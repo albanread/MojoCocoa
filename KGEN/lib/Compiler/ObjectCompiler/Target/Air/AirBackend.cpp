@@ -1046,7 +1046,6 @@ llvm::Error legalizeModule(llvm::Module &m) {
   // After deviceize, which can leave a cast redundant by moving its
   // operand into the space it was casting to.
   refreshOverloadedMemIntrinsics(m);
-  dropNoOpAddrSpaceCasts(m);
 
   // Metal has no 64-bit floats anywhere (MSL has no `double`); emitting the
   // type produces bitcode the AIR reader rejects opaquely. Diagnose cleanly.
@@ -1096,6 +1095,14 @@ llvm::Error legalizeModule(llvm::Module &m) {
         c, {llvm::ConstantAsMetadata::get(legal), llvm::MDNode::get(c, {}),
             llvm::MDNode::get(c, argMD)}));
   }
+
+  // After legalizeKernel, not before it. Retyping a kernel's parameters to
+  // their AIR address spaces turns casts that WERE meaningful into
+  // same-space no-ops, so cleaning up earlier in this function missed every
+  // one this loop had yet to create. Invisible until gate 1 started running
+  // on canonical IR and reported "AddrSpaceCast must be between different
+  // address spaces".
+  dropNoOpAddrSpaceCasts(m);
 
   // Module flags and AIR identification, per the golden sample.
   auto addFlag = [&](llvm::StringRef name, uint32_t value, uint32_t behavior) {

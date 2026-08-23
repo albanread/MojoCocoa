@@ -31,6 +31,8 @@ void *AppleGPUMetal_hostPtr(AGMetalBuf *buf);
 const char *AppleGPUMetal_copyHtoD(AGMetalBuf *dst, const void *src, size_t bytes);
 const char *AppleGPUMetal_copyDtoH(void *dst, AGMetalBuf *src, size_t bytes);
 const char *AppleGPUMetal_copyDtoD(AGMetalBuf *dst, AGMetalBuf *src, size_t bytes);
+const char *AppleGPUMetal_copyRawDtoD(AGMetalCtx *ctx, uint64_t dstAddr,
+                                      uint64_t srcAddr, size_t bytes);
 const char *AppleGPUMetal_copyRawHtoD(AGMetalCtx *ctx, uint64_t dstAddr,
                                     const void *src, size_t bytes);
 const char *AppleGPUMetal_copyRawDtoH(AGMetalCtx *ctx, void *dst,

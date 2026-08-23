@@ -571,6 +571,27 @@ const char *AppleGPUMetal_copyDtoD(AGMetalBuf *dst, AGMetalBuf *src,
 }
 
 // Raw-address copies (DevicePointer paths): resolve through the registry.
+// Device-to-device by gpuAddress, for buffers that carry an address rather
+// than an MTLBuffer handle (sub-buffer views have mtl == nullptr). Both ends
+// resolve through the same allocation registry the other raw copies use.
+const char *AppleGPUMetal_copyRawDtoD(AGMetalCtx *ctx, uint64_t dstAddr,
+                                      uint64_t srcAddr, size_t bytes) {
+  size_t dstOff = 0, srcOff = 0;
+  id dstBuf = resolveAddress(dstAddr, &dstOff);
+  id srcBuf = resolveAddress(srcAddr, &srcOff);
+  if (!dstBuf || !srcBuf)
+    return agmErrorf(
+        "AppleGPURT[metal]: DtoD with unknown device address 0x%llx",
+        (unsigned long long)(dstBuf ? srcAddr : dstAddr));
+  BlitOp op;
+  op.src = srcBuf;
+  op.srcOff = srcOff;
+  op.dst = dstBuf;
+  op.dstOff = dstOff;
+  op.bytes = bytes;
+  return runBlitOp(ctx, op);
+}
+
 const char *AppleGPUMetal_copyRawHtoD(AGMetalCtx *ctx, uint64_t dstAddr,
                                     const void *src, size_t bytes) {
   size_t off = 0;
@@ -829,8 +850,23 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
         (i < fn->argSlots.size() && fn->argSlots[i].known) ? &fn->argSlots[i]
                                                            : nullptr;
     bool isDev;
+    // Explicit caller flags WIN over reflection when they say "device".
+    //
+    // The reflection discriminator -- bufferDataType == MTLDataTypeNone --
+    // identifies a device buffer only for kernels WE generate, whose
+    // parameter is `{} addrspace(1)*` with an opaque pointee. A kernel
+    // compiled from MSL source declares `device float*`, so Metal reports
+    // Float/4 and the same test calls it a constant. That is a real kernel
+    // taking a real buffer, and the runtime smoke test (saxpy from MSL) is
+    // exactly that shape -- it started failing the size check below the
+    // moment reflection was introduced.
+    //
+    // Reflection is still what settles the case the flags get wrong
+    // (captures, flagged false but genuinely device pointers), so the rule is
+    // "device if EITHER source says so".
+    const bool flaggedDev = argIsDevicePtr && argIsDevicePtr[i];
     if (slot) {
-      isDev = slot->deviceBuffer;
+      isDev = slot->deviceBuffer || flaggedDev;
       // A constant parameter must be handed exactly the bytes it declares.
       // If the two ever disagree neither binding is right and the kernel
       // reads undefined memory, so refuse rather than run. No test trips

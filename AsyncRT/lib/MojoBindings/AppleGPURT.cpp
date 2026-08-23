@@ -542,8 +542,18 @@ AsyncRT_DeviceBuffer_reassignOwnershipTo(const DeviceBuffer *buf,
 extern "C" const char *
 AsyncRT_DeviceContext_HtoD_async(const DeviceContext *, const DeviceBuffer *dst,
                                  const void *src) {
-  if (dst->mtl)
-    return AppleGPUMetal_copyHtoD(dst->mtl, src, dst->bytes);
+  if (!dst)
+    return vrErrorf("AppleGPURT: HtoD with a null destination buffer");
+  // Route on isHostBuffer, not on `mtl` -- see DtoD below for why: a device
+  // sub-view carries a gpuAddress with mtl == nullptr, and memcpying to that
+  // is what crashed test_topk_nan_contract.
+  if (!dst->isHostBuffer)
+    return dst->mtl ? AppleGPUMetal_copyHtoD(dst->mtl, src, dst->bytes)
+                    : AppleGPUMetal_copyRawHtoD(
+                          dst->ctx->metal,
+                          static_cast<uint64_t>(
+                              reinterpret_cast<uintptr_t>(dst->ptr)),
+                          src, dst->bytes);
   if (dst->bytes)
     memcpy(dst->ptr, src, dst->bytes);
   return VR_OK;
@@ -552,8 +562,15 @@ AsyncRT_DeviceContext_HtoD_async(const DeviceContext *, const DeviceBuffer *dst,
 extern "C" const char *
 AsyncRT_DeviceContext_DtoH_async(const DeviceContext *, void *dst,
                                  const DeviceBuffer *src) {
-  if (src->mtl)
-    return AppleGPUMetal_copyDtoH(dst, src->mtl, src->bytes);
+  if (!src)
+    return vrErrorf("AppleGPURT: DtoH with a null source buffer");
+  if (!src->isHostBuffer)
+    return src->mtl ? AppleGPUMetal_copyDtoH(dst, src->mtl, src->bytes)
+                    : AppleGPUMetal_copyRawDtoH(
+                          src->ctx->metal, dst,
+                          static_cast<uint64_t>(
+                              reinterpret_cast<uintptr_t>(src->ptr)),
+                          src->bytes);
   if (src->bytes)
     memcpy(dst, src->ptr, src->bytes);
   return VR_OK;
@@ -562,11 +579,57 @@ AsyncRT_DeviceContext_DtoH_async(const DeviceContext *, void *dst,
 extern "C" const char *
 AsyncRT_DeviceContext_DtoD_async(const DeviceContext *, const DeviceBuffer *dst,
                                  const DeviceBuffer *src) {
+  // Guard the handles. This one dereferences BOTH on its first line, which is
+  // why it was the path that crashed: test_topk_nan_contract passed a null
+  // buffer and got a SIGSEGV inside the runtime, with the Mojo stack trace
+  // pointing at AsyncRT_DeviceContext_DtoD_async and nothing saying why.
+  // An error naming the argument is worth more than a signal.
+  if (!dst || !src)
+    return vrErrorf("AppleGPURT: DtoD with a null %s buffer",
+                    !dst ? (!src ? "destination and source" : "destination")
+                         : "source");
   size_t n = dst->bytes < src->bytes ? dst->bytes : src->bytes;
-  if (dst->mtl && src->mtl)
-    return AppleGPUMetal_copyDtoD(dst->mtl, src->mtl, n);
-  if (n)
-    memcpy(dst->ptr, src->ptr, n);
+  if (!n)
+    return VR_OK;
+  // All four combinations, not just the two symmetric ones. A Metal buffer is
+  // an MTLBuffer addressed by gpuAddress and its `ptr` is not a CPU pointer,
+  // so the old fallthrough -- anything that was not metal-to-metal went to
+  // memcpy -- dereferenced a non-CPU pointer whenever exactly one side was a
+  // device buffer. That is the second crash in this function:
+  // test_topk_nan_contract cleared the null guard above and then died in the
+  // memcpy with a mixed pair.
+  // Route on isHostBuffer, NOT on `mtl`. VRBuffer::ptr is documented as
+  // "host memory (cpu) or gpuAddress token (metal)", and a device SUB-VIEW
+  // carries an address with mtl == nullptr -- so testing `mtl` sends a device
+  // buffer down the CPU path and memcpys through a gpuAddress. That is the
+  // crash under test_topk_nan_contract, twice over: first in the memcpy, then
+  // in copyHtoD once the memcpy was guarded.
+  const bool dstDev = !dst->isHostBuffer, srcDev = !src->isHostBuffer;
+  auto addr = [](const VRBuffer *b) {
+    return static_cast<uint64_t>(reinterpret_cast<uintptr_t>(b->ptr));
+  };
+  if (dstDev && srcDev) {
+    if (dst->mtl && src->mtl)
+      return AppleGPUMetal_copyDtoD(dst->mtl, src->mtl, n);
+    if (!dst->ctx || !dst->ctx->metal)
+      return vrErrorf("AppleGPURT: DtoD between device buffers without a "
+                      "metal context");
+    return AppleGPUMetal_copyRawDtoD(dst->ctx->metal, addr(dst), addr(src), n);
+  }
+  if (dstDev)
+    return dst->mtl
+               ? AppleGPUMetal_copyHtoD(dst->mtl, src->ptr, n)
+               : AppleGPUMetal_copyRawHtoD(dst->ctx->metal, addr(dst),
+                                           src->ptr, n);
+  if (srcDev)
+    return src->mtl
+               ? AppleGPUMetal_copyDtoH(dst->ptr, src->mtl, n)
+               : AppleGPUMetal_copyRawDtoH(src->ctx->metal, dst->ptr,
+                                           addr(src), n);
+  if (!dst->ptr || !src->ptr)
+    return vrErrorf("AppleGPURT: DtoD host copy with a null %s pointer",
+                    !dst->ptr ? "destination" : "source");
+  memcpy(dst->ptr, src->ptr, n);
   return VR_OK;
 }
 
@@ -579,6 +642,8 @@ extern "C" const char *
 AsyncRT_DeviceContext_setMemory_async(const DeviceContext *,
                                       const DeviceBuffer *dst, uint64_t val,
                                       size_t val_size) {
+  if (!dst)
+    return vrErrorf("AppleGPURT: setMemory with a null destination buffer");
   if (dst->mtl)
     return AppleGPUMetal_fill(dst->mtl, val, val_size);
   char *p = static_cast<char *>(dst->ptr);
