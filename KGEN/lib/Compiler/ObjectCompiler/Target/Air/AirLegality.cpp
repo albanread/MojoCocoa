@@ -1,0 +1,789 @@
+//===- AirLegality.cpp - Data-driven legality firewall for AIR -----------===//
+
+#include "AirLegality.h"
+
+#include <cstdlib>
+#include <mutex>
+
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/ADT/DepthFirstIterator.h"
+#include "llvm/ADT/StringSwitch.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/IR/Dominators.h"
+#include "llvm/IR/Module.h"
+#include "llvm/Support/FormatVariadic.h"
+#include "llvm/Support/raw_ostream.h"
+
+namespace M::KGEN::Air {
+namespace {
+
+//===----------------------------------------------------------------------===//
+// The rule table
+//===----------------------------------------------------------------------===//
+//
+// `evidence` says how we know. "measured" means this backend shipped the
+// defect and the fix was verified on an M4. "air-poc" means it comes from the
+// out-of-tree LLVM AIR backend at github.com/imperatormk/llvm-project
+// (Apache-2.0 WITH LLVM-exception), reconstructed black-box the same way ours
+// was -- so it is evidence, not specification, and stays at Log until we have
+// confirmed it against our own oracle.
+
+struct Rule {
+  llvm::StringRef id;
+  RuleAction action;
+  llvm::StringRef evidence;
+  llvm::StringRef what;
+};
+
+// clang-format off
+Rule Rules[] = {
+  // --- measured here, and the fix is in: safe to fail the build on ---------
+  {"mask-bitcast",         RuleAction::Fail,   "measured",
+   "bitcast between <N x i1> and iN -- InstCombine's `any(mask)` idiom. This "
+   "is the form that was MEASURED to pass verifyModule, metallib AND air-opt "
+   "and then kill the compiler service at pipeline creation"},
+  {"odd-int-width",        RuleAction::Log,    "unproven",
+   "integer width outside 1/8/16/32/64, other than the mask bitcast above. "
+   "LOG, not fail: generalising from the i4 mask case was wrong. "
+   "test_grid_dim emits `trunc i64 to i2` and passes, so the reader clearly "
+   "tolerates at least some odd widths. Narrow this only with evidence"},
+  {"native-int-float-cast", RuleAction::Fail,  "measured",
+   "sitofp/uitofp/fptosi/fptoui -- Apple's compiler emits none of these ever; "
+   "they must be air.convert.* calls"},
+  {"vector-fp-cast",       RuleAction::Fail,   "measured",
+   "vector fpext/fptrunc -- the scalar form is fine, the vector form is "
+   "computed wrongly by the driver with no error"},
+  {"vector-llvm-fma",      RuleAction::Fail,   "measured",
+   "vector llvm.fma -- Apple spells it air.fma.<ty>; scalar llvm.fma.f32 is "
+   "accepted"},
+
+  // --- measured here, but still finding false positives: log only ----------
+  {"generic-deref",        RuleAction::Log,    "measured",
+   "load/store/atomic through an addrspace(0) pointer that is not "
+   "alloca-derived. AIR has no generic space, so the access reads zero and "
+   "writes nowhere -- silently, with correct-looking IR"},
+  {"addrspacecast",        RuleAction::Log,    "measured",
+   "addrspacecast -- Apple emits none; the idiom is ptrtoint+inttoptr. A "
+   "same-space cast is also invalid IR outright"},
+  {"dead-intrinsic-decl",  RuleAction::Log,    "measured",
+   "llvm.* declaration nothing calls -- the reader resolves every declared "
+   "symbol, so a dead declare is as fatal as a live call and far harder to "
+   "see"},
+
+  // --- from air-poc, unconfirmed on our hardware: log only -----------------
+  {"unmapped-llvm-intrinsic", RuleAction::Log, "measured",
+   "VECTOR llvm.* math intrinsic that has a known air.* equivalent. Anything "
+   "the OPTIMISER introduces arrives as llvm.* and never went through our "
+   "stdlib's air.* naming. Scalar forms are deliberately NOT flagged: "
+   "Apple's own compiler emits llvm.fma.f32 and the reader accepts it (38 "
+   "such calls across the oracle corpus). Only the vector form was measured "
+   "to fail"},
+  {"nan-minmax-unwrapped", RuleAction::Permit, "air-poc",
+   "air.fmin/air.fmax with no NaN-propagation select. OFF BY DEFAULT and kept "
+   "only as documentation: it cannot work as a detection rule. AIR's fmin/fmax "
+   "drop NaN, but that is CORRECT for llvm.minnum/maxnum and wrong only for "
+   "llvm.minimum/maximum -- and after renaming the two are indistinguishable. "
+   "Apple's own output trips this 4 times. The correctness belongs in the "
+   "guard-nan-minmax transform, which wraps only calls it renamed from "
+   "minimum/maximum"},
+  {"i64-simd-shuffle",     RuleAction::Log,    "air-poc",
+   "i64 air.simd_shuffle -- the GPU JIT rejects it; rewrite as bitcast to "
+   "<2 x i32>, shuffle, bitcast back"},
+  {"f64",                  RuleAction::Log,    "air-poc",
+   "double anywhere -- Apple Silicon has no f64; it must be demoted"},
+  {"int-to-bf16",          RuleAction::Log,    "air-poc",
+   "direct int->bfloat conversion -- must go via float, then bit-shuffle"},
+  {"nonvolatile-loop-load", RuleAction::Log,   "air-poc",
+   "device load in a loop whose body also stores through the same pointer, "
+   "not marked volatile -- LLVM hoists it and the reduction reads stale data"},
+  {"unguarded-scalar-store", RuleAction::Log,  "air-poc",
+   "device store in a kernel with no per-thread index -- every thread in the "
+   "group writes the same address unless guarded by tid.x == 0"},
+};
+// clang-format on
+
+//===----------------------------------------------------------------------===//
+// llvm.* -> air.* rename table
+//===----------------------------------------------------------------------===//
+//
+// Ported from AIRIntrinsicMappings.td in the out-of-tree LLVM AIR backend
+// (github.com/imperatormk/llvm-project, Apache-2.0 WITH LLVM-exception).
+// Data, not code: each entry is independently checkable against `xcrun metal`
+// output, and several already were -- air.fma.v4f32 was derived here by hand
+// before this table was found.
+
+struct Rename {
+  llvm::StringRef llvmName;
+  llvm::StringRef airName;
+};
+
+const Rename Renames[] = {
+    {"llvm.maxnum.f32", "air.fmax.f32"},
+    {"llvm.minnum.f32", "air.fmin.f32"},
+    {"llvm.maxnum.f16", "air.fmax.f16"},
+    {"llvm.minnum.f16", "air.fmin.f16"},
+    {"llvm.maximum.f32", "air.fmax.f32"},
+    {"llvm.minimum.f32", "air.fmin.f32"},
+    {"llvm.maximum.f16", "air.fmax.f16"},
+    {"llvm.minimum.f16", "air.fmin.f16"},
+    {"llvm.maximum.v2f32", "air.fmax.v2f32"},
+    {"llvm.maximum.v3f32", "air.fmax.v3f32"},
+    {"llvm.maximum.v4f32", "air.fmax.v4f32"},
+    {"llvm.minimum.v2f32", "air.fmin.v2f32"},
+    {"llvm.minimum.v3f32", "air.fmin.v3f32"},
+    {"llvm.minimum.v4f32", "air.fmin.v4f32"},
+    {"llvm.maximum.v2f16", "air.fmax.v2f16"},
+    {"llvm.maximum.v4f16", "air.fmax.v4f16"},
+    {"llvm.minimum.v2f16", "air.fmin.v2f16"},
+    {"llvm.minimum.v4f16", "air.fmin.v4f16"},
+    {"llvm.sin.f32", "air.sin.f32"},
+    {"llvm.cos.f32", "air.cos.f32"},
+    {"llvm.sin.f16", "air.sin.f16"},
+    {"llvm.cos.f16", "air.cos.f16"},
+    {"llvm.exp.f32", "air.fast_exp.f32"},
+    {"llvm.log.f32", "air.fast_log.f32"},
+    {"llvm.exp2.f32", "air.exp2.f32"},
+    {"llvm.log2.f32", "air.log2.f32"},
+    {"llvm.pow.f32", "air.pow.f32"},
+    {"llvm.exp.f16", "air.fast_exp.f16"},
+    {"llvm.log.f16", "air.fast_log.f16"},
+    {"llvm.exp2.f16", "air.fast_exp2.f16"},
+    {"llvm.log2.f16", "air.fast_log2.f16"},
+    {"llvm.sqrt.f32", "air.fast_sqrt.f32"},
+    {"llvm.fabs.f32", "air.fabs.f32"},
+    {"llvm.floor.f32", "air.fast_floor.f32"},
+    {"llvm.ceil.f32", "air.fast_ceil.f32"},
+    {"llvm.sqrt.f16", "air.fast_sqrt.f16"},
+    {"llvm.fabs.f16", "air.fabs.f16"},
+    {"llvm.floor.f16", "air.fast_floor.f16"},
+    {"llvm.ceil.f16", "air.fast_ceil.f16"},
+    {"llvm.fma.f32", "air.fma.f32"},
+    {"llvm.fma.f16", "air.fma.f16"},
+    {"llvm.rint.f32", "air.fast_rint.f32"},
+    {"llvm.rint.f16", "air.fast_rint.f16"},
+    {"llvm.maxnum.v2f32", "air.fast_fmax.v2f32"},
+    {"llvm.maxnum.v3f32", "air.fast_fmax.v3f32"},
+    {"llvm.maxnum.v4f32", "air.fast_fmax.v4f32"},
+    {"llvm.minnum.v2f32", "air.fast_fmin.v2f32"},
+    {"llvm.minnum.v3f32", "air.fast_fmin.v3f32"},
+    {"llvm.minnum.v4f32", "air.fast_fmin.v4f32"},
+    {"llvm.sin.v2f32", "air.sin.v2f32"},
+    {"llvm.sin.v3f32", "air.sin.v3f32"},
+    {"llvm.sin.v4f32", "air.sin.v4f32"},
+    {"llvm.cos.v2f32", "air.cos.v2f32"},
+    {"llvm.cos.v3f32", "air.cos.v3f32"},
+    {"llvm.cos.v4f32", "air.cos.v4f32"},
+    {"llvm.exp.v2f32", "air.fast_exp.v2f32"},
+    {"llvm.exp.v3f32", "air.fast_exp.v3f32"},
+    {"llvm.exp.v4f32", "air.fast_exp.v4f32"},
+    {"llvm.log.v2f32", "air.fast_log.v2f32"},
+    {"llvm.log.v3f32", "air.fast_log.v3f32"},
+    {"llvm.log.v4f32", "air.fast_log.v4f32"},
+    {"llvm.exp2.v2f32", "air.exp2.v2f32"},
+    {"llvm.exp2.v3f32", "air.exp2.v3f32"},
+    {"llvm.exp2.v4f32", "air.exp2.v4f32"},
+    {"llvm.log2.v2f32", "air.log2.v2f32"},
+    {"llvm.log2.v3f32", "air.log2.v3f32"},
+    {"llvm.log2.v4f32", "air.log2.v4f32"},
+    {"llvm.pow.v2f32", "air.pow.v2f32"},
+    {"llvm.pow.v3f32", "air.pow.v3f32"},
+    {"llvm.pow.v4f32", "air.pow.v4f32"},
+    {"llvm.sqrt.v2f32", "air.fast_sqrt.v2f32"},
+    {"llvm.sqrt.v3f32", "air.fast_sqrt.v3f32"},
+    {"llvm.sqrt.v4f32", "air.fast_sqrt.v4f32"},
+    {"llvm.fabs.v2f32", "air.fast_fabs.v2f32"},
+    {"llvm.fabs.v3f32", "air.fast_fabs.v3f32"},
+    {"llvm.fabs.v4f32", "air.fast_fabs.v4f32"},
+    {"llvm.floor.v2f32", "air.fast_floor.v2f32"},
+    {"llvm.floor.v3f32", "air.fast_floor.v3f32"},
+    {"llvm.floor.v4f32", "air.fast_floor.v4f32"},
+    {"llvm.ceil.v2f32", "air.fast_ceil.v2f32"},
+    {"llvm.ceil.v3f32", "air.fast_ceil.v3f32"},
+    {"llvm.ceil.v4f32", "air.fast_ceil.v4f32"},
+    {"llvm.rint.v2f32", "air.fast_rint.v2f32"},
+    {"llvm.rint.v3f32", "air.fast_rint.v3f32"},
+    {"llvm.rint.v4f32", "air.fast_rint.v4f32"},
+    {"llvm.fma.v2f32", "air.fma.v2f32"},
+    {"llvm.fma.v3f32", "air.fma.v3f32"},
+    {"llvm.fma.v4f32", "air.fma.v4f32"},
+};
+
+//===----------------------------------------------------------------------===//
+// Configuration
+//===----------------------------------------------------------------------===//
+
+std::once_flag ConfigOnce;
+
+RuleAction parseAction(llvm::StringRef v, bool &ok) {
+  ok = true;
+  return llvm::StringSwitch<RuleAction>(v.lower())
+      .Case("permit", RuleAction::Permit)
+      .Case("off", RuleAction::Permit)
+      .Case("no", RuleAction::Permit)
+      .Case("log", RuleAction::Log)
+      .Case("warn", RuleAction::Log)
+      .Case("warning", RuleAction::Log)
+      .Case("fail", RuleAction::Fail)
+      .Case("error", RuleAction::Fail)
+      .Case("err", RuleAction::Fail)
+      .Default((ok = false, RuleAction::Log));
+}
+
+llvm::StringRef actionName(RuleAction a) {
+  switch (a) {
+  case RuleAction::Permit: return "permit";
+  case RuleAction::Log:    return "log";
+  case RuleAction::Fail:   return "fail";
+  }
+  return "?";
+}
+
+void doConfigure() {
+  const char *cfg = ::getenv("APPLEGPU_AIR_RULES");
+  if (!cfg || !*cfg)
+    return;
+  llvm::StringRef s(cfg);
+  llvm::SmallVector<llvm::StringRef, 8> parts;
+  s.split(parts, ',', -1, /*KeepEmpty=*/false);
+  for (llvm::StringRef p : parts) {
+    p = p.trim();
+    if (p.equals_insensitive("list"))
+      continue; // handled by listRulesIfRequested
+    auto [name, val] = p.split('=');
+    name = name.trim();
+    val = val.trim();
+    if (val.empty()) {
+      llvm::errs() << "[air-rules] ignoring '" << p << "': expected id=action\n";
+      continue;
+    }
+    bool ok = false;
+    RuleAction a = parseAction(val, ok);
+    if (!ok) {
+      llvm::errs() << "[air-rules] ignoring '" << p << "': unknown action '"
+                   << val << "' (permit|log|fail)\n";
+      continue;
+    }
+    if (name.equals_insensitive("all")) {
+      for (Rule &r : Rules)
+        r.action = a;
+      continue;
+    }
+    bool found = false;
+    for (Rule &r : Rules)
+      if (r.id == name) {
+        r.action = a;
+        found = true;
+      }
+    if (!found)
+      llvm::errs() << "[air-rules] no such rule '" << name
+                   << "' (APPLEGPU_AIR_RULES=list to see them)\n";
+  }
+}
+
+const Rule *ruleFor(llvm::StringRef id) {
+  for (const Rule &r : Rules)
+    if (r.id == id)
+      return &r;
+  return nullptr;
+}
+
+//===----------------------------------------------------------------------===//
+// Helpers
+//===----------------------------------------------------------------------===//
+
+/// Does this pointer trace back to an alloca? Private/stack memory is
+/// legitimately addrspace(0), and treating it as a defect rejects most working
+/// kernels -- measured: 45 findings across 13 passing tests.
+bool isAllocaDerived(const llvm::Value *v) {
+  llvm::SmallPtrSet<const llvm::Value *, 8> seen;
+  llvm::SmallVector<const llvm::Value *, 8> work{v};
+  while (!work.empty()) {
+    const llvm::Value *cur = work.pop_back_val()->stripPointerCasts();
+    if (!seen.insert(cur).second)
+      continue;
+    if (llvm::isa<llvm::AllocaInst>(cur))
+      return true;
+    if (auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(cur)) {
+      work.push_back(gep->getPointerOperand());
+      continue;
+    }
+    if (auto *phi = llvm::dyn_cast<llvm::PHINode>(cur)) {
+      for (const llvm::Value *in : phi->incoming_values())
+        work.push_back(in);
+      continue;
+    }
+    if (auto *sel = llvm::dyn_cast<llvm::SelectInst>(cur)) {
+      work.push_back(sel->getTrueValue());
+      work.push_back(sel->getFalseValue());
+      continue;
+    }
+  }
+  return false;
+}
+
+bool badIntWidth(unsigned w) {
+  return w != 1 && w != 8 && w != 16 && w != 32 && w != 64;
+}
+
+/// Recursive search for an illegal scalar type, without descending through
+/// pointers -- a struct holding an addrspace(0) pointer is normal (that is
+/// what a descriptor blob IS); only dereferencing one is a defect.
+llvm::StringRef illegalScalar(llvm::Type *t,
+                              llvm::SmallPtrSetImpl<llvm::Type *> &seen) {
+  if (!t || !seen.insert(t).second)
+    return {};
+  if (auto *it = llvm::dyn_cast<llvm::IntegerType>(t))
+    if (badIntWidth(it->getBitWidth()))
+      return "odd-int-width";
+
+  if (t->isDoubleTy())
+    return "f64";
+  if (llvm::isa<llvm::PointerType>(t))
+    return {};
+  for (llvm::Type *sub : t->subtypes())
+    if (auto why = illegalScalar(sub, seen); !why.empty())
+      return why;
+  return {};
+}
+
+std::string typeStr(llvm::Type *t) {
+  std::string s;
+  llvm::raw_string_ostream os(s);
+  t->print(os);
+  return s;
+}
+
+} // namespace
+
+void printRuleTable();
+
+void configureFromEnv() {
+  std::call_once(ConfigOnce, [] {
+    doConfigure();
+    // Print the table on request, once, after config is applied so the
+    // listing shows the ACTIVE action for each rule rather than the default.
+    const char *cfg = ::getenv("APPLEGPU_AIR_RULES");
+    if (cfg && llvm::StringRef(cfg).contains("list"))
+      printRuleTable();
+  });
+}
+
+std::vector<Finding> checkLegality(llvm::Module &m) {
+  configureFromEnv();
+  std::vector<Finding> out;
+
+  auto enabled = [&](llvm::StringRef id) -> const Rule * {
+    const Rule *r = ruleFor(id);
+    return (r && r->action != RuleAction::Permit) ? r : nullptr;
+  };
+  auto report = [&](const Rule *r, const llvm::Twine &detail,
+                    const llvm::Function *fn) {
+    out.push_back({r->id,
+                   (detail + (fn ? "  [in @" + fn->getName() + "]" : "")).str(),
+                   r->action});
+  };
+
+  llvm::StringMap<llvm::StringRef> renameMap;
+  if (enabled("unmapped-llvm-intrinsic"))
+    for (const Rename &rn : Renames)
+      renameMap[rn.llvmName] = rn.airName;
+
+  llvm::SmallPtrSet<llvm::Type *, 32> seen;
+  auto checkType = [&](llvm::Type *t, const llvm::Twine &where,
+                       const llvm::Function *fn) {
+    seen.clear();
+    llvm::StringRef why = illegalScalar(t, seen);
+    if (why.empty())
+      return;
+    if (const Rule *r = enabled(why))
+      report(r, where + ": " + r->what + " (" + typeStr(t) + ")", fn);
+  };
+
+  for (llvm::Function &fn : m) {
+    if (fn.isDeclaration()) {
+      if (const Rule *r = enabled("dead-intrinsic-decl"))
+        if (fn.use_empty() && fn.isIntrinsic())
+          report(r, "dead declaration @" + fn.getName(), nullptr);
+      continue;
+    }
+    for (llvm::Argument &a : fn.args())
+      checkType(a.getType(), "parameter %" + llvm::Twine(a.getArgNo()), &fn);
+
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb) {
+        checkType(inst.getType(),
+                  llvm::Twine(inst.getOpcodeName()) + " result", &fn);
+
+        if (auto *bc = llvm::dyn_cast<llvm::BitCastInst>(&inst)) {
+          auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(bc->getSrcTy());
+          auto *it = llvm::dyn_cast<llvm::IntegerType>(bc->getDestTy());
+          if (!vt) {
+            vt = llvm::dyn_cast<llvm::FixedVectorType>(bc->getDestTy());
+            it = llvm::dyn_cast<llvm::IntegerType>(bc->getSrcTy());
+          }
+          if (vt && it && vt->getElementType()->isIntegerTy(1) &&
+              it->getBitWidth() == vt->getNumElements())
+            if (const Rule *r = enabled("mask-bitcast"))
+              report(r, "bitcast <" + llvm::Twine(vt->getNumElements()) +
+                            " x i1> <-> i" + llvm::Twine(it->getBitWidth()),
+                     &fn);
+        }
+
+        switch (inst.getOpcode()) {
+        case llvm::Instruction::AddrSpaceCast:
+          if (const Rule *r = enabled("addrspacecast"))
+            report(r, "addrspacecast", &fn);
+          break;
+        case llvm::Instruction::SIToFP:
+        case llvm::Instruction::UIToFP:
+        case llvm::Instruction::FPToSI:
+        case llvm::Instruction::FPToUI:
+          if (const Rule *r = enabled("native-int-float-cast"))
+            report(r, llvm::Twine("native ") + inst.getOpcodeName(), &fn);
+          if (inst.getType()->isBFloatTy() ||
+              (inst.getType()->isVectorTy() &&
+               inst.getType()->getScalarType()->isBFloatTy()))
+            if (const Rule *r = enabled("int-to-bf16"))
+              report(r, llvm::Twine(inst.getOpcodeName()) + " to bfloat", &fn);
+          break;
+        case llvm::Instruction::FPExt:
+        case llvm::Instruction::FPTrunc:
+          if (inst.getType()->isVectorTy())
+            if (const Rule *r = enabled("vector-fp-cast"))
+              report(r, llvm::Twine("vector ") + inst.getOpcodeName(), &fn);
+          break;
+        default:
+          break;
+        }
+
+        // Dereference through a generic pointer, excluding stack memory.
+        llvm::Value *ptrOp = nullptr;
+        if (auto *ld = llvm::dyn_cast<llvm::LoadInst>(&inst))
+          ptrOp = ld->getPointerOperand();
+        else if (auto *st = llvm::dyn_cast<llvm::StoreInst>(&inst))
+          ptrOp = st->getPointerOperand();
+        else if (auto *rmw = llvm::dyn_cast<llvm::AtomicRMWInst>(&inst))
+          ptrOp = rmw->getPointerOperand();
+        else if (auto *cx = llvm::dyn_cast<llvm::AtomicCmpXchgInst>(&inst))
+          ptrOp = cx->getPointerOperand();
+        if (ptrOp)
+          if (auto *pt = llvm::dyn_cast<llvm::PointerType>(ptrOp->getType()))
+            if (pt->getAddressSpace() == 0 && !isAllocaDerived(ptrOp))
+              if (const Rule *r = enabled("generic-deref"))
+                report(r, llvm::Twine(inst.getOpcodeName()) + " through a "
+                                                              "generic pointer",
+                       &fn);
+
+        auto *ci = llvm::dyn_cast<llvm::CallInst>(&inst);
+        llvm::Function *callee = ci ? ci->getCalledFunction() : nullptr;
+        if (!callee)
+          continue;
+        llvm::StringRef name = callee->getName();
+
+        if (callee->isIntrinsic() && ci->getType()->isVectorTy() &&
+            callee->getIntrinsicID() == llvm::Intrinsic::fma)
+          if (const Rule *r = enabled("vector-llvm-fma"))
+            report(r, "vector llvm.fma", &fn);
+
+        // Vector only -- see the rule's note.
+        if (!renameMap.empty() && ci->getType()->isVectorTy())
+          if (auto it = renameMap.find(name); it != renameMap.end())
+            if (const Rule *r = enabled("unmapped-llvm-intrinsic"))
+              report(r, name + " should be " + it->second, &fn);
+
+        if (name.starts_with("air.simd_shuffle") && name.ends_with(".i64"))
+          if (const Rule *r = enabled("i64-simd-shuffle"))
+            report(r, name, &fn);
+
+        if (name.starts_with("air.fmin") || name.starts_with("air.fmax")) {
+          bool wrapped = llvm::any_of(ci->users(), [](const llvm::User *u) {
+            return llvm::isa<llvm::SelectInst>(u) || llvm::isa<llvm::FCmpInst>(u);
+          });
+          if (!wrapped)
+            if (const Rule *r = enabled("nan-minmax-unwrapped"))
+              report(r, name + " with no NaN-propagation select", &fn);
+        }
+      }
+  }
+  return out;
+}
+
+
+//===----------------------------------------------------------------------===//
+// Transforms
+//===----------------------------------------------------------------------===//
+//
+// Separate switch from the rules, and every one defaults OFF. A detection rule
+// that is wrong prints a spurious line; a transform that is wrong silently
+// changes generated code. They do not deserve the same default.
+//
+//   APPLEGPU_AIR_XFORMS="rename-llvm-intrinsics=on,split-i64-shuffle=on"
+//   APPLEGPU_AIR_XFORMS=all=on
+//
+// Turn one on, run the full sweep, and promote it here once clean.
+
+namespace {
+
+struct Transform {
+  llvm::StringRef id;
+  bool enabled;
+  llvm::StringRef what;
+};
+
+Transform Transforms[] = {
+  {"rename-llvm-intrinsics", false,
+   "rename llvm.* math intrinsics to their air.* equivalents, using the "
+   "ported table. Anything the optimiser introduces arrives as llvm.* and "
+   "never passed through the stdlib's air.* naming"},
+  {"guard-nan-minmax", false,
+   "wrap renamed fmin/fmax in a NaN-propagation select. AIR's fmin/fmax DROP "
+   "NaN, so llvm.minimum/maximum semantics are not preserved by the rename "
+   "alone. Only meaningful with rename-llvm-intrinsics"},
+  {"split-i64-shuffle", false,
+   "rewrite i64 air.simd_shuffle as bitcast to <2 x i32>, shuffle, bitcast "
+   "back -- the GPU JIT rejects the i64 form"},
+  {"volatile-loop-loads", false,
+   "mark a device load volatile when it sits in a loop whose body also stores "
+   "through the same base pointer, so LLVM cannot hoist it out and read stale "
+   "data"},
+};
+
+std::once_flag XformOnce;
+
+void doConfigureXforms() {
+  const char *cfg = ::getenv("APPLEGPU_AIR_XFORMS");
+  if (!cfg || !*cfg)
+    return;
+  llvm::SmallVector<llvm::StringRef, 8> parts;
+  llvm::StringRef(cfg).split(parts, ',', -1, /*KeepEmpty=*/false);
+  for (llvm::StringRef p : parts) {
+    auto [name, val] = p.trim().split('=');
+    name = name.trim();
+    bool on = llvm::StringSwitch<bool>(val.trim().lower())
+                  .Case("on", true)
+                  .Case("yes", true)
+                  .Case("true", true)
+                  .Case("1", true)
+                  .Default(false);
+    if (name.equals_insensitive("all")) {
+      for (Transform &t : Transforms)
+        t.enabled = on;
+      continue;
+    }
+    bool found = false;
+    for (Transform &t : Transforms)
+      if (t.id == name) { t.enabled = on; found = true; }
+    if (!found)
+      llvm::errs() << "[air-xforms] no such transform '" << name << "'\n";
+  }
+}
+
+bool xformEnabled(llvm::StringRef id) {
+  std::call_once(XformOnce, doConfigureXforms);
+  for (const Transform &t : Transforms)
+    if (t.id == id)
+      return t.enabled;
+  return false;
+}
+
+/// llvm.* -> air.* by table. Returns the calls that were renamed to a
+/// fmin/fmax, so the NaN guard can wrap exactly those.
+bool renameIntrinsics(llvm::Module &m,
+                      llvm::SmallVectorImpl<llvm::CallInst *> &minmax) {
+  llvm::StringMap<llvm::StringRef> map;
+  for (const Rename &rn : Renames)
+    map[rn.llvmName] = rn.airName;
+
+  llvm::SmallVector<llvm::CallInst *, 16> calls;
+  for (llvm::Function &fn : m)
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb)
+        if (auto *ci = llvm::dyn_cast<llvm::CallInst>(&inst))
+          if (llvm::Function *c = ci->getCalledFunction())
+            if (map.count(c->getName()))
+              calls.push_back(ci);
+  if (calls.empty())
+    return false;
+
+  for (llvm::CallInst *ci : calls) {
+    llvm::Function *old = ci->getCalledFunction();
+    llvm::StringRef nu = map[old->getName()];
+    bool isMinMax = old->getName().contains(".minimum.") ||
+                    old->getName().contains(".maximum.");
+    llvm::FunctionCallee fc =
+        m.getOrInsertFunction(nu, old->getFunctionType());
+    if (auto *decl = llvm::dyn_cast<llvm::Function>(fc.getCallee())) {
+      decl->setDoesNotThrow();
+      decl->setWillReturn();
+      decl->setMustProgress();
+      decl->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Local);
+    }
+    ci->setCalledFunction(fc);
+    if (isMinMax)
+      minmax.push_back(ci);
+  }
+  // The declaration is dead now, and a dead llvm.* declare is as fatal as a
+  // live call -- the reader resolves every declared symbol.
+  llvm::SmallVector<llvm::Function *, 8> dead;
+  for (llvm::Function &fn : m)
+    if (fn.isDeclaration() && fn.use_empty() && fn.isIntrinsic() &&
+        map.count(fn.getName()))
+      dead.push_back(&fn);
+  for (llvm::Function *fn : dead)
+    fn->eraseFromParent();
+  return true;
+}
+
+/// air.fmin/fmax drop NaN. llvm.minimum/maximum must propagate it, so re-add
+/// the semantics the rename threw away:  isnan(a) ? a : isnan(b) ? b : r
+bool wrapNaN(llvm::ArrayRef<llvm::CallInst *> calls) {
+  for (llvm::CallInst *ci : calls) {
+    if (ci->arg_size() != 2)
+      continue;
+    llvm::Value *a = ci->getArgOperand(0), *b = ci->getArgOperand(1);
+    llvm::IRBuilder<> bld(ci->getNextNode());
+    llvm::Value *aNan = bld.CreateFCmpUNO(a, a, "a.isnan");
+    llvm::Value *bNan = bld.CreateFCmpUNO(b, b, "b.isnan");
+    llvm::Value *pick = bld.CreateSelect(bNan, b, ci);
+    llvm::Value *res = bld.CreateSelect(aNan, a, pick, "nan.prop");
+    ci->replaceUsesWithIf(res, [&](llvm::Use &u) {
+      return u.getUser() != aNan && u.getUser() != bNan && u.getUser() != pick;
+    });
+  }
+  return !calls.empty();
+}
+
+/// The GPU JIT rejects i64 air.simd_shuffle; the v2i32 form is accepted.
+bool splitI64Shuffle(llvm::Module &m) {
+  llvm::SmallVector<llvm::CallInst *, 8> calls;
+  for (llvm::Function &fn : m)
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb)
+        if (auto *ci = llvm::dyn_cast<llvm::CallInst>(&inst))
+          if (llvm::Function *c = ci->getCalledFunction())
+            if (c->getName().starts_with("air.simd_shuffle") &&
+                ci->getType()->isIntegerTy(64))
+              calls.push_back(ci);
+  if (calls.empty())
+    return false;
+  llvm::Type *v2i32 =
+      llvm::FixedVectorType::get(llvm::Type::getInt32Ty(m.getContext()), 2);
+  for (llvm::CallInst *ci : calls) {
+    llvm::Function *old = ci->getCalledFunction();
+    llvm::IRBuilder<> b(ci);
+    llvm::SmallVector<llvm::Value *, 4> args;
+    llvm::SmallVector<llvm::Type *, 4> tys;
+    for (llvm::Value *a : ci->args()) {
+      llvm::Value *na =
+          a->getType()->isIntegerTy(64) ? b.CreateBitCast(a, v2i32) : a;
+      args.push_back(na);
+      tys.push_back(na->getType());
+    }
+    std::string nu = (old->getName().take_front(
+                          old->getName().rfind('.')) + ".v2i32").str();
+    llvm::FunctionCallee fc = m.getOrInsertFunction(
+        nu, llvm::FunctionType::get(v2i32, tys, false));
+    if (auto *decl = llvm::dyn_cast<llvm::Function>(fc.getCallee())) {
+      decl->setConvergent();
+      decl->setDoesNotThrow();
+    }
+    llvm::Value *call = b.CreateCall(fc, args);
+    ci->replaceAllUsesWith(b.CreateBitCast(call, ci->getType()));
+    ci->eraseFromParent();
+  }
+  return true;
+}
+
+/// A device load inside a loop whose body also stores through the same base
+/// gets marked volatile, so it is re-read each iteration.
+bool volatileLoopLoads(llvm::Module &m) {
+  bool changed = false;
+  for (llvm::Function &fn : m) {
+    if (fn.isDeclaration())
+      continue;
+    llvm::DominatorTree dt(fn);
+    llvm::LoopInfo li(dt);
+    for (llvm::Loop *top : li)
+      for (llvm::Loop *lp : llvm::depth_first(top)) {
+        llvm::SmallPtrSet<const llvm::Value *, 8> storedBases;
+        for (llvm::BasicBlock *bb : lp->blocks())
+          for (llvm::Instruction &inst : *bb)
+            if (auto *st = llvm::dyn_cast<llvm::StoreInst>(&inst))
+              storedBases.insert(
+                  st->getPointerOperand()->stripPointerCasts());
+        if (storedBases.empty())
+          continue;
+        for (llvm::BasicBlock *bb : lp->blocks())
+          for (llvm::Instruction &inst : *bb)
+            if (auto *ld = llvm::dyn_cast<llvm::LoadInst>(&inst)) {
+              if (ld->isVolatile())
+                continue;
+              auto *pt = llvm::dyn_cast<llvm::PointerType>(
+                  ld->getPointerOperand()->getType());
+              if (!pt || pt->getAddressSpace() != 1)
+                continue;
+              if (!storedBases.count(
+                      ld->getPointerOperand()->stripPointerCasts()))
+                continue;
+              ld->setVolatile(true);
+              changed = true;
+            }
+      }
+  }
+  return changed;
+}
+
+} // namespace
+
+void printRuleTable() {
+  llvm::errs() << "AIR legality rules (APPLEGPU_AIR_RULES=id=permit|log|fail, "
+                  "or all=...)\n\n";
+  for (const Rule &r : Rules)
+    llvm::errs() << llvm::formatv("  {0,-24} {1,-7} {2,-9} {3}\n", r.id,
+                                  actionName(r.action), r.evidence, r.what);
+  llvm::errs() << "\ntransforms (APPLEGPU_AIR_XFORMS=id=on|off, or all=on) -- "
+                  "all default OFF\n\n";
+  std::call_once(XformOnce, doConfigureXforms);
+  for (const Transform &t : Transforms)
+    llvm::errs() << llvm::formatv("  {0,-24} {1,-7} {2}\n", t.id,
+                                  t.enabled ? "on" : "off", t.what);
+  llvm::errs() << "\n";
+}
+
+bool applyTransforms(llvm::Module &m) {
+  bool changed = false;
+  llvm::SmallVector<llvm::CallInst *, 8> minmax;
+  if (xformEnabled("rename-llvm-intrinsics"))
+    changed |= renameIntrinsics(m, minmax);
+  if (xformEnabled("guard-nan-minmax") && !minmax.empty())
+    changed |= wrapNaN(minmax);
+  if (xformEnabled("split-i64-shuffle"))
+    changed |= splitI64Shuffle(m);
+  if (xformEnabled("volatile-loop-loads"))
+    changed |= volatileLoopLoads(m);
+  return changed;
+}
+
+} // namespace M::KGEN::Air
+
+namespace M::KGEN::Air {
+
+void reportLegality(llvm::Module &m) {
+  unsigned fails = 0;
+  for (const Finding &f : checkLegality(m)) {
+    llvm::errs() << (f.action == RuleAction::Fail ? "fail" : "log") << '\t'
+                 << f.ruleId << '\t' << f.detail << '\n';
+    fails += f.action == RuleAction::Fail;
+  }
+  llvm::errs() << "-- " << m.getName() << ": " << fails << " fail\n";
+}
+
+} // namespace M::KGEN::Air

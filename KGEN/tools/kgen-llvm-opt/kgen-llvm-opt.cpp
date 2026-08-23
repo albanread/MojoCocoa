@@ -185,6 +185,23 @@ static CodeGenOptLevel getCodeGenOptLevel(const CLOptions &clOptions) {
   return static_cast<CodeGenOptLevel>(unsigned(clOptions.codeGenOptLevel));
 }
 
+namespace M::KGEN::Air {
+// Defined in ObjectCompiler (Target/Air/AirLegality.cpp), which this tool
+// already links. Forward-declared rather than pulling the header onto this
+// tool's include path -- it lives under lib/, not include/.
+void reportLegality(llvm::Module &m);
+} // namespace M::KGEN::Air
+
+namespace {
+struct AirLegalityReportPass : PassInfoMixin<AirLegalityReportPass> {
+  PreservedAnalyses run(Module &m, ModuleAnalysisManager &) {
+    M::KGEN::Air::reportLegality(m);
+    return PreservedAnalyses::all();
+  }
+  static bool isRequired() { return true; }
+};
+} // namespace
+
 static ModulePassManager
 buildPipeline(PassBuilder &pb, const CLOptions &clOptions, Triple triple) {
   ModulePassManager mpm;
@@ -426,6 +443,19 @@ int main(int argc, char **argv) {
   M::KGEN::registerKGENLLVMPasses(pb);
   ModulePassManager mpm;
   if (!clOptions.disableOptimizationPasses)
+  // `-passes=air-legality` runs the AIR legality firewall over a module and
+  // prints its findings. Same code the backend gates on, so the two can never
+  // drift -- and running it here means a corpus can be reviewed without going
+  // through a bazel action, where overriding APPLEGPU_AIR_RULES would re-key
+  // every action and force a full rebuild.
+  pb.registerPipelineParsingCallback(
+      [](StringRef name, ModulePassManager &mpm,
+         ArrayRef<PassBuilder::PipelineElement>) {
+        if (name != "air-legality")
+          return false;
+        mpm.addPass(AirLegalityReportPass());
+        return true;
+      });
     mpm = buildPipeline(pb, clOptions, module->getTargetTriple());
   if (clOptions.downgradeIR)
     M::KGEN::addLLVMIRDowngradePass(mpm);

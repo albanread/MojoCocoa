@@ -41,6 +41,7 @@
 #include "KGEN/Compiler/ObjectCompiler.h"
 #include "KGEN/Compiler/SaveAsmOutput.h"
 #include "KGEN/ToolCommon/CompilationOptions.h"
+#include "AirLegality.h"
 #include "LLVM/Bitcode/17/BitcodeWriter17.h"
 #include "LLVM/Transforms/LLVMIRDowngradePass.h"
 #include "LLVM/Transforms/PointerRewriter.h"
@@ -61,6 +62,8 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include <functional>
+
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/PassManager.h"
@@ -975,12 +978,34 @@ void lowerVectorFMA(llvm::Module &m) {
 // Returns a plain string rather than an Error so both error conventions in
 // this file (llvm::Error in legalizeModule, KGEN Error in emitObject) can
 // use it.
+
 std::optional<std::string> verifyBeforeEmit(llvm::Module &m,
                                             llvm::StringRef stage) {
   std::string msg;
   llvm::raw_string_ostream os(msg);
-  if (!llvm::verifyModule(m, &os))
-    return std::nullopt;
+  if (!llvm::verifyModule(m, &os)) {
+    // Valid IR is not the same as legal AIR. See AirLegality.h: the LLVM
+    // verifier is target-agnostic by construction and cannot see any of it.
+    std::vector<Air::Finding> found = Air::checkLegality(m);
+    std::string fatal;
+    for (const Air::Finding &f : found) {
+      if (f.action == Air::RuleAction::Fail)
+        fatal += "  - [" + f.ruleId.str() + "] " + f.detail + "\n";
+      else
+        llvm::errs() << "[air-legality] " << f.ruleId << ": " << f.detail
+                     << "\n";
+    }
+    if (fatal.empty())
+      return std::nullopt;
+    return ("AIR module is valid LLVM but illegal for the target after " +
+            stage +
+            ". These are target legality, not IR validity, so no verifier "
+            "sees them and the reader reports only \"Invalid record\" or "
+            "kills the compiler service at pipeline creation. Set "
+            "APPLEGPU_AIR_RULES=<id>=log to downgrade one, or =list to see "
+            "them all.\n" + fatal)
+        .str();
+  }
   return ("AIR module fails LLVM verification after " + stage +
           ". This is invalid IR, not an AIR restriction -- the AIR reader "
           "would report it only as \"Invalid record\". Verifier says:\n" +
@@ -1204,6 +1229,8 @@ llvm::Error legalizeModule(llvm::Module &m) {
   m.setTargetTriple(llvm::Triple(kAirTriple));
   lowerVectorFMA(m);
   lowerMaskBitcasts(m);
+  // Table-driven transforms, all off by default (APPLEGPU_AIR_XFORMS).
+  Air::applyTransforms(m);
   mangleAirOps(m);
   eraseDeadIntrinsicDeclarations(m);
   lowerIntFloatConverts(m);
@@ -1456,8 +1483,19 @@ public:
     // for its purpose fails verification there: 23 spurious
     // "llvm.lifetime.start/end can only be used on alloca or poison" against
     // 4 real findings. A gate that cries wolf gets switched off.
-    if (auto bad = verifyBeforeEmit(module, "AIR legalization"))
+    if (auto bad = verifyBeforeEmit(module, "AIR legalization")) {
+      // Keep the rejected module. The gate fires before any emission
+      // debug hatch runs, so without this a rejection leaves no artefact
+      // -- and the module IS the diagnosis.
+      if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR")) {
+        std::error_code ec;
+        llvm::raw_fd_ostream dbg(std::string(keep) + "/applegpu-rejected.ll",
+                                 ec);
+        if (!ec)
+          module.print(dbg, nullptr);
+      }
       return Error(*bad);
+    }
 
     // Downgrade modern IR constructs to what the LLVM-17-era AIR reader
     // accepts (in-tree pass, built for exactly this).
