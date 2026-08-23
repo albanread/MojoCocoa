@@ -209,19 +209,20 @@ Many benchmarks and tests use compile-time defines:
 - `get_defined_bool[flag_name]=true/false`
 - `get_defined_dtype[type]=float16/float32`
 
-## Contributing Areas
+## Contributing — not applicable
 
-Currently accepting contributions for:
+This is an unaffiliated fork. Upstream's contributor process does not apply,
+and the files describing it (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, the
+issue and PR templates, `CODEOWNERS`, the CLA workflow) were removed rather
+than left pointing at Modular's trackers and review teams.
 
-- Mojo standard library (`/mojo/stdlib/`)
-- MAX accelerator library (`/max/kernels/`)
-- MAX API and models (`/max/`)
-- Code examples (`/max/examples/`, `/mojo/examples/`)
-- Mojo documentation (`/mojo/docs/`)
+Nothing here goes upstream. Never suggest filing an issue or pull request with
+Modular, and never attribute this fork's behaviour to them — the AIR backend
+under `KGEN/lib/**/Target/Air/` and the GPU runtime under
+`AsyncRT/lib/MojoBindings/AppleGPU*` are this fork's own code, not theirs.
 
-Each area has its own guidelines in the nearest `CONTRIBUTING.md`; the root
-`CONTRIBUTING.md` is the full contributor guide. Other areas are not open for
-external contributions.
+`LICENSE` and `Licenses/` stay: the tree is overwhelmingly Modular's
+Apache-2.0 code and a derivative work has to ship the licence.
 
 ## Platform Support
 

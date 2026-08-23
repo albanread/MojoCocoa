@@ -40,6 +40,35 @@ machine you are building on.
 `spikes/` has the evidence: Conway's Life with mouse drawing and age-coloured
 cells, a Metal mandelbrot, and a Mojo editor-and-runner written in Mojo.
 
+## ⚠️ No support — and don't bother Modular
+
+This fork is **unsupported by Modular Inc.** and unaffiliated with them. It is
+one person's port, running on one machine.
+
+- Do **not** file issues, discussions, pull requests or support requests with
+  Modular, or on the upstream repo, for anything you build or break here.
+  Nothing in this tree is theirs to answer for. The AIR backend and the GPU
+  runtime in particular are **ours, not Modular's** — if they misbehave, that
+  is this fork's doing.
+- No support is offered here either. Everything is **as-is**, with no
+  compatibility promises and no undertaking to fix anything.
+
+If you want supported Mojo on supported platforms, use the real thing:
+[modular/modular](https://github.com/modular/modular) and
+[docs.modular.com](https://docs.modular.com).
+
+Upstream's contributor process does not apply here — this fork carries no
+contributing guide, no code of conduct and no CLA, because contributions go
+nowhere upstream. Those files were removed rather than left lying around
+pointing at Modular's issue trackers and review teams.
+
+## Fixed at this release, forever
+
+This fork never rebases on, merges, or tracks upstream. The fork point is the
+whole point: a known-good snapshot of the open-sourced compiler, tuned for this
+hardware until the machine stops working. Hardcoding for arm64 Darwin and the
+M-series GPU is a feature, not a bug.
+
 ## Where this sits
 
 This is the Mojo member of a family of ports that share one idea: **a compiler
@@ -90,6 +119,24 @@ own is. `AIR_APPLE_SILICON.md` records the evidence and the plan: our own AIR
 backend and our own runtime against the open `AsyncRT` C ABI, replacing
 `libmax`/`libMGPRT` with code we can read.
 
+## Thank you, Mojo developers
+
+This fork exists only because Modular open-sourced the entire Mojo compiler —
+parser, elaborator, code generator, JIT, LSP — along with the standard library,
+the GPU kernel library, and the AIR bitcode machinery, all under Apache 2.0
+with LLVM Exceptions. That is a rare and generous act.
+
+It is worth being precise about how much it bought. The Cocoa work above is a
+compiler hook: it was possible only because the elaborator and the comptime
+machinery were right there to hook into. The GPU work is our own AIR backend,
+but it drops into `TargetTraits` / `TargetBackend` extension points that
+upstream deliberately left public and documented for out-of-tree use — the
+`plugin_consumers` package group in `KGEN/BUILD.bazel` is an invitation. None
+of this would be a weekend's work against a closed compiler; most of it would
+not be possible at all.
+
+Thank you to everyone who built Mojo and then gave it away. 🔥
+
 ## Building
 
 Bazel, via the bundled wrapper — no toolchain install needed.
@@ -111,3 +158,10 @@ Requires Apple Silicon, macOS 15+, and Xcode 16+.
 Forked from `modular/modular` at `577b6b8`, Apache 2.0 with LLVM exceptions.
 Upstream's own README is kept as `UPSTREAM-README.md`. Everything added here
 carries the same licence.
+
+[LICENSE](LICENSE) and [Licenses/](Licenses/) stay exactly as upstream has
+them, and are the one part of Modular's paperwork this fork keeps deliberately.
+Almost every file here is still their Apache-2.0 code; §4(a) requires a
+derivative work to ship the licence with it, and the same grant is what puts
+this fork's own additions on a clear footing. The contributor process was
+dropped because it routes to Modular. The licence is not process.
