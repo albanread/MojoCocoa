@@ -628,6 +628,74 @@ std::optional<std::string> simdgroupMatrixSuffix(llvm::CallInst *call) {
   return flags + "." + *ret + types;
 }
 
+// AIR has no native int<->float cast instructions: every conversion goes
+// through an air.convert.* call. Apple emits ZERO sitofp/uitofp/fptosi/fptoui
+// for a kernel that does all four, and the wheel does the same for the very
+// kernel that made us look (test_mandelbrot).
+//
+// Leaving them native does not fail cleanly. metallib accepts the module and
+// the Metal compiler SERVICE dies at pipeline creation with
+// XPC_ERROR_CONNECTION_INTERRUPTED, naming nothing.
+//
+// Naming, golden-sampled with `xcrun metal -S -emit-llvm` on a kernel casting
+// scalars and vectors both ways:
+//
+//   air.convert.f.f32.s.i32     air.convert.s.i32.f.f32
+//   air.convert.f.f32.u.i32     air.convert.u.i32.f.f32
+//   air.convert.f.v4f32.s.v4i32 air.convert.s.v4i32.f.v4f32
+//
+// i.e. air.convert.<dstKind>.<dstTy>.<srcKind>.<srcTy>, kind in {f,s,u} and
+// types in the same overload mangling the simdgroup family uses.
+void lowerIntFloatConverts(llvm::Module &m) {
+  llvm::SmallVector<llvm::CastInst *, 8> casts;
+  for (llvm::Function &fn : m) {
+    if (fn.isDeclaration())
+      continue;
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb)
+        if (auto *ci = llvm::dyn_cast<llvm::CastInst>(&inst))
+          switch (ci->getOpcode()) {
+          case llvm::Instruction::SIToFP:
+          case llvm::Instruction::UIToFP:
+          case llvm::Instruction::FPToSI:
+          case llvm::Instruction::FPToUI:
+            casts.push_back(ci);
+            break;
+          default:
+            break;
+          }
+  }
+  for (llvm::CastInst *ci : casts) {
+    llvm::Type *dstTy = ci->getType();
+    llvm::Type *srcTy = ci->getOperand(0)->getType();
+    auto dst = airLLVMTypeMangle(dstTy);
+    auto src = airLLVMTypeMangle(srcTy);
+    if (!dst || !src)
+      continue; // leave it; better a known-shape failure than a wrong symbol
+    llvm::StringRef dstKind, srcKind;
+    switch (ci->getOpcode()) {
+    case llvm::Instruction::SIToFP: dstKind = "f"; srcKind = "s"; break;
+    case llvm::Instruction::UIToFP: dstKind = "f"; srcKind = "u"; break;
+    case llvm::Instruction::FPToSI: dstKind = "s"; srcKind = "f"; break;
+    default:                        dstKind = "u"; srcKind = "f"; break;
+    }
+    std::string name = ("air.convert." + dstKind + "." + *dst + "." + srcKind +
+                        "." + *src).str();
+    llvm::FunctionCallee fn = m.getOrInsertFunction(
+        name, llvm::FunctionType::get(dstTy, {srcTy}, false));
+    if (auto *decl = llvm::dyn_cast<llvm::Function>(fn.getCallee())) {
+      decl->setDoesNotThrow();
+      decl->setWillReturn();
+      decl->setMustProgress();
+      decl->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Local);
+    }
+    llvm::IRBuilder<> b(ci);
+    llvm::Value *call = b.CreateCall(fn, {ci->getOperand(0)});
+    ci->replaceAllUsesWith(call);
+    ci->eraseFromParent();
+  }
+}
+
 void mangleAirOps(llvm::Module &m) {
   llvm::SmallVector<llvm::CallInst *, 16> calls;
   for (llvm::Function &fn : m)
@@ -831,6 +899,7 @@ llvm::Error legalizeModule(llvm::Module &m) {
   llvm::LLVMContext &c = m.getContext();
   m.setTargetTriple(llvm::Triple(kAirTriple));
   mangleAirOps(m);
+  lowerIntFloatConverts(m);
   remapAddressSpaces(m);
   deviceizeCapturedPointers(m);
   // After deviceize, which can leave a cast redundant by moving its

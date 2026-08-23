@@ -280,9 +280,43 @@ void stripTooNewAttributes(llvm::Module &module) {
   }
 }
 
+// llvm.stepvector (LLVM 12) has no AIR equivalent, and naming an intrinsic
+// the driver does not know does not fail cleanly: metallib accepts the
+// module and the Metal compiler SERVICE dies at pipeline creation with
+// XPC_ERROR_CONNECTION_INTERRUPTED, which names nothing at all.
+//
+// For a fixed-width vector it is simply the constant <0, 1, ... N-1>, so
+// fold it. Confirmed against the wheel, which compiles the same kernel
+// (test_mandelbrot) and emits no stepvector -- it keeps llvm.fma, so plain
+// LLVM intrinsics are fine in AIR; this particular one is not.
+void expandStepVector(llvm::Module &module) {
+  llvm::SmallVector<llvm::CallInst *, 4> dead;
+  for (llvm::Function &fn : module)
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb) {
+        auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+        if (!call || !call->getCalledFunction())
+          continue;
+        if (call->getCalledFunction()->getIntrinsicID() !=
+            llvm::Intrinsic::stepvector)
+          continue;
+        auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(call->getType());
+        if (!vt)
+          continue; // scalable: nothing sensible to fold to
+        llvm::SmallVector<llvm::Constant *, 16> elems;
+        for (unsigned i = 0, e = vt->getNumElements(); i != e; ++i)
+          elems.push_back(llvm::ConstantInt::get(vt->getElementType(), i));
+        call->replaceAllUsesWith(llvm::ConstantVector::get(elems));
+        dead.push_back(call);
+      }
+  for (llvm::CallInst *call : dead)
+    call->eraseFromParent();
+}
+
 void downgradeModernConstructs(llvm::Module &module) {
   downgradePoison(module);
   stripTooNewAttributes(module);
+  expandStepVector(module);
   for (llvm::Function &fn : module) {
     for (llvm::BasicBlock &bb : fn) {
       for (llvm::Instruction &inst : llvm::make_early_inc_range(bb)) {
