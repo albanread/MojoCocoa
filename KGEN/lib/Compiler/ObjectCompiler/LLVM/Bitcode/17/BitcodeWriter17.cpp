@@ -3607,17 +3607,29 @@ void ModuleBitcodeWriter::writeInstruction(const Instruction &I,
     const CallInst &CI = cast<CallInst>(I);
     FunctionType *FTy = CI.getFunctionType();
 
-    // PointerRewriter typed the emask callee `i8*`; the call's explicit type
-    // must match it, else the AIR reader rejects "explicit call type does not
-    // match pointee". Gated to the emask family; every other call is unchanged.
-    if (const Function *F = dyn_cast<Function>(CI.getCalledOperand())) {
-      StringRef CalleeName = F->getName();
-      if (CalleeName.starts_with("llvm.agx3.") &&
-          CalleeName.contains(".with.emask")) {
-        if (TypedPointerType *PtrTy = PointerMap.lookup(F))
-          FTy = cast<FunctionType>(PtrTy->getElementType());
+      // The call's explicit type must equal the pointee type of the callee
+      // operand, and PointerRewriter -- not the CallInst -- is the authority on
+      // that: when it retypes a callee's parameters it records the new
+      // FunctionType in PointerMap, while CI.getFunctionType() still returns
+      // the pre-rewrite one. Emitting the stale type makes the AIR reader
+      // reject the module with "Explicit call type does not match pointee type
+      // of callee operand"; metallib reports only "Unexpected bitcode file!".
+      //
+      // Originally gated to the `llvm.agx3.*.with.emask` family, where it was
+      // first hit. The rule is not specific to those -- it holds for every call
+      // whose callee PointerRewriter retyped, which is any callee taking a
+      // pointer once a kernel's address spaces are legalised.
+      if (const Function *F = dyn_cast<Function>(CI.getCalledOperand())) {
+        if (TypedPointerType *PtrTy = PointerMap.lookup(F)) {
+          auto *MappedFTy = dyn_cast<FunctionType>(PtrTy->getElementType());
+          // Only the pointer *types* may differ. A different arity would mean
+          // the map refers to some other function, so leave those alone rather
+          // than emit a call whose operand count disagrees with its type.
+          if (MappedFTy && MappedFTy->getNumParams() == FTy->getNumParams() &&
+              MappedFTy->isVarArg() == FTy->isVarArg())
+            FTy = MappedFTy;
+        }
       }
-    }
 
     if (CI.hasOperandBundles())
       writeOperandBundles(CI, InstID);
