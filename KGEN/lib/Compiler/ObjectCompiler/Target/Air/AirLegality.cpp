@@ -79,13 +79,15 @@ Rule Rules[] = {
    "see"},
 
   // --- from air-poc, unconfirmed on our hardware: log only -----------------
-  {"unmapped-llvm-intrinsic", RuleAction::Log, "measured",
-   "VECTOR llvm.* math intrinsic that has a known air.* equivalent. Anything "
-   "the OPTIMISER introduces arrives as llvm.* and never went through our "
-   "stdlib's air.* naming. Scalar forms are deliberately NOT flagged: "
-   "Apple's own compiler emits llvm.fma.f32 and the reader accepts it (38 "
-   "such calls across the oracle corpus). Only the vector form was measured "
-   "to fail"},
+  {"unmapped-llvm-intrinsic", RuleAction::Log, "unproven",
+   "VECTOR llvm.* math intrinsic that has a known air.* equivalent. NOTE the "
+   "evidence is weaker than it looks and this rule is probably still too "
+   "broad. llvm.fma.v4f32 was measured to kill pipeline creation, but "
+   "llvm.maxnum.v4f32 is emitted 661 times across 10 tests and is evidently "
+   "tolerated: turning rename-llvm-intrinsics on changed nothing for the "
+   "three failing tests that carry it. Scalar forms are definitely fine -- "
+   "Apple emits llvm.fma.f32 itself. Treat a hit here as a question, not an "
+   "answer, until the specific intrinsic has been tested"},
   {"nan-minmax-unwrapped", RuleAction::Permit, "air-poc",
    "air.fmin/air.fmax with no NaN-propagation select. OFF BY DEFAULT and kept "
    "only as documentation: it cannot work as a detection rule. AIR's fmin/fmax "
