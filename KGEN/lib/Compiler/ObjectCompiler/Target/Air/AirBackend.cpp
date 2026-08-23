@@ -61,6 +61,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/Verifier.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
@@ -696,6 +697,43 @@ void lowerIntFloatConverts(llvm::Module &m) {
   }
 }
 
+//===----------------------------------------------------------------------===//
+// Gate 1 of 3: does the module satisfy LLVM's OWN rules?
+//
+// The AIR reader answers every kind of malformed input with the same few
+// words -- "Invalid record", "Unexpected bitcode file!", or, once metallib
+// has accepted it, XPC_ERROR_CONNECTION_INTERRUPTED from a compiler service
+// that simply dies. None of them name a function or an instruction.
+//
+// A good share of what it was rejecting was not AIR-specific at all: it was
+// IR that no reader accepts, ours included. `select` with mismatched pointer
+// types and a same-address-space `addrspacecast` both reached metallib and
+// came back as "Invalid record"; run through the verifier they are
+//
+//   both values to select must have same type
+//
+// which says where to look. So verify before serialising, and let the class
+// of defect that is our own plain bug be reported as one.
+//
+// Gates 2 and 3 -- the bitstream record diff against Modular's output, and
+// golden samples from `xcrun metal` -- cannot run in-process and live in
+// spikes/air-gates.sh.
+// Returns a diagnostic if the module is invalid, nullopt if it is clean.
+// Returns a plain string rather than an Error so both error conventions in
+// this file (llvm::Error in legalizeModule, KGEN Error in emitObject) can
+// use it.
+std::optional<std::string> verifyBeforeEmit(llvm::Module &m,
+                                            llvm::StringRef stage) {
+  std::string msg;
+  llvm::raw_string_ostream os(msg);
+  if (!llvm::verifyModule(m, &os))
+    return std::nullopt;
+  return ("AIR module fails LLVM verification after " + stage +
+          ". This is invalid IR, not an AIR restriction -- the AIR reader "
+          "would report it only as \"Invalid record\". Verifier says:\n" +
+          msg).str();
+}
+
 void mangleAirOps(llvm::Module &m) {
   llvm::SmallVector<llvm::CallInst *, 16> calls;
   for (llvm::Function &fn : m)
@@ -1164,6 +1202,10 @@ public:
       // module for one of them.
       dropNoOpAddrSpaceCasts(module);
     }
+
+    // Gate 1: last point before the module becomes bytes.
+    if (auto bad = verifyBeforeEmit(module, "AIR legalization"))
+      return Error(*bad);
 
     // Debug hatch: dump post-pass text (after MetalAIRPass/PointerRewriter).
     if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR")) {
