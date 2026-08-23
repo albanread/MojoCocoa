@@ -28,6 +28,32 @@ namespace {
 // .f32, .f16 — golden MSL probes). Mangle at declaration time so each
 // payload type gets its own correctly-typed declaration; a shared bare stem
 // asserts "bad signature" at translation when payload types differ.
+//
+// On the `.u.` below — measured, not assumed. AIR carries SEPARATE signed and
+// unsigned integer symbols, and both exist:
+//
+//   declare i32 @air.simd_min.s.i32(i32)      declare i32 @air.simd_min.u.i32(i32)
+//   declare i32 @air.simd_max.s.i32(i32)      declare i32 @air.simd_max.u.i32(i32)
+//   declare i32 @air.simd_sum.s.i32(i32)      declare i32 @air.simd_sum.u.i32(i32)
+//   declare i32 @air.simd_shuffle_xor.s.i32(i32, i16)
+//   declare <2 x i32> @air.simd_shuffle_xor.s.v2i32(<2 x i32>, i16)
+//
+// We cannot tell which to pick here: the LLVM dialect's integer types are
+// signless, and the stdlib emits bare stems ("llvm.air.simd_sum"), so the
+// signedness is simply not in scope by this point. `.u.` is therefore a
+// GUESS, and it is only sound where the two symbols compute the same bits:
+//
+//   sum, product, prefix sums -- two's-complement add/multiply are
+//                                bit-identical signed vs unsigned.  SAFE.
+//   shuffles                  -- a lane move does not interpret the payload.
+//                                SAFE.
+//   min, max                  -- genuinely different.  min(-1, 5) is -1
+//                                signed and 5 unsigned.  NOT SAFE, and
+//                                rejected below rather than guessed at.
+//
+// Today the stdlib never emits llvm.air.simd_min/max, so nothing hits that
+// path; the guard is there so that wiring them up fails at compile time
+// instead of silently computing the wrong reduction.
 std::optional<std::string> airSuffixFor(mlir::Type ty) {
   if (ty.isF32())
     return std::string(".f32");
@@ -41,8 +67,12 @@ std::optional<std::string> airSuffixFor(mlir::Type ty) {
       return std::string(".u.i16");
     case 32:
       return std::string(".u.i32");
-    case 64:
-      return std::string(".u.i64");
+      // No 64-bit case: MSL rejects simd-group ops on 64-bit types outright
+      // ("no matching function for call to 'simd_shuffle_xor'"), so no
+      // air.*.u.i64 symbol exists to call. warp.mojo already splits 64-bit
+      // payloads into two 32-bit halves for exactly this reason. Emitting
+      // .u.i64 would name a symbol that does not exist, which does not fail
+      // cleanly -- see the driver-crash note on needsAirTypeSuffix.
     }
   }
   if (auto vt = llvm::dyn_cast<mlir::VectorType>(ty)) {
@@ -57,11 +87,30 @@ std::optional<std::string> airSuffixFor(mlir::Type ty) {
 }
 
 // Families whose AIR runtime symbols carry a type suffix. Kept in sync with
-// the backend's copy in AirBackend.cpp.
+// the backend's copy in AirBackend.cpp -- which currently omits
+// `air.simd_ballot`; the lists have drifted, and the backend's is the one to
+// correct, since a stem missing there is left bare.
+//
+// Getting a name in this list wrong is expensive to diagnose. An AIR symbol
+// that does not exist, or one called with the wrong signature, is not
+// reported as an error: it survives `metal -x ir -c` and `metallib`, then
+// takes down the driver's compiler service at pipeline creation with
+//
+//   Compilation failed due to an interrupted connection:
+//   XPC_ERROR_CONNECTION_INTERRUPTED
+//
+// (measured on an M4 Max by handing the golden sample a shuffle declared
+// `(float, i32)` instead of AIR's real `(float, i16)`). If you see that
+// message, suspect a symbol name or signature here before anything else.
 bool needsAirTypeSuffix(llvm::StringRef name) {
   static const llvm::StringRef stems[] = {
       "air.simd_shuffle_xor", "air.simd_shuffle_down", "air.simd_shuffle_up",
-      "air.simd_shuffle", "air.simd_sum", "air.simd_prefix_sum",
+      "air.simd_shuffle", "air.simd_sum",
+      // Apple's real prefix-sum symbols. There is no `air.simd_prefix_sum`
+      // -- MSL spells these simd_prefix_exclusive_sum /
+      // simd_prefix_inclusive_sum, and the golden probe emits
+      // air.simd_prefix_exclusive_sum.f32.
+      "air.simd_prefix_exclusive_sum", "air.simd_prefix_inclusive_sum",
       "air.simd_min", "air.simd_max", "air.simd_product", "air.simd_ballot",
       "air.cos", "air.sin", "air.tan", "air.acos", "air.asin", "air.atan",
       "air.cosh", "air.sinh", "air.tanh", "air.exp", "air.exp2", "air.exp10",
@@ -127,8 +176,25 @@ public:
     // parameters, and barriers are unsuffixed in AIR.
     if (needsAirTypeSuffix(fnName)) {
       mlir::Type keyTy = !operands.empty() ? operands[0].getType() : resType;
-      if (auto suffix = airSuffixFor(keyTy))
-        fnName += *suffix;
+      // `.s.` vs `.u.` is unrecoverable here and the two differ for min/max
+      // (see airSuffixFor). Refuse rather than pick one and be silently
+      // wrong on negative inputs.
+      if ((fnName == "air.simd_min" || fnName == "air.simd_max") &&
+          llvm::isa<mlir::IntegerType>(keyTy))
+        return op.emitError()
+               << "cannot lower '" << fnName
+               << "' for an integer payload: AIR has distinct .s./.u. symbols "
+                  "with different semantics, and signedness is not available "
+                  "at this point in the pipeline. Plumb it through the "
+                  "intrinsic name before enabling integer simd_min/simd_max.";
+      auto suffix = airSuffixFor(keyTy);
+      if (!suffix)
+        return op.emitError()
+               << "no AIR type suffix for payload type of '" << fnName
+               << "'; emitting the bare stem would name a symbol AIR does "
+                  "not define, which crashes the Metal compiler service at "
+                  "pipeline creation rather than failing here";
+      fnName += *suffix;
     }
     auto fn = symtab.lookup<mlir::LLVM::LLVMFuncOp>(fnName);
     if (!fn) {

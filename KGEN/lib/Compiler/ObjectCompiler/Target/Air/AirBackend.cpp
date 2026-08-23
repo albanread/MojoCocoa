@@ -478,9 +478,13 @@ std::optional<std::string> airTypeSuffix(llvm::Type *ty) {
 // which we do not enable, so the plain spelling is correct here.
 bool needsAirTypeSuffix(llvm::StringRef name) {
   static const llvm::StringRef stems[] = {
-      // shuffles / simd-group ops
+      // shuffles / simd-group ops. Kept in sync with AirLowering.cpp's copy,
+      // which carries the golden-sample evidence for these names.
+      // `air.simd_prefix_sum` was wrong in both lists -- AIR spells them
+      // air.simd_prefix_exclusive_sum / air.simd_prefix_inclusive_sum.
       "air.simd_shuffle_xor", "air.simd_shuffle_down", "air.simd_shuffle_up",
-      "air.simd_shuffle", "air.simd_sum", "air.simd_prefix_sum",
+      "air.simd_shuffle", "air.simd_sum",
+      "air.simd_prefix_exclusive_sum", "air.simd_prefix_inclusive_sum",
       "air.simd_min", "air.simd_max", "air.simd_product",
       // math
       "air.cos", "air.sin", "air.tan", "air.acos", "air.asin", "air.atan",
