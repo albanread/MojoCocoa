@@ -742,21 +742,47 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   }
 
   for (uint32_t i = 0; i < argc; i++) {
-    // Plain path (no per-arg flags): classify 8-byte args by whether their
-    // value resolves in the allocation registry — a resolving address is a
-    // device pointer and binds with setBuffer (external-function launches
-    // pass DeviceBuffer device addresses this way).
+    // Classify 8-byte args by whether their value resolves in the allocation
+    // registry: a resolving address is a device pointer and binds with
+    // setBuffer. DeviceBuffer host structs are {device_ptr, handle}, so the
+    // address is the leading word.
+    //
+    // This runs even when the caller supplied explicit flags, and must, because
+    // the flags are wrong for CAPTURES on this backend. _device_context_metal
+    // marks every capture slot false -- "captures are raw values, never device
+    // buffers" -- which holds on CUDA, where a captured pointer is just an
+    // integer the kernel dereferences. It does not hold here: AirBackend
+    // promotes a captured device pointer into a real addrspace(1) kernel
+    // buffer parameter, so the kernel expects a BINDING, not the address bytes.
+    //
+    // Binding it with setBytes instead put the address value where the kernel
+    // expected the buffer base, and the kernel wrote 1.0 through it into
+    // nothing. That is
+    // max/kernels/test/gpu/basics/test_static_layout_capture_argcount.mojo,
+    // which failed with the output buffer still holding its -1.0 fill:
+    //
+    //   arg[0] setBytes size=8 u64=0x1000001c900   <- a live device address
+    //   define void @kernel({} addrspace(1)* writeonly %0, ...)
+    //
+    // A false positive needs an 8-byte scalar whose value lands inside a live
+    // allocation, which is unlikely but not impossible. The principled fix is
+    // to ask the pipeline what each argument is -- MTLComputePipelineReflection
+    // via MTLPipelineOptionArgumentInfo gives an MTLArgumentType per index --
+    // and bind to that rather than inferring from the value.
+    // TODO(air-argtypes): replace this with pipeline-reflection classification.
     bool isDev = argIsDevicePtr ? argIsDevicePtr[i] : false;
-    if (!argIsDevicePtr && argSizes && argSizes[i] >= 8) {
-      // DeviceBuffer host structs are {device_ptr, handle} — the address is
-      // the first word. Any >=8-byte arg whose leading word resolves in the
-      // allocation registry is treated as a device pointer. (TODO: replace
-      // the heuristic with pipeline-reflection argument classification.)
+    if (!isDev && argSizes && argSizes[i] >= 8) {
       uint64_t maybe = 0;
       memcpy(&maybe, argAddrs[i], sizeof(maybe));
       size_t off = 0;
-      if (resolveAddress(maybe, &off))
+      if (resolveAddress(maybe, &off)) {
         isDev = true;
+        if (trace)
+          fprintf(stderr,
+                  "  arg[%u] reclassified as a device pointer (0x%llx "
+                  "resolves; flags said scalar)\n",
+                  i, (unsigned long long)maybe);
+      }
     }
     if (isDev) {
       uint64_t addr = 0;
@@ -786,8 +812,21 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
           memcpy(&asF, argAddrs[i], 4);
           memcpy(&asU, argAddrs[i], 4);
         }
-        fprintf(stderr, "  arg[%u] setBytes   size=%llu  f32=%g u32=%u\n", i,
-                (unsigned long long)size, (double)asF, asU);
+        // An 8-byte scalar that resolves in the allocation registry is almost
+        // certainly a device pointer travelling as a capture, which Metal
+        // cannot bind as a resource. Say so: that is the shape of the
+        // TODO(air-indirect) gap, and it is invisible otherwise.
+        char note[80] = "";
+        if (size >= 8) {
+          uint64_t w = 0;
+          memcpy(&w, argAddrs[i], 8);
+          size_t off = 0;
+          snprintf(note, sizeof note, "  u64=0x%llx%s",
+                   (unsigned long long)w,
+                   resolveAddress(w, &off) ? " <-- DEVICE ADDRESS" : "");
+        }
+        fprintf(stderr, "  arg[%u] setBytes   size=%llu  f32=%g u32=%u%s\n", i,
+                (unsigned long long)size, (double)asF, asU, note);
       }
     }
   }
