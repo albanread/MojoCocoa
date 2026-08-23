@@ -51,23 +51,40 @@ Changes made, all unverified:
 - Whole Vega naming sweep -> AppleGPU, including the `__vega_cap_` ->
   `__applegpu_cap_` handshake, which is now moot since hoisting is gone.
 
-### Two known gaps, both marked in the source
+### Follow-ups
 
-- `TODO(air-indirect)` in `AirBackend.cpp` — Apple describes capture structs as
-  `air.indirect_buffer` + `air.struct_type_info` with nested
-  `air.indirect_argument` records. We do not emit that yet. One buffer slot for
-  the whole blob, however many captured pointers.
-- `TODO(air-residency)` in `AppleGPUMetal.cpp` — **the one that will bite.** A
-  pointer dereferenced by GPU address rather than through a bound argument
-  still needs its allocation resident for the dispatch; Metal will not infer
-  that from a raw address. Hoisting used to give this for free. The registry
-  `resolveAddress()` walks knows every live buffer, so the coarse fix is
-  `useResource:usage:` across all of them on the encoder.
+- `TODO(air-indirect)` in `AirBackend.cpp` — **open, and no longer a
+  correctness blocker.** Kernels that dereference a device pointer out of a
+  capture struct work: the load becomes an `inttoptr` into `addrspace(1)`
+  (Apple's own idiom) and `markAllResident()` keeps the pointee alive.
+  `test_function_mts` covers it and passes. Emitting
+  `air.indirect_buffer` / `air.struct_type_info` buys PRECISION — it tells
+  Metal which bytes of the blob are pointers, which is what would let
+  residency be narrowed from every live allocation to the reachable ones. The
+  exact metadata shape is golden-sampled and written out above the TODO,
+  including the two easy-to-miss details (nested `location_index` is its own
+  namespace; non-pointer fields are `air.indirect_constant`).
+- `TODO(air-argtypes)` — **done**, superseded by pipeline reflection.
+  `loadFunction` reads each buffer index's type and size back from
+  `MTLComputePipelineReflection` and the launch path binds to that instead of
+  guessing from argument values.
+- `TODO(air-residency)` — **done**, coarsely. `markAllResident()` marks every
+  live root buffer on the encoder before dispatch. Measured: without it, a
+  raw-address deref silently passes with validation off and fails with every
+  read returning 0 under `MTL_SHADER_VALIDATION=1`. Narrowing it needs
+  `air-indirect` above.
 
-`AirLowering.cpp` has NOT been looked at yet. It mangles `air.simd_shuffle_*`
-by payload type; the thing to check is anything assuming wave64, since Apple
-SIMD groups are 32 lanes. `mojo/stdlib/std/gpu/primitives/warp.mojo` already
-carries an Apple path — read it first.
+### Two things that turned out not to be true
+
+- `AirLowering.cpp` was flagged here as the place to hunt wave64 assumptions.
+  There are none: it mangles by payload type, which is width-agnostic. The
+  32-lane work had already landed in the runtime and `warp.mojo`. It did have
+  real defects — `air.simd_prefix_sum` is not an AIR symbol, and integer
+  `.s.`/`.u.` cannot be chosen from a signless LLVM type — both now handled.
+- The Vega port's `addrspacecast` for captured pointers is wrong on Apple.
+  It was chosen because `inttoptr` destroys the provenance AMD's
+  `getPtrRsrcId` needs; AIR has no generic address space at all, and Apple's
+  own compiler uses `inttoptr` everywhere. This one silently wrote zeroes.
 
 ## Build discipline (learned the hard way)
 

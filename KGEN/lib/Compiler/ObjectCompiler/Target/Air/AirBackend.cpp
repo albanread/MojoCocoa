@@ -292,9 +292,48 @@ llvm::Function *legalizeKernel(llvm::Function &fn,
   //
   // TODO(air-indirect): emit air.indirect_buffer / air.struct_type_info for
   // capture-struct params, and type their pointer fields addrspace(1) rather
-  // than relying on deviceizeCapturedPointers to retype the loads. Until then
-  // captured pointers reach the kernel as AS1 loads out of the AS2 capture
-  // buffer, which is what deviceizeCapturedPointers already produces.
+  // than relying on deviceizeCapturedPointers to retype the loads.
+  //
+  // NOT a correctness blocker. Kernels that dereference a device pointer out
+  // of a capture struct work today: deviceizeCapturedPointers rewrites the
+  // load to an inttoptr into addrspace(1) (Apple's own idiom), and the
+  // runtime keeps the pointee alive with markAllResident(). That is what
+  // test_function_mts exercises and it passes.
+  //
+  // What emitting the metadata buys is PRECISION. It tells Metal which bytes
+  // of the blob are device pointers, so residency can be narrowed from "every
+  // live allocation on the encoder" to just the reachable ones -- see
+  // markAllResident in AppleGPUMetal.cpp, which is coarse by necessity
+  // precisely because this metadata is missing.
+  //
+  // The exact target shape, golden-sampled from `xcrun metal -S -emit-llvm`
+  // on a kernel taking `constant Caps& { device float* p; device float* q;
+  // uint n; }`, including two details easy to miss:
+  //
+  //   !12 = !{i32 0, !"air.indirect_buffer", !"air.buffer_size", i32 24,
+  //           !"air.location_index", i32 0, i32 1, !"air.read",
+  //           !"air.address_space", i32 2, !"air.struct_type_info", !13, ...}
+  //   !13 = !{i32 0,  i32 8, i32 0, !"float", !"p",
+  //             !"air.indirect_argument", !14,
+  //           i32 8,  i32 8, i32 0, !"float", !"q",
+  //             !"air.indirect_argument", !15,
+  //           i32 16, i32 4, i32 0, !"uint",  !"n",
+  //             !"air.indirect_argument", !16}
+  //   !14 = !{i32 0, !"air.buffer", !"air.location_index", i32 0, i32 1, ...
+  //           !"air.address_space", i32 1, ...}
+  //   !16 = !{i32 2, !"air.indirect_constant", !"air.location_index", i32 2, ...}
+  //
+  //   - struct_type_info is a FLAT tuple per field:
+  //     <byteOffset>, <size>, 0, <typeName>, <fieldName>,
+  //     "air.indirect_argument", <node>.
+  //   - nested location_index is its OWN namespace, not the top-level buffer
+  //     numbering (p and q take 0 and 1 here while a top-level buffer also
+  //     uses 1), and non-pointer fields are air.indirect_constant, not
+  //     air.buffer.
+  //
+  // The field layout is recoverable: legalizeKernel keeps each by-value
+  // param's original type in scalarOrigTypes, so the struct and its pointer
+  // offsets are still in hand at the point the metadata is written.
 
   // By-value scalar params become constant-address-space(2) pointer params —
   // AIR's model for MSL `constant T&` — loaded at entry; the runtime binds
