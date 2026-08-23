@@ -727,6 +727,20 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   id enc = msg<id>(cb, "computeCommandEncoder");
   msg<void>(enc, "setComputePipelineState:", fn->pipeline);
 
+  // APPLEGPU_TRACE_LAUNCH=1 dumps what actually reaches the encoder. Argument
+  // binding is the hard part of this ABI and the failure mode is silent: a
+  // wrong index or a scalar bound as a buffer yields a kernel that runs,
+  // reports no error, and writes nothing you asked for.
+  const bool trace = ::getenv("APPLEGPU_TRACE_LAUNCH") != nullptr;
+  if (trace) {
+    fprintf(stderr,
+            "[applegpu] launch '%s' grid=%ux%ux%u block=%ux%ux%u smem=%u "
+            "argc=%u flags=%s\n",
+            fn->name.c_str(), grid[0], grid[1], grid[2], block[0], block[1],
+            block[2], sharedMemBytes, argc,
+            argIsDevicePtr ? "explicit" : "heuristic");
+  }
+
   for (uint32_t i = 0; i < argc; i++) {
     // Plain path (no per-arg flags): classify 8-byte args by whether their
     // value resolves in the allocation registry — a resolving address is a
@@ -757,11 +771,24 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
       }
       msg<void>(enc, "setBuffer:offset:atIndex:", buffer,
                 static_cast<unsigned long>(off), static_cast<unsigned long>(i));
+      if (trace)
+        fprintf(stderr, "  arg[%u] setBuffer  addr=0x%llx off=%zu\n", i,
+                (unsigned long long)addr, off);
     } else {
       uint64_t size = argSizes ? argSizes[i] : 0;
       msg<void>(enc, "setBytes:length:atIndex:", argAddrs[i],
                 static_cast<unsigned long>(size),
                 static_cast<unsigned long>(i));
+      if (trace) {
+        float asF = 0;
+        uint32_t asU = 0;
+        if (size >= 4) {
+          memcpy(&asF, argAddrs[i], 4);
+          memcpy(&asU, argAddrs[i], 4);
+        }
+        fprintf(stderr, "  arg[%u] setBytes   size=%llu  f32=%g u32=%u\n", i,
+                (unsigned long long)size, (double)asF, asU);
+      }
     }
   }
 

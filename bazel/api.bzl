@@ -125,7 +125,22 @@ def _process_mojo_deps(deps):
             new_deps.append("@modular_wheel//:" + dep.split("/")[-1])
             imports_max = True
         elif dep == "//MLRT:Driver/DeviceContext":
-            new_deps.append("@modular_wheel//:AsyncRTMojoBindings_lib")
+            # Our AppleGPURT, not the wheel's closed libAsyncRTMojoBindings.
+            #
+            # This substitution is the whole point of the fork: the wheel's
+            # runtime is a binary we cannot read, and replacing it with an
+            # implementation of the same C ABI is what makes a GPU stack we
+            # own possible at all. MojoMacX64 makes the same swap.
+            #
+            # It is easy to omit here and hard to notice, because Apple
+            # Silicon is the one platform where the wheel's copy actually
+            # loads. On x86-64 it is the wrong architecture and the link
+            # fails immediately; on arm64 it resolves, the program runs, the
+            # kernel launch goes into a runtime with no Metal backend, and you
+            # get a clean exit, a plausible-looking GPU timing and a buffer
+            # that was never written. compute_smoke reported a 243x speedup
+            # and 0% agreement that way.
+            new_deps.append("//AsyncRT/lib/MojoBindings")
         elif dep == "//KGEN:CompilerRT":
             needs_compiler_rt = True
         else:
