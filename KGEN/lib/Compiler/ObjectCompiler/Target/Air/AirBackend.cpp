@@ -662,6 +662,26 @@ void lowerIntFloatConverts(llvm::Module &m) {
           case llvm::Instruction::FPToUI:
             casts.push_back(ci);
             break;
+          case llvm::Instruction::FPExt:
+          case llvm::Instruction::FPTrunc:
+            // VECTOR float<->float only. Apple splits these: a scalar
+            // half/bfloat <-> float stays a native fpext/fptrunc, while the
+            // vector form becomes a call. Golden sample of a kernel doing
+            // four scalar and four vector fp conversions emits exactly four
+            // native casts and four air.convert:
+            //
+            //   air.convert.f.v4f32.f.v4bf16   air.convert.f.v4bf16.f.v4f32
+            //   air.convert.f.v4f32.f.v4f16    air.convert.f.v4f16.f.v4f32
+            //
+            // This is what broke rms_norm on bfloat16 while every float32
+            // case passed: an f32-only kernel has no fp<->fp conversion to
+            // get wrong, and the bf16 path widens <8 x bfloat> to <8 x float>
+            // to accumulate. Modular emits the calls; we emitted a native
+            // vector fptrunc/fpext, which the driver does not compute
+            // correctly -- no crash, no invalid IR, just wrong numbers.
+            if (ci->getType()->isVectorTy())
+              casts.push_back(ci);
+            break;
           default:
             break;
           }
@@ -678,7 +698,9 @@ void lowerIntFloatConverts(llvm::Module &m) {
     case llvm::Instruction::SIToFP: dstKind = "f"; srcKind = "s"; break;
     case llvm::Instruction::UIToFP: dstKind = "f"; srcKind = "u"; break;
     case llvm::Instruction::FPToSI: dstKind = "s"; srcKind = "f"; break;
-    default:                        dstKind = "u"; srcKind = "f"; break;
+    case llvm::Instruction::FPToUI: dstKind = "u"; srcKind = "f"; break;
+    // fp<->fp: both sides are "f".
+    default:                        dstKind = "f"; srcKind = "f"; break;
     }
     std::string name = ("air.convert." + dstKind + "." + *dst + "." + srcKind +
                         "." + *src).str();
