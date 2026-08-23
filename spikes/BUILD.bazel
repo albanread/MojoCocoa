@@ -1,0 +1,62 @@
+"""Cocoa spikes and example apps. See COCOA_ARM64.md.
+
+These need the `max` package as well as `std` (DeviceContext lives in
+max.gpu.host), so they are mojo_binary targets rather than things you can hand
+to a bare `mojo run` -- the //KGEN:mojo wrapper supplies only std.
+
+Deps are the two packages these actually import. ALL_MOJOPKGS would also work
+in principle but drags in every kernel package, including one that currently
+fails to parse (msa.amd.splitk_reduce_quant) -- unrelated to this code.
+
+Every one of them needs cocoa.sqlite at elaboration time:
+
+    export MODULAR_MOJO_MAX_COCOAKB_PATH=.../CocoaBaseMCP/cocoa.sqlite
+"""
+
+load("//bazel:api.bzl", "mojo_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+# -lobjc: every message send resolves objc_msgSend out of libobjc, which is
+# already loaded in any process that touches Foundation -- but the link still
+# has to name it.
+_MOJO_DEPS = [
+    "@mojo//:std",
+    "//max:max_mojo",  # max.gpu.host.DeviceContext
+]
+
+_COCOA_LINKOPTS = [
+    "-lobjc",
+    "-framework", "Foundation",
+    "-framework", "AppKit",
+    "-framework", "QuartzCore",
+    "-framework", "Metal",
+]
+
+[
+    mojo_binary(
+        name = name,
+        srcs = [src],
+        linkopts = _COCOA_LINKOPTS,
+        tags = ["manual"],  # need a display and/or a GPU; not for //...
+        deps = _MOJO_DEPS,
+    )
+    for name, src in [
+        ("mandelbrot", "mandelbrot/mandelbrot.mojo"),
+        ("compute_smoke", "mandelbrot/compute_smoke.mojo"),
+        ("window_smoke", "mandelbrot/window_smoke.mojo"),
+        ("life", "life/life.mojo"),
+    ]
+]
+
+# The playground imports its tokenizer as a sibling module.
+mojo_binary(
+    name = "playground",
+    srcs = [
+        "playground/playground.mojo",
+        "playground/highlight.mojo",
+    ],
+    linkopts = _COCOA_LINKOPTS,
+    tags = ["manual"],
+    deps = _MOJO_DEPS,
+)

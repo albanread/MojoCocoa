@@ -1,0 +1,32 @@
+load("//bazel:api.bzl", "modular_cc_binary", "modular_cc_library")
+
+# AppleGPURT — our implementation of the AsyncRT device ABI, replacing the
+# closed AsyncRTMojoBindings/MGPRT that ship only as binaries in the modular
+# wheel. CPU backend in AppleGPURT.cpp; Apple Silicon Metal backend in
+# AppleGPUMetal.cpp. See AIR_APPLE_SILICON.md.
+modular_cc_library(
+    name = "MojoBindings",
+    srcs = [
+        "AppleGPURT.cpp",
+        "AppleGPUMetal.cpp",
+    ],
+    hdrs = ["AppleGPUInternal.h"],
+    linkopts = [
+        "-framework",
+        "Metal",
+        "-framework",
+        "CoreFoundation",
+        "-lobjc",
+    ],
+    visibility = ["//visibility:public"],
+    alwayslink = True,
+)
+
+# Headerless ABI smoke: drives the runtime exactly as Mojo's external_calls
+# will find it — local prototypes only, no shared header. MSL saxpy on the
+# first Metal device, verified element by element.
+modular_cc_binary(
+    name = "applegpu_metal_smoke",
+    srcs = ["applegpu_metal_smoke.c"],
+    deps = [":MojoBindings"],
+)
