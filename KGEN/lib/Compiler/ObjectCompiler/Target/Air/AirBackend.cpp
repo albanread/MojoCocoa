@@ -924,9 +924,32 @@ public:
       out.write(bc.data(), bc.size());
     }
 
+    // Locate xcrun WITHOUT relying on PATH.
+    //
+    // Under Bazel there is no PATH to search: rules_mojo pins the compile
+    // action's environment to PATH=/dev/null on purpose, for hermeticity
+    // (alongside MODULAR_MOJO_MAX_{COMPILERRT,LLD}_PATH=/dev/null). Confirmed
+    // with `bazel aquery 'mnemonic("MojoCompile", ...)'`. A bare
+    // findProgramByName therefore always fails there, and --action_env=PATH
+    // cannot fix it because the rule's own env wins.
+    //
+    // The failure that produced is worth remembering: the AIR bitcode is
+    // generated FIRST and only packaging fails, so the whole codegen path can
+    // be working and the build still stops with what reads like a compiler
+    // error.
+    //
+    // /usr/bin/xcrun is the stable system stub on every macOS; it resolves the
+    // active toolchain itself via DEVELOPER_DIR or xcode-select, and
+    // rules_mojo does pass DEVELOPER_DIR through. Verified that `env -i
+    // DEVELOPER_DIR=... /usr/bin/xcrun -sdk macosx metallib --version` works
+    // with no PATH at all. Note it is NOT under DEVELOPER_DIR/usr/bin -- that
+    // path does not exist on this install.
     llvm::ErrorOr<std::string> xcrun = llvm::sys::findProgramByName("xcrun");
+    if (!xcrun && llvm::sys::fs::can_execute("/usr/bin/xcrun"))
+      xcrun = std::string("/usr/bin/xcrun");
     if (!xcrun)
-      return Error("xcrun not found; the AIR emitter needs Xcode");
+      return Error("xcrun not found on PATH or at /usr/bin/xcrun; the AIR "
+                   "emitter needs Xcode command line tools");
     llvm::SmallString<128> errPath;
     if (llvm::sys::fs::createTemporaryFile("applegpu-metal", "err", errPath))
       return Error("failed to create temporary stderr file");
