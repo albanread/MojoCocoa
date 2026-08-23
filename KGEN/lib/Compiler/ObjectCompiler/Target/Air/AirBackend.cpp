@@ -260,6 +260,54 @@ void propagatePointerAS(llvm::SmallVectorImpl<llvm::Value *> &retype) {
   }
 }
 
+// Re-resolve overloaded memory intrinsics after address-space retyping.
+//
+// llvm.memcpy/memmove/memset encode their pointers' address spaces IN THE
+// NAME (llvm.memcpy.p0.p0.i64). Retyping an argument to addrspace(1) without
+// re-resolving leaves the call disagreeing with its own callee:
+//
+//   Call parameter type does not match function signature!
+//     call void @llvm.memcpy.p0.p0.i64(ptr %a, ptr addrspace(1) %b, ...)
+//
+// The AIR reader would have called that "Invalid record". Same family as the
+// select/phi/icmp reconciliation above -- a retyped pointer whose consumer
+// was left behind -- but here the consumer is a declaration whose identity
+// depends on the types, so the fix is to look up the right overload rather
+// than to cast the operand back.
+void refreshOverloadedMemIntrinsics(llvm::Module &m) {
+  llvm::SmallVector<llvm::CallInst *, 8> calls;
+  for (llvm::Function &fn : m)
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb)
+        if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+          if (llvm::Function *callee = call->getCalledFunction())
+            switch (callee->getIntrinsicID()) {
+            case llvm::Intrinsic::memcpy:
+            case llvm::Intrinsic::memcpy_inline:
+            case llvm::Intrinsic::memmove:
+            case llvm::Intrinsic::memset:
+            case llvm::Intrinsic::memset_inline:
+              calls.push_back(call);
+              break;
+            default:
+              break;
+            }
+  for (llvm::CallInst *call : calls) {
+    llvm::Intrinsic::ID id = call->getCalledFunction()->getIntrinsicID();
+    bool isSet = id == llvm::Intrinsic::memset ||
+                 id == llvm::Intrinsic::memset_inline;
+    llvm::SmallVector<llvm::Type *, 3> tys;
+    tys.push_back(call->getArgOperand(0)->getType()); // dst
+    if (!isSet)
+      tys.push_back(call->getArgOperand(1)->getType()); // src
+    tys.push_back(call->getArgOperand(2)->getType()); // length
+    llvm::Function *want =
+        llvm::Intrinsic::getOrInsertDeclaration(&m, id, tys);
+    if (want != call->getCalledFunction())
+      call->setCalledFunction(want);
+  }
+}
+
 // Mojo's address-space numbering is NVPTX's (CONSTANT=4, LOCAL=5); AIR uses
 // constant=2 and private=0. Remap module globals and propagate.
 void remapAddressSpaces(llvm::Module &m) {
@@ -997,6 +1045,7 @@ llvm::Error legalizeModule(llvm::Module &m) {
   deviceizeCapturedPointers(m);
   // After deviceize, which can leave a cast redundant by moving its
   // operand into the space it was casting to.
+  refreshOverloadedMemIntrinsics(m);
   dropNoOpAddrSpaceCasts(m);
 
   // Metal has no 64-bit floats anywhere (MSL has no `double`); emitting the
@@ -1105,7 +1154,15 @@ llvm::Error legalizeModule(llvm::Module &m) {
     fn.removeFnAttr("target-cpu");
     fn.removeFnAttr("target-features");
     fn.removeFnAttr("tune-cpu");
-    fn.setDSOLocal(false);
+    // Only for functions that are NOT local. LLVM requires local linkage to
+    // imply dso_local ("GlobalValue with local linkage or non-default
+    // visibility must be dso_local!"), so clearing it unconditionally emitted
+    // invalid IR for every internal helper -- print, the philox RNG, and so
+    // on. The AIR reader tolerated it, so it passed unnoticed until gate 1
+    // named it. The intent here is only to match the golden sample, which
+    // carries no dso_local on its EXTERNAL declarations.
+    if (!fn.hasLocalLinkage())
+      fn.setDSOLocal(false);
     for (llvm::Argument &arg : fn.args()) {
       arg.removeAttr(llvm::Attribute::Captures);
       arg.removeAttr(llvm::Attribute::Range);
