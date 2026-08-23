@@ -1133,6 +1133,67 @@ void mangleAirOps(llvm::Module &m) {
 // connection: XPC_ERROR_CONNECTION_INTERRUPTED".
 //
 // Retype such loads to device AS1 and propagate through their use graph.
+// Rebuild any function whose arguments no longer match its own type.
+//
+// propagatePointerAS retypes a defined callee's parameter with
+// Argument::mutateType, which changes the ARGUMENT but not the FunctionType
+// the argument belongs to. The two then disagree and the module is invalid:
+//
+//   Argument value does not match function argument type!
+//   ptr addrspace(1) %0
+//    ptr
+//
+// LLVM has no way to mutate a FunctionType in place, so the function has to be
+// rebuilt around the types its arguments now have: new Function, splice the
+// body across, repoint the call sites, erase the old one.
+//
+// This is the fifth consumer in the table in address-spaces.md -- "defined
+// callees: retype the parameter and recurse". The recursion was there; what
+// was missing is that retyping a parameter is not a local edit either.
+void rebuildMismatchedSignatures(llvm::Module &m) {
+  llvm::SmallVector<llvm::Function *, 4> stale;
+  for (llvm::Function &fn : m) {
+    if (fn.isDeclaration())
+      continue;
+    llvm::FunctionType *fTy = fn.getFunctionType();
+    bool mismatch = false;
+    for (unsigned i = 0, e = fn.arg_size(); i != e && !mismatch; ++i)
+      mismatch = fn.getArg(i)->getType() != fTy->getParamType(i);
+    if (mismatch)
+      stale.push_back(&fn);
+  }
+  for (llvm::Function *fn : stale) {
+    llvm::SmallVector<llvm::Type *, 8> params;
+    for (llvm::Argument &a : fn->args())
+      params.push_back(a.getType());
+    auto *newTy = llvm::FunctionType::get(fn->getReturnType(), params,
+                                          fn->isVarArg());
+    llvm::Function *nf = llvm::Function::Create(newTy, fn->getLinkage(),
+                                                fn->getAddressSpace(), "", &m);
+    nf->takeName(fn);
+    nf->copyAttributesFrom(fn);
+    nf->setComdat(fn->getComdat());
+    nf->splice(nf->begin(), fn);
+    for (unsigned i = 0, e = fn->arg_size(); i != e; ++i) {
+      llvm::Argument *oldA = fn->getArg(i), *newA = nf->getArg(i);
+      newA->takeName(oldA);
+      oldA->replaceAllUsesWith(newA);
+    }
+    // Call sites carry their own copy of the callee type; leaving the old one
+    // is the same defect BitcodeWriter17 hits as "Explicit call type does not
+    // match pointee type of callee operand".
+    llvm::SmallVector<llvm::CallBase *, 8> calls;
+    for (llvm::User *u : fn->users())
+      if (auto *cb = llvm::dyn_cast<llvm::CallBase>(u))
+        calls.push_back(cb);
+    for (llvm::CallBase *cb : calls)
+      cb->setCalledFunction(newTy, nf);
+    fn->replaceAllUsesWith(nf);
+    fn->eraseFromParent();
+  }
+}
+
+
 void deviceizeCapturedPointers(llvm::Module &m) {
   llvm::LLVMContext &c = m.getContext();
   for (llvm::Function &fn : m) {
@@ -1302,7 +1363,45 @@ void dropNoOpAddrSpaceCasts(llvm::Module &m) {
   }
 }
 
+// Inline every internal helper before anything else looks at the module.
+//
+// AIR has no call stack and Metal kernels are fully inlined regardless, so
+// this costs nothing -- but doing it FIRST rather than after legalisation
+// removes a whole class of defect that has now bitten three separate times:
+//
+//   - deviceizeCapturedPointers never saw code that inlining brought in later,
+//     leaving device pointers generic (reads returned zero, silently);
+//   - propagatePointerAS retyped a defined callee's parameter, which leaves
+//     the enclosing FunctionType behind and the module invalid;
+//   - a kernel using threadgroup memory THROUGH a helper could not have the
+//     global rewritten to a parameter, because the argument does not exist
+//     inside the callee.
+//
+// Every one of those is "the code moved after I legalised it". Inline first
+// and the question does not arise.
+void inlineInternalHelpers(llvm::Module &m) {
+  for (llvm::Function &fn : m)
+    if (!fn.isDeclaration() && fn.hasLocalLinkage()) {
+      fn.removeFnAttr(llvm::Attribute::NoInline);
+      fn.addFnAttr(llvm::Attribute::AlwaysInline);
+    }
+  llvm::PassBuilder pb;
+  llvm::LoopAnalysisManager lam;
+  llvm::FunctionAnalysisManager fam;
+  llvm::CGSCCAnalysisManager cgam;
+  llvm::ModuleAnalysisManager mam;
+  pb.registerModuleAnalyses(mam);
+  pb.registerCGSCCAnalyses(cgam);
+  pb.registerFunctionAnalyses(fam);
+  pb.registerLoopAnalyses(lam);
+  pb.crossRegisterProxies(lam, fam, cgam, mam);
+  llvm::ModulePassManager mpm;
+  mpm.addPass(llvm::AlwaysInlinerPass());
+  mpm.run(m, mam);
+}
+
 llvm::Error legalizeModule(llvm::Module &m) {
+  inlineInternalHelpers(m);
   llvm::LLVMContext &c = m.getContext();
   m.setTargetTriple(llvm::Triple(kAirTriple));
   lowerVectorFMA(m);
@@ -1373,6 +1472,10 @@ llvm::Error legalizeModule(llvm::Module &m) {
   // one this loop had yet to create. Invisible until gate 1 started running
   // on canonical IR and reported "AddrSpaceCast must be between different
   // address spaces".
+  // After the kernel loop, not before it: legalizeKernel is what retypes a
+  // callee parameter, and Argument::mutateType leaves the enclosing
+  // FunctionType behind. Reconcile the two before anything reads a signature.
+  rebuildMismatchedSignatures(m);
   dropNoOpAddrSpaceCasts(m);
 
   // Module flags and AIR identification, per the golden sample.
