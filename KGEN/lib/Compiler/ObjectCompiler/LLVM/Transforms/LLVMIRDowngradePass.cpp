@@ -311,6 +311,20 @@ void expandStepVector(llvm::Module &module) {
       }
   for (llvm::CallInst *call : dead)
     call->eraseFromParent();
+
+    // Erase the declaration too, once nothing calls it. Folding the calls is
+    // not enough: the reader resolves every declared symbol, so a dead
+    // `declare <4 x i64> @llvm.stepvector.v4i64()` is as fatal as a live call
+    // -- and much harder to see, because the IR contains no use of it. It
+    // survives metallib and then kills the compiler service at pipeline
+    // creation with XPC_ERROR_CONNECTION_INTERRUPTED, naming nothing at all.
+    llvm::SmallVector<llvm::Function *, 4> deadDecls;
+    for (llvm::Function &fn : module)
+      if (fn.isDeclaration() && fn.use_empty() &&
+          fn.getIntrinsicID() == llvm::Intrinsic::stepvector)
+        deadDecls.push_back(&fn);
+    for (llvm::Function *fn : deadDecls)
+      fn->eraseFromParent();
 }
 
 void downgradeModernConstructs(llvm::Module &module) {

@@ -61,6 +61,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
@@ -800,6 +801,155 @@ void lowerIntFloatConverts(llvm::Module &m) {
   }
 }
 
+// Vector fma must be air.fma.<ty>, not llvm.fma.<ty>.
+//
+// Apple's own compiler emits `air.fma.v4f32` for a float4 fma and keeps the
+// LLVM intrinsic only for scalars -- the released compiler emits
+// `llvm.fma.f32` and the reader accepts it. So the split is by width, exactly
+// as it is for the fp<->fp converts above.
+//
+// A vector `llvm.fma` survives `metallib` and then kills the compiler service
+// at pipeline creation with XPC_ERROR_CONNECTION_INTERRUPTED, naming no
+// function and no instruction -- the symptom diagnostics.md tells you to read
+// as a wrong symbol name before anything else. Found on test_mandelbrot by
+// listing the module's declared symbols and diffing them against what
+// `xcrun metal` emits for the same source.
+//
+// Only llvm.fma is handled here because that is what we were measured to
+// emit. llvm.fmuladd would presumably need the same treatment; it has not
+// been seen, so it is not guessed at.
+// Erase LLVM intrinsic declarations nothing calls any more.
+//
+// Every lowering here works by replacing calls and leaving the old
+// declaration behind, and that is not harmless: the AIR reader resolves each
+// declared symbol, so a dead `declare <4 x i64> @llvm.stepvector.v4i64()` or
+// `declare <4 x float> @llvm.fma.v4f32(...)` is as fatal as a live call --
+// and much harder to spot, because nothing in the IR uses it. Both cost a
+// separate diagnosis on test_mandelbrot before the pattern was obvious: the
+// symbol list is what to look at, not the instruction stream.
+//
+// Restricted to llvm.* intrinsics. An unused air.* declaration names a
+// function Apple actually provides, so it resolves.
+// Lower InstCombine's mask-to-bitmask idiom, which asks for a type no GPU has.
+//
+// `if any(v < 4.0)` over a float4 becomes, after InstCombine:
+//
+//     %m  = fcmp ole <4 x float> %x, splat (float 4.0)
+//     %b  = bitcast <4 x i1> %m to i4          ; <-- i4
+//     %z  = icmp eq i4 %b, 0
+//
+// which is ordinary LLVM and completely legal. `i4` is not a register width
+// any GPU implements, and AIR is no exception. Nothing catches it: the module
+// verifies, `metallib` packages it, and `air-opt` is silent -- all three only
+// check form. It fails when the metallib is compiled to a pipeline state, and
+// the Metal compiler *service* is what dies, so the error surfaces as
+// XPC_ERROR_CONNECTION_INTERRUPTED with no function, no instruction, and no
+// hint that a type is involved.
+//
+// The comparison against zero is the whole point of the bitcast -- "no lane
+// set" / "any lane set" -- so rewrite the pair as an OR reduction over the
+// lanes and never materialise the odd-width integer. Only rewritten when
+// every user is such a comparison; anything else is left alone, because a
+// known-shape failure beats silently wrong code.
+void lowerMaskBitcasts(llvm::Module &m) {
+  using namespace llvm::PatternMatch;
+  llvm::SmallVector<llvm::BitCastInst *, 8> dead;
+  for (llvm::Function &fn : m)
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb) {
+        auto *bc = llvm::dyn_cast<llvm::BitCastInst>(&inst);
+        if (!bc)
+          continue;
+        auto *srcTy = llvm::dyn_cast<llvm::FixedVectorType>(bc->getSrcTy());
+        auto *dstTy = llvm::dyn_cast<llvm::IntegerType>(bc->getDestTy());
+        if (!srcTy || !dstTy || !srcTy->getElementType()->isIntegerTy(1))
+          continue;
+        if (dstTy->getBitWidth() != srcTy->getNumElements())
+          continue;
+        bool allZeroCompares = !bc->use_empty();
+        for (llvm::User *u : bc->users()) {
+          auto *cmp = llvm::dyn_cast<llvm::ICmpInst>(u);
+          if (!cmp || !cmp->isEquality() ||
+              !match(cmp->getOperand(1), m_Zero())) {
+            allZeroCompares = false;
+            break;
+          }
+        }
+        if (allZeroCompares)
+          dead.push_back(bc);
+      }
+  for (llvm::BitCastInst *bc : dead) {
+    auto *srcTy = llvm::cast<llvm::FixedVectorType>(bc->getSrcTy());
+    llvm::IRBuilder<> b(bc);
+    // OR the lanes together: `any` is true iff the packed integer is nonzero.
+    llvm::Value *any = b.CreateExtractElement(bc->getOperand(0), uint64_t(0));
+    for (unsigned e = srcTy->getNumElements(), i = 1; i != e; ++i)
+      any = b.CreateOr(any, b.CreateExtractElement(bc->getOperand(0), i));
+    llvm::SmallVector<llvm::ICmpInst *, 4> cmps;
+    for (llvm::User *u : bc->users())
+      cmps.push_back(llvm::cast<llvm::ICmpInst>(u));
+    for (llvm::ICmpInst *cmp : cmps) {
+      llvm::IRBuilder<> cb(cmp);
+      // `== 0` is "no lane set", `!= 0` is "any lane set".
+      llvm::Value *rep = cmp->getPredicate() == llvm::CmpInst::ICMP_EQ
+                             ? cb.CreateNot(any)
+                             : any;
+      cmp->replaceAllUsesWith(rep);
+      cmp->eraseFromParent();
+    }
+    bc->eraseFromParent();
+  }
+}
+
+
+void eraseDeadIntrinsicDeclarations(llvm::Module &m) {
+  llvm::SmallVector<llvm::Function *, 8> dead;
+  for (llvm::Function &fn : m)
+    if (fn.isDeclaration() && fn.use_empty() && fn.isIntrinsic())
+      dead.push_back(&fn);
+  for (llvm::Function *fn : dead)
+    fn->eraseFromParent();
+}
+
+
+void lowerVectorFMA(llvm::Module &m) {
+  llvm::SmallVector<llvm::CallInst *, 8> calls;
+  for (llvm::Function &fn : m)
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb) {
+        auto *ci = llvm::dyn_cast<llvm::CallInst>(&inst);
+        if (!ci || !ci->getCalledFunction())
+          continue;
+        if (ci->getCalledFunction()->getIntrinsicID() != llvm::Intrinsic::fma)
+          continue;
+        if (!ci->getType()->isVectorTy())
+          continue;
+        calls.push_back(ci);
+      }
+  for (llvm::CallInst *ci : calls) {
+    llvm::Type *ty = ci->getType();
+    auto mangled = airLLVMTypeMangle(ty);
+    if (!mangled)
+      continue; // better a known-shape failure than a wrong symbol
+    std::string name = "air.fma." + std::string(*mangled);
+    llvm::FunctionCallee fn = m.getOrInsertFunction(
+        name, llvm::FunctionType::get(ty, {ty, ty, ty}, false));
+    if (auto *decl = llvm::dyn_cast<llvm::Function>(fn.getCallee())) {
+      decl->setDoesNotThrow();
+      decl->setWillReturn();
+      decl->setMustProgress();
+      decl->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Local);
+    }
+    llvm::IRBuilder<> b(ci);
+    llvm::Value *call = b.CreateCall(
+        fn, {ci->getArgOperand(0), ci->getArgOperand(1), ci->getArgOperand(2)});
+    if (auto *newCall = llvm::dyn_cast<llvm::CallInst>(call))
+      newCall->copyFastMathFlags(ci);
+    ci->replaceAllUsesWith(call);
+    ci->eraseFromParent();
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // Gate 1 of 3: does the module satisfy LLVM's OWN rules?
 //
@@ -1052,7 +1202,10 @@ void dropNoOpAddrSpaceCasts(llvm::Module &m) {
 llvm::Error legalizeModule(llvm::Module &m) {
   llvm::LLVMContext &c = m.getContext();
   m.setTargetTriple(llvm::Triple(kAirTriple));
+  lowerVectorFMA(m);
+  lowerMaskBitcasts(m);
   mangleAirOps(m);
+  eraseDeadIntrinsicDeclarations(m);
   lowerIntFloatConverts(m);
   remapAddressSpaces(m);
   deviceizeCapturedPointers(m);
