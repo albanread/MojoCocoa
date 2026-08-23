@@ -301,10 +301,31 @@ const Rule *ruleFor(llvm::StringRef id) {
 // Helpers
 //===----------------------------------------------------------------------===//
 
+bool isAllocaDerived(const llvm::Value *v);
+
 /// Does this pointer trace back to an alloca? Private/stack memory is
 /// legitimately addrspace(0), and treating it as a defect rejects most working
 /// kernels -- measured: 45 findings across 13 passing tests.
-bool isAllocaDerived(const llvm::Value *v) {
+bool isAllocaDerivedImpl(const llvm::Value *v, unsigned depth);
+
+/// The alloca a pointer expression is rooted at, or null.
+const llvm::AllocaInst *allocaBaseOf(const llvm::Value *p, unsigned depth) {
+  for (unsigned i = 0; i < 8; ++i) {
+    p = p->stripPointerCasts();
+    if (const auto *a = llvm::dyn_cast<llvm::AllocaInst>(p))
+      return a;
+    if (const auto *g = llvm::dyn_cast<llvm::GetElementPtrInst>(p)) {
+      p = g->getPointerOperand();
+      continue;
+    }
+    return nullptr;
+  }
+  return nullptr;
+}
+
+bool isAllocaDerivedImpl(const llvm::Value *v, unsigned depth) {
+  if (depth > 8)
+    return false; // bounded: give up rather than chase a cycle
   llvm::SmallPtrSet<const llvm::Value *, 8> seen;
   llvm::SmallVector<const llvm::Value *, 8> work{v};
   while (!work.empty()) {
@@ -327,8 +348,59 @@ bool isAllocaDerived(const llvm::Value *v) {
       work.push_back(sel->getFalseValue());
       continue;
     }
+    // A pointer LOADED OUT of stack memory. `alloca [2 x ptr]` holding
+    // pointers to other allocas is ordinary private indirection, and treating
+    // the reload as a device access produced 77 false positives.
+    //
+    // But a device pointer spilled to the stack and reloaded is exactly the
+    // defect this rule exists to catch, so "came off the stack" is not enough
+    // on its own: follow it back to what was STORED there. Private only if
+    // every store into that slot stored something itself alloca-derived.
+    if (auto *ld = llvm::dyn_cast<const llvm::LoadInst>(cur)) {
+      // A pointer LOADED OUT of stack memory. `alloca [2 x ptr]` holding
+      // pointers to other allocas is ordinary private indirection, and
+      // treating the reload as a device access produced 77 false positives.
+      //
+      // But a device pointer spilled to the stack and reloaded is exactly the
+      // defect this rule exists to catch, so "came off the stack" is not
+      // enough: follow it back to what was STORED there, and accept only if
+      // every store into that slot stored something itself alloca-derived.
+      //
+      // This whole case may only ESTABLISH privacy or decline to; it must not
+      // return false, because that would abandon the other work items and
+      // report a pointer that a different path proves private. Getting that
+      // wrong took suite findings from 77 to 443.
+      if (const auto *base = allocaBaseOf(ld->getPointerOperand(), depth)) {
+        bool sawStore = false, allPrivate = true;
+        llvm::SmallPtrSet<const llvm::User *, 16> visited;
+        llvm::SmallVector<const llvm::User *, 16> users(base->users());
+        while (!users.empty() && allPrivate) {
+          const llvm::User *u = users.pop_back_val();
+          if (!visited.insert(u).second)
+            continue;
+          if (const auto *st = llvm::dyn_cast<llvm::StoreInst>(u)) {
+            if (st->getValueOperand() != u->getOperand(1)) {
+              sawStore = true;
+              allPrivate = isAllocaDerivedImpl(st->getValueOperand(), depth + 1);
+            }
+            continue;
+          }
+          if (llvm::isa<llvm::BitCastInst>(u) ||
+              llvm::isa<llvm::GetElementPtrInst>(u) ||
+              llvm::isa<llvm::AddrSpaceCastInst>(u))
+            users.append(u->user_begin(), u->user_end());
+        }
+        if (sawStore && allPrivate)
+          return true;
+      }
+      continue;
+    }
   }
   return false;
+}
+
+bool isAllocaDerived(const llvm::Value *v) {
+  return isAllocaDerivedImpl(v, 0);
 }
 
 bool badIntWidth(unsigned w) {
