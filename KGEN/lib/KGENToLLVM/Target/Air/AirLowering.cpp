@@ -19,6 +19,7 @@
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/SymbolTable.h"
 
 namespace M::KGEN {
@@ -155,9 +156,18 @@ public:
     llvm::SmallVector<mlir::Value> operands;
     for (mlir::Value v : adaptor.getOperands()) {
       if (auto st = llvm::dyn_cast<mlir::LLVM::LLVMStructType>(v.getType())) {
-        for (auto [idx, elemTy] : llvm::enumerate(st.getBody()))
+        for (auto [idx, elemTy] : llvm::enumerate(st.getBody())) {
+          // Skip trailing byte-array padding. Mojo's Bool arrives as
+          // {i1, [15 x i8]}, and flattening both halves gave
+          // air.simdgroup_matrix_...(<8 x half>, i1, [15 x i8], ...) where
+          // AIR declares (<8 x half>, i1, ...). No AIR builtin takes a byte
+          // array, so a [N x i8] member is padding by construction.
+          if (auto at = llvm::dyn_cast<mlir::LLVM::LLVMArrayType>(elemTy))
+            if (at.getElementType().isInteger(8))
+              continue;
           operands.push_back(rewriter.createOrFold<mlir::LLVM::ExtractValueOp>(
               op.getLoc(), v, idx));
+        }
       } else {
         operands.push_back(v);
       }
@@ -174,6 +184,13 @@ public:
     // Builtins (thread_position_in_grid, …) and barriers must stay bare:
     // the AIR backend matches builtin stems by name to turn them into kernel
     // parameters, and barriers are unsuffixed in AIR.
+    // The simdgroup_matrix MMA family is NOT mangled here. AIR names it by
+    // full signature and encodes its transpose flags in the name, and those
+    // flags are not constants at this point: KGEN packs the intrinsic's
+    // arguments into one struct inside the still-uninlined llvm_intrinsic
+    // wrapper, so each flag is an extractvalue with nothing to fold against.
+    // AirBackend::mangleAirOps does it on LLVM IR after inlining, where the
+    // i1 is a real ConstantInt. The declaration stays bare until then.
     if (needsAirTypeSuffix(fnName)) {
       mlir::Type keyTy = !operands.empty() ? operands[0].getType() : resType;
       // `.s.` vs `.u.` is unrecoverable here and the two differ for min/max

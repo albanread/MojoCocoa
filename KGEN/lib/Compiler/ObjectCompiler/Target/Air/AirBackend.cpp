@@ -538,6 +538,70 @@ bool needsAirTypeSuffix(llvm::StringRef name) {
   return false;
 }
 
+// LLVM-style overload mangling, which is what AIR uses for the
+// simdgroup_matrix family: v64f32, v8f16, bf16, i8.
+std::optional<std::string> airLLVMTypeMangle(llvm::Type *ty) {
+  if (ty->isFloatTy())
+    return std::string("f32");
+  if (ty->isHalfTy())
+    return std::string("f16");
+  if (ty->isBFloatTy())
+    return std::string("bf16");
+  if (auto *it = llvm::dyn_cast<llvm::IntegerType>(ty))
+    return "i" + std::to_string(it->getBitWidth());
+  if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(ty))
+    if (auto inner = airLLVMTypeMangle(vt->getElementType()))
+      return "v" + std::to_string(vt->getNumElements()) + *inner;
+  return std::nullopt;
+}
+
+bool isSimdgroupMatrixMMA(llvm::StringRef name) {
+  return name.starts_with("air.simdgroup_matrix_") &&
+         name.contains("multiply_accumulate");
+}
+
+// The simdgroup_matrix MMA family carries a full signature in its name, not
+// the single payload suffix the other AIR builtins use, and the 16x16x16 form
+// additionally encodes its transpose flags there.
+//
+// Golden-sampled with `xcrun metal -S -emit-llvm` on MSL simdgroup ops:
+//
+//   air.simdgroup_matrix_8x8_multiply_accumulate.v64f32.v64f16.v64f16.v64f32
+//     <64 x float> (<64 x half>, <64 x half>, <64 x float>)
+//   ...v64f32.v64bf16.v64bf16.v64f32     ...v64f32.v64f32.v64f32.v64f32
+//
+// and from Modular's compiler for the 16x16x16 form our stdlib calls:
+//
+//   air.simdgroup_matrix_16x16x16_multiply_accumulate.f.f.v8f32.v8f16.v8f16.v8f32
+//     <8 x float> (<8 x half>, i1, <8 x half>, i1, <8 x float>)
+//
+// so the shape is  .[<transA>.<transB>.]<ret>.<A>.<B>.<C>  -- flags rendered
+// f/t, kept as i1 operands but EXCLUDED from the type list.
+//
+// This runs on LLVM IR rather than in AirLowering because the flags have to
+// be constants to be named at all, and they are not constants until the
+// llvm_intrinsic wrapper has been inlined.
+std::optional<std::string> simdgroupMatrixSuffix(llvm::CallInst *call) {
+  std::string flags, types;
+  for (llvm::Value *arg : call->args()) {
+    if (arg->getType()->isIntegerTy(1)) {
+      auto *c = llvm::dyn_cast<llvm::ConstantInt>(arg);
+      if (!c)
+        return std::nullopt; // a runtime transpose cannot be named
+      flags += c->isZero() ? ".f" : ".t";
+      continue;
+    }
+    auto m = airLLVMTypeMangle(arg->getType());
+    if (!m)
+      return std::nullopt;
+    types += "." + *m;
+  }
+  auto ret = airLLVMTypeMangle(call->getType());
+  if (!ret)
+    return std::nullopt;
+  return flags + "." + *ret + types;
+}
+
 void mangleAirOps(llvm::Module &m) {
   llvm::SmallVector<llvm::CallInst *, 16> calls;
   for (llvm::Function &fn : m)
@@ -545,28 +609,53 @@ void mangleAirOps(llvm::Module &m) {
       for (llvm::Instruction &inst : bb)
         if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
           if (llvm::Function *callee = call->getCalledFunction())
-            if (needsAirTypeSuffix(callee->getName()))
+            if (needsAirTypeSuffix(callee->getName()) ||
+                isSimdgroupMatrixMMA(callee->getName()))
               calls.push_back(call);
   for (llvm::CallInst *call : calls) {
-    llvm::Type *keyTy = call->arg_size() ? call->getArgOperand(0)->getType()
-                                         : call->getType();
-    auto suffix = airTypeSuffix(keyTy);
+    std::optional<std::string> suffix;
+    if (isSimdgroupMatrixMMA(call->getCalledFunction()->getName())) {
+      suffix = simdgroupMatrixSuffix(call);
+    } else {
+      llvm::Type *keyTy = call->arg_size() ? call->getArgOperand(0)->getType()
+                                           : call->getType();
+      suffix = airTypeSuffix(keyTy);
+    }
     if (!suffix)
       continue; // leaves the bare stem; fails loudly with a clear label
     std::string mangled =
         (call->getCalledFunction()->getName() + *suffix).str();
     llvm::FunctionCallee target = m.getOrInsertFunction(
         mangled, call->getFunctionType());
-    // Golden AIR declares its runtime functions pure and non-throwing
-    // (`nounwind willreturn memory(none) local_unnamed_addr`). Without
-    // `memory(none)` the backend must assume the call clobbers memory, which
-    // perturbs how dependent stores are lowered.
+    // Match Apple's attribute set exactly. From golden samples of both
+    // families (`xcrun metal -S -emit-llvm`):
+    //
+    //   declare float @air.simd_shuffle_xor.f32(float, i16) local_unnamed_addr #2
+    //   declare <64 x float> @air.simdgroup_matrix_8x8_multiply_accumulate...  #2
+    //   attributes #2 = { convergent mustprogress nounwind willreturn }
+    //
+    // Two corrections to what the fork set here:
+    //
+    //  - CONVERGENT was missing, and its absence is a latent miscompile
+    //    independent of anything else. These are cross-lane operations; a
+    //    shuffle or a simdgroup matmul is only meaningful with a defined set
+    //    of participating lanes. Without `convergent` the optimiser is free
+    //    to sink or hoist the call across divergent control flow and silently
+    //    change which lanes take part.
+    //
+    //  - memory(none) is NOT what Apple emits, and it is the likelier half of
+    //    "LLVM ERROR: Unexpected bitcode file!" from metallib: it is a modern
+    //    memory-effects attribute whose bitcode encoding the AIR reader
+    //    predates. The fork's rationale -- that without it the backend must
+    //    assume the call clobbers memory -- is reasonable in the abstract and
+    //    simply is not the trade Apple's own compiler makes.
+    //
+    // `nofree` also went, for the same reason: not in the golden sample.
     if (auto *decl = llvm::dyn_cast<llvm::Function>(target.getCallee())) {
+      decl->setConvergent();
       decl->setDoesNotThrow();
-      decl->setDoesNotAccessMemory();
       decl->setWillReturn();
       decl->setMustProgress();
-      decl->setDoesNotFreeMemory();
       decl->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Local);
     }
     call->setCalledFunction(target);
