@@ -188,6 +188,45 @@ id resolveAddress(uint64_t addr, size_t *offsetOut) {
   return it->second.first->buffer;
 }
 
+// Make every live allocation resident on `enc`.
+//
+// Required, not defensive. Since capture hoisting was dropped (AirBackend.cpp,
+// "Captured pointers: NOT hoisted on Apple Silicon"), a device pointer inside
+// a capture blob reaches the kernel as a bare 64-bit address. Metal tracks
+// residency per *bound resource*, and a raw address is not a binding, so
+// nothing keeps the pointee resident for the dispatch.
+//
+// Measured on an M4 Max, kernel dereferencing a gpuAddress out of a setBytes
+// blob with no air.indirect_buffer metadata:
+//
+//   MTL_SHADER_VALIDATION=0   no useResource -> PASSES  (silently)
+//   MTL_SHADER_VALIDATION=1   no useResource -> FAILS, every read returns 0
+//   MTL_SHADER_VALIDATION=1   useResource    -> PASSES
+//
+// So the unfixed path is not merely fragile, it is already wrong; it only
+// looks correct because a small, recently CPU-written Shared buffer happens
+// to be resident. Run the GPU tests with MTL_SHADER_VALIDATION=1 or this
+// class of bug stays invisible.
+//
+// Coarse by design: every live root buffer, not just the reachable ones. The
+// precise fix is to mark only what a kernel can reach, which needs
+// TODO(air-indirect) -- once capture structs carry air.indirect_buffer /
+// air.struct_type_info, the pointer fields are described and Metal can
+// resolve them itself. Cost here is O(live allocations) per dispatch.
+void markAllResident(id enc) {
+  // MTLResourceUsageRead | MTLResourceUsageWrite. Read-only would need the
+  // reachability analysis above to know a kernel never writes through a
+  // captured pointer.
+  constexpr unsigned long kReadWrite = 1UL | 2UL;
+  auto &r = registry();
+  std::lock_guard<std::mutex> lock(r.mu);
+  for (auto &entry : r.map) {
+    AGMetalBuf *buf = entry.second.first;
+    if (buf && buf->buffer)
+      msg<void>(enc, "useResource:usage:", buf->buffer, kReadWrite);
+  }
+}
+
 //===----------------------------------------------------------------------===//
 // Command helpers (synchronous bring-up)
 //===----------------------------------------------------------------------===//
@@ -727,15 +766,11 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   }
 
   // The fork bound hoisted capture pointers here as real resources. Apple
-  // Silicon dereferences them directly out of the capture buffer instead.
-  //
-  // TODO(air-residency): a pointer dereferenced by GPU address rather than
-  // through a bound argument still needs its allocation RESIDENT for the
-  // duration of the dispatch. Metal will not infer that from a raw address.
-  // The allocation registry that resolveAddress() walks already knows every
-  // live buffer, so the coarse fix is to `useResource:usage:` all of them on
-  // this encoder; the precise fix is to mark only the ones a kernel can
-  // reach. Untested until a capture-carrying kernel runs.
+  // Silicon dereferences them directly out of the capture buffer instead,
+  // which means nothing has told Metal to keep the pointee resident -- see
+  // markAllResident() for the measurement showing this is a real fault and
+  // not a theoretical one.
+  markAllResident(enc);
 
   if (sharedMemBytes)
     msg<void>(enc, "setThreadgroupMemoryLength:atIndex:",
