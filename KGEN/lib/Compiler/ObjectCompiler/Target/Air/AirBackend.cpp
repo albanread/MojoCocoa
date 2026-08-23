@@ -676,12 +676,51 @@ void deviceizeCapturedPointers(llvm::Module &m) {
 }
 
 // Full-module AIR legalization.
+// Remove addrspacecasts whose source and destination address space are the
+// same. Such a cast is the identity, and it is invalid IR -- LLVM requires
+// the two spaces to differ -- so the AIR reader refuses the whole module:
+//
+//   air-opt: applegpu-kernel.air: error: Invalid cast
+//   xcrun metallib: LLVM ERROR: Unexpected bitcode file!
+//
+// which names neither the instruction nor the function, and so reads like a
+// corrupt file rather than one bad cast.
+//
+// They arrive from the frontend, not from anything here: the stdlib writes
+// `unsafe_address_space_cast[target_space]()` (see
+// max/mojo/max/gpu/memory/masked_load_apple.mojo) and nothing requires the
+// target to differ from the source, so a GLOBAL->GLOBAL cast is a perfectly
+// ordinary thing for it to emit. NVPTX and AMDGPU fold it away; Apple's
+// LLVM-17-era reader validates first and rejects.
+//
+// Verified against the oracle: Modular's own compiler emits no such cast for
+// the same source, going straight to a `bitcast ... to i8 addrspace(1)*`.
+void dropNoOpAddrSpaceCasts(llvm::Module &m) {
+  for (llvm::Function &fn : m) {
+    if (fn.isDeclaration())
+      continue;
+    llvm::SmallVector<llvm::AddrSpaceCastInst *, 8> dead;
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb)
+        if (auto *asc = llvm::dyn_cast<llvm::AddrSpaceCastInst>(&inst))
+          if (asc->getSrcAddressSpace() == asc->getDestAddressSpace())
+            dead.push_back(asc);
+    for (llvm::AddrSpaceCastInst *asc : dead) {
+      asc->replaceAllUsesWith(asc->getPointerOperand());
+      asc->eraseFromParent();
+    }
+  }
+}
+
 llvm::Error legalizeModule(llvm::Module &m) {
   llvm::LLVMContext &c = m.getContext();
   m.setTargetTriple(llvm::Triple(kAirTriple));
   mangleAirOps(m);
   remapAddressSpaces(m);
   deviceizeCapturedPointers(m);
+  // After deviceize, which can leave a cast redundant by moving its
+  // operand into the space it was casting to.
+  dropNoOpAddrSpaceCasts(m);
 
   // Metal has no 64-bit floats anywhere (MSL has no `double`); emitting the
   // type produces bitcode the AIR reader rejects opaquely. Diagnose cleanly.
@@ -936,6 +975,10 @@ public:
       mpm.addPass(LLVMIRDowngradePass());
       mpm.addPass(PointerRewriter());
       mpm.run(module, mam);
+      // Again after the pipeline, not only in legalizeModule: inlining can
+      // pull a same-space cast in from a callee, and the reader rejects the
+      // module for one of them.
+      dropNoOpAddrSpaceCasts(module);
     }
 
     // Debug hatch: dump post-pass text (after MetalAIRPass/PointerRewriter).
@@ -1001,6 +1044,14 @@ public:
     // DEVELOPER_DIR=... /usr/bin/xcrun -sdk macosx metallib --version` works
     // with no PATH at all. Note it is NOT under DEVELOPER_DIR/usr/bin -- that
     // path does not exist on this install.
+    // Keep the .air BEFORE packaging, not after. When metallib rejects the
+    // bitcode ("Unexpected bitcode file!") the rejected file is exactly what
+    // you need, and copying it only on success meant it was deleted at the
+    // one moment it mattered.
+    if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR"))
+      llvm::sys::fs::copy_file(llPath,
+                               (std::string(keep) + "/applegpu-kernel.air"));
+
     llvm::ErrorOr<std::string> xcrun = llvm::sys::findProgramByName("xcrun");
     if (!xcrun && llvm::sys::fs::can_execute("/usr/bin/xcrun"))
       xcrun = std::string("/usr/bin/xcrun");
@@ -1031,8 +1082,6 @@ public:
 
     // Debug escape hatch: APPLEGPU_KEEP_AIR=<dir> keeps the .ll and .metallib.
     if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR")) {
-      llvm::sys::fs::copy_file(llPath,
-                               (std::string(keep) + "/applegpu-kernel.air"));
       llvm::sys::fs::copy_file(
           libPath, (std::string(keep) + "/applegpu-kernel.metallib"));
     }
