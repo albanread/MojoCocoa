@@ -1,7 +1,18 @@
 // AppleGPURT Metal smoke: the phase-2b acceptance gate.
 // Exercises the AsyncRT_* ABI through local prototypes only — the same way
-// Mojo's external_call finds it. MSL source path (the AIR trio does not
-// exist yet); saxpy on the default Metal device; every element verified.
+// Mojo's external_call finds it. Saxpy on the default Metal device; every
+// element verified.
+//
+// Deliberately the MSL source path, not AIR. The AIR trio now builds, but
+// this gate exists to test the RUNTIME in isolation: if it fails, the fault
+// is in AppleGPURT/AppleGPUMetal, not in codegen. Getting a Mojo kernel
+// through Mojo -> AIR -> metallib is the next gate up, and wants its own.
+//
+// Run it under validation as well as plain — a raw device address that is
+// not resident passes silently without it. See markAllResident() in
+// AppleGPUMetal.cpp.
+//
+//   MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 applegpu_metal_smoke
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -80,7 +91,10 @@ int main(void) {
   void *xAddr = NULL, *yAddr = NULL;
   CHECK(AsyncRT_DeviceContext_createBuffer_async(&x, &xAddr, ctx, N, 4));
   CHECK(AsyncRT_DeviceContext_createBuffer_async(&y, &yAddr, ctx, N, 4));
-  printf("buffers: x@0x%llx y@0x%llx (private, HBM2)\n",
+  // Not "private, HBM2" — that was the Vega II, which had its own memory and
+  // needed a staging blit per transfer. These are storageModeShared in one
+  // unified pool, and the addresses are MTLBuffer gpuAddress values.
+  printf("buffers: x@0x%llx y@0x%llx (shared, unified)\n",
          (unsigned long long)(uintptr_t)xAddr,
          (unsigned long long)(uintptr_t)yAddr);
 
@@ -124,13 +138,18 @@ int main(void) {
   }
   printf("saxpy: %zu/%d wrong\n", bad, N);
 
-  // memset path too.
+  // memset path too. Counted separately: folding this into `bad` and then
+  // announcing "verified zero" regardless of the count meant the gate
+  // reported a pass it had not established.
   CHECK(AsyncRT_DeviceContext_setMemory_async(ctx, y, 0, 4));
+  CHECK(AsyncRT_DeviceContext_synchronize(ctx));
   CHECK(AsyncRT_DeviceContext_DtoH_async(ctx, hostY, y));
+  size_t badMemset = 0;
   for (int i = 0; i < N; i++)
     if (hostY[i] != 0.0f)
-      bad++;
-  printf("memset: verified zero\n");
+      badMemset++;
+  printf("memset: %zu/%d wrong\n", badMemset, N);
+  bad += badMemset;
 
   AsyncRT_DeviceFunction_release(fn);
   AsyncRT_DeviceBuffer_release(x);
