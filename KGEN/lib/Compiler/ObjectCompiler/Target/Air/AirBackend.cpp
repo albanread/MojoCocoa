@@ -1084,8 +1084,16 @@ void mangleAirOps(llvm::Module &m) {
     }
     if (!suffix)
       continue; // leaves the bare stem; fails loudly with a clear label
-    std::string mangled =
-        (call->getCalledFunction()->getName() + *suffix).str();
+    // Take the stem only. The frontend appends a per-dtype disambiguator to
+    // the MMA name (see mma_apple.mojo) because `llvm.air.*` gets no overload
+    // mangling of its own; the real air.* name is derived from the operand
+    // types here, so anything past the stem has to come off first.
+    llvm::StringRef rawName = call->getCalledFunction()->getName();
+    llvm::StringRef stem = rawName;
+    if (size_t at = rawName.find("multiply_accumulate");
+        at != llvm::StringRef::npos)
+      stem = rawName.take_front(at + sizeof("multiply_accumulate") - 1);
+    std::string mangled = (stem + *suffix).str();
     llvm::FunctionCallee target = m.getOrInsertFunction(
         mangled, call->getFunctionType());
     // Match Apple's attribute set exactly. From golden samples of both

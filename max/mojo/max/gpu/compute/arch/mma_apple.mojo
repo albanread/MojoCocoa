@@ -262,20 +262,167 @@ def _mma_apple_transposable(
     )
 
     comptime if _valid_float_input and d.dtype == DType.float32:
-        d = rebind[type_of(d)](
-            llvm_intrinsic[
-                "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate",
-                SIMD[DType.float32, 8],
-            ](a, transpose_a, b, transpose_b, c)
-        )
+        var d_wide = SIMD[DType.float32, 64](0)
+        # One symbol per (a, b) dtype pair.
+        #
+        # `llvm.air.*` is not a real LLVM intrinsic, so it gets none of the
+        # per-overload name mangling `llvm.fma.v4f32` would: every operand
+        # combination resolved to the SAME declaration. Whichever signature was seen
+        # first won, and the next call with different operand types tripped an
+        # assertion inside MLIR's LLVM translation -- "Calling a function with a bad
+        # signature!" -- before the AIR backend ever ran. test_apple_mma_8x8
+        # instantiates all nine float pairs, which is why it crashed the compiler.
+        #
+        # The tag is stripped again in AirBackend's mangleAirOps, which derives the
+        # real air.* name from the operand types; this only has to be unique.
+        comptime if a.dtype == DType.bfloat16:
+            comptime if b.dtype == DType.bfloat16:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.bf16.bf16",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            elif b.dtype == DType.float16:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.bf16.f16",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            elif b.dtype == DType.float8_e4m3fn:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.bf16.f8",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            else:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.bf16.f32",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+        elif a.dtype == DType.float16:
+            comptime if b.dtype == DType.bfloat16:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.f16.bf16",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            elif b.dtype == DType.float16:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.f16.f16",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            elif b.dtype == DType.float8_e4m3fn:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.f16.f8",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            else:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.f16.f32",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+        elif a.dtype == DType.float8_e4m3fn:
+            comptime if b.dtype == DType.bfloat16:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.f8.bf16",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            elif b.dtype == DType.float16:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.f8.f16",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            elif b.dtype == DType.float8_e4m3fn:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.f8.f8",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            else:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.f8.f32",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+        else:
+            comptime if b.dtype == DType.bfloat16:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.f32.bf16",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            elif b.dtype == DType.float16:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.f32.f16",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            elif b.dtype == DType.float8_e4m3fn:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.f32.f8",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            else:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate.f32.f32",
+                        SIMD[DType.float32, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
 
     elif _valid_int_input and d.dtype in (DType.int32, DType.uint32):
-        d = rebind[type_of(d)](
-            llvm_intrinsic[
-                "llvm.air.simdgroup_matrix_16x16x16_widening_multiply_accumulate",
-                SIMD[d.dtype, 8],
-            ](a, transpose_a, b, transpose_b, c)
-        )
+        comptime if a.dtype == DType.int8:
+            comptime if b.dtype == DType.int8:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_widening_multiply_accumulate.s8.s8",
+                        SIMD[d.dtype, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            else:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_widening_multiply_accumulate.s8.u8",
+                        SIMD[d.dtype, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+        else:
+            comptime if b.dtype == DType.int8:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_widening_multiply_accumulate.u8.s8",
+                        SIMD[d.dtype, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
+            else:
+                d = rebind[type_of(d)](
+                    llvm_intrinsic[
+                        "llvm.air.simdgroup_matrix_16x16x16_widening_multiply_accumulate.u8.u8",
+                        SIMD[d.dtype, 8],
+                    ](a, transpose_a, b, transpose_b, c)
+                )
 
     else:
         _unsupported_mma_op(d, a, b, c)
@@ -317,10 +464,102 @@ def _mma_apple_8x8(mut d: SIMD, a: SIMD, b: SIMD, c: SIMD):
             b_wide[s] = b[s]
             c_wide[s] = rebind[Scalar[DType.float32]](c[s])
 
-        var d_wide = llvm_intrinsic[
-            "llvm.air.simdgroup_matrix_8x8_multiply_accumulate",
-            SIMD[DType.float32, 64],
-        ](a_wide, b_wide, c_wide)
+        # One symbol per (a, b) dtype pair.
+        #
+        # `llvm.air.*` is not a real LLVM intrinsic, so it gets none of the
+        # per-overload name mangling `llvm.fma.v4f32` would: every operand
+        # combination resolved to the SAME declaration. Whichever signature was seen
+        # first won, and the next call with different operand types tripped an
+        # assertion inside MLIR's LLVM translation -- "Calling a function with a bad
+        # signature!" -- before the AIR backend ever ran. test_apple_mma_8x8
+        # instantiates all nine float pairs, which is why it crashed the compiler.
+        #
+        # The tag is stripped again in AirBackend's mangleAirOps, which derives the
+        # real air.* name from the operand types; this only has to be unique.
+        comptime if a.dtype == DType.bfloat16:
+            comptime if b.dtype == DType.bfloat16:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.bf16.bf16",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+            elif b.dtype == DType.float16:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.bf16.f16",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+            elif b.dtype == DType.float8_e4m3fn:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.bf16.f8",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+            else:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.bf16.f32",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+        elif a.dtype == DType.float16:
+            comptime if b.dtype == DType.bfloat16:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.f16.bf16",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+            elif b.dtype == DType.float16:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.f16.f16",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+            elif b.dtype == DType.float8_e4m3fn:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.f16.f8",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+            else:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.f16.f32",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+        elif a.dtype == DType.float8_e4m3fn:
+            comptime if b.dtype == DType.bfloat16:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.f8.bf16",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+            elif b.dtype == DType.float16:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.f8.f16",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+            elif b.dtype == DType.float8_e4m3fn:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.f8.f8",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+            else:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.f8.f32",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+        else:
+            comptime if b.dtype == DType.bfloat16:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.f32.bf16",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+            elif b.dtype == DType.float16:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.f32.f16",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+            elif b.dtype == DType.float8_e4m3fn:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.f32.f8",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
+            else:
+                d_wide = llvm_intrinsic[
+                    "llvm.air.simdgroup_matrix_8x8_multiply_accumulate.f32.f32",
+                    SIMD[DType.float32, 64],
+                ](a_wide, b_wide, c_wide)
 
         comptime for s in range(2):
             d[s] = rebind[Scalar[d.dtype]](d_wide[s])
