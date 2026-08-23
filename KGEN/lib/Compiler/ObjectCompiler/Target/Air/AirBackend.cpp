@@ -1127,18 +1127,45 @@ void deviceizeCapturedPointers(llvm::Module &m) {
           // to addrspace(1) and its loads to addrspace(0), so writes landed
           // and reads returned zero. That is a whole output buffer of zeroes
           // with nothing reported anywhere.
-          while (auto *outer = llvm::dyn_cast<llvm::ExtractValueInst>(agg))
-            agg = outer->getAggregateOperand();
-          bool fromConstantBuffer = llvm::isa<llvm::Argument>(agg);
-          if (auto *ld = llvm::dyn_cast<llvm::LoadInst>(agg)) {
-            auto *srcTy = llvm::dyn_cast<llvm::PointerType>(
-                ld->getPointerOperand()->getType());
-            fromConstantBuffer =
-                srcTy && (srcTy->getAddressSpace() == 2 ||
-                          srcTy->getAddressSpace() == 1);
-          }
-          if (fromConstantBuffer)
-            sources.push_back(ev);
+            // ...and the chain is not always a straight line. A kernel choosing
+            // between two descriptors emits `select` on the WHOLE struct, and a
+            // loop-carried one emits `phi`; the pointer is extracted from that. So
+            // the walk has to branch, and a value counts only if EVERY root reaching
+            // it is constant-buffer derived -- one non-buffer root and this is not
+            // necessarily a device address.
+            //
+            // Third shape of the same defect (direct load, nested extractvalue, now
+            // select/phi). address-spaces.md says it plainly: write one of these and
+            // you must write all of them, or they surface weeks apart.
+            std::function<bool(llvm::Value *, unsigned)> rootsAreBuffer =
+                [&](llvm::Value *v, unsigned depth) -> bool {
+              if (depth > 16)
+                return false; // give up rather than chase a cycle
+              if (llvm::isa<llvm::Argument>(v))
+                return true;
+              if (auto *ld = llvm::dyn_cast<llvm::LoadInst>(v)) {
+                auto *srcTy = llvm::dyn_cast<llvm::PointerType>(
+                    ld->getPointerOperand()->getType());
+                return srcTy && (srcTy->getAddressSpace() == 2 ||
+                                 srcTy->getAddressSpace() == 1);
+              }
+              if (auto *outer = llvm::dyn_cast<llvm::ExtractValueInst>(v))
+                return rootsAreBuffer(outer->getAggregateOperand(), depth + 1);
+              if (auto *sel = llvm::dyn_cast<llvm::SelectInst>(v))
+                return rootsAreBuffer(sel->getTrueValue(), depth + 1) &&
+                       rootsAreBuffer(sel->getFalseValue(), depth + 1);
+              if (auto *phi = llvm::dyn_cast<llvm::PHINode>(v)) {
+                for (llvm::Value *in : phi->incoming_values())
+                  if (!rootsAreBuffer(in, depth + 1))
+                    return false;
+                return phi->getNumIncomingValues() > 0;
+              }
+              if (auto *ins = llvm::dyn_cast<llvm::InsertValueInst>(v))
+                return rootsAreBuffer(ins->getAggregateOperand(), depth + 1);
+              return false;
+            };
+            if (rootsAreBuffer(agg, 0))
+              sources.push_back(ev);
         }
       }
     for (llvm::Instruction *src : sources) {
