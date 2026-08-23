@@ -242,8 +242,47 @@ void downgradePoison(llvm::Module &module) {
           }
 }
 
+// Attribute kinds (and attribute FORMS) newer than the AIR reader, stripped
+// at IR level. The writer's getAttrKindEncoding drop-list catches enum
+// attribute kinds, but `range(...)` is a CONSTANT-RANGE attribute with its
+// own record encoding (LLVM 19) that never passes through that switch -- it
+// leaked into the bitcode on call sites (`call range(i64 61, 65) i64
+// @llvm.ctlz.i64(...)`) and the reader answers "Invalid bitcode file!".
+// Found by handing our own module text to Apple's frontend, which pointed at
+// the exact token. Strip from function declarations, arguments, and every
+// call site's return/param lists alike.
+void stripTooNewAttributes(llvm::Module &module) {
+  auto scrubList = [](auto apply) {
+    static const llvm::Attribute::AttrKind kinds[] = {
+        llvm::Attribute::Range,         llvm::Attribute::Captures,
+        llvm::Attribute::Initializes,   llvm::Attribute::DeadOnUnwind,
+        llvm::Attribute::Writable,      llvm::Attribute::NoFPClass,
+        llvm::Attribute::NoExt,
+    };
+    for (llvm::Attribute::AttrKind k : kinds)
+      apply(k);
+  };
+  for (llvm::Function &fn : module) {
+    scrubList([&](llvm::Attribute::AttrKind k) {
+      fn.removeFnAttr(k);
+      fn.removeRetAttr(k);
+      for (llvm::Argument &arg : fn.args())
+        arg.removeAttr(k);
+    });
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb)
+        if (auto *cb = llvm::dyn_cast<llvm::CallBase>(&inst))
+          scrubList([&](llvm::Attribute::AttrKind k) {
+            cb->removeRetAttr(k);
+            for (unsigned i = 0, e = cb->arg_size(); i != e; ++i)
+              cb->removeParamAttr(i, k);
+          });
+  }
+}
+
 void downgradeModernConstructs(llvm::Module &module) {
   downgradePoison(module);
+  stripTooNewAttributes(module);
   for (llvm::Function &fn : module) {
     for (llvm::BasicBlock &bb : fn) {
       for (llvm::Instruction &inst : llvm::make_early_inc_range(bb)) {
@@ -274,6 +313,18 @@ void downgradeModernConstructs(llvm::Module &module) {
         if (auto *trunc = llvm::dyn_cast<llvm::TruncInst>(&inst)) {
           trunc->setHasNoUnsignedWrap(false);
           trunc->setHasNoSignedWrap(false);
+          continue;
+        }
+        // Fast-math flags on FP CASTS (fpext/fptrunc): modern LLVM extends
+        // FPMathOperator to them; the AIR reader sizes INST_CAST at exactly
+        // three operands, so one flagged fpext kills the module. Found by the
+        // corpus differ: the single failing kernel in the fp4 set was the
+        // single kernel with a 4-operand INST_CAST (op2=8 fpext, op3=2).
+        if (auto *castI = llvm::dyn_cast<llvm::CastInst>(&inst)) {
+          // copyFastMathFlags, not setFastMathFlags: set ORs flags IN and is
+          // a silent no-op when clearing; copy replaces.
+          if (llvm::isa<llvm::FPMathOperator>(castI))
+            castI->copyFastMathFlags(llvm::FastMathFlags());
           continue;
         }
         if (auto *cmp = llvm::dyn_cast<llvm::ICmpInst>(&inst)) {

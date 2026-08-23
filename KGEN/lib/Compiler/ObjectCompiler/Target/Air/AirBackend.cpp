@@ -195,6 +195,32 @@ void propagatePointerAS(llvm::SmallVectorImpl<llvm::Value *> &retype) {
           llvm::isa<llvm::PointerType>(inst->getType())) {
         inst->mutateType(want);
         retype.push_back(inst);
+        // Reconcile SIBLING operands. Mutating a select or phi to the new
+        // address space leaves any other pointer arm at the old one, which
+        // is invalid IR -- llvm-as names it plainly ("both values to select
+        // must have same type"), while a bitcode reader hitting the encoded
+        // VSELECT can only say "Invalid record", which is how this actually
+        // surfaced: every reader, Apple's AND modern LLVM's, refused the
+        // module. Route mismatched arms through the ptrtoint/inttoptr pair
+        // (the Apple idiom; AIR has no addrspacecast).
+        auto fixOperand = [&](llvm::Use &use, llvm::Instruction *insertPt) {
+          llvm::Value *op = use.get();
+          if (op == v || op->getType() == want ||
+              !op->getType()->isPointerTy())
+            return;
+          llvm::IRBuilder<> b(insertPt);
+          llvm::Value *asInt = b.CreatePtrToInt(
+              op, llvm::Type::getInt64Ty(inst->getContext()));
+          use.set(b.CreateIntToPtr(asInt, want));
+        };
+        if (auto *sel = llvm::dyn_cast<llvm::SelectInst>(inst)) {
+          fixOperand(sel->getOperandUse(1), sel);
+          fixOperand(sel->getOperandUse(2), sel);
+        } else if (auto *phi = llvm::dyn_cast<llvm::PHINode>(inst)) {
+          for (unsigned i = 0, e = phi->getNumIncomingValues(); i != e; ++i)
+            fixOperand(phi->getOperandUse(i),
+                       phi->getIncomingBlock(i)->getTerminator());
+        }
       }
     }
   }
@@ -1145,6 +1171,14 @@ public:
       llvm::StringRef stem = llvm::sys::path::stem(llPath);
       llvm::sys::fs::copy_file(
           llPath, (std::string(keep) + "/" + stem.str() + ".air"));
+      // The textual IR too, same stem: when a reader rejects the bitcode
+      // (sometimes including modern LLVM's own -- writer bugs exist), the
+      // text is the only view of what the module actually contained.
+      std::error_code ec;
+      llvm::raw_fd_ostream txt(std::string(keep) + "/" + stem.str() + ".ll",
+                               ec);
+      if (!ec)
+        module.print(txt, nullptr);
     }
 
     llvm::ErrorOr<std::string> xcrun = llvm::sys::findProgramByName("xcrun");
