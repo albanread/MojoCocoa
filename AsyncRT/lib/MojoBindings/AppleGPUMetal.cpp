@@ -133,12 +133,33 @@ struct AGMetalBuf {
   uint64_t gpuBase = 0;  // gpuAddress of `buffer` (not of the view)
 };
 
+// What the compiled kernel says about one buffer index, read back from the
+// pipeline at load time. This is the argument contract, and having it means
+// the launch path no longer has to infer from argument VALUES what the
+// compiler already decided.
+//
+// Read off MTLComputePipelineReflection for three of our kernels:
+//
+//   addrspace(1) device buffer   bufferDataType None    size 4    RW
+//   addrspace(2) constant f32    bufferDataType UInt    size 4    RO
+//   addrspace(2) constant struct bufferDataType UInt    size 72   RO
+//
+// A device-buffer parameter is `{} addrspace(1)*` -- an opaque pointee, so
+// Metal reports MTLDataTypeNone. Constant parameters carry a real type and
+// the size the kernel will read. That is the discriminator.
+struct AGMetalArgSlot {
+  bool known = false;
+  bool deviceBuffer = false; // bind with setBuffer, not setBytes
+  uint64_t declaredSize = 0; // bytes the kernel expects at this index
+};
+
 struct AGMetalFunc {
   id library = nullptr;
   id function = nullptr;
   id pipeline = nullptr; // id<MTLComputePipelineState>
   std::string name;
   int32_t maxDynamicSharedBytes = -1;
+  std::vector<AGMetalArgSlot> argSlots; // indexed by buffer index
 };
 
 namespace {
@@ -663,12 +684,19 @@ const char *AppleGPUMetal_loadFunction(AGMetalFunc **out, AGMetalCtx *ctx,
   }
 
   nserr = nullptr;
-  // No reflection needed: the fork asked for MTLPipelineOptionArgumentInfo
-  // purely to read back `__vega_cap_*` parameter names, and captured pointers
-  // are no longer hoisted into parameters on Apple Silicon.
-  id pipeline = msg<id>(ctx->device,
-                        "newComputePipelineStateWithFunction:error:", function,
-                        &nserr);
+  // Ask for reflection. The fork used it only to read back `__vega_cap_*`
+  // parameter names, and dropped it when capture hoisting went away; we need
+  // it again for a better reason. Without the argument contract the launch
+  // path has to guess whether an 8-byte value is a device address to bind or
+  // scalar bytes to copy, and a guess is wrong in one direction or the other
+  // (see AGMetalArgSlot, and TODO(air-argtypes) as was).
+  //
+  // MTLPipelineOptionBindingInfo(1) | MTLPipelineOptionBufferTypeInfo(2).
+  id refl = nullptr;
+  id pipeline =
+      msg<id>(ctx->device,
+              "newComputePipelineStateWithFunction:options:reflection:error:",
+              function, 3ul, &refl, &nserr);
   if (!pipeline) {
     objcRelease(function);
     objcRelease(library);
@@ -681,6 +709,31 @@ const char *AppleGPUMetal_loadFunction(AGMetalFunc **out, AGMetalCtx *ctx,
   fn->pipeline = pipeline;
   fn->name = functionName;
   fn->maxDynamicSharedBytes = maxDynamicSharedBytes;
+
+  // Record the contract. Reflection is best-effort: if it is unavailable the
+  // slots stay `known == false` and the launch path falls back to the old
+  // value-based classification rather than refusing to run.
+  if (refl) {
+    id bindings = msg<id>(refl, "bindings");
+    unsigned long n = bindings ? msg<unsigned long>(bindings, "count") : 0ul;
+    for (unsigned long b = 0; b < n; b++) {
+      id bind = msg<id>(bindings, "objectAtIndex:", b);
+      if (!bind)
+        continue;
+      // MTLBindingTypeBuffer == 0; threadgroup memory and textures are bound
+      // by other paths and carry no argument contract here.
+      if (msg<long>(bind, "type") != 0)
+        continue;
+      unsigned long idx = msg<unsigned long>(bind, "index");
+      unsigned long dataType = msg<unsigned long>(bind, "bufferDataType");
+      unsigned long dataSize = msg<unsigned long>(bind, "bufferDataSize");
+      if (fn->argSlots.size() <= idx)
+        fn->argSlots.resize(idx + 1);
+      fn->argSlots[idx] = {/*known=*/true,
+                           /*deviceBuffer=*/dataType == 0, // MTLDataTypeNone
+                           /*declaredSize=*/dataSize};
+    }
+  }
   *out = fn;
   return nullptr;
 }
@@ -769,21 +822,50 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
     // to ask the pipeline what each argument is -- MTLComputePipelineReflection
     // via MTLPipelineOptionArgumentInfo gives an MTLArgumentType per index --
     // and bind to that rather than inferring from the value.
-    // TODO(air-argtypes): replace this with pipeline-reflection classification.
-    bool isDev = argIsDevicePtr ? argIsDevicePtr[i] : false;
-    if (!isDev && argSizes && argSizes[i] >= 8) {
-      uint64_t maybe = 0;
-      memcpy(&maybe, argAddrs[i], sizeof(maybe));
-      size_t off = 0;
-      if (resolveAddress(maybe, &off)) {
-        isDev = true;
-        if (trace)
-          fprintf(stderr,
-                  "  arg[%u] reclassified as a device pointer (0x%llx "
-                  "resolves; flags said scalar)\n",
-                  i, (unsigned long long)maybe);
+    // Prefer the kernel's own contract, recorded from pipeline reflection at
+    // load time (AGMetalArgSlot). It is the compiler's decision read straight
+    // back, so it needs no inference.
+    const AGMetalArgSlot *slot =
+        (i < fn->argSlots.size() && fn->argSlots[i].known) ? &fn->argSlots[i]
+                                                           : nullptr;
+    bool isDev;
+    if (slot) {
+      isDev = slot->deviceBuffer;
+      // A constant parameter must be handed exactly the bytes it declares.
+      // If the two ever disagree neither binding is right and the kernel
+      // reads undefined memory, so refuse rather than run. No test trips
+      // this today -- the sizes do agree everywhere we have looked, including
+      // the 72- and 56-byte capture structs in test_function_mts -- which is
+      // the point: it is a standing invariant on the argument contract, cheap
+      // to check, and the failure it guards against is silent.
+      if (!isDev && argSizes && argSizes[i] != slot->declaredSize) {
+        msg<void>(enc, "endEncoding");
+        return agmErrorf(
+            "AppleGPURT[metal]: '%s' arg %u expects %llu bytes of constant "
+            "data (air.arg_type_size), host supplied %llu. The kernel's "
+            "argument contract and the launch path disagree; binding either "
+            "way would read undefined memory.",
+            fn->name.c_str(), i, (unsigned long long)slot->declaredSize,
+            (unsigned long long)argSizes[i]);
+      }
+    } else {
+      // No reflection: fall back to the flags, then to the registry for an
+      // 8-byte value the flags call a scalar. Captures arrive flagged false
+      // because that is true on CUDA, where a captured pointer is just an
+      // integer the kernel dereferences; here it may be a real buffer
+      // parameter.
+      isDev = argIsDevicePtr ? argIsDevicePtr[i] : false;
+      if (!isDev && argSizes && argSizes[i] >= 8) {
+        uint64_t maybe = 0;
+        memcpy(&maybe, argAddrs[i], sizeof(maybe));
+        size_t off = 0;
+        if (resolveAddress(maybe, &off))
+          isDev = true;
       }
     }
+    if (trace)
+      fprintf(stderr, "  arg[%u] %s (%s)\n", i, isDev ? "device" : "constant",
+              slot ? "from pipeline reflection" : "inferred, no reflection");
     if (isDev) {
       uint64_t addr = 0;
       memcpy(&addr, argAddrs[i], sizeof(addr));
