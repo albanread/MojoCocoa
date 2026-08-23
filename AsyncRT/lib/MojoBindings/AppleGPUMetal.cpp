@@ -945,6 +945,20 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
         }
         fprintf(stderr, "  arg[%u] setBytes   size=%llu  f32=%g u32=%u%s\n", i,
                 (unsigned long long)size, (double)asF, asU, note);
+          if (::getenv("APPLEGPU_TRACE_BLOB") && size >= 8) {
+            // A descriptor blob is opaque from the host side: pointers, shapes
+            // and strides packed by the frontend and decoded by the kernel.
+            // When the two disagree the only symptom is a buffer of zeros, so
+            // dump the words and mark the ones the registry recognises.
+            const uint64_t *w = (const uint64_t *)argAddrs[i];
+            for (uint64_t k = 0; k < size / 8; ++k) {
+              size_t off = 0;
+              bool dev = resolveAddress(w[k], &off);
+              fprintf(stderr, "      [%2llu] 0x%016llx  %20lld%s\n",
+                      (unsigned long long)k, (unsigned long long)w[k],
+                      (long long)w[k], dev ? "   <-- DEVICE PTR" : "");
+            }
+          }
       }
     }
   }

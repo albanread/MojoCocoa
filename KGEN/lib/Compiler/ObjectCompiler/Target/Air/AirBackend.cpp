@@ -941,6 +941,19 @@ void deviceizeCapturedPointers(llvm::Module &m) {
         // compiler types it (`%struct.Caps = type { float addrspace(1)*, .. }`).
         if (auto *ev = llvm::dyn_cast<llvm::ExtractValueInst>(&inst)) {
           llvm::Value *agg = ev->getAggregateOperand();
+          // Walk the aggregate chain to its root before judging it. A
+          // descriptor blob holding several tensors arrives as a struct of
+          // structs, and the frontend pulls the per-tensor struct out first
+          // and its pointer out second -- so the aggregate here is usually
+          // another extractvalue, not the load. Testing only the immediate
+          // aggregate deviceized whichever pointer the frontend happened to
+          // extract in one step and left every other one generic, which on
+          // AIR means it is not addressable at all: the kernel's stores went
+          // to addrspace(1) and its loads to addrspace(0), so writes landed
+          // and reads returned zero. That is a whole output buffer of zeroes
+          // with nothing reported anywhere.
+          while (auto *outer = llvm::dyn_cast<llvm::ExtractValueInst>(agg))
+            agg = outer->getAggregateOperand();
           bool fromConstantBuffer = llvm::isa<llvm::Argument>(agg);
           if (auto *ld = llvm::dyn_cast<llvm::LoadInst>(agg)) {
             auto *srcTy = llvm::dyn_cast<llvm::PointerType>(
@@ -1317,6 +1330,21 @@ public:
           fn.addFnAttr(llvm::Attribute::AlwaysInline);
         }
       mpm.addPass(llvm::AlwaysInlinerPass());
+        mpm.run(module, mam);
+
+        // Re-legalise address spaces now that inlining has run. legalizeModule
+        // did this already, but only over the code that existed then: whatever
+        // AlwaysInliner has just pulled in from a callee has never been through
+        // it, and a device pointer in that code is still generic.
+        //
+        // On AIR that is not a missed optimisation, it is a wrong answer. AIR
+        // has no generic address space, so a kernel left with its stores in
+        // addrspace(1) and its loads in addrspace(0) writes correctly and reads
+        // zero -- an output buffer full of zeroes, no diagnostic anywhere, and
+        // nothing in the IR that any verifier objects to.
+        deviceizeCapturedPointers(module);
+
+        llvm::ModulePassManager mpm2;
       // The published Metal emission machinery, by its own declarations:
       // BitcodeWriter17.cpp:15 — "for writing Metal bitcode"; Apple's AIR
       // reader is LLVM-18-based (BitcodeWriter17.cpp ~1765) and requires
@@ -1326,9 +1354,9 @@ public:
       // (LLVMIRDowngradePass.cpp:184) — lifetime-intrinsic downgrading
       // today; our legalizeModule above supplies the body that upstream
       // kept closed. PointerRewriter un-opaques for the writer.
-      mpm.addPass(LLVMIRDowngradePass());
-      mpm.addPass(PointerRewriter());
-      mpm.run(module, mam);
+      mpm2.addPass(LLVMIRDowngradePass());
+      mpm2.addPass(PointerRewriter());
+      mpm2.run(module, mam);
       // Again after the pipeline, not only in legalizeModule: inlining can
       // pull a same-space cast in from a callee, and the reader rejects the
       // module for one of them.
