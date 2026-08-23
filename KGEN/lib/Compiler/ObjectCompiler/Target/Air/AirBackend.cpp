@@ -591,24 +591,42 @@ void deviceizeCapturedPointers(llvm::Module &m) {
         }
       }
     for (llvm::Instruction *src : sources) {
-      // Insert an explicit addrspacecast rather than mutating the type:
-      //  - an extractvalue's type is recomputed from its aggregate, so a
-      //    mutation does not survive serialization, and the mismatch gets
-      //    reconciled downstream as a ptrtoint/inttoptr round trip;
-      //  - inttoptr DESTROYS POINTER PROVENANCE, which is precisely what
-      //    AMD's getPtrRsrcId needs to find the buffer resource. An
-      //    addrspacecast keeps the chain intact.
+      // Round-trip through an integer rather than addrspacecast'ing.
+      //
+      // The fork used addrspacecast here, on the grounds that inttoptr
+      // destroys the pointer provenance AMD's getPtrRsrcId needs to find a
+      // buffer resource. That is an AMD constraint and it does not apply to
+      // Apple Silicon, where the reverse is true: an integer round trip is
+      // Apple's OWN idiom and addrspacecast is not used at all.
+      //
+      // Golden samples say so plainly. Casting a raw 64-bit address to a
+      // device pointer in MSL:
+      //
+      //   %6 = inttoptr i64 %5 to float addrspace(1)*
+      //
+      // and across every sample taken from `xcrun metal -S -emit-llvm` --
+      // plain buffers, capture structs with device pointers, raw-address
+      // deref, simd ops -- there are ZERO addrspacecast instructions and ZERO
+      // addrspace(0) pointers. AIR has no generic address space to cast from,
+      // so a generic->device addrspacecast is a construct Apple's own
+      // compiler never emits, and the value it produced did not address
+      // device memory: test_function_mts wrote a grid of zeroes through one.
       llvm::Instruction *insertPt = src->getNextNode();
       if (!insertPt)
         continue;
       llvm::IRBuilder<> b(insertPt);
-      llvm::Value *cast = b.CreateAddrSpaceCast(
-          src, llvm::PointerType::get(c, 1), src->getName() + ".dev");
+      llvm::Value *asInt = b.CreatePtrToInt(src, llvm::Type::getInt64Ty(c),
+                                            src->getName() + ".addr");
+      llvm::Value *cast = b.CreateIntToPtr(
+          asInt, llvm::PointerType::get(c, 1), src->getName() + ".dev");
       // replaceUsesWithIf demands identical types, which an addrspacecast
       // deliberately does not have; rewrite the uses directly.
+      // Skip BOTH instructions we just created. `asInt` is the one that
+      // consumes `src` now; rewriting its operand to `cast` would make the
+      // ptrtoint feed on the inttoptr derived from it -- a cycle.
       llvm::SmallVector<llvm::Use *, 8> uses;
       for (llvm::Use &u : src->uses())
-        if (u.getUser() != cast)
+        if (u.getUser() != cast && u.getUser() != asInt)
           uses.push_back(&u);
       for (llvm::Use *u : uses)
         u->set(cast);
