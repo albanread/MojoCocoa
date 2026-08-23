@@ -467,7 +467,30 @@ llvm::Function *legalizeKernel(llvm::Function &fn,
   // These coincide now that nothing is inserted between the original params
   // and the builtins; the fork's hoisted capture params sat in that gap.
   unsigned numOrigParams = paramTypes.size();
-  unsigned firstBuiltinIdx = numOrigParams;
+
+  // Dynamically-sized threadgroup memory is a PARAMETER in AIR, not a global.
+  //
+  // Mojo elaborates it as `@extern_ptr_syml = external addrspace(3) global`
+  // and nothing ever defines that symbol, so metallib stops with
+  //   LLVM ERROR: Undefined symbol: extern_ptr_syml
+  // Apple's own compiler gives the kernel a `threadgroup float*` parameter
+  // instead, and the host sizes it with setThreadgroupMemoryLength:atIndex:,
+  // which AppleGPUMetal already calls. The runtime half was always there;
+  // only the signature was wrong.
+  llvm::SmallVector<llvm::GlobalVariable *, 2> tgGlobals;
+  for (llvm::GlobalVariable &gv : m.globals()) {
+    if (!gv.isDeclaration() || gv.getAddressSpace() != 3)
+      continue;
+    if (llvm::any_of(gv.users(), [&](const llvm::User *u) {
+          auto *ins = llvm::dyn_cast<llvm::Instruction>(u);
+          return ins && ins->getFunction() == &fn;
+        }))
+      tgGlobals.push_back(&gv);
+  }
+  for (unsigned t = 0; t < tgGlobals.size(); ++t)
+    paramTypes.push_back(llvm::PointerType::get(ctx_, 3));
+
+  unsigned firstBuiltinIdx = numOrigParams + tgGlobals.size();
   for (KernelBuiltinUse &use : uses)
     paramTypes.push_back(use.anyDimensioned
                              ? llvm::FixedVectorType::get(
@@ -516,6 +539,34 @@ llvm::Function *legalizeKernel(llvm::Function &fn,
   propagatePointerAS(retype);
 
   // Replace shim calls with reads of the new parameters.
+  // Point the old globals at their new parameters. The global itself stays
+  // in the module but loses every use, so the later dead-global sweep drops
+  // it -- and an undefined addrspace(3) global with no uses is still an
+  // undefined symbol to the reader, so it must actually go.
+  for (unsigned t = 0; t < tgGlobals.size(); ++t) {
+    llvm::Argument *tgArg = newFn->getArg(numOrigParams + t);
+    tgArg->setName("tg_mem");
+    tgGlobals[t]->replaceAllUsesWith(tgArg);
+  }
+
+  // Threadgroup parameters. Same air.buffer record as a device buffer but
+  // address_space 3, and note the location_index restarts at 0: threadgroup
+  // bindings are numbered separately from device buffers, which is what
+  // setThreadgroupMemoryLength:atIndex:0 on the host is addressing.
+  for (unsigned t = 0; t < tgGlobals.size(); ++t) {
+    unsigned idx = numOrigParams + t;
+    llvm::Argument *arg = newFn->getArg(idx);
+    argMD.push_back(mdStrings(
+        c, {mdI32(c, idx), mdStr(c, "air.buffer"),
+            mdStr(c, "air.location_index"), mdI32(c, t), mdI32(c, 1),
+            mdStr(c, "air.read_write"),
+            mdStr(c, "air.address_space"), mdI32(c, 3),
+            mdStr(c, "air.arg_type_size"), mdI32(c, 4),
+            mdStr(c, "air.arg_type_align_size"), mdI32(c, 4),
+            mdStr(c, "air.arg_type_name"), mdStr(c, "void"),
+            mdStr(c, "air.arg_name"), mdStr(c, arg->getName())}));
+    arg->addAttr(llvm::Attribute::get(c, "air-buffer-no-alias"));
+  }
   for (unsigned u = 0; u < uses.size(); ++u) {
     llvm::Argument *arg = newFn->getArg(firstBuiltinIdx + u);
     for (llvm::CallInst *call : uses[u].calls) {
