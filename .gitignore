@@ -66,7 +66,13 @@ docs/_build/
 
 # PyBuilder
 .pybuilder/
-target/
+# Rust build directory, at the repo root ONLY. Was a bare `target/`, which
+# git matches at any depth -- and because macOS turns on core.ignorecase,
+# it also matched `Target/`, silently swallowing every KGEN and Support
+# .../Target/ SOURCE directory: TargetTraits, TargetLowering, the whole
+# Host backend, and the AIR trio. 21 files went untracked and the repo
+# did not compile as cloned. Keep this anchored.
+/target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
