@@ -172,7 +172,32 @@ void propagatePointerAS(llvm::SmallVectorImpl<llvm::Value *> &retype) {
       else if (auto *sel = llvm::dyn_cast<llvm::SelectInst>(inst);
                sel && sel->getCondition() != v)
         want = v->getType();
-      else if (auto *call = llvm::dyn_cast<llvm::CallInst>(inst)) {
+      else if (auto *cmp = llvm::dyn_cast<llvm::ICmpInst>(inst)) {
+        // An icmp yields i1, so it is never itself retyped and the generic
+        // path below never looks at it -- but comparing a retyped AS1
+        // pointer against an operand still in AS0 is invalid IR. The
+        // verifier calls it "Both operands to ICmp instruction are not of
+        // the same type!"; the AIR reader would have said only "Invalid
+        // record". Most often the sibling is a null constant, from a
+        // captured pointer being null-checked.
+        llvm::Type *want = v->getType();
+        for (unsigned i = 0; i != 2; ++i) {
+          llvm::Use &use = cmp->getOperandUse(i);
+          llvm::Value *op = use.get();
+          if (op == v || op->getType() == want || !op->getType()->isPointerTy())
+            continue;
+          if (llvm::isa<llvm::ConstantPointerNull>(op)) {
+            use.set(llvm::ConstantPointerNull::get(
+                llvm::cast<llvm::PointerType>(want)));
+            continue;
+          }
+          llvm::IRBuilder<> b(cmp);
+          llvm::Value *asInt = b.CreatePtrToInt(
+              op, llvm::Type::getInt64Ty(cmp->getContext()));
+          use.set(b.CreateIntToPtr(asInt, want));
+        }
+        continue;
+      } else if (auto *call = llvm::dyn_cast<llvm::CallInst>(inst)) {
         // A retyped pointer flowing into a call: retype the matching params
         // of DEFINED callees so their bodies see the new address space
         // (external callees are adapted at the call site by the
@@ -209,6 +234,14 @@ void propagatePointerAS(llvm::SmallVectorImpl<llvm::Value *> &retype) {
           if (op == v || op->getType() == want ||
               !op->getType()->isPointerTy())
             return;
+          // A null pointer constant just gets rebuilt in the new space; no
+          // instruction, and it keeps `icmp eq ptr, null` recognisable to
+          // later passes rather than burying it under an inttoptr.
+          if (llvm::isa<llvm::ConstantPointerNull>(op)) {
+            use.set(llvm::ConstantPointerNull::get(
+                llvm::cast<llvm::PointerType>(want)));
+            return;
+          }
           llvm::IRBuilder<> b(insertPt);
           llvm::Value *asInt = b.CreatePtrToInt(
               op, llvm::Type::getInt64Ty(inst->getContext()));
@@ -1183,6 +1216,19 @@ public:
     if (llvm::Error err = legalizeModule(module))
       return Error("AIR legalization failed");
 
+    // Gate 1: verify while the IR is still CANONICAL -- after our own
+    // legalization, before the downgrade pipeline.
+    //
+    // Not after the pipeline, which was the first placement and was wrong.
+    // PointerRewriter deliberately rewrites pointers to TypedPointerType for
+    // the LLVM-17 writer and (per MojoMacX64's triage) drops the
+    // lifetime-on-alloca exemption on purpose, so a module that is correct
+    // for its purpose fails verification there: 23 spurious
+    // "llvm.lifetime.start/end can only be used on alloca or poison" against
+    // 4 real findings. A gate that cries wolf gets switched off.
+    if (auto bad = verifyBeforeEmit(module, "AIR legalization"))
+      return Error(*bad);
+
     // Downgrade modern IR constructs to what the LLVM-17-era AIR reader
     // accepts (in-tree pass, built for exactly this).
     {
@@ -1225,9 +1271,7 @@ public:
       dropNoOpAddrSpaceCasts(module);
     }
 
-    // Gate 1: last point before the module becomes bytes.
-    if (auto bad = verifyBeforeEmit(module, "AIR legalization"))
-      return Error(*bad);
+
 
     // Debug hatch: dump post-pass text (after MetalAIRPass/PointerRewriter).
     if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR")) {
