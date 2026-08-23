@@ -179,6 +179,136 @@ static void downgradeLifetimeIntrinsics(Module &module,
   }
 }
 
+namespace {
+
+// The AIR encoding is far older than our LLVM (22), so
+// constructs newer than the reader must be lowered away here (this is the
+// published MetalAIRPass; upstream downgrades lifetime intrinsics only):
+//   - `freeze` (LLVM 10) and unary `fneg` (LLVM 8) hard-crash
+//     BitcodeWriter17 with llvm_unreachable
+//   - GEP no-wrap flags (LLVM 19) survive into AIR and break the driver's
+//     GCN compiler
+// Standard downgrade practice, cf. Julia's llvm-downgrade.
+// `poison` (LLVM 12) is newer than the AIR reader on BOTH backends. Ported
+// from MojoMacX64, where it was written for AMD's Metal plugin -- the Vega
+// framing made it look AMD-specific and it did not come across in the port,
+// which cost the whole test_apple_* MMA cluster: metallib answers
+// "LLVM ERROR: Unexpected bitcode file!", naming nothing.
+//
+// Confirmed on Apple with the field guide's own one-command diagnostic
+// (AIR_on_AMD.md, "Vintage landmines"):
+//
+//   llvm-bcanalyzer --dump ours.air  | grep -oE '<[A-Za-z_0-9]+' | sort -u > ours
+//   llvm-bcanalyzer --dump apple.air | grep -oE '<[A-Za-z_0-9]+' | sort -u > apple
+//   comm -23 ours apple   ->   <UnknownCode26
+//
+// CST_CODE_POISON == 26, in the CONSTANTS_BLOCK, and it is the ONLY record
+// type we emit that Modular's compiler does not. `undef` is the classic
+// equivalent and what older readers expect.
+llvm::Constant *depoison(llvm::Constant *c) {
+  if (llvm::isa<llvm::PoisonValue>(c))
+    return llvm::UndefValue::get(c->getType());
+  auto *agg = llvm::dyn_cast<llvm::ConstantAggregate>(c);
+  if (!agg)
+    return c;
+  bool changed = false;
+  llvm::SmallVector<llvm::Constant *, 8> elems;
+  for (unsigned i = 0, e = agg->getNumOperands(); i != e; ++i) {
+    llvm::Constant *elem = agg->getOperand(i);
+    llvm::Constant *fixed = depoison(elem);
+    changed |= fixed != elem;
+    elems.push_back(fixed);
+  }
+  if (!changed)
+    return c;
+  if (llvm::isa<llvm::ConstantVector>(agg))
+    return llvm::ConstantVector::get(elems);
+  if (auto *at = llvm::dyn_cast<llvm::ArrayType>(agg->getType()))
+    return llvm::ConstantArray::get(at, elems);
+  if (auto *st = llvm::dyn_cast<llvm::StructType>(agg->getType()))
+    return llvm::ConstantStruct::get(st, elems);
+  return c;
+}
+
+void downgradePoison(llvm::Module &module) {
+  for (llvm::Function &fn : module)
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb)
+        for (llvm::Use &use : inst.operands())
+          if (auto *c = llvm::dyn_cast<llvm::Constant>(use.get())) {
+            llvm::Constant *fixed = depoison(c);
+            if (fixed != c)
+              use.set(fixed);
+          }
+}
+
+void downgradeModernConstructs(llvm::Module &module) {
+  downgradePoison(module);
+  for (llvm::Function &fn : module) {
+    for (llvm::BasicBlock &bb : fn) {
+      for (llvm::Instruction &inst : llvm::make_early_inc_range(bb)) {
+        if (auto *freeze = llvm::dyn_cast<llvm::FreezeInst>(&inst)) {
+          freeze->replaceAllUsesWith(freeze->getOperand(0));
+          freeze->eraseFromParent();
+          continue;
+        }
+        // Poison-generating flags newer than the AIR reader, all pure
+        // optimisation hints. Each one adds a flags operand to a record the
+        // reader sizes exactly, so the module dies as "Invalid record" /
+        // "Unexpected bitcode file!" with no location:
+        //   or disjoint          LLVM 18   INST_BINOP grows a flags operand
+        //   zext nneg            LLVM 18   INST_CAST grows op3
+        //   trunc nuw/nsw        LLVM 20   INST_CAST grows op3
+        //   icmp/fcmp samesign   LLVM 20   INST_CMP2 grows a flags operand
+        // Found by feeding our own module text to Apple's frontend
+        // (`xcrun metal -x ir -Xclang -opaque-pointers`), which named
+        // `or disjoint` where metallib named nothing.
+        if (auto *pd = llvm::dyn_cast<llvm::PossiblyDisjointInst>(&inst)) {
+          pd->setIsDisjoint(false);
+          continue;
+        }
+        if (auto *nneg = llvm::dyn_cast<llvm::PossiblyNonNegInst>(&inst)) {
+          nneg->setNonNeg(false);
+          continue;
+        }
+        if (auto *trunc = llvm::dyn_cast<llvm::TruncInst>(&inst)) {
+          trunc->setHasNoUnsignedWrap(false);
+          trunc->setHasNoSignedWrap(false);
+          continue;
+        }
+        if (auto *cmp = llvm::dyn_cast<llvm::ICmpInst>(&inst)) {
+          cmp->setSameSign(false);
+          continue;
+        }
+        if (auto *gep = llvm::dyn_cast<llvm::GetElementPtrInst>(&inst)) {
+          // GEP no-wrap flags (nusw/nuw) are LLVM 19+; the AIR reader knows
+          // only `inbounds`. Apple's own air-as rejects the text form
+          // ("expected type" on `getelementptr inbounds nuw`), and the
+          // encoded flag bits make the driver's GCN compiler bail with
+          // "Compilation failed due to an interrupted compilation".
+          gep->setNoWrapFlags(gep->isInBounds()
+                                  ? llvm::GEPNoWrapFlags::inBounds()
+                                  : llvm::GEPNoWrapFlags::none());
+          continue;
+        }
+        auto *unary = llvm::dyn_cast<llvm::UnaryOperator>(&inst);
+        if (unary && unary->getOpcode() == llvm::Instruction::FNeg) {
+          llvm::IRBuilder<> builder(unary);
+          llvm::Value *sub = builder.CreateFSub(
+              llvm::ConstantFP::getNegativeZero(unary->getType()),
+              unary->getOperand(0));
+          if (auto *subInst = llvm::dyn_cast<llvm::Instruction>(sub))
+            subInst->copyFastMathFlags(unary);
+          unary->replaceAllUsesWith(sub);
+          unary->eraseFromParent();
+        }
+      }
+    }
+  }
+}
+
+} // namespace
+
 namespace M::KGEN {
 
 // Implementation of MetalAIRPass::run
@@ -186,6 +316,7 @@ PreservedAnalyses LLVMIRDowngradePass::run(Module &module,
                                            ModuleAnalysisManager &mam) {
 
   downgradeLifetimeIntrinsics(module, mam);
+  downgradeModernConstructs(module);
   return PreservedAnalyses::all();
 }
 

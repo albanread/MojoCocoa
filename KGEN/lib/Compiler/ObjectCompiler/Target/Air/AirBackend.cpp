@@ -1137,9 +1137,15 @@ public:
     // bitcode ("Unexpected bitcode file!") the rejected file is exactly what
     // you need, and copying it only on success meant it was deleted at the
     // one moment it mattered.
-    if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR"))
-      llvm::sys::fs::copy_file(llPath,
-                               (std::string(keep) + "/applegpu-kernel.air"));
+    if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR")) {
+      // Unique per kernel: a module with several kernels overwrote this, and
+      // the survivor was a kernel that PASSED while a different one failed --
+      // which reads as "the file metallib rejects is fine when I run metallib
+      // on it by hand".
+      llvm::StringRef stem = llvm::sys::path::stem(llPath);
+      llvm::sys::fs::copy_file(
+          llPath, (std::string(keep) + "/" + stem.str() + ".air"));
+    }
 
     llvm::ErrorOr<std::string> xcrun = llvm::sys::findProgramByName("xcrun");
     if (!xcrun && llvm::sys::fs::can_execute("/usr/bin/xcrun"))
