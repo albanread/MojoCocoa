@@ -39,6 +39,8 @@
 #include <map>
 #include <mutex>
 #include <string>
+
+#include <IOKit/IOKitLib.h>
 #include <vector>
 
 #include <CoreFoundation/CoreFoundation.h>
@@ -115,11 +117,32 @@ constexpr bool kUnifiedMemory = true;
 // Structures
 //===----------------------------------------------------------------------===//
 
+/// What this device can actually answer, resolved once at context creation.
+///
+/// The rule here is that a value is either MEASURED from a platform property
+/// or it is absent. A CUDA-shaped question Metal cannot answer is left
+/// unanswered rather than filled with a plausible constant: an invented core
+/// count does not fix attention dispatch, it moves the failure into kernel
+/// scheduling where it is much harder to attribute.
+struct AGMetalCaps {
+  /// Physical GPU cores, from the IOKit AGXAccelerator registry entry
+  /// (`gpu-core-count`). This is the honest analogue of a CUDA SM: an Apple
+  /// GPU core has its own scheduler, register file and threadgroup memory.
+  /// Zero means the property was not readable and the attribute stays
+  /// unsupported.
+  int coreCount = 0;
+  /// `MTLDevice.architecture.name`, e.g. "applegpu_g16s". Distinct from the
+  /// apple-mN family string: this is the GPU ISA generation, and it is what
+  /// Apple's own offline AIR translator wants for -arch.
+  std::string gpuArch;
+};
+
 struct AGMetalCtx {
   id device = nullptr; // id<MTLDevice>, retained by MTLCopyAllDevices
   id queue = nullptr;  // id<MTLCommandQueue>
   std::string name;
   std::string arch;
+  AGMetalCaps caps;
 };
 
 struct AGMetalBuf {
@@ -313,6 +336,44 @@ std::vector<id> &allDevices() {
   return devices;
 }
 
+/// Physical GPU core count, straight from the driver.
+///
+/// Metal itself exposes no core/SM count, which is why this attribute was
+/// unanswered. But the AGXAccelerator IOKit entry publishes `gpu-core-count`,
+/// and that is a real hardware property rather than a guess -- 32 on an
+/// M4 Max, 10 on a base M2. Searching parents matters: the property lives on
+/// the accelerator's parent entry on some machines.
+///
+/// Returns 0 if it cannot be read, and the caller then leaves the attribute
+/// unsupported rather than substituting a number.
+int queryGpuCoreCount() {
+  int cores = 0;
+  io_iterator_t it = 0;
+  if (IOServiceGetMatchingServices(kIOMainPortDefault,
+                                   IOServiceMatching("AGXAccelerator"),
+                                   &it) != KERN_SUCCESS)
+    return 0;
+  io_object_t svc;
+  while ((svc = IOIteratorNext(it))) {
+    CFTypeRef v = IORegistryEntrySearchCFProperty(
+        svc, kIOServicePlane, CFSTR("gpu-core-count"), kCFAllocatorDefault,
+        kIORegistryIterateRecursively | kIORegistryIterateParents);
+    if (v) {
+      if (CFGetTypeID(v) == CFNumberGetTypeID())
+        CFNumberGetValue((CFNumberRef)v, kCFNumberIntType, &cores);
+      else if (CFGetTypeID(v) == CFDataGetTypeID() &&
+               CFDataGetLength((CFDataRef)v) >= 4)
+        memcpy(&cores, CFDataGetBytePtr((CFDataRef)v), 4);
+      CFRelease(v);
+    }
+    IOObjectRelease(svc);
+    if (cores)
+      break;
+  }
+  IOObjectRelease(it);
+  return cores;
+}
+
 std::string archForName(const std::string &name) {
   // Arch strings must classify as APPLE_GPU in the stdlib's _vendor_from_arch,
   // which SUBSTRING-matches: a name containing "amd", "gfx" or "mi" would
@@ -364,6 +425,12 @@ const char *AppleGPUMetal_createContext(AGMetalCtx **out, int id_,
   // this is the Apple Metal API driving an AMD GPU.
   ctx->name = devName + " (Apple Metal)";
   ctx->arch = archForName(devName);
+  // Resolve capabilities once, here, rather than per query: the IOKit lookup
+  // walks the registry and this is asked on every dispatch-shaping decision.
+  ctx->caps.coreCount = queryGpuCoreCount();
+  if (const char *t = ::getenv("APPLEGPU_TRACE_CAPS"))
+    (void)t, fprintf(stderr, "[applegpu] caps device='%s' arch=%s cores=%d\n",
+                     devName.c_str(), ctx->arch.c_str(), ctx->caps.coreCount);
   snprintf(nameOut, nameCap, "%s", ctx->name.c_str());
   snprintf(archOut, archCap, "%s", ctx->arch.c_str());
   *out = ctx;

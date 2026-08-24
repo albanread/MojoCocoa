@@ -16,6 +16,10 @@ modular_cc_library(
         "Metal",
         "-framework",
         "CoreFoundation",
+        # gpu-core-count lives in the AGXAccelerator IOKit registry entry;
+        # Metal exposes no core/SM count of its own.
+        "-framework",
+        "IOKit",
         "-lobjc",
     ],
     visibility = ["//visibility:public"],
