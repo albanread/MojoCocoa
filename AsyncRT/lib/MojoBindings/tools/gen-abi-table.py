@@ -75,6 +75,27 @@ def marker_note(lines, idx):
     return ""
 
 
+def coverage():
+    """Measured references from pre-link objects, if a snapshot exists.
+
+    Kept in a checked-in TSV rather than measured live, so the table stays
+    deterministic and the drift check stays meaningful on a machine that has
+    not built the tests. Refresh with tools/measure-abi-coverage.sh.
+    """
+    p = ROOT / "ABI-COVERAGE.tsv"
+    if not p.exists():
+        return None, 0
+    counts, objs = {}, 0
+    for line in p.read_text().split("\n"):
+        if line.startswith("# measured over"):
+            objs = int(line.split()[3])
+        if not line or line.startswith("#"):
+            continue
+        sym, _, n = line.partition("\t")
+        counts[sym] = int(n)
+    return counts, objs
+
+
 def main():
     entries = {}
     for name in SOURCES:
@@ -92,6 +113,7 @@ def main():
     for status, _, _, _ in entries.values():
         counts[status] += 1
 
+    cov, nobjs = coverage()
     rev = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT,
                          capture_output=True, text=True).stdout.strip()
 
@@ -115,6 +137,22 @@ def main():
     for s in STATUS_ORDER:
         w(f"| `{s}` | {STATUS_BLURB[s]} | {counts[s]} |")
     w("")
+    if cov is not None:
+        reached = sum(1 for k in entries if cov.get(k, 0))
+        w(f"Of {len(entries)} symbols, **{reached} are referenced by the built "
+          f"tests and {len(entries) - reached} are not**, measured across "
+          f"{nobjs} pre-link objects.")
+        w("")
+        w("That measurement has to come from the PRE-LINK objects. The runtime")
+        w("is `alwayslink = True`, so every symbol is defined text in every")
+        w("executable whether or not anything calls it, and `nm` on a linked")
+        w("binary reports complete coverage of everything. The `tests` column")
+        w("below counts objects whose UNDEFINED set names the symbol.")
+        w("")
+        w("It is static reachability, so a count is an upper bound: `>= 1`")
+        w("means linked against, not executed. A `0` means genuinely never")
+        w("referenced, and that direction is sound.")
+        w("")
     w("## Read this first")
     w("")
     w("`silent-noop` and `silent-zero` are separated from `error` deliberately.")
@@ -123,6 +161,16 @@ def main():
     w("somewhere else entirely, usually in a kernel, usually much later. They")
     w("are the same amount of \"not implemented\" and very different amounts of")
     w("trouble.")
+    w("")
+    w("Symbol parity -- every name Mojo `external_call`s being defined here --")
+    w("is checked by `tools/check-abi-symbols.py`. It is a script rather than a")
+    w("bazel test because the scan crosses the whole Mojo tree, which is not a")
+    w("dependency a test target can express honestly. Run it in CI. It exists")
+    w("because a truncated stub name sat undetected: the runtime defined")
+    w("`AsyncRT_cuda_tensorMapEncodeIm` while Mojo called")
+    w("`...EncodeIm2col`, a link failure waiting for the first build to reach")
+    w("that path, and the table listed the misspelling as though it were")
+    w("coverage.")
     w("")
     w("`error` entries abort callers that do not expect failure. `sync_parallelize`")
     w("calls `abort()` rather than propagating, so a stub there became a hard")
@@ -134,10 +182,16 @@ def main():
             continue
         w(f"## {s} ({len(rows)})")
         w("")
-        w("| symbol | where | note |")
-        w("|---|---|---|")
+        head = "| symbol | where | tests | note |" if cov is not None \
+            else "| symbol | where | note |"
+        w(head)
+        w("|---|---|---|---|" if cov is not None else "|---|---|---|")
         for sym, (_, note, f, ln) in rows:
-            w(f"| `{sym}` | {f}:{ln} | {note} |")
+            if cov is None:
+                w(f"| `{sym}` | {f}:{ln} | {note} |")
+            else:
+                n = cov.get(sym, 0)
+                w(f"| `{sym}` | {f}:{ln} | {n if n else '**0**'} | {note} |")
         w("")
     return "\n".join(out) + "\n"
 

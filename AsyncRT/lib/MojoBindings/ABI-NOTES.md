@@ -4,7 +4,7 @@
 hand-edit** -- run the generator, or `tools/check-abi-table.sh` to see
 what has drifted.
 
-Source: `AppleGPURT.cpp`, `AppleGPUMetal.cpp` at `e665f13`.
+Source: `AppleGPURT.cpp`, `AppleGPUMetal.cpp` at `36c1d48`.
 
 Status is read out of the code, not asserted here, because a
 hand-maintained status column is wrong the moment someone implements a
@@ -19,6 +19,18 @@ none: the entire point is to say what will happen *before* you call.
 | `silent-zero` | **returns 0 and reports success** | 8 |
 | `error` | refuses with a defined error | 35 |
 
+Of 125 symbols, **31 are referenced by the built tests and 94 are not**, measured across 90 pre-link objects.
+
+That measurement has to come from the PRE-LINK objects. The runtime
+is `alwayslink = True`, so every symbol is defined text in every
+executable whether or not anything calls it, and `nm` on a linked
+binary reports complete coverage of everything. The `tests` column
+below counts objects whose UNDEFINED set names the symbol.
+
+It is static reachability, so a count is an upper bound: `>= 1`
+means linked against, not executed. A `0` means genuinely never
+referenced, and that direction is sound.
+
 ## Read this first
 
 `silent-noop` and `silent-zero` are separated from `error` deliberately.
@@ -28,157 +40,167 @@ somewhere else entirely, usually in a kernel, usually much later. They
 are the same amount of "not implemented" and very different amounts of
 trouble.
 
+Symbol parity -- every name Mojo `external_call`s being defined here --
+is checked by `tools/check-abi-symbols.py`. It is a script rather than a
+bazel test because the scan crosses the whole Mojo tree, which is not a
+dependency a test target can express honestly. Run it in CI. It exists
+because a truncated stub name sat undetected: the runtime defined
+`AsyncRT_cuda_tensorMapEncodeIm` while Mojo called
+`...EncodeIm2col`, a link failure waiting for the first build to reach
+that path, and the table listed the misspelling as though it were
+coverage.
+
 `error` entries abort callers that do not expect failure. `sync_parallelize`
 calls `abort()` rather than propagating, so a stub there became a hard
 process abort with no located diagnostic until it was implemented.
 
 ## implemented (67)
 
-| symbol | where | note |
-|---|---|---|
-| `AsyncRT_DeviceBuffer_bytesize` | AppleGPURT.cpp:508 |  |
-| `AsyncRT_DeviceBuffer_context` | AppleGPURT.cpp:512 |  |
-| `AsyncRT_DeviceBuffer_createSubBuffer` | AppleGPURT.cpp:461 |  |
-| `AsyncRT_DeviceBuffer_hostPtr` | AppleGPURT.cpp:517 |  |
-| `AsyncRT_DeviceBuffer_reassignOwnershipTo` | AppleGPURT.cpp:528 |  |
-| `AsyncRT_DeviceBuffer_release` | AppleGPURT.cpp:497 |  |
-| `AsyncRT_DeviceBuffer_release_ptr` | AppleGPURT.cpp:503 |  |
-| `AsyncRT_DeviceBuffer_retain` | AppleGPURT.cpp:493 |  |
-| `AsyncRT_DeviceContextScope_create` | AppleGPURT.cpp:367 |  |
-| `AsyncRT_DeviceContextScope_release` | AppleGPURT.cpp:376 |  |
-| `AsyncRT_DeviceContext_DtoD_async` | AppleGPURT.cpp:579 |  |
-| `AsyncRT_DeviceContext_DtoD_async_no_cross_stream_sync` | AppleGPURT.cpp:636 |  |
-| `AsyncRT_DeviceContext_DtoH_async` | AppleGPURT.cpp:562 |  |
-| `AsyncRT_DeviceContext_DtoH_async_sized` | AppleGPURT.cpp:960 |  |
-| `AsyncRT_DeviceContext_HtoD_async` | AppleGPURT.cpp:542 |  |
-| `AsyncRT_DeviceContext_HtoD_async_sized` | AppleGPURT.cpp:949 |  |
-| `AsyncRT_DeviceContext_allPeerAccessEnabled` | AppleGPURT.cpp:342 |  |
-| `AsyncRT_DeviceContext_archName` | AppleGPURT.cpp:972 |  |
-| `AsyncRT_DeviceContext_canAccess` | AppleGPURT.cpp:335 |  |
-| `AsyncRT_DeviceContext_computeCapability` | AppleGPURT.cpp:254 |  |
-| `AsyncRT_DeviceContext_create` | AppleGPURT.cpp:183 |  |
-| `AsyncRT_DeviceContext_createBuffer_async` | AppleGPURT.cpp:398 |  |
-| `AsyncRT_DeviceContext_createBuffer_owning` | AppleGPURT.cpp:454 |  |
-| `AsyncRT_DeviceContext_createHostBuffer` | AppleGPURT.cpp:427 |  |
-| `AsyncRT_DeviceContext_createStream` | AppleGPURT.cpp:679 |  |
-| `AsyncRT_DeviceContext_deviceApi` | AppleGPURT.cpp:243 |  |
-| `AsyncRT_DeviceContext_deviceName` | AppleGPURT.cpp:237 |  |
-| `AsyncRT_DeviceContext_enableAllPeerAccess` | AppleGPURT.cpp:347 |  |
-| `AsyncRT_DeviceContext_enablePeerAccess` | AppleGPURT.cpp:351 |  |
-| `AsyncRT_DeviceContext_enqueueFunctionDirect` | AppleGPURT.cpp:823 |  |
-| `AsyncRT_DeviceContext_enqueue_event` | AppleGPURT.cpp:729 |  |
-| `AsyncRT_DeviceContext_enqueue_wait_for_context` | AppleGPURT.cpp:329 |  |
-| `AsyncRT_DeviceContext_eventCreate` | AppleGPURT.cpp:722 |  |
-| `AsyncRT_DeviceContext_getApiVersion` | AppleGPURT.cpp:261 |  |
-| `AsyncRT_DeviceContext_getAttribute` | AppleGPURT.cpp:267 |  |
-| `AsyncRT_DeviceContext_getMemoryInfo` | AppleGPURT.cpp:300 |  |
-| `AsyncRT_DeviceContext_id` | AppleGPURT.cpp:233 |  |
-| `AsyncRT_DeviceContext_isCompatible` | AppleGPURT.cpp:315 |  |
-| `AsyncRT_DeviceContext_loadFunction` | AppleGPURT.cpp:798 |  |
-| `AsyncRT_DeviceContext_maxSingleAllocationSize` | AppleGPURT.cpp:983 |  |
-| `AsyncRT_DeviceContext_metal_device` | AppleGPURT.cpp:879 |  |
-| `AsyncRT_DeviceContext_numStreams` | AppleGPURT.cpp:698 |  |
-| `AsyncRT_DeviceContext_numberOfDevices` | AppleGPURT.cpp:224 |  |
-| `AsyncRT_DeviceContext_release` | AppleGPURT.cpp:157 |  |
-| `AsyncRT_DeviceContext_retain` | AppleGPURT.cpp:216 |  |
-| `AsyncRT_DeviceContext_runHealthcheck` | AppleGPURT.cpp:319 |  |
-| `AsyncRT_DeviceContext_setAsCurrent` | AppleGPURT.cpp:996 |  |
-| `AsyncRT_DeviceContext_setMemory_async` | AppleGPURT.cpp:641 |  |
-| `AsyncRT_DeviceContext_startTimer` | AppleGPURT.cpp:761 |  |
-| `AsyncRT_DeviceContext_stopTimer` | AppleGPURT.cpp:770 |  |
-| `AsyncRT_DeviceContext_stream` | AppleGPURT.cpp:673 |  |
-| `AsyncRT_DeviceContext_streamPriorityRange` | AppleGPURT.cpp:689 |  |
-| `AsyncRT_DeviceContext_strfree` | AppleGPURT.cpp:175 |  |
-| `AsyncRT_DeviceContext_supportsMulticast` | AppleGPURT.cpp:357 |  |
-| `AsyncRT_DeviceContext_synchronize` | AppleGPURT.cpp:323 |  |
-| `AsyncRT_DeviceEvent_release` | AppleGPURT.cpp:753 |  |
-| `AsyncRT_DeviceEvent_retain` | AppleGPURT.cpp:1014 |  |
-| `AsyncRT_DeviceEvent_synchronize` | AppleGPURT.cpp:749 |  |
-| `AsyncRT_DeviceFunction_getAttribute` | AppleGPURT.cpp:871 |  |
-| `AsyncRT_DeviceFunction_release` | AppleGPURT.cpp:867 |  |
-| `AsyncRT_DeviceFunction_retain` | AppleGPURT.cpp:863 |  |
-| `AsyncRT_DeviceStream_eventRecord` | AppleGPURT.cpp:738 |  |
-| `AsyncRT_DeviceStream_release` | AppleGPURT.cpp:706 |  |
-| `AsyncRT_DeviceStream_retain` | AppleGPURT.cpp:702 |  |
-| `AsyncRT_DeviceStream_synchronize` | AppleGPURT.cpp:710 |  |
-| `AsyncRT_DeviceStream_waitForEvent` | AppleGPURT.cpp:744 |  |
-| `AsyncRT_DeviceTimer_release` | AppleGPURT.cpp:777 |  |
+| symbol | where | tests | note |
+|---|---|---|---|
+| `AsyncRT_DeviceBuffer_bytesize` | AppleGPURT.cpp:508 | 43 |  |
+| `AsyncRT_DeviceBuffer_context` | AppleGPURT.cpp:512 | 20 |  |
+| `AsyncRT_DeviceBuffer_createSubBuffer` | AppleGPURT.cpp:461 | 1 |  |
+| `AsyncRT_DeviceBuffer_hostPtr` | AppleGPURT.cpp:517 | **0** |  |
+| `AsyncRT_DeviceBuffer_reassignOwnershipTo` | AppleGPURT.cpp:528 | **0** |  |
+| `AsyncRT_DeviceBuffer_release` | AppleGPURT.cpp:497 | 69 |  |
+| `AsyncRT_DeviceBuffer_release_ptr` | AppleGPURT.cpp:503 | **0** |  |
+| `AsyncRT_DeviceBuffer_retain` | AppleGPURT.cpp:493 | 12 |  |
+| `AsyncRT_DeviceContextScope_create` | AppleGPURT.cpp:367 | **0** |  |
+| `AsyncRT_DeviceContextScope_release` | AppleGPURT.cpp:376 | **0** |  |
+| `AsyncRT_DeviceContext_DtoD_async` | AppleGPURT.cpp:579 | 54 |  |
+| `AsyncRT_DeviceContext_DtoD_async_no_cross_stream_sync` | AppleGPURT.cpp:636 | **0** |  |
+| `AsyncRT_DeviceContext_DtoH_async` | AppleGPURT.cpp:562 | 14 |  |
+| `AsyncRT_DeviceContext_DtoH_async_sized` | AppleGPURT.cpp:960 | **0** |  |
+| `AsyncRT_DeviceContext_HtoD_async` | AppleGPURT.cpp:542 | 14 |  |
+| `AsyncRT_DeviceContext_HtoD_async_sized` | AppleGPURT.cpp:949 | **0** |  |
+| `AsyncRT_DeviceContext_allPeerAccessEnabled` | AppleGPURT.cpp:342 | **0** |  |
+| `AsyncRT_DeviceContext_archName` | AppleGPURT.cpp:972 | **0** |  |
+| `AsyncRT_DeviceContext_canAccess` | AppleGPURT.cpp:335 | **0** |  |
+| `AsyncRT_DeviceContext_computeCapability` | AppleGPURT.cpp:254 | 21 |  |
+| `AsyncRT_DeviceContext_create` | AppleGPURT.cpp:183 | 74 |  |
+| `AsyncRT_DeviceContext_createBuffer_async` | AppleGPURT.cpp:398 | 69 |  |
+| `AsyncRT_DeviceContext_createBuffer_owning` | AppleGPURT.cpp:454 | 12 |  |
+| `AsyncRT_DeviceContext_createHostBuffer` | AppleGPURT.cpp:427 | 55 |  |
+| `AsyncRT_DeviceContext_createStream` | AppleGPURT.cpp:679 | **0** |  |
+| `AsyncRT_DeviceContext_deviceApi` | AppleGPURT.cpp:243 | 68 |  |
+| `AsyncRT_DeviceContext_deviceName` | AppleGPURT.cpp:237 | 4 |  |
+| `AsyncRT_DeviceContext_enableAllPeerAccess` | AppleGPURT.cpp:347 | **0** |  |
+| `AsyncRT_DeviceContext_enablePeerAccess` | AppleGPURT.cpp:351 | **0** |  |
+| `AsyncRT_DeviceContext_enqueueFunctionDirect` | AppleGPURT.cpp:823 | 66 |  |
+| `AsyncRT_DeviceContext_enqueue_event` | AppleGPURT.cpp:729 | **0** |  |
+| `AsyncRT_DeviceContext_enqueue_wait_for_context` | AppleGPURT.cpp:329 | **0** |  |
+| `AsyncRT_DeviceContext_eventCreate` | AppleGPURT.cpp:722 | **0** |  |
+| `AsyncRT_DeviceContext_getApiVersion` | AppleGPURT.cpp:261 | **0** |  |
+| `AsyncRT_DeviceContext_getAttribute` | AppleGPURT.cpp:267 | 11 |  |
+| `AsyncRT_DeviceContext_getMemoryInfo` | AppleGPURT.cpp:300 | **0** |  |
+| `AsyncRT_DeviceContext_id` | AppleGPURT.cpp:233 | 66 |  |
+| `AsyncRT_DeviceContext_isCompatible` | AppleGPURT.cpp:315 | 3 |  |
+| `AsyncRT_DeviceContext_loadFunction` | AppleGPURT.cpp:798 | 66 |  |
+| `AsyncRT_DeviceContext_maxSingleAllocationSize` | AppleGPURT.cpp:983 | **0** |  |
+| `AsyncRT_DeviceContext_metal_device` | AppleGPURT.cpp:879 | **0** |  |
+| `AsyncRT_DeviceContext_numStreams` | AppleGPURT.cpp:698 | **0** |  |
+| `AsyncRT_DeviceContext_numberOfDevices` | AppleGPURT.cpp:224 | **0** |  |
+| `AsyncRT_DeviceContext_release` | AppleGPURT.cpp:157 | 74 |  |
+| `AsyncRT_DeviceContext_retain` | AppleGPURT.cpp:216 | 68 |  |
+| `AsyncRT_DeviceContext_runHealthcheck` | AppleGPURT.cpp:319 | **0** |  |
+| `AsyncRT_DeviceContext_setAsCurrent` | AppleGPURT.cpp:996 | **0** |  |
+| `AsyncRT_DeviceContext_setMemory_async` | AppleGPURT.cpp:641 | 10 |  |
+| `AsyncRT_DeviceContext_startTimer` | AppleGPURT.cpp:761 | 1 |  |
+| `AsyncRT_DeviceContext_stopTimer` | AppleGPURT.cpp:770 | 1 |  |
+| `AsyncRT_DeviceContext_stream` | AppleGPURT.cpp:673 | **0** |  |
+| `AsyncRT_DeviceContext_streamPriorityRange` | AppleGPURT.cpp:689 | **0** |  |
+| `AsyncRT_DeviceContext_strfree` | AppleGPURT.cpp:175 | 74 |  |
+| `AsyncRT_DeviceContext_supportsMulticast` | AppleGPURT.cpp:357 | **0** |  |
+| `AsyncRT_DeviceContext_synchronize` | AppleGPURT.cpp:323 | 71 |  |
+| `AsyncRT_DeviceEvent_release` | AppleGPURT.cpp:753 | **0** |  |
+| `AsyncRT_DeviceEvent_retain` | AppleGPURT.cpp:1014 | **0** |  |
+| `AsyncRT_DeviceEvent_synchronize` | AppleGPURT.cpp:749 | **0** |  |
+| `AsyncRT_DeviceFunction_getAttribute` | AppleGPURT.cpp:871 | **0** |  |
+| `AsyncRT_DeviceFunction_release` | AppleGPURT.cpp:867 | 66 |  |
+| `AsyncRT_DeviceFunction_retain` | AppleGPURT.cpp:863 | **0** |  |
+| `AsyncRT_DeviceStream_eventRecord` | AppleGPURT.cpp:738 | **0** |  |
+| `AsyncRT_DeviceStream_release` | AppleGPURT.cpp:706 | **0** |  |
+| `AsyncRT_DeviceStream_retain` | AppleGPURT.cpp:702 | **0** |  |
+| `AsyncRT_DeviceStream_synchronize` | AppleGPURT.cpp:710 | **0** |  |
+| `AsyncRT_DeviceStream_waitForEvent` | AppleGPURT.cpp:744 | **0** |  |
+| `AsyncRT_DeviceTimer_release` | AppleGPURT.cpp:777 | 1 |  |
 
 ## sync-fallback (3)
 
-| symbol | where | note |
-|---|---|---|
-| `AsyncRT_DeviceContext_enqueueHostFunction` | AppleGPURT.cpp:1004 | resumes the coroutine in place, so `destroy` is unreachable |
-| `AsyncRT_DeviceContext_enqueueHostFunctionRange` | AppleGPURT.cpp:1035 | resumes each handle in order, in place |
-| `AsyncRT_DeviceStream_enqueueHostFunc` | AppleGPURT.cpp:715 | runs the callback in place; there is no queue to defer to yet |
+| symbol | where | tests | note |
+|---|---|---|---|
+| `AsyncRT_DeviceContext_enqueueHostFunction` | AppleGPURT.cpp:1004 | 1 | resumes the coroutine in place, so `destroy` is unreachable |
+| `AsyncRT_DeviceContext_enqueueHostFunctionRange` | AppleGPURT.cpp:1035 | 4 | resumes each handle in order, in place |
+| `AsyncRT_DeviceStream_enqueueHostFunc` | AppleGPURT.cpp:715 | **0** | runs the callback in place; there is no queue to defer to yet |
 
 ## silent-noop (12)
 
-| symbol | where | note |
-|---|---|---|
-| `AsyncRT_AsyncValue_release` | AppleGPURT.cpp:904 |  |
-| `AsyncRT_AsyncValue_retain` | AppleGPURT.cpp:905 |  |
-| `AsyncRT_DeviceGraphBuilder_addInPlaceInput` | AppleGPURT.cpp:920 |  |
-| `AsyncRT_DeviceGraphBuilder_addInput` | AppleGPURT.cpp:921 |  |
-| `AsyncRT_DeviceGraphBuilder_addOutput` | AppleGPURT.cpp:922 |  |
-| `AsyncRT_DeviceGraphBuilder_release` | AppleGPURT.cpp:928 |  |
-| `AsyncRT_DeviceGraphMemoryPool_release` | AppleGPURT.cpp:930 |  |
-| `AsyncRT_DeviceGraphMemoryPool_retain` | AppleGPURT.cpp:931 |  |
-| `AsyncRT_DeviceGraph_release` | AppleGPURT.cpp:933 |  |
-| `AsyncRT_DeviceGraph_retain` | AppleGPURT.cpp:934 |  |
-| `AsyncRT_DeviceMulticastBuffer_release` | AppleGPURT.cpp:940 |  |
-| `AsyncRT_DeviceMulticastBuffer_retain` | AppleGPURT.cpp:941 |  |
+| symbol | where | tests | note |
+|---|---|---|---|
+| `AsyncRT_AsyncValue_release` | AppleGPURT.cpp:904 | **0** |  |
+| `AsyncRT_AsyncValue_retain` | AppleGPURT.cpp:905 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_addInPlaceInput` | AppleGPURT.cpp:920 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_addInput` | AppleGPURT.cpp:921 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_addOutput` | AppleGPURT.cpp:922 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_release` | AppleGPURT.cpp:928 | **0** |  |
+| `AsyncRT_DeviceGraphMemoryPool_release` | AppleGPURT.cpp:930 | **0** |  |
+| `AsyncRT_DeviceGraphMemoryPool_retain` | AppleGPURT.cpp:931 | **0** |  |
+| `AsyncRT_DeviceGraph_release` | AppleGPURT.cpp:933 | **0** |  |
+| `AsyncRT_DeviceGraph_retain` | AppleGPURT.cpp:934 | **0** |  |
+| `AsyncRT_DeviceMulticastBuffer_release` | AppleGPURT.cpp:940 | **0** |  |
+| `AsyncRT_DeviceMulticastBuffer_retain` | AppleGPURT.cpp:941 | **0** |  |
 
 ## silent-zero (8)
 
-| symbol | where | note |
-|---|---|---|
-| `AsyncRT_AsyncValue_createFromDeviceBuffer` | AppleGPURT.cpp:901 |  |
-| `AsyncRT_AsyncValue_retainBufferStorage` | AppleGPURT.cpp:902 |  |
-| `AsyncRT_AsyncValue_retainHandle` | AppleGPURT.cpp:903 |  |
-| `AsyncRT_CompletionFlag_devicePtr` | AppleGPURT.cpp:908 |  |
-| `AsyncRT_DeviceContext_createGraphMemoryPool` | AppleGPURT.cpp:913 |  |
-| `AsyncRT_DeviceGraphBuilder_lastNodeIdOrNone` | AppleGPURT.cpp:924 |  |
-| `AsyncRT_DeviceGraphBuilder_numInputs` | AppleGPURT.cpp:925 |  |
-| `AsyncRT_DeviceGraphBuilder_numOutputs` | AppleGPURT.cpp:926 |  |
+| symbol | where | tests | note |
+|---|---|---|---|
+| `AsyncRT_AsyncValue_createFromDeviceBuffer` | AppleGPURT.cpp:901 | **0** |  |
+| `AsyncRT_AsyncValue_retainBufferStorage` | AppleGPURT.cpp:902 | **0** |  |
+| `AsyncRT_AsyncValue_retainHandle` | AppleGPURT.cpp:903 | **0** |  |
+| `AsyncRT_CompletionFlag_devicePtr` | AppleGPURT.cpp:908 | **0** |  |
+| `AsyncRT_DeviceContext_createGraphMemoryPool` | AppleGPURT.cpp:913 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_lastNodeIdOrNone` | AppleGPURT.cpp:924 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_numInputs` | AppleGPURT.cpp:925 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_numOutputs` | AppleGPURT.cpp:926 | **0** |  |
 
 ## error (35)
 
-| symbol | where | note |
-|---|---|---|
-| `AsyncRT_AndThen` | AppleGPURT.cpp:906 |  |
-| `AsyncRT_DeviceContext_createExternalStream` | AppleGPURT.cpp:898 |  |
-| `AsyncRT_DeviceContext_createGraphBuilder` | AppleGPURT.cpp:911 |  |
-| `AsyncRT_DeviceContext_createGraphBuilderWithPool` | AppleGPURT.cpp:912 |  |
-| `AsyncRT_DeviceContext_cuda_context` | AppleGPURT.cpp:891 |  |
-| `AsyncRT_DeviceContext_cuda_current_context` | AppleGPURT.cpp:892 |  |
-| `AsyncRT_DeviceContext_hip_device` | AppleGPURT.cpp:893 |  |
-| `AsyncRT_DeviceContext_selectStream` | AppleGPURT.cpp:886 |  |
-| `AsyncRT_DeviceContext_setMetalPrintEnabled` | AppleGPURT.cpp:1047 |  |
-| `AsyncRT_DeviceContext_startMetalTraceCapture` | AppleGPURT.cpp:1048 |  |
-| `AsyncRT_DeviceContext_stopMetalTraceCapture` | AppleGPURT.cpp:1049 |  |
-| `AsyncRT_DeviceFunction_copyToConstantMemory` | AppleGPURT.cpp:887 |  |
-| `AsyncRT_DeviceFunction_cuda_module` | AppleGPURT.cpp:894 |  |
-| `AsyncRT_DeviceFunction_hip_module` | AppleGPURT.cpp:895 |  |
-| `AsyncRT_DeviceGraphBuilder_addCopyDeviceToDevice` | AppleGPURT.cpp:914 |  |
-| `AsyncRT_DeviceGraphBuilder_addCopyDeviceToHost` | AppleGPURT.cpp:915 |  |
-| `AsyncRT_DeviceGraphBuilder_addCopyHostToDevice` | AppleGPURT.cpp:916 |  |
-| `AsyncRT_DeviceGraphBuilder_addEmpty` | AppleGPURT.cpp:917 |  |
-| `AsyncRT_DeviceGraphBuilder_addFunction` | AppleGPURT.cpp:918 |  |
-| `AsyncRT_DeviceGraphBuilder_addFunctionDirect` | AppleGPURT.cpp:1050 |  |
-| `AsyncRT_DeviceGraphBuilder_addSetMemory` | AppleGPURT.cpp:919 |  |
-| `AsyncRT_DeviceGraphBuilder_instantiate` | AppleGPURT.cpp:923 |  |
-| `AsyncRT_DeviceGraphBuilder_recordingContext` | AppleGPURT.cpp:927 |  |
-| `AsyncRT_DeviceGraph_createBuffer` | AppleGPURT.cpp:929 |  |
-| `AsyncRT_DeviceGraph_replay` | AppleGPURT.cpp:932 |  |
-| `AsyncRT_DeviceMulticastBuffer_allocate` | AppleGPURT.cpp:937 |  |
-| `AsyncRT_DeviceMulticastBuffer_multicastBufferFor` | AppleGPURT.cpp:938 |  |
-| `AsyncRT_DeviceMulticastBuffer_unicastBufferFor` | AppleGPURT.cpp:939 |  |
-| `AsyncRT_DeviceStream_cuda_stream` | AppleGPURT.cpp:896 |  |
-| `AsyncRT_DeviceStream_enqueueFunctionDirect` | AppleGPURT.cpp:1051 |  |
-| `AsyncRT_DeviceStream_enqueueWaitOnHostValue` | AppleGPURT.cpp:907 |  |
-| `AsyncRT_DeviceStream_hip_stream` | AppleGPURT.cpp:897 |  |
-| `AsyncRT_cuda_tensorMapEncodeIm` | AppleGPURT.cpp:1053 |  |
-| `AsyncRT_cuda_tensorMapEncodeTiled` | AppleGPURT.cpp:1052 |  |
-| `AsyncRT_occupancyMaxActiveBlocksPerMultiprocessor` | AppleGPURT.cpp:888 |  |
+| symbol | where | tests | note |
+|---|---|---|---|
+| `AsyncRT_AndThen` | AppleGPURT.cpp:906 | **0** |  |
+| `AsyncRT_DeviceContext_createExternalStream` | AppleGPURT.cpp:898 | **0** |  |
+| `AsyncRT_DeviceContext_createGraphBuilder` | AppleGPURT.cpp:911 | **0** |  |
+| `AsyncRT_DeviceContext_createGraphBuilderWithPool` | AppleGPURT.cpp:912 | **0** |  |
+| `AsyncRT_DeviceContext_cuda_context` | AppleGPURT.cpp:891 | **0** |  |
+| `AsyncRT_DeviceContext_cuda_current_context` | AppleGPURT.cpp:892 | **0** |  |
+| `AsyncRT_DeviceContext_hip_device` | AppleGPURT.cpp:893 | **0** |  |
+| `AsyncRT_DeviceContext_selectStream` | AppleGPURT.cpp:886 | **0** |  |
+| `AsyncRT_DeviceContext_setMetalPrintEnabled` | AppleGPURT.cpp:1047 | **0** |  |
+| `AsyncRT_DeviceContext_startMetalTraceCapture` | AppleGPURT.cpp:1048 | **0** |  |
+| `AsyncRT_DeviceContext_stopMetalTraceCapture` | AppleGPURT.cpp:1049 | **0** |  |
+| `AsyncRT_DeviceFunction_copyToConstantMemory` | AppleGPURT.cpp:887 | **0** |  |
+| `AsyncRT_DeviceFunction_cuda_module` | AppleGPURT.cpp:894 | **0** |  |
+| `AsyncRT_DeviceFunction_hip_module` | AppleGPURT.cpp:895 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_addCopyDeviceToDevice` | AppleGPURT.cpp:914 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_addCopyDeviceToHost` | AppleGPURT.cpp:915 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_addCopyHostToDevice` | AppleGPURT.cpp:916 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_addEmpty` | AppleGPURT.cpp:917 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_addFunction` | AppleGPURT.cpp:918 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_addFunctionDirect` | AppleGPURT.cpp:1050 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_addSetMemory` | AppleGPURT.cpp:919 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_instantiate` | AppleGPURT.cpp:923 | **0** |  |
+| `AsyncRT_DeviceGraphBuilder_recordingContext` | AppleGPURT.cpp:927 | **0** |  |
+| `AsyncRT_DeviceGraph_createBuffer` | AppleGPURT.cpp:929 | **0** |  |
+| `AsyncRT_DeviceGraph_replay` | AppleGPURT.cpp:932 | **0** |  |
+| `AsyncRT_DeviceMulticastBuffer_allocate` | AppleGPURT.cpp:937 | **0** |  |
+| `AsyncRT_DeviceMulticastBuffer_multicastBufferFor` | AppleGPURT.cpp:938 | **0** |  |
+| `AsyncRT_DeviceMulticastBuffer_unicastBufferFor` | AppleGPURT.cpp:939 | **0** |  |
+| `AsyncRT_DeviceStream_cuda_stream` | AppleGPURT.cpp:896 | **0** |  |
+| `AsyncRT_DeviceStream_enqueueFunctionDirect` | AppleGPURT.cpp:1051 | **0** |  |
+| `AsyncRT_DeviceStream_enqueueWaitOnHostValue` | AppleGPURT.cpp:907 | **0** |  |
+| `AsyncRT_DeviceStream_hip_stream` | AppleGPURT.cpp:897 | **0** |  |
+| `AsyncRT_cuda_tensorMapEncodeIm2col` | AppleGPURT.cpp:1053 | **0** |  |
+| `AsyncRT_cuda_tensorMapEncodeTiled` | AppleGPURT.cpp:1052 | **0** |  |
+| `AsyncRT_occupancyMaxActiveBlocksPerMultiprocessor` | AppleGPURT.cpp:888 | **0** |  |
 
