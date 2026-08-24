@@ -79,8 +79,6 @@ def matmul_sram(
     var result = Float32(0.0)
 
     var K_roundbytile = align_down(K, tile_size)
-    # Can't use 0 as tile size so set to 1 when the remainder is 0.
-    var K_remainder = K - K_roundbytile if K - K_roundbytile > 0 else 1
 
     @always_inline
     def update_tile[
@@ -138,8 +136,19 @@ def matmul_sram(
 
         barrier()
 
+    # Only the workgroup tile size. Passing K_remainder as a second tile size
+    # is what stops the residue path ever running: for K=511 the 31-wide tile
+    # consumes the tail with full_tile=True, so update_tile[False] and its
+    # bounds checks are dead code. Worse, that final call carries tile_size=31
+    # while the workgroup is still 32x32, so a_shared is indexed
+    # localRow*31 + localCol -- (r,31) aliases (r+1,0) -- and lane 31 loads
+    # a[row][K] with no bound check at all.
+    #
+    # With one tile size the tail becomes a genuine residue call, i.e.
+    # update_tile[False] at offset 480 with tile_size=32: the shared layout
+    # stays 32-wide and the out-of-range lanes zero-fill.
     tile_and_unswitch(
-        0, K, tile_size, K_remainder, workgroup_function=update_tile
+        0, K, tile_size, workgroup_function=update_tile
     )
 
     if row < M and col < N:
