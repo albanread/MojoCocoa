@@ -42,6 +42,7 @@
 #include "KGEN/Compiler/SaveAsmOutput.h"
 #include "KGEN/ToolCommon/CompilationOptions.h"
 #include "AirLegality.h"
+#include "Target/Air/AirTargetProfile.h"
 #include "LLVM/Bitcode/17/BitcodeWriter17.h"
 #include "LLVM/Transforms/LLVMIRDowngradePass.h"
 #include "LLVM/Transforms/PointerRewriter.h"
@@ -92,7 +93,9 @@ namespace {
 // "air64-apple-macosx" that std/gpu/host/info.mojo carries -- that is the
 // KGEN target attribute, not what the Metal frontend stamps into a module.
 // (The fork pinned air64-apple-macosx14.2.0 from Xcode 15.2 / AIR 2.6.)
-constexpr const char *kAirTriple = "air64_v28-apple-macosx26.0.0";
+// The literal that used to live here is now AirTargetProfile.h::kMetal4.
+// Deriving the triple from the profile is what keeps `_v28` and
+// air.version from drifting apart -- they encode the same number.
 
 //===----------------------------------------------------------------------===//
 // Builtin shims: the stdlib emits calls to functions named
@@ -1418,9 +1421,40 @@ void inlineInternalHelpers(llvm::Module &m) {
 }
 
 llvm::Error legalizeModule(llvm::Module &m) {
+  // Resolve the target profile FIRST. The triple and every version stamp are
+  // derived from it, and scrub() later strips `target-cpu`, which is where the
+  // frontend leaves the selected arch (`metal:4` is normalised to `apple-m4`
+  // upstream, so what arrives here is always the family form).
+  llvm::StringRef arch;
+  for (llvm::Function &fn : m)
+    if (!fn.isDeclaration()) {
+      arch = fn.getFnAttribute("target-cpu").getValueAsString();
+      break;
+    }
+  bool unverifiedProfile = false;
+  std::optional<Air::TargetProfile> profileOr =
+      Air::profileForArch(arch, unverifiedProfile);
+  if (!profileOr)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "no Apple AIR target profile for arch '%s'; expected apple-m1..apple-m5, "
+        "optionally suffixed with a language profile (e.g. apple-m4-metal4)",
+        arch.str().c_str());
+  if (unverifiedProfile)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "AIR language profile '%s' has never been checked against a golden "
+        "sample from an installed toolchain, so its SDK and deployment "
+        "versions would be invented. Sample one with `xcrun metal -S "
+        "-emit-llvm` and fill in AirTargetProfile.h before selecting it",
+        profileOr->lang.name.str().c_str());
+  const Air::TargetProfile &profile = *profileOr;
+  if (::getenv("APPLEGPU_TRACE_PROFILE"))
+    llvm::errs() << "[air-profile] " << profile.describe() << "\n";
+
   inlineInternalHelpers(m);
   llvm::LLVMContext &c = m.getContext();
-  m.setTargetTriple(llvm::Triple(kAirTriple));
+  m.setTargetTriple(llvm::Triple(profile.triple()));
   lowerVectorFMA(m);
   lowerMaskBitcasts(m);
   // Table-driven transforms, all off by default (APPLEGPU_AIR_XFORMS).
@@ -1504,12 +1538,16 @@ llvm::Error legalizeModule(llvm::Module &m) {
     addFlag("wchar_size", 4, llvm::Module::Error);
   if (!m.getModuleFlag("frame-pointer"))
     addFlag("frame-pointer", 2, llvm::Module::Max);
-  addFlag("air.max_device_buffers", 31, llvm::Module::Max);
-  addFlag("air.max_constant_buffers", 31, llvm::Module::Max);
-  addFlag("air.max_threadgroup_buffers", 31, llvm::Module::Max);
-  addFlag("air.max_textures", 128, llvm::Module::Max);
-  addFlag("air.max_read_write_textures", 8, llvm::Module::Max);
-  addFlag("air.max_samplers", 16, llvm::Module::Max);
+  addFlag("air.max_device_buffers", profile.limits.deviceBuffers,
+            llvm::Module::Max);
+    addFlag("air.max_constant_buffers", profile.limits.constantBuffers,
+            llvm::Module::Max);
+    addFlag("air.max_threadgroup_buffers", profile.limits.threadgroupBuffers,
+            llvm::Module::Max);
+    addFlag("air.max_textures", profile.limits.textures, llvm::Module::Max);
+    addFlag("air.max_read_write_textures", profile.limits.readWriteTextures,
+            llvm::Module::Max);
+    addFlag("air.max_samplers", profile.limits.samplers, llvm::Module::Max);
   if (!m.getModuleFlag("SDK Version")) {
     // Was {14, 2} for the fork's pinned Xcode 15.2. TODO: derive from the SDK
     // actually in use rather than pinning (`xcrun --show-sdk-version` reports
@@ -1532,9 +1570,13 @@ llvm::Error legalizeModule(llvm::Module &m) {
   // wrong -- the Metal toolchain installed here
   // ("Apple metal version 32023.830") emits 2.8/4.0, and the triple above
   // agrees (`air64_v28`). Re-derive all three together after an Xcode update.
-  setVersionMD("air.version", {mdI32(c, 2), mdI32(c, 8), mdI32(c, 0)});
+  setVersionMD("air.version", {mdI32(c, profile.lang.airMajor),
+                               mdI32(c, profile.lang.airMinor),
+                               mdI32(c, profile.lang.airPatch)});
   setVersionMD("air.language_version",
-               {mdStr(c, "Metal"), mdI32(c, 4), mdI32(c, 0), mdI32(c, 0)});
+               {mdStr(c, "Metal"), mdI32(c, profile.lang.metalMajor),
+                mdI32(c, profile.lang.metalMinor),
+                mdI32(c, profile.lang.metalPatch)});
   setVersionMD("air.compile_options",
                {mdStr(c, "air.compile.denorms_disable")});
   setVersionMD("air.source_file_name", {mdStr(c, "mojo-kernel")});

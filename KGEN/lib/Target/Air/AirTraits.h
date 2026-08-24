@@ -13,6 +13,8 @@
 
 #include "Target/TargetTraits.h"
 
+#include "Target/Air/AirTargetProfile.h"
+
 #include "llvm/TargetParser/Triple.h"
 
 namespace M::KGEN {
@@ -32,13 +34,19 @@ struct AirTraits final : TargetTraits {
   /// targets use ARM64 during compilation" convention. The bazel-built LLVM
   /// carries the AArch64 backend.
   std::string codegenTriple(llvm::StringRef triple) const override {
-    return "arm64-apple-macosx14.2.0";
+    // Derived from the default language profile, not written out again. The
+    // literal that used to sit here said macosx14.2.0 -- left over from the
+    // x86-64 fork's pinned Xcode 15.2, and quietly contradicting the AIR
+    // triple's macosx26.0.0 for as long as both existed.
+    return Air::TargetProfile{"apple-m4", Air::kMetal4}.codegenTriple();
   }
 
   /// The hardware-verified AIR profile is LLVM-17-encoded bitcode. Verified
   /// against Xcode 15.2 on the x86-64 fork; re-verify against the Xcode in use
   /// here before trusting it (AIR_APPLE_SILICON.md §5).
-  unsigned forcedBitcodeVersion() const override { return 17; }
+  unsigned forcedBitcodeVersion() const override {
+    return Air::kMetal4.bitcodeVersion;
+  }
 
   llvm::StringRef acceleratorSectionTitle() const override {
     return "Apple Metal";
