@@ -326,6 +326,130 @@ void expandStepVector(llvm::Module &module) {
     for (llvm::Function *fn : deadDecls)
       fn->eraseFromParent();
 }
+// Expand llvm.vector.reduce.* into explicit element-wise operations.
+//
+// AIR has never heard of these. They arrive from ordinary Mojo -- a
+// `comptime for` summing a SIMD vector becomes llvm.vector.reduce.fadd once
+// the optimiser recognises the pattern -- and then behave exactly like
+// llvm.stepvector and llvm.vector.interleave2 did: metallib accepts the
+// module, air-opt is silent, and the Metal compiler service dies at pipeline
+// creation with XPC_ERROR_CONNECTION_INTERRUPTED, naming nothing.
+//
+// Found by the pure-FMA benchmark, which failed at 4 and 8 chains while 1, 2,
+// 16 and 32 passed -- the optimiser only forms the reduction at some widths,
+// which is why this had gone unnoticed. The unresolved-external firewall named
+// llvm.vector.reduce.fadd.v4f32 and .v8f32 at compile time.
+//
+// fadd and fmul are ORDERED: the intrinsic takes a start value and the result
+// is (((start op v[0]) op v[1]) ...). Emitting a tree instead would be a
+// different answer in floating point, so the sequential form is used unless
+// the call carries `reassoc`, and even then sequential is a legal choice.
+void expandVectorReduce(llvm::Module &module) {
+  llvm::SmallVector<llvm::CallInst *, 8> dead;
+  for (llvm::Function &fn : module)
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb) {
+        auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+        if (!call || !call->getCalledFunction())
+          continue;
+        llvm::Intrinsic::ID id = call->getCalledFunction()->getIntrinsicID();
+
+        // Which operand is the vector, and is there a start value?
+        bool ordered = id == llvm::Intrinsic::vector_reduce_fadd ||
+                       id == llvm::Intrinsic::vector_reduce_fmul;
+        unsigned vecArg = ordered ? 1 : 0;
+        bool known =
+            ordered || id == llvm::Intrinsic::vector_reduce_add ||
+            id == llvm::Intrinsic::vector_reduce_mul ||
+            id == llvm::Intrinsic::vector_reduce_and ||
+            id == llvm::Intrinsic::vector_reduce_or ||
+            id == llvm::Intrinsic::vector_reduce_xor ||
+            id == llvm::Intrinsic::vector_reduce_smax ||
+            id == llvm::Intrinsic::vector_reduce_smin ||
+            id == llvm::Intrinsic::vector_reduce_umax ||
+            id == llvm::Intrinsic::vector_reduce_umin ||
+            id == llvm::Intrinsic::vector_reduce_fmax ||
+            id == llvm::Intrinsic::vector_reduce_fmin;
+        if (!known)
+          continue;
+        auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(
+            call->getArgOperand(vecArg)->getType());
+        if (!vt)
+          continue; // scalable: no fixed element count to unroll to
+
+        llvm::IRBuilder<> b(call);
+        b.setFastMathFlags(call->getFastMathFlags());
+        llvm::Value *vec = call->getArgOperand(vecArg);
+        unsigned n = vt->getNumElements();
+
+        llvm::Value *acc = ordered ? call->getArgOperand(0)
+                                   : b.CreateExtractElement(vec, uint64_t(0));
+        for (unsigned e = ordered ? 0 : 1; e != n; ++e) {
+          llvm::Value *x = b.CreateExtractElement(vec, e);
+          switch (id) {
+          case llvm::Intrinsic::vector_reduce_fadd:
+            acc = b.CreateFAdd(acc, x);
+            break;
+          case llvm::Intrinsic::vector_reduce_fmul:
+            acc = b.CreateFMul(acc, x);
+            break;
+          case llvm::Intrinsic::vector_reduce_add:
+            acc = b.CreateAdd(acc, x);
+            break;
+          case llvm::Intrinsic::vector_reduce_mul:
+            acc = b.CreateMul(acc, x);
+            break;
+          case llvm::Intrinsic::vector_reduce_and:
+            acc = b.CreateAnd(acc, x);
+            break;
+          case llvm::Intrinsic::vector_reduce_or:
+            acc = b.CreateOr(acc, x);
+            break;
+          case llvm::Intrinsic::vector_reduce_xor:
+            acc = b.CreateXor(acc, x);
+            break;
+          case llvm::Intrinsic::vector_reduce_smax:
+            acc = b.CreateSelect(b.CreateICmpSGT(acc, x), acc, x);
+            break;
+          case llvm::Intrinsic::vector_reduce_smin:
+            acc = b.CreateSelect(b.CreateICmpSLT(acc, x), acc, x);
+            break;
+          case llvm::Intrinsic::vector_reduce_umax:
+            acc = b.CreateSelect(b.CreateICmpUGT(acc, x), acc, x);
+            break;
+          case llvm::Intrinsic::vector_reduce_umin:
+            acc = b.CreateSelect(b.CreateICmpULT(acc, x), acc, x);
+            break;
+          // AIR's fmax/fmin DROP NaN, and so does an ordered select chain, so
+          // this matches llvm.maxnum/minnum semantics rather than
+          // maximum/minimum. That is what the reduce intrinsic specifies.
+          case llvm::Intrinsic::vector_reduce_fmax:
+            acc = b.CreateSelect(b.CreateFCmpOGT(acc, x), acc, x);
+            break;
+          case llvm::Intrinsic::vector_reduce_fmin:
+            acc = b.CreateSelect(b.CreateFCmpOLT(acc, x), acc, x);
+            break;
+          default:
+            break;
+          }
+        }
+        call->replaceAllUsesWith(acc);
+        dead.push_back(call);
+      }
+  for (llvm::CallInst *call : dead)
+    call->eraseFromParent();
+
+  // Sweep the stranded declarations: a dead declare is resolved too.
+  llvm::SmallVector<llvm::Function *, 8> deadDecls;
+  for (llvm::Function &fn : module)
+    if (fn.isDeclaration() && fn.use_empty() &&
+        fn.getName().starts_with("llvm.vector.reduce."))
+      deadDecls.push_back(&fn);
+  for (llvm::Function *fn : deadDecls)
+    fn->eraseFromParent();
+}
+
+
 
 // Expand llvm.vector.interleave2 / deinterleave2 into shufflevector.
 //
@@ -421,6 +545,7 @@ void downgradeModernConstructs(llvm::Module &module) {
   stripTooNewAttributes(module);
   expandStepVector(module);
   expandVectorInterleave(module);
+  expandVectorReduce(module);
   for (llvm::Function &fn : module) {
     for (llvm::BasicBlock &bb : fn) {
       for (llvm::Instruction &inst : llvm::make_early_inc_range(bb)) {
