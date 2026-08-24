@@ -255,6 +255,39 @@ public:
       rewriter.setInsertionPointToStart(module.getBody());
       fn = mlir::LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), symName,
                                           fnType);
+      // Cross-lane and barrier ops must be `convergent` HERE, at creation,
+      // not when the AIR module is finally legalised.
+      //
+      // A barrier only means anything if the whole threadgroup reaches the
+      // same one. LLVM will happily clone a call it believes is ordinary --
+      // loop unswitching duplicates the loop body per specialised predicate,
+      // and if that predicate is per-lane (`col < N` on a ragged tile edge)
+      // the lanes end up at DIFFERENT barrier instances and the threadgroup
+      // never synchronises. `convergent` is what tells the unswitcher to
+      // leave the loop alone.
+      //
+      // Setting it in the object backend, as AirBackend::applyAirCallAttributes
+      // does, is far too late: by then the optimiser has already run and the
+      // barrier has already been cloned. The attribute on the final module is
+      // then correct and useless. Measured on test_matmul_1_sram -- 2 barriers
+      // in source became 8 in the emitted AIR, in blocks carrying LLVM's `.us`
+      // unswitch suffix, and the kernel read a threadgroup tile that only 22
+      // of its 32 lanes had written.
+      //
+      // Which families need it is measured from `xcrun metal -S -emit-llvm`:
+      // barriers and cross-lane ops carry `convergent mustprogress nounwind
+      // willreturn`; plain math does NOT. Memory effects are deliberately
+      // omitted -- `readnone`'s modern spelling is one the AIR reader
+      // predates.
+      llvm::StringRef stem = fnName;
+      if (stem == "air.wg.barrier" || stem == "air.simdgroup.barrier" ||
+          stem.starts_with("air.simd_") || stem.starts_with("air.quad_") ||
+          stem.starts_with("air.simdgroup_matrix_")) {
+        fn.setPassthroughAttr(rewriter.getArrayAttr(
+            {rewriter.getStringAttr("convergent"),
+             rewriter.getStringAttr("nounwind"),
+             rewriter.getStringAttr("willreturn")}));
+      }
       symtab.insert(fn); // single-threaded pass: safe by construction
     }
     rewriter.replaceOpWithNewOp<mlir::LLVM::CallOp>(op, fn, operands);
