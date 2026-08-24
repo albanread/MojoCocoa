@@ -183,6 +183,17 @@ struct AGMetalFunc {
   std::string name;
   int32_t maxDynamicSharedBytes = -1;
   std::vector<AGMetalArgSlot> argSlots; // indexed by buffer index
+  /// True when this came from an MTLB container, i.e. a metallib THIS
+  /// compiler produced. False for MSL source compiled at load time.
+  ///
+  /// The distinction decides whether reflection can be trusted as the
+  /// argument contract. Our kernels declare device parameters with an opaque
+  /// pointee, so Metal reports bufferDataType == MTLDataTypeNone and that
+  /// cleanly identifies a device buffer. An MSL kernel declares
+  /// `device float*`, so Metal reports Float/4 and the same test would call
+  /// it a constant. Same reflection API, opposite meaning, and no way to tell
+  /// which you are looking at without knowing where the function came from.
+  bool generated = false;
 };
 
 namespace {
@@ -763,7 +774,8 @@ const char *AppleGPUMetal_loadFunction(AGMetalFunc **out, AGMetalCtx *ctx,
                                      int32_t maxDynamicSharedBytes) {
   id library = nullptr;
   id nserr = nullptr;
-  if (dataLen >= 4 && memcmp(data, "MTLB", 4) == 0) {
+  const bool generated = dataLen >= 4 && memcmp(data, "MTLB", 4) == 0;
+  if (generated) {
     dispatch_data_t dd = dispatch_data_create(data, dataLen, nullptr,
                                               DISPATCH_DATA_DESTRUCTOR_DEFAULT);
     library = msg<id>(ctx->device, "newLibraryWithData:error:", dd, &nserr);
@@ -823,6 +835,7 @@ const char *AppleGPUMetal_loadFunction(AGMetalFunc **out, AGMetalCtx *ctx,
   fn->function = function;
   fn->pipeline = pipeline;
   fn->name = functionName;
+  fn->generated = generated;
   fn->maxDynamicSharedBytes = maxDynamicSharedBytes;
 
   // Record the contract. Reflection is best-effort: if it is unavailable the
@@ -959,7 +972,36 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
     // (captures, flagged false but genuinely device pointers), so the rule is
     // "device if EITHER source says so".
     const bool flaggedDev = argIsDevicePtr && argIsDevicePtr[i];
-    if (slot) {
+    if (fn->generated) {
+      // Compiler-generated metallib: reflection IS the contract.
+      //
+      // Every slot must be known. A generated kernel whose reflection does not
+      // describe an index the caller is binding means the compiler and the
+      // driver disagree about the signature, and guessing which is right is
+      // how a scalar gets bound as a buffer.
+      if (!slot) {
+        msg<void>(enc, "endEncoding");
+        return agmErrorf(
+            "AppleGPURT[metal]: '%s' is a compiler-generated kernel but "
+            "pipeline reflection describes no argument at index %u, while the "
+            "host is binding %u. The compiler's signature and the driver's "
+            "reflected contract disagree.",
+            fn->name.c_str(), i, argc);
+      }
+      // Caller flags are CHECKED against reflection, never allowed to
+      // override it. A flag that disagrees is a real contract mismatch and
+      // worth saying so, but the kernel's own declaration wins.
+      isDev = slot->deviceBuffer;
+      if (argIsDevicePtr && flaggedDev != isDev)
+        fprintf(stderr,
+                "[applegpu] '%s' arg %u: caller says %s, reflection says %s; "
+                "using reflection\n",
+                fn->name.c_str(), i, flaggedDev ? "device" : "constant",
+                isDev ? "device" : "constant");
+    } else if (slot) {
+      // Raw MSL, with reflection available but not decisive: the
+      // MTLDataTypeNone discriminator does not identify a device buffer here,
+      // so either source saying "device" is taken at its word.
       isDev = slot->deviceBuffer || flaggedDev;
       // A constant parameter must be handed exactly the bytes it declares.
       // If the two ever disagree neither binding is right and the kernel
