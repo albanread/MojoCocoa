@@ -1644,8 +1644,39 @@ struct ConvertPOPCallLLVMIntrinsic
     }
 
     // just emit regular LLVM intrinsic call.
+    // Give non-LLVM "intrinsics" a per-signature symbol.
+    //
+    // `llvm.air.*` names are ours, not LLVM's, so they get none of the
+    // per-overload mangling that turns llvm.fma into llvm.fma.v4f32. Every
+    // operand combination therefore resolves to ONE declaration: whichever
+    // signature is translated first wins, and the next call with different
+    // operand types asserts inside MLIR's LLVM translation with "Calling a
+    // function with a bad signature!" -- a hard compiler crash, in a stack
+    // that names no user code.
+    //
+    // Fixing that at each call site means tagging every intrinsic in the
+    // stdlib by hand and getting the full operand cross-product right each
+    // time; doing it here covers the class once. The suffix only has to be
+    // unique -- the AIR backend strips everything from '$' when it derives the
+    // real air.* name from the operand types.
+    StringAttr intrin = cast<StringAttr>(op.getIntrin());
+    if (intrin.getValue().starts_with("llvm.air.")) {
+      std::string tag;
+      llvm::raw_string_ostream os(tag);
+      os << intrin.getValue() << "$";
+      for (Type t : types)
+        os << t << '.';
+      for (Type t : op.getOperands().getTypes())
+        os << t << '.';
+      // MLIR type printing contains characters a symbol name cannot carry.
+      for (char &c : tag)
+        if (!llvm::isAlnum(c) && c != '.' && c != '_' && c != '$')
+          c = '_';
+      intrin = rewriter.getStringAttr(tag);
+    }
+
     rewriter.replaceOpWithNewOp<LLVM::CallIntrinsicOp>(
-        op, types, cast<StringAttr>(op.getIntrin()),
+        op, types, intrin,
         expandOperands(rewriter, op.getLoc(), adaptor.getOperands(),
                        op.getOperands().getTypes(), *getTypeConverter()),
         convertFastmathFlags(op.getFastmathFlags(), rewriter));
