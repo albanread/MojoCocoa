@@ -213,6 +213,35 @@ public:
                   "pipeline creation rather than failing here";
       fnName += *suffix;
     }
+    // Make the SYMBOL unique per signature, whatever the AIR name will be.
+    //
+    // The suffixing above covers the families that carry a type suffix, but
+    // the MMA family and the builtins deliberately stay bare -- and a bare
+    // stem is exactly what collides. `air.simdgroup_matrix_8x8_multiply_
+    // accumulate` is one symbol for every (a, b) dtype pair, so the first
+    // signature translated wins and the next call asserts inside MLIR's
+    // LLVM translation with "Calling a function with a bad signature!", a
+    // hard compiler crash whose stack names no user code.
+    //
+    // Uniquing here rather than at each call site fixes the class once:
+    // there is no list of intrinsics to keep in sync and no operand
+    // cross-product to enumerate. The tag only has to be UNIQUE, never
+    // correct -- AirBackend::airStem drops everything from '$' before
+    // parseBuiltinShim matches a builtin stem or mangleAirOps derives the
+    // real air.* name from the operand types.
+    {
+      std::string tag;
+      llvm::raw_string_ostream os(tag);
+      os << fnName << '$' << resType;
+      for (mlir::Type t : argTypes)
+        os << '.' << t;
+      // MLIR type syntax carries characters a symbol name cannot.
+      for (char &c : tag)
+        if (!llvm::isAlnum(c) && c != '.' && c != '_' && c != '$')
+          c = '_';
+      fnName = tag;
+    }
+
     auto fn = symtab.lookup<mlir::LLVM::LLVMFuncOp>(fnName);
     if (!fn) {
       auto module = llvm::cast<mlir::ModuleOp>(symtab.getOp());

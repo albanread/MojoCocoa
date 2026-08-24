@@ -118,10 +118,26 @@ constexpr BuiltinKind kBuiltins[] = {
     {"thread_index_in_threadgroup", "air.thread_index_in_threadgroup"},
 };
 
+// Drop the per-signature tag LowerPOPToLLVM appends to `llvm.air.*` names.
+//
+// Those names are ours, not LLVM's, so they get none of the per-overload
+// mangling that turns llvm.fma into llvm.fma.v4f32: every operand combination
+// would otherwise resolve to ONE declaration, and the second signature
+// asserts ("Calling a function with a bad signature!") during MLIR->LLVM
+// translation -- a hard compiler crash in a stack naming no user code.
+// ConvertPOPCallLLVMIntrinsic makes the symbol unique by appending
+// `$<types>`. Nothing downstream wants to see that: the real air.* name is
+// derived from the operand types here, so the tag only ever had to be
+// unique, never correct.
+llvm::StringRef airStem(llvm::StringRef name) {
+  return name.take_front(name.find('$'));
+}
+
 // Parses "llvm.air.<base>[.<dim>]" into (kind, dim). dim: x=0,y=1,z=2, or
 // nullopt for scalar builtins used undimensioned.
 std::optional<std::pair<const BuiltinKind *, std::optional<unsigned>>>
 parseBuiltinShim(llvm::StringRef name) {
+  name = airStem(name); // before the .x/.y/.z test -- the tag would hide it
   name.consume_front("llvm."); // pre-lowering spelling
   if (!name.consume_front("air."))
     return std::nullopt;
@@ -1070,12 +1086,12 @@ void mangleAirOps(llvm::Module &m) {
       for (llvm::Instruction &inst : bb)
         if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
           if (llvm::Function *callee = call->getCalledFunction())
-            if (needsAirTypeSuffix(callee->getName()) ||
-                isSimdgroupMatrixMMA(callee->getName()))
+            if (needsAirTypeSuffix(airStem(callee->getName())) ||
+                isSimdgroupMatrixMMA(airStem(callee->getName())))
               calls.push_back(call);
   for (llvm::CallInst *call : calls) {
     std::optional<std::string> suffix;
-    if (isSimdgroupMatrixMMA(call->getCalledFunction()->getName())) {
+    if (isSimdgroupMatrixMMA(airStem(call->getCalledFunction()->getName()))) {
       suffix = simdgroupMatrixSuffix(call);
     } else {
       llvm::Type *keyTy = call->arg_size() ? call->getArgOperand(0)->getType()
@@ -1084,16 +1100,9 @@ void mangleAirOps(llvm::Module &m) {
     }
     if (!suffix)
       continue; // leaves the bare stem; fails loudly with a clear label
-    // Take the stem only. The frontend appends a per-dtype disambiguator to
-    // the MMA name (see mma_apple.mojo) because `llvm.air.*` gets no overload
-    // mangling of its own; the real air.* name is derived from the operand
-    // types here, so anything past the stem has to come off first.
-    llvm::StringRef rawName = call->getCalledFunction()->getName();
-    llvm::StringRef stem = rawName;
-    if (size_t at = rawName.find("multiply_accumulate");
-        at != llvm::StringRef::npos)
-      stem = rawName.take_front(at + sizeof("multiply_accumulate") - 1);
-    std::string mangled = (stem + *suffix).str();
+    // The tag comes off before the real suffix goes on.
+    std::string mangled =
+        (airStem(call->getCalledFunction()->getName()) + *suffix).str();
     llvm::FunctionCallee target = m.getOrInsertFunction(
         mangled, call->getFunctionType());
     // Match Apple's attribute set exactly. From golden samples of both
