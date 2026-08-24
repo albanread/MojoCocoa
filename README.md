@@ -1,11 +1,11 @@
 # MojoCocoa — Mojo as a first-class local language on the Mac
 
 > [!WARNING]
-> **This is the newest of these ports and it does not work yet.** The Cocoa
-> support is real and verified — 9 of 9 spikes pass and the example apps
-> build — but the **Apple Silicon GPU stack has never been compiled**. It is
-> ported source, nothing more. Expect breakage, expect the API to move, and
-> read [`STATUS.md`](STATUS.md) before relying on anything here.
+> **This is an experimental, incomplete port.** Cocoa support is verified at
+> 9 of 9 spikes. The source-built Apple GPU path now compiles and runs a
+> validated end-to-end smoke test and the exercised Apple MMA tests, but broad
+> MAX coverage still contains compiler, runtime ABI, and numerical failures.
+> Read [`STATUS.md`](STATUS.md) before relying on anything here.
 
 **A personal-computer port of Mojo: the compiler and standard library, built to
 run natively on hardware we own, using the operating-system features and the
@@ -89,7 +89,7 @@ it says so.
 | [**maxdragon**](https://github.com/albanread/maxdragon) | Windows 11 ARM64<br/>`aarch64-pc-windows-msvc` | Qualcomm Oryon (Snapdragon X)<br/>Adreno X1-45 · Hexagon NPU | Mojo → SPIR-V → OpenCL,<br/>via `dragonrt`; the NPU through QNN at graph level, outside Mojo | `mojo build` works; the JIT is not enabled on this branch; the Adreno acceptance test passes and Mandelbrot runs at 16 ms/frame against 250 ms on one CPU core; the Hexagon reaches 4.1× the CPU on gigabyte-scale graphs; 258 of 369 stdlib test targets pass |
 | [**WINMOJOX64Blackwell**](https://github.com/albanread/WINMOJOX64Blackwell) | Windows 11 x64<br/>`x86_64-pc-windows-msvc` | Intel Core Ultra 9 285H<br/>NVIDIA RTX PRO 2000 Blackwell (`sm_120a`) | Mojo → PTX → `nvcuda.dll`,<br/>via `nvptxrt` | `mojo build` and `mojo run` both work; TMA, CUDA graphs, completion flags and host callbacks all tested on hardware; REPL and LLDB packaged; no systematic SM120a kernel census yet |
 | [**MojoMacX64**](https://github.com/albanread/MojoMacX64) | macOS x86-64<br/>Mac Pro 2019 | Intel x86-64<br/>AMD Radeon Pro Vega II 32 GB (gfx906) | Mojo → AIR → Metal,<br/>via `MetalRT` | Cocoa apps build and run; `msg_send` materialised to C speed (3660 ns → 3 ns); a Mandelbrot at 60fps whose escape iteration *and* colour are Mojo kernels on the Vega II; wave64 matmul lands 3.4× on prefill; a Mojo editor written in Mojo |
-| [**MojoCocoa**](https://github.com/albanread/MojoCocoa) ← *you are here* | macOS ARM64<br/>Apple Silicon | Apple M4<br/>Apple GPU, 10 cores | Mojo → AIR → Metal<br/>(ported, never compiled) | **Newest, and not working yet.** The Cocoa compiler hook and `std.objc` pass 9 of 9 spikes and the example apps build, but the Apple Silicon GPU stack is ported source that has never been through a compiler |
+| [**MojoCocoa**](https://github.com/albanread/MojoCocoa) ← *you are here* | macOS ARM64<br/>Apple Silicon | Apple M4<br/>Apple GPU, 10 cores | Mojo → AIR → Metal,<br/>via `AppleGPURT` | Cocoa and `std.objc` pass 9 of 9 spikes; the source-built GPU stack passes a validated numerical smoke test and exercised Apple MMA tests; the broader MAX GPU surface remains in triage |
 
 None of these is finished, and none of them is trying to become the official port of anything.
 
@@ -102,12 +102,12 @@ That is the whole of it.
 
 Stated plainly, so that nothing here is taken for more than it is:
 
-- **It does not work yet.** The Cocoa half is done and verified. The GPU half
-  — the AIR lowering, the backend and the Apple GPU runtime — has been ported
-  from [MojoMacX64](https://github.com/albanread/MojoMacX64) and **has never
-  been through a compiler**. Two known gaps are already marked in the source
-  (`TODO(air-indirect)` and `TODO(air-residency)`), and one of them is expected
-  to bite. [`STATUS.md`](STATUS.md) is the current, honest picture.
+- **It is incomplete.** The Cocoa half is done and verified. The GPU half —
+  AIR lowering, backend, and Apple GPU runtime — now works as an end-to-end
+  vertical slice, including validated numerical smoke and Apple MMA coverage.
+  It is not yet a generally working MAX backend: the full test census still
+  exposes compiler legality, AsyncRT ABI, binding/lifetime, and numerical
+  gaps. [`STATUS.md`](STATUS.md) is the current, honest picture.
 - **It does not accept contributions.** There is no contributor guide, no CLA,
   no code of conduct and no review process, because there is no project here
   for anyone to join. Pull requests will not be reviewed. The upstream
@@ -176,23 +176,25 @@ and why some of it got *simpler*.
 | Cocoa compiler hook (`cocoakb`) | working — 9/9 spikes |
 | `std.objc` — dispatch, ownership, runtime class definition | working |
 | Cocoa example apps | building |
-| Apple Silicon GPU stack (AIR + runtime) | ported, not yet compiled |
+| Apple Silicon GPU stack (AIR + runtime) | validated end-to-end smoke and Apple MMA coverage; broader MAX surface in triage |
 
 `STATUS.md` is the honest, current picture. `COCOA_ARM64.md` and
-`AIR_APPLE_SILICON.md` are the design notes.
+`APPLE_GPU_LOWERING_REVIEW.md` are the current design notes;
+`AIR_APPLE_SILICON.md` is the original porting plan.
 
 ## The GPU part, and why it exists
 
 Modular open-sourced a great deal — the frontend, elaborator, MLIR dialects and
-the host backend are all here and genuinely buildable, which is the only reason
-the Cocoa hook was possible at all. What they did not publish is GPU lowering:
-only `Host` exists under the three `Target/` directories, and the wheels ship no
-backend library.
+the host backend are all genuinely buildable, which is the only reason the
+Cocoa hook was possible at all. At this fork's upstream starting point they did
+not publish GPU lowering: only `Host` existed under the three `Target/`
+directories, and the wheels shipped no backend library.
 
-So a compiler you build yourself cannot emit GPU code, however good Modular's
-own is. `AIR_APPLE_SILICON.md` records the evidence and the plan: our own AIR
-backend and our own runtime against the open `AsyncRT` C ABI, replacing
-`libmax`/`libMGPRT` with code we can read.
+Upstream's source-built compiler could not emit GPU code on its own. This fork
+now supplies an AIR lowering/backend and a runtime against the open `AsyncRT` C
+ABI, replacing `libmax`/`libMGPRT` with code we can read. The current design and
+remaining risks are reviewed in
+[`APPLE_GPU_LOWERING_REVIEW.md`](APPLE_GPU_LOWERING_REVIEW.md).
 
 ## Building
 
@@ -217,15 +219,16 @@ picture — read that before relying on anything here.
 
 | Document | What it covers |
 | --- | --- |
-| [`STATUS.md`](STATUS.md) | Where the port stands right now, what is verified, and what has never been compiled. The place to pick up. |
+| [`STATUS.md`](STATUS.md) | Where the port stands right now, what is verified, and what remains open. The place to pick up. |
+| [`APPLE_GPU_LOWERING_REVIEW.md`](APPLE_GPU_LOWERING_REVIEW.md) | The current Mojo/MAX-to-AIR flow, systemic findings, specific adjustments, test architecture, and recommended implementation order. |
 | [`COCOA_ARM64.md`](COCOA_ARM64.md) | The Cocoa hook on Apple Silicon: comptime SDK queries, dispatch, and the ARM64 calling convention. |
 | [`UPSTREAM-README.md`](UPSTREAM-README.md) | Modular's own README, kept verbatim. |
 
-### Apple Silicon GPU — the device port, not yet compiled
+### Apple Silicon GPU — original porting record
 
 | Document | What it covers |
 | --- | --- |
-| [`AIR_APPLE_SILICON.md`](AIR_APPLE_SILICON.md) | The evidence and the plan: why a compiler you build yourself cannot emit GPU code (only `Host` exists under the three `Target/` directories, and the wheels ship no backend library), and the design of our own AIR backend and runtime against the open `AsyncRT` C ABI. Records what retargeting from AMD to Apple involved — and why some of it got *simpler*, since unified memory removes the staging blits entirely. |
+| [`AIR_APPLE_SILICON.md`](AIR_APPLE_SILICON.md) | The original evidence and porting plan: why an upstream source build had no GPU lowering, the design of this fork's AIR backend and AsyncRT runtime, and the Apple Silicon deltas. Read it as historical context; current status and advice are in the review above. |
 
 The predecessor's write-up,
 [`AIR_on_AMD.md`](https://github.com/albanread/MojoMacX64/blob/main/AIR_on_AMD.md)
@@ -316,7 +319,7 @@ flowchart TB
     C["<b>compiler</b> — <i>KGEN/lib</i><br/>parser, five dialects, elaborator/interpreter,<br/>lowering, JIT, LLDB and Jupyter glue<br/>the 120 MB lives here, plus LLVM"]
     RT["<b>runtime</b> — <i>KGEN/lib/CompilerRT · AsyncRT</i><br/>what compiled programs link against:<br/>the KGEN_CompilerRT_* C ABI and async scheduler<br/>shared libraries, so <b>one allocator serves the process</b>"]
     SL["<b>stdlib</b> — <i>mojo/stdlib/std</i><br/>38 modules of pure Mojo, shipped as one<br/>pre-elaborated std.mojoc (3.1 MB)<br/>OS access via ffi/sys, not C — why it ported unchanged"]
-    MX["<b>MAX device layer</b> — <i>max/ · AsyncRT/lib/MojoBindings</i><br/>the AsyncRT device ABI, reimplemented by <b>AppleGPU{RT,Metal}</b>;<br/>Mojo kernels → AIR → Metal → Apple GPU.<br/><b>Ported, not yet compiled</b> — see STATUS.md"]
+    MX["<b>MAX device layer</b> — <i>max/ · AsyncRT/lib/MojoBindings</i><br/>the AsyncRT device ABI, reimplemented by <b>AppleGPU{RT,Metal}</b>;<br/>Mojo kernels → AIR → Metal → Apple GPU.<br/><b>Validated vertical slice; broader surface in triage</b> — see STATUS.md"]
 
     D --> C --> RT
     SL -. "compiled by" .-> C

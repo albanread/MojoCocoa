@@ -11,6 +11,7 @@ _LIT_TESTS = [
 ]
 
 _FILECHECK_TESTS = [
+    "test_air_overload_symbols.mojo",
     "test_amd_target.mojo",
     "test_compile_gcn.mojo",
     "test_compile_nvptx.mojo",
@@ -27,6 +28,7 @@ _EXTRA_COPTS = {
 }
 
 _EXTRA_CONSTRAINTS = {
+    "test_air_overload_symbols.mojo": ["//:apple_gpu"],
     "test_amd_target.mojo": ["//:amd_gpu"],
     "test_compile_nvptx.mojo": ["//:nvidia_gpu"],
     "test_cuda_target.mojo": ["//:nvidia_gpu"],

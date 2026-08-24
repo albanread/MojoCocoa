@@ -1589,44 +1589,40 @@ public:
   bool isOffload() const override { return true; }
   bool isBaseTarget() const override { return false; }
 
-  /// The stdlib reaches AIR builtins through `llvm.call_intrinsic` ops named
-  /// `llvm.air.*`, which are not real LLVM intrinsics and fail MLIR->LLVM
-  /// translation. Rewrite them into plain calls to `air.*`-named external
-  /// functions (legal names); the AIR legalizer converts those calls into
-  /// trailing kernel parameters later.
+  /// Verify that no AIR shim survived MLIR lowering. This USED to rewrite
+  /// them, which was wrong twice over.
+  ///
+  /// AirLowering (KGENToLLVM/Target/Air) is the single owner of AIR
+  /// declaration creation: it claims `llvm.air.*` in the module-scoped POP
+  /// pass, unpacks operands, applies the type suffix and keys the symbol by
+  /// signature. By the time the object backend sees the module the ops are
+  /// already plain calls, so the walk below found nothing on real input --
+  /// it ran before the lowering pipeline had created any CallIntrinsicOp.
+  ///
+  /// Worse, had it ever fired it would have looked a declaration up by NAME
+  /// alone and reintroduced exactly the bare-symbol type collision
+  /// AirLowering exists to prevent -- a dead fallback waiting to become
+  /// live after an unrelated pipeline change. An object backend should not
+  /// be reconstructing operation semantics from MLIR in the first place.
+  ///
+  /// So it verifies instead: reaching here means the target hooks did not
+  /// run, and that is worth a hard, located failure rather than silent
+  /// recovery.
   void
   prepareModuleForLowering(mlir::Operation *module,
                            const CompilationOptions &options) const override {
     auto moduleOp = llvm::dyn_cast<mlir::ModuleOp>(module);
     if (!moduleOp)
       return;
-    mlir::SymbolTable symtab(moduleOp);
-    llvm::SmallVector<mlir::LLVM::CallIntrinsicOp, 8> worklist;
     moduleOp.walk([&](mlir::LLVM::CallIntrinsicOp op) {
-      if (op.getIntrin().starts_with("llvm.air."))
-        worklist.push_back(op);
+      if (!op.getIntrin().starts_with("llvm.air."))
+        return;
+      op.emitError()
+          << "AIR shim '" << op.getIntrin()
+          << "' reached the object backend still as an llvm.call_intrinsic; "
+             "AirLowering should have converted it in the module-scoped POP "
+             "pass. The target lowering hook did not run for this module.";
     });
-    for (mlir::LLVM::CallIntrinsicOp op : worklist) {
-      llvm::StringRef airName = op.getIntrin().drop_front(strlen("llvm."));
-      mlir::OpBuilder b(op);
-      auto fn = symtab.lookup<mlir::LLVM::LLVMFuncOp>(airName);
-      if (!fn) {
-        mlir::OpBuilder declBuilder(moduleOp.getBodyRegion());
-        auto fnType = mlir::LLVM::LLVMFunctionType::get(
-            op.getNumResults() ? op.getResult(0).getType()
-                               : mlir::LLVM::LLVMVoidType::get(
-                                     moduleOp.getContext()),
-            llvm::to_vector(op.getArgs().getTypes()));
-        fn = declBuilder.create<mlir::LLVM::LLVMFuncOp>(op.getLoc(), airName,
-                                                        fnType);
-        symtab.insert(fn);
-      }
-      auto call =
-          b.create<mlir::LLVM::CallOp>(op.getLoc(), fn, op.getArgs());
-      if (op.getNumResults())
-        op.getResult(0).replaceAllUsesWith(call.getResult());
-      op.erase();
-    }
   }
 
   /// AIR has no LLVM codegen target. The TargetMachine (opt pipeline only —

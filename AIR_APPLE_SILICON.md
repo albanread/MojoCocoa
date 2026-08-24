@@ -1,5 +1,12 @@
 # An Apple Silicon GPU stack for Mojo — no Modular binaries
 
+> [!NOTE]
+> This is the original porting plan. The stack has since compiled and run end
+> to end. For the current evidence, architecture review, systemic findings,
+> and recommended adjustments, see
+> [`APPLE_GPU_LOWERING_REVIEW.md`](APPLE_GPU_LOWERING_REVIEW.md) and
+> [`STATUS.md`](STATUS.md).
+
 Scoping notes for porting the MacVegaFork GPU stack from the Radeon Pro Vega II
 to Apple Silicon, so one from-source compiler has **both** the Cocoa support
 (`cocoakb`, see `COCOA_ARM64.md`) and GPU codegen — using only our own code.
