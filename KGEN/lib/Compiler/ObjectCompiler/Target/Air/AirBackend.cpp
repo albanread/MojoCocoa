@@ -1767,6 +1767,31 @@ public:
         module.print(dbg, nullptr);
     }
 
+    // Last look at the finished module: which symbols is Apple's reader
+    // going to have to resolve? This has to be HERE and not beside the other
+    // gates -- the downgrade pipeline and PointerRewriter both strand
+    // declarations after eraseDeadIntrinsicDeclarations has already run, and
+    // an unresolved external is not rejected by metallib. It survives
+    // packaging and kills the compiler service at pipeline creation with
+    // XPC_ERROR_CONNECTION_INTERRUPTED, naming nothing at all.
+    {
+      std::string fatal;
+      for (const Air::Finding &f : Air::checkExternals(module)) {
+        if (f.action == Air::RuleAction::Fail)
+          fatal += "  - " + f.detail + "\n";
+        else
+          llvm::errs() << "[air-legality] " << f.ruleId << ": " << f.detail
+                       << "\n";
+      }
+      if (!fatal.empty())
+        return Error(
+            "AIR module declares symbols the Metal reader cannot resolve. "
+            "These pass metallib and fail at pipeline creation with no "
+            "diagnostic, so they are rejected here instead. Set "
+            "APPLEGPU_AIR_RULES=unresolved-external=log to downgrade.\n" +
+            fatal);
+    }
+
     // Emission: AIR bitcode via the cooperating PointerRewriter +
     // BitcodeWriter17 pair (typed POINTER records), wrapped in the bitcode
     // wrapper header, packaged by `xcrun metallib`.

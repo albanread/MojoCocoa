@@ -327,10 +327,100 @@ void expandStepVector(llvm::Module &module) {
       fn->eraseFromParent();
 }
 
+// Expand llvm.vector.interleave2 / deinterleave2 into shufflevector.
+//
+// Both come from our own stdlib -- SIMD.interleave() and SIMD.deinterleave()
+// in std/builtin/simd.mojo -- not from the optimiser, and the RoPE half of
+// the fused QK RMS-norm kernel is what reaches them.
+//
+// AIR has never heard of either name. Our LLVM spells them
+// `llvm.vector.interleave2`; the LLVM-17-era reader Apple ships knew the
+// construct only as `llvm.experimental.vector.interleave2`, so what arrives
+// is an unresolved external. That is the llvm.stepvector failure mode again:
+// it survives metallib and then kills the compiler service at pipeline
+// creation with XPC_ERROR_CONNECTION_INTERRUPTED, naming nothing.
+//
+// This is lowered here rather than in simd.mojo on purpose. NVPTX and AMDGPU
+// lower the intrinsic natively and lower it well; making the stdlib emit
+// shuffles unconditionally would pessimise every other target to suit this
+// one. LangRef itself notes that for factor 2 on fixed-width vectors the
+// recommended spelling IS a shufflevector, so nothing is lost on AIR.
+//
+//   interleave2(a, b) -> mask[2i] = i, mask[2i+1] = N + i
+//   deinterleave2(v)  -> even[i] = 2i, odd[i] = 2i + 1, returned as a struct
+void expandVectorInterleave(llvm::Module &module) {
+  llvm::SmallVector<llvm::CallInst *, 8> dead;
+  for (llvm::Function &fn : module)
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb) {
+        auto *call = llvm::dyn_cast<llvm::CallInst>(&inst);
+        if (!call || !call->getCalledFunction())
+          continue;
+        llvm::Intrinsic::ID id = call->getCalledFunction()->getIntrinsicID();
+        llvm::IRBuilder<> b(call);
+
+        if (id == llvm::Intrinsic::vector_interleave2) {
+          auto *wide = llvm::dyn_cast<llvm::FixedVectorType>(call->getType());
+          if (!wide)
+            continue; // scalable: no constant mask to build
+          unsigned n = wide->getNumElements() / 2;
+          llvm::SmallVector<int, 32> mask;
+          for (unsigned i = 0; i != n; ++i) {
+            mask.push_back(i);
+            mask.push_back(n + i);
+          }
+          call->replaceAllUsesWith(b.CreateShuffleVector(
+              call->getArgOperand(0), call->getArgOperand(1), mask));
+          dead.push_back(call);
+          continue;
+        }
+
+        if (id == llvm::Intrinsic::vector_deinterleave2) {
+          llvm::Value *src = call->getArgOperand(0);
+          auto *wide = llvm::dyn_cast<llvm::FixedVectorType>(src->getType());
+          if (!wide)
+            continue;
+          unsigned n = wide->getNumElements() / 2;
+          llvm::SmallVector<int, 32> evenMask, oddMask;
+          for (unsigned i = 0; i != n; ++i) {
+            evenMask.push_back(2 * i);
+            oddMask.push_back(2 * i + 1);
+          }
+          llvm::Value *poison = llvm::PoisonValue::get(wide);
+          llvm::Value *even = b.CreateShuffleVector(src, poison, evenMask);
+          llvm::Value *odd = b.CreateShuffleVector(src, poison, oddMask);
+          // Rebuild the aggregate rather than rewriting the extractvalues.
+          // Every user in this tree is an extractvalue today, but a phi of the
+          // struct would not be, and instcombine folds the pair away anyway.
+          llvm::Value *agg = llvm::PoisonValue::get(call->getType());
+          agg = b.CreateInsertValue(agg, even, 0u);
+          agg = b.CreateInsertValue(agg, odd, 1u);
+          call->replaceAllUsesWith(agg);
+          dead.push_back(call);
+          continue;
+        }
+      }
+  for (llvm::CallInst *call : dead)
+    call->eraseFromParent();
+
+  // Sweep the stranded declarations. A dead `declare` is as fatal as a live
+  // call here -- the reader resolves every declared symbol.
+  llvm::SmallVector<llvm::Function *, 4> deadDecls;
+  for (llvm::Function &fn : module)
+    if (fn.isDeclaration() && fn.use_empty() &&
+        (fn.getIntrinsicID() == llvm::Intrinsic::vector_interleave2 ||
+         fn.getIntrinsicID() == llvm::Intrinsic::vector_deinterleave2))
+      deadDecls.push_back(&fn);
+  for (llvm::Function *fn : deadDecls)
+    fn->eraseFromParent();
+}
+
+
 void downgradeModernConstructs(llvm::Module &module) {
   downgradePoison(module);
   stripTooNewAttributes(module);
   expandStepVector(module);
+  expandVectorInterleave(module);
   for (llvm::Function &fn : module) {
     for (llvm::BasicBlock &bb : fn) {
       for (llvm::Instruction &inst : llvm::make_early_inc_range(bb)) {

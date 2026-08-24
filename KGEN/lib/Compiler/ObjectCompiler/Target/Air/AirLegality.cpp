@@ -73,6 +73,13 @@ Rule Rules[] = {
   {"addrspacecast",        RuleAction::Log,    "measured",
    "addrspacecast -- Apple emits none; the idiom is ptrtoint+inttoptr. A "
    "same-space cast is also invalid IR outright"},
+  {"unresolved-external",  RuleAction::Log,    "measured",
+   "declaration-only symbol that Apple's reader has to resolve and probably "
+   "cannot. An unresolved external survives metallib and then kills the "
+   "compiler service at pipeline creation with "
+   "XPC_ERROR_CONNECTION_INTERRUPTED, naming nothing -- measured on "
+   "llvm.stepvector and again on llvm.vector.interleave2. The allowlist below "
+   "is measured across 188 distinct captured modules, not guessed"},
   {"dead-intrinsic-decl",  RuleAction::Log,    "measured",
    "llvm.* declaration nothing calls -- the reader resolves every declared "
    "symbol, so a dead declare is as fatal as a live call and far harder to "
@@ -849,6 +856,86 @@ bool applyTransforms(llvm::Module &m) {
 } // namespace M::KGEN::Air
 
 namespace M::KGEN::Air {
+
+//===----------------------------------------------------------------------===//
+// Unresolved externals
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+/// `llvm.*` externals measured to reach AIR and be accepted.
+///
+/// Taken from a census of 188 distinct captured modules across 13 tests, not
+/// from a guess about what ought to work. Anything absent fails the rule --
+/// which is the point: llvm.stepvector and llvm.vector.interleave2 both got
+/// this far and killed the Metal compiler service rather than being rejected.
+bool isAllowedExternal(const llvm::Function &fn) {
+  llvm::StringRef n = fn.getName();
+
+  // Apple's own AGX3 target intrinsics. We emit these deliberately
+  // (max/mojo/max/gpu/memory/masked_load_apple.mojo) and Apple resolves them.
+  //
+  // Note they are NOT LLVM intrinsics: Function::isIntrinsic() is a test on
+  // the `llvm.` name prefix, so it answers true for these while
+  // getIntrinsicID() answers not_intrinsic. Any rule phrased as
+  // "declaration + isIntrinsic()" will match them by accident.
+  if (n.starts_with("llvm.agx3."))
+    return true;
+
+  // Apple provides the air.* runtime. Whether a given air.* name is one Apple
+  // actually defines is a different question, checked against golden samples
+  // elsewhere; it is not an unresolved-external problem.
+  if (n.starts_with("air."))
+    return true;
+
+  switch (fn.getIntrinsicID()) {
+  // Integer min/max: by far the most common, 82 modules for umax alone.
+  case llvm::Intrinsic::umax:
+  case llvm::Intrinsic::umin:
+  case llvm::Intrinsic::smax:
+  case llvm::Intrinsic::smin:
+  // Generate no code at all.
+  case llvm::Intrinsic::lifetime_start:
+  case llvm::Intrinsic::lifetime_end:
+  // Expanded by the reader; refreshOverloadedMemIntrinsics keeps the overload
+  // honest after pointers are retyped.
+  case llvm::Intrinsic::memcpy:
+  case llvm::Intrinsic::memmove:
+  case llvm::Intrinsic::memset:
+  case llvm::Intrinsic::fabs:
+  case llvm::Intrinsic::ctlz:
+    return true;
+  default:
+    return false;
+  }
+}
+
+} // namespace
+
+std::vector<Finding> checkExternals(llvm::Module &m) {
+  configureFromEnv();
+  std::vector<Finding> out;
+  const Rule *r = ruleFor("unresolved-external");
+  if (!r || r->action == RuleAction::Permit)
+    return out;
+  for (llvm::Function &fn : m) {
+    if (!fn.isDeclaration() || isAllowedExternal(fn))
+      continue;
+    // Name a caller: the symbol alone rarely says which kernel to look at.
+    std::string where;
+    for (const llvm::User *u : fn.users())
+      if (auto *ci = llvm::dyn_cast<llvm::CallBase>(u))
+        if (const llvm::Function *caller = ci->getFunction()) {
+          where = ("  [called from @" + caller->getName() + "]").str();
+          break;
+        }
+    if (where.empty() && fn.use_empty())
+      where = "  [no uses -- a dead declare is resolved too]";
+    out.push_back({r->id, ("unresolved external @" + fn.getName() + where).str(),
+                   r->action});
+  }
+  return out;
+}
 
 void reportLegality(llvm::Module &m) {
   unsigned fails = 0;

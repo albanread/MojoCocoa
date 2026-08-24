@@ -67,6 +67,13 @@ void configureFromEnv();
 /// Called automatically when APPLEGPU_AIR_RULES contains `list`.
 void printRuleTable();
 
+/// Enumerate declaration-only symbols the Apple reader would have to resolve
+/// and report the ones not on the measured allowlist. Separate from
+/// checkLegality because it must run on the FINAL module, immediately before
+/// bitcode serialization: the downgrade pipeline and PointerRewriter both
+/// strand declarations after the earlier sweeps have run.
+std::vector<Finding> checkExternals(llvm::Module &m);
+
 /// Print every finding to stderr, changing nothing. Exposed so
 /// `kgen-llvm-opt -passes=air-legality` can review a corpus of .ll files under
 /// exactly the rules the backend enforces -- outside any bazel action, where
