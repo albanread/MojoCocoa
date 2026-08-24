@@ -711,6 +711,7 @@ extern "C" const char *AsyncRT_DeviceStream_synchronize(const DeviceStream *) {
   return VR_OK;
 }
 
+// ABI-STATUS: sync-fallback -- runs the callback in place; there is no queue to defer to yet
 extern "C" const char *
 AsyncRT_DeviceStream_enqueueHostFunc(const DeviceStream *, void (*fn)(void *),
                                      void *userData) {
@@ -999,6 +1000,7 @@ extern "C" const char *AsyncRT_DeviceContext_setAsCurrent(const DeviceContext *)
 // Coroutine scheduling: synchronous backend resumes the coroutine in place.
 // The destroy callback is for cancellation, which cannot happen when the
 // resume runs to completion before we return.
+// ABI-STATUS: sync-fallback -- resumes the coroutine in place, so `destroy` is unreachable
 extern "C" const char *
 AsyncRT_DeviceContext_enqueueHostFunction(const DeviceContext *,
                                           void (*resume)(void *),
@@ -1029,6 +1031,7 @@ extern "C" void AsyncRT_DeviceEvent_retain(const DeviceEvent *event) {
 // Worth implementing rather than leaving stubbed: sync_parallelize ABORTS on
 // error rather than raising, so this stub turned a missing ABI entry point
 // into a hard process abort with no located diagnostic.
+// ABI-STATUS: sync-fallback -- resumes each handle in order, in place
 extern "C" const char *AsyncRT_DeviceContext_enqueueHostFunctionRange(
     const DeviceContext *, void (*resume)(void *), void (*destroy)(void *),
     void **coroHandles, size_t count) {

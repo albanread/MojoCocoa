@@ -1,244 +1,184 @@
-# AsyncRT_* C ABI — signatures recovered from .mojo call-site comments
+# AsyncRT ABI capability table
 
-AsyncValue *AsyncRT_AsyncValue_createFromDeviceBuffer(
-AsyncValue *AsyncRT_AsyncValue_retainBufferStorage(
-AsyncValue *AsyncRT_AsyncValue_retainHandle(AnyAsyncValueRef *handle)
-DeviceGraphMemoryPool *AsyncRT_DeviceContext_createGraphMemoryPool(
-const DeviceContext *AsyncRT_DeviceBuffer_context(const DeviceBuffer *buffer)
-const char * AsyncRT_DeviceBuffer_reassignOwnershipTo(const DeviceBuffer *buf, const DeviceContext *ctx)
-const char * AsyncRT_DeviceContext_DtoD_async(const DeviceContext *ctx, const DeviceBuffer *dst, const DeviceBuffer *src)
-const char * AsyncRT_DeviceContext_DtoD_async_no_cross_stream_sync(const DeviceContext *ctx, const DeviceBuffer *dst, const DeviceBuffer *src)
-const char * AsyncRT_DeviceContext_DtoH_async(const DeviceContext *ctx, void *dst, const DeviceBuffer *src)
-const char * AsyncRT_DeviceContext_HtoD_async(const DeviceContext *ctx, const DeviceBuffer *dst, const void *src)
-const char * AsyncRT_DeviceContext_computeCapability(int32_t *result, const DeviceContext *ctx)
-const char * AsyncRT_DeviceContext_enqueue_wait_for_context(const DeviceContext *ctx, const DeviceContext *other)
-const char * AsyncRT_DeviceContext_getApiVersion(int *result, const DeviceContext *ctx)
-const char * AsyncRT_DeviceContext_getAttribute(int *result, const DeviceContext *ctx, int attr)
-const char * AsyncRT_DeviceContext_isCompatible(const DeviceContext *ctx)
-const char * AsyncRT_DeviceContext_synchronize(const DeviceContext *ctx)
-const char * AsyncRT_DeviceGraph_createBuffer(DeviceBuffer **result, void **devicePtr, DeviceGraphBuilder *builder, size_t len, size_t elemSize, bool isHost)
-const char *AsyncRT_DeviceBuffer_createSubBuffer(
-const char *AsyncRT_DeviceBuffer_hostPtr(
-const char *AsyncRT_DeviceContextScope_create(const DeviceContextScope **result, const DeviceContext *ctx)
-const char *AsyncRT_DeviceContext_allPeerAccessEnabled(bool *result)
-const char *AsyncRT_DeviceContext_canAccess(bool *result, const DeviceContext *ctx, const DeviceContext *peer)
-const char *AsyncRT_DeviceContext_create(const DeviceContext **result, const char *api, int id)
-const char *AsyncRT_DeviceContext_createBuffer_async(const DeviceBuffer **result, void **device_ptr, const DeviceContext *ctx, size_t len, size_t elem_size)
-const char *AsyncRT_DeviceContext_createExternalStream(const DeviceStream **stream, void *externalStream, const DeviceContext *ctx)
-const char *AsyncRT_DeviceContext_createGraphBuilder(
-const char *AsyncRT_DeviceContext_createGraphBuilderWithPool(
-const char *AsyncRT_DeviceContext_createHostBuffer(const DeviceBuffer **result, void **device_ptr, const DeviceContext *ctx, size_t len, size_t elem_size)
-const char *AsyncRT_DeviceContext_createStream(const DeviceStream **stream, int priority, const DeviceContext *ctx)
-const char *AsyncRT_DeviceContext_cuda_context(CUcontext *result, const DeviceContext *ctx)
-const char *AsyncRT_DeviceContext_cuda_current_context(CUcontext *result)
-const char *AsyncRT_DeviceContext_deviceName(const DeviceContext *ctx)
-const char *AsyncRT_DeviceContext_enableAllPeerAccess()
-const char *AsyncRT_DeviceContext_enablePeerAccess(const DeviceContext *ctx, const DeviceContext *peer)
-const char *AsyncRT_DeviceContext_enqueue_event(const DeviceEvent **result, const DeviceContext *ctx)
-const char *AsyncRT_DeviceContext_eventCreate(const DeviceEvent **result, const DeviceContext *ctx, unsigned int flags)
-const char *AsyncRT_DeviceContext_getMemoryInfo(const DeviceContext *ctx, size_t *free, size_t *total)
-const char *AsyncRT_DeviceContext_hip_device(hipDevice_t *result, const DeviceContext *ctx)
-const char *AsyncRT_DeviceContext_loadFunction(
-const char *AsyncRT_DeviceContext_metal_device(MTL::Device **result, const DeviceContext *ctx)
-const char *AsyncRT_DeviceContext_runHealthcheck(DeviceContext *ctx)
-const char *AsyncRT_DeviceContext_selectStream(
-const char *AsyncRT_DeviceContext_setMemory_async(const DeviceContext *ctx, const DeviceBuffer *dst, uint64_t val, size_t val_size)
-const char *AsyncRT_DeviceContext_stream(const DeviceStream **result, const DeviceContext *ctx)
-const char *AsyncRT_DeviceContext_streamPriorityRange(int *leastPriority, int *greatestPriority, const DeviceContext *ctx)
-const char *AsyncRT_DeviceContext_supportsMulticast(bool *result, const DeviceContext *ctx)
-const char *AsyncRT_DeviceEvent_synchronize(const DeviceEvent *event)
-const char *AsyncRT_DeviceFunction_copyToConstantMemory(
-const char *AsyncRT_DeviceFunction_cuda_module(CUmodule *result, const DeviceFunction *func)
-const char *AsyncRT_DeviceFunction_getAttribute(int32_t *result, const DeviceFunction *func, int32_t attr_code)
-const char *AsyncRT_DeviceFunction_hip_module(hipModule_t *result, const DeviceFunction *func)
-const char *AsyncRT_DeviceGraphBuilder_addCopyDeviceToDevice(
-const char *AsyncRT_DeviceGraphBuilder_addCopyDeviceToHost(
-const char *AsyncRT_DeviceGraphBuilder_addCopyHostToDevice(
-const char *AsyncRT_DeviceGraphBuilder_addEmpty(
-const char *AsyncRT_DeviceGraphBuilder_addSetMemory(
-const char *AsyncRT_DeviceGraphBuilder_instantiate(
-const char *AsyncRT_DeviceGraphBuilder_recordingContext(
-const char *AsyncRT_DeviceGraph_replay(DeviceGraph *graph)
-const char *AsyncRT_DeviceStream_cuda_stream(CUstream *result, const DeviceStream *stream)
-const char *AsyncRT_DeviceStream_enqueueHostFunc(const DeviceStream *stream, void (*fn)(void *), void *userData)
-const char *AsyncRT_DeviceStream_enqueueWaitOnHostValue(
-const char *AsyncRT_DeviceStream_eventRecord(const DeviceStream *stream, const DeviceEvent *event)
-const char *AsyncRT_DeviceStream_hip_stream(hipStream_t *result, const DeviceStream *stream)
-const char *AsyncRT_DeviceStream_synchronize(const DeviceStream *stream)
-const char *AsyncRT_DeviceStream_waitForEvent(const DeviceStream *stream, const DeviceEvent *event)
-const char *AsyncRT_occupancyMaxActiveBlocksPerMultiprocessor(int *numBlocks, const DeviceContext *ctx, const DeviceFunction *func, int blockSize, size_t dynamicSharedMemSize)
-const char* AsyncRT_DeviceMulticastBuffer_allocate(const DeviceMulticastBuffer **result, size_t ctxsLen, const DeviceContext **ctxs, size_t len, size_t elemSize)
-const char* AsyncRT_DeviceMulticastBuffer_multicastBufferFor(const DeviceBuffer **result, void **devicePtr, const DeviceMulticastBuffer *multiBuffer, const DeviceContext* ctx)
-const char* AsyncRT_DeviceMulticastBuffer_unicastBufferFor(const DeviceBuffer **result, void **devicePtr, const DeviceMulticastBuffer *multiBuffer, const DeviceContext* ctx)
-int AsyncRT_DeviceContext_numStreams(const DeviceContext *ctx)
-int32_t *AsyncRT_DeviceContext_numberOfDevices(const char* kind)
-int32_t AsyncRT_DeviceGraphBuilder_lastNodeIdOrNone(
-int64_t AsyncRT_DeviceBuffer_bytesize(const DeviceBuffer *buffer)
-int64_t AsyncRT_DeviceContext_id(const DeviceContext *ctx)
-int64_t AsyncRT_DeviceGraphBuilder_numInputs(
-int64_t AsyncRT_DeviceGraphBuilder_numOutputs(
-uint64_t AsyncRT_CompletionFlag_devicePtr(const CompletionFlag *flag)
-void AsyncRT_AsyncValue_release(AsyncValue *value)
-void AsyncRT_AsyncValue_retain(AsyncValue *value)
-void AsyncRT_DeviceBuffer_release(const DeviceBuffer *buffer)
-void AsyncRT_DeviceBuffer_release_ptr(const DeviceBuffer *buffer)
-void AsyncRT_DeviceBuffer_retain(const DeviceBuffer *buffer)
-void AsyncRT_DeviceContextScope_release(const DeviceContextScope *scope)
-void AsyncRT_DeviceContext_createBuffer_owning(
-void AsyncRT_DeviceContext_deviceApi(llvm::StringRef *result, const DeviceContext *ctx)
-void AsyncRT_DeviceContext_release(const DeviceContext *ctx)
-void AsyncRT_DeviceContext_retain(const DeviceContext *ctx)
-void AsyncRT_DeviceContext_strfree(const char* ptr)
-void AsyncRT_DeviceEvent_release(const DeviceEvent *event)
-void AsyncRT_DeviceFunction_release(const DeviceFunction *ctx)
-void AsyncRT_DeviceFunction_retain(const DeviceFunction *ctx)
-void AsyncRT_DeviceGraphBuilder_addInPlaceInput(
-void AsyncRT_DeviceGraphBuilder_addInput(
-void AsyncRT_DeviceGraphBuilder_addOutput(
-void AsyncRT_DeviceGraphBuilder_release(DeviceGraphBuilder *builder)
-void AsyncRT_DeviceGraphMemoryPool_release(DeviceGraphMemoryPool *pool)
-void AsyncRT_DeviceGraphMemoryPool_retain(DeviceGraphMemoryPool *pool)
-void AsyncRT_DeviceGraph_release(DeviceGraph *graph)
-void AsyncRT_DeviceGraph_retain(DeviceGraph *graph)
-void AsyncRT_DeviceStream_release(const DeviceStream *stream)
-void AsyncRT_DeviceStream_retain(const DeviceStream *stream)
-void AsyncRT_DeviceTimer_release(const DviceTimer *timer)
+**Generated by `tools/gen-abi-table.py` from the runtime source. Do not
+hand-edit** -- run the generator, or `tools/check-abi-table.sh` to see
+what has drifted.
 
-# All called symbols (census):
-AsyncRT_AndThen
-AsyncRT_AsyncValue_createFromDeviceBuffer
-AsyncRT_AsyncValue_release
-AsyncRT_AsyncValue_retain
-AsyncRT_AsyncValue_retainBufferStorage
-AsyncRT_AsyncValue_retainHandle
-AsyncRT_Complete
-AsyncRT_CompletionFlag_devicePtr
-AsyncRT_CreateAsync_Error
-AsyncRT_DestroyChain
-AsyncRT_DestroySpinWaiter
-AsyncRT_DeviceBuffer_bytesize
-AsyncRT_DeviceBuffer_context
-AsyncRT_DeviceBuffer_createSubBuffer
-AsyncRT_DeviceBuffer_hostPtr
-AsyncRT_DeviceBuffer_reassignOwnershipTo
-AsyncRT_DeviceBuffer_release
-AsyncRT_DeviceBuffer_release_ptr
-AsyncRT_DeviceBuffer_retain
-AsyncRT_DeviceContextScope_create
-AsyncRT_DeviceContextScope_release
-AsyncRT_DeviceContext_DtoD_async
-AsyncRT_DeviceContext_DtoD_async_no_cross_stream_sync
-AsyncRT_DeviceContext_DtoH_async
-AsyncRT_DeviceContext_DtoH_async_sized
-AsyncRT_DeviceContext_HtoD_async
-AsyncRT_DeviceContext_HtoD_async_sized
-AsyncRT_DeviceContext_allPeerAccessEnabled
-AsyncRT_DeviceContext_archName
-AsyncRT_DeviceContext_canAccess
-AsyncRT_DeviceContext_computeCapability
-AsyncRT_DeviceContext_create
-AsyncRT_DeviceContext_createBuffer_async
-AsyncRT_DeviceContext_createBuffer_owning
-AsyncRT_DeviceContext_createExternalStream
-AsyncRT_DeviceContext_createGraphBuilder
-AsyncRT_DeviceContext_createGraphBuilderWithPool
-AsyncRT_DeviceContext_createGraphMemoryPool
-AsyncRT_DeviceContext_createHostBuffer
-AsyncRT_DeviceContext_createStream
-AsyncRT_DeviceContext_cuda_context
-AsyncRT_DeviceContext_cuda_current_context
-AsyncRT_DeviceContext_deviceApi
-AsyncRT_DeviceContext_deviceName
-AsyncRT_DeviceContext_enableAllPeerAccess
-AsyncRT_DeviceContext_enablePeerAccess
-AsyncRT_DeviceContext_enqueueFunctionDirect
-AsyncRT_DeviceContext_enqueueHostFunction
-AsyncRT_DeviceContext_enqueueHostFunctionRange
-AsyncRT_DeviceContext_enqueue_event
-AsyncRT_DeviceContext_enqueue_wait_for_context
-AsyncRT_DeviceContext_eventCreate
-AsyncRT_DeviceContext_getApiVersion
-AsyncRT_DeviceContext_getAttribute
-AsyncRT_DeviceContext_getMemoryInfo
-AsyncRT_DeviceContext_hip_device
-AsyncRT_DeviceContext_id
-AsyncRT_DeviceContext_isCompatible
-AsyncRT_DeviceContext_loadFunction
-AsyncRT_DeviceContext_maxSingleAllocationSize
-AsyncRT_DeviceContext_metal_device
-AsyncRT_DeviceContext_numStreams
-AsyncRT_DeviceContext_numberOfDevices
-AsyncRT_DeviceContext_release
-AsyncRT_DeviceContext_retain
-AsyncRT_DeviceContext_runHealthcheck
-AsyncRT_DeviceContext_selectStream
-AsyncRT_DeviceContext_setAsCurrent
-AsyncRT_DeviceContext_setMemory_async
-AsyncRT_DeviceContext_setMetalPrintEnabled
-AsyncRT_DeviceContext_startMetalTraceCapture
-AsyncRT_DeviceContext_startTimer
-AsyncRT_DeviceContext_stopMetalTraceCapture
-AsyncRT_DeviceContext_stopTimer
-AsyncRT_DeviceContext_stream
-AsyncRT_DeviceContext_streamPriorityRange
-AsyncRT_DeviceContext_strfree
-AsyncRT_DeviceContext_supportsMulticast
-AsyncRT_DeviceContext_synchronize
-AsyncRT_DeviceEvent_release
-AsyncRT_DeviceEvent_retain
-AsyncRT_DeviceEvent_synchronize
-AsyncRT_DeviceFunction_copyToConstantMemory
-AsyncRT_DeviceFunction_cuda_module
-AsyncRT_DeviceFunction_getAttribute
-AsyncRT_DeviceFunction_hip_module
-AsyncRT_DeviceFunction_release
-AsyncRT_DeviceFunction_retain
-AsyncRT_DeviceGraphBuilder_add
-AsyncRT_DeviceGraphBuilder_addCopyDeviceToDevice
-AsyncRT_DeviceGraphBuilder_addCopyDeviceToHost
-AsyncRT_DeviceGraphBuilder_addCopyHostToDevice
-AsyncRT_DeviceGraphBuilder_addEmpty
-AsyncRT_DeviceGraphBuilder_addFunctionDirect
-AsyncRT_DeviceGraphBuilder_addInPlaceInput
-AsyncRT_DeviceGraphBuilder_addInput
-AsyncRT_DeviceGraphBuilder_addOutput
-AsyncRT_DeviceGraphBuilder_addSetMemory
-AsyncRT_DeviceGraphBuilder_instantiate
-AsyncRT_DeviceGraphBuilder_lastNodeIdOrNone
-AsyncRT_DeviceGraphBuilder_numInputs
-AsyncRT_DeviceGraphBuilder_numOutputs
-AsyncRT_DeviceGraphBuilder_recordingContext
-AsyncRT_DeviceGraphBuilder_release
-AsyncRT_DeviceGraphMemoryPool_release
-AsyncRT_DeviceGraphMemoryPool_retain
-AsyncRT_DeviceGraph_createBuffer
-AsyncRT_DeviceGraph_release
-AsyncRT_DeviceGraph_replay
-AsyncRT_DeviceGraph_retain
-AsyncRT_DeviceMulticastBuffer_allocate
-AsyncRT_DeviceMulticastBuffer_multicastBufferFor
-AsyncRT_DeviceMulticastBuffer_unicastBufferFor
-AsyncRT_DeviceStream_cuda_stream
-AsyncRT_DeviceStream_enqueueFunctionDirect
-AsyncRT_DeviceStream_enqueueHostFunc
-AsyncRT_DeviceStream_enqueueWaitOnHostValue
-AsyncRT_DeviceStream_eventRecord
-AsyncRT_DeviceStream_hip_stream
-AsyncRT_DeviceStream_release
-AsyncRT_DeviceStream_retain
-AsyncRT_DeviceStream_synchronize
-AsyncRT_DeviceStream_waitForEvent
-AsyncRT_DeviceTimer_release
-AsyncRT_Execute
-AsyncRT_GetCurrentCPUDevice
-AsyncRT_GetOrCreateCPUDevice
-AsyncRT_InitializeChain
-AsyncRT_InitializeSpinWaiter
-AsyncRT_ParallelismLevel
-AsyncRT_ReleaseCPUDevice
-AsyncRT_SpinWaiter_Wait
-AsyncRT_Wait
-AsyncRT_Wait_Timeout
-AsyncRT_cuda_tensorMapEncodeIm
-AsyncRT_cuda_tensorMapEncodeTiled
-AsyncRT_occupancyMaxActiveBlocksPerMultiprocessor
+Source: `AppleGPURT.cpp`, `AppleGPUMetal.cpp` at `e665f13`.
+
+Status is read out of the code, not asserted here, because a
+hand-maintained status column is wrong the moment someone implements a
+stub and forgets the doc. A capability table nobody trusts is worse than
+none: the entire point is to say what will happen *before* you call.
+
+| status | meaning | count |
+|---|---|---|
+| `implemented` | real implementation | 67 |
+| `sync-fallback` | works, but with bring-up semantics (see note) | 3 |
+| `silent-noop` | **does nothing and reports success** | 12 |
+| `silent-zero` | **returns 0 and reports success** | 8 |
+| `error` | refuses with a defined error | 35 |
+
+## Read this first
+
+`silent-noop` and `silent-zero` are separated from `error` deliberately.
+An entry point that refuses produces a bug report naming itself. One that
+silently succeeds with a wrong answer produces a debugging session
+somewhere else entirely, usually in a kernel, usually much later. They
+are the same amount of "not implemented" and very different amounts of
+trouble.
+
+`error` entries abort callers that do not expect failure. `sync_parallelize`
+calls `abort()` rather than propagating, so a stub there became a hard
+process abort with no located diagnostic until it was implemented.
+
+## implemented (67)
+
+| symbol | where | note |
+|---|---|---|
+| `AsyncRT_DeviceBuffer_bytesize` | AppleGPURT.cpp:508 |  |
+| `AsyncRT_DeviceBuffer_context` | AppleGPURT.cpp:512 |  |
+| `AsyncRT_DeviceBuffer_createSubBuffer` | AppleGPURT.cpp:461 |  |
+| `AsyncRT_DeviceBuffer_hostPtr` | AppleGPURT.cpp:517 |  |
+| `AsyncRT_DeviceBuffer_reassignOwnershipTo` | AppleGPURT.cpp:528 |  |
+| `AsyncRT_DeviceBuffer_release` | AppleGPURT.cpp:497 |  |
+| `AsyncRT_DeviceBuffer_release_ptr` | AppleGPURT.cpp:503 |  |
+| `AsyncRT_DeviceBuffer_retain` | AppleGPURT.cpp:493 |  |
+| `AsyncRT_DeviceContextScope_create` | AppleGPURT.cpp:367 |  |
+| `AsyncRT_DeviceContextScope_release` | AppleGPURT.cpp:376 |  |
+| `AsyncRT_DeviceContext_DtoD_async` | AppleGPURT.cpp:579 |  |
+| `AsyncRT_DeviceContext_DtoD_async_no_cross_stream_sync` | AppleGPURT.cpp:636 |  |
+| `AsyncRT_DeviceContext_DtoH_async` | AppleGPURT.cpp:562 |  |
+| `AsyncRT_DeviceContext_DtoH_async_sized` | AppleGPURT.cpp:960 |  |
+| `AsyncRT_DeviceContext_HtoD_async` | AppleGPURT.cpp:542 |  |
+| `AsyncRT_DeviceContext_HtoD_async_sized` | AppleGPURT.cpp:949 |  |
+| `AsyncRT_DeviceContext_allPeerAccessEnabled` | AppleGPURT.cpp:342 |  |
+| `AsyncRT_DeviceContext_archName` | AppleGPURT.cpp:972 |  |
+| `AsyncRT_DeviceContext_canAccess` | AppleGPURT.cpp:335 |  |
+| `AsyncRT_DeviceContext_computeCapability` | AppleGPURT.cpp:254 |  |
+| `AsyncRT_DeviceContext_create` | AppleGPURT.cpp:183 |  |
+| `AsyncRT_DeviceContext_createBuffer_async` | AppleGPURT.cpp:398 |  |
+| `AsyncRT_DeviceContext_createBuffer_owning` | AppleGPURT.cpp:454 |  |
+| `AsyncRT_DeviceContext_createHostBuffer` | AppleGPURT.cpp:427 |  |
+| `AsyncRT_DeviceContext_createStream` | AppleGPURT.cpp:679 |  |
+| `AsyncRT_DeviceContext_deviceApi` | AppleGPURT.cpp:243 |  |
+| `AsyncRT_DeviceContext_deviceName` | AppleGPURT.cpp:237 |  |
+| `AsyncRT_DeviceContext_enableAllPeerAccess` | AppleGPURT.cpp:347 |  |
+| `AsyncRT_DeviceContext_enablePeerAccess` | AppleGPURT.cpp:351 |  |
+| `AsyncRT_DeviceContext_enqueueFunctionDirect` | AppleGPURT.cpp:823 |  |
+| `AsyncRT_DeviceContext_enqueue_event` | AppleGPURT.cpp:729 |  |
+| `AsyncRT_DeviceContext_enqueue_wait_for_context` | AppleGPURT.cpp:329 |  |
+| `AsyncRT_DeviceContext_eventCreate` | AppleGPURT.cpp:722 |  |
+| `AsyncRT_DeviceContext_getApiVersion` | AppleGPURT.cpp:261 |  |
+| `AsyncRT_DeviceContext_getAttribute` | AppleGPURT.cpp:267 |  |
+| `AsyncRT_DeviceContext_getMemoryInfo` | AppleGPURT.cpp:300 |  |
+| `AsyncRT_DeviceContext_id` | AppleGPURT.cpp:233 |  |
+| `AsyncRT_DeviceContext_isCompatible` | AppleGPURT.cpp:315 |  |
+| `AsyncRT_DeviceContext_loadFunction` | AppleGPURT.cpp:798 |  |
+| `AsyncRT_DeviceContext_maxSingleAllocationSize` | AppleGPURT.cpp:983 |  |
+| `AsyncRT_DeviceContext_metal_device` | AppleGPURT.cpp:879 |  |
+| `AsyncRT_DeviceContext_numStreams` | AppleGPURT.cpp:698 |  |
+| `AsyncRT_DeviceContext_numberOfDevices` | AppleGPURT.cpp:224 |  |
+| `AsyncRT_DeviceContext_release` | AppleGPURT.cpp:157 |  |
+| `AsyncRT_DeviceContext_retain` | AppleGPURT.cpp:216 |  |
+| `AsyncRT_DeviceContext_runHealthcheck` | AppleGPURT.cpp:319 |  |
+| `AsyncRT_DeviceContext_setAsCurrent` | AppleGPURT.cpp:996 |  |
+| `AsyncRT_DeviceContext_setMemory_async` | AppleGPURT.cpp:641 |  |
+| `AsyncRT_DeviceContext_startTimer` | AppleGPURT.cpp:761 |  |
+| `AsyncRT_DeviceContext_stopTimer` | AppleGPURT.cpp:770 |  |
+| `AsyncRT_DeviceContext_stream` | AppleGPURT.cpp:673 |  |
+| `AsyncRT_DeviceContext_streamPriorityRange` | AppleGPURT.cpp:689 |  |
+| `AsyncRT_DeviceContext_strfree` | AppleGPURT.cpp:175 |  |
+| `AsyncRT_DeviceContext_supportsMulticast` | AppleGPURT.cpp:357 |  |
+| `AsyncRT_DeviceContext_synchronize` | AppleGPURT.cpp:323 |  |
+| `AsyncRT_DeviceEvent_release` | AppleGPURT.cpp:753 |  |
+| `AsyncRT_DeviceEvent_retain` | AppleGPURT.cpp:1014 |  |
+| `AsyncRT_DeviceEvent_synchronize` | AppleGPURT.cpp:749 |  |
+| `AsyncRT_DeviceFunction_getAttribute` | AppleGPURT.cpp:871 |  |
+| `AsyncRT_DeviceFunction_release` | AppleGPURT.cpp:867 |  |
+| `AsyncRT_DeviceFunction_retain` | AppleGPURT.cpp:863 |  |
+| `AsyncRT_DeviceStream_eventRecord` | AppleGPURT.cpp:738 |  |
+| `AsyncRT_DeviceStream_release` | AppleGPURT.cpp:706 |  |
+| `AsyncRT_DeviceStream_retain` | AppleGPURT.cpp:702 |  |
+| `AsyncRT_DeviceStream_synchronize` | AppleGPURT.cpp:710 |  |
+| `AsyncRT_DeviceStream_waitForEvent` | AppleGPURT.cpp:744 |  |
+| `AsyncRT_DeviceTimer_release` | AppleGPURT.cpp:777 |  |
+
+## sync-fallback (3)
+
+| symbol | where | note |
+|---|---|---|
+| `AsyncRT_DeviceContext_enqueueHostFunction` | AppleGPURT.cpp:1004 | resumes the coroutine in place, so `destroy` is unreachable |
+| `AsyncRT_DeviceContext_enqueueHostFunctionRange` | AppleGPURT.cpp:1035 | resumes each handle in order, in place |
+| `AsyncRT_DeviceStream_enqueueHostFunc` | AppleGPURT.cpp:715 | runs the callback in place; there is no queue to defer to yet |
+
+## silent-noop (12)
+
+| symbol | where | note |
+|---|---|---|
+| `AsyncRT_AsyncValue_release` | AppleGPURT.cpp:904 |  |
+| `AsyncRT_AsyncValue_retain` | AppleGPURT.cpp:905 |  |
+| `AsyncRT_DeviceGraphBuilder_addInPlaceInput` | AppleGPURT.cpp:920 |  |
+| `AsyncRT_DeviceGraphBuilder_addInput` | AppleGPURT.cpp:921 |  |
+| `AsyncRT_DeviceGraphBuilder_addOutput` | AppleGPURT.cpp:922 |  |
+| `AsyncRT_DeviceGraphBuilder_release` | AppleGPURT.cpp:928 |  |
+| `AsyncRT_DeviceGraphMemoryPool_release` | AppleGPURT.cpp:930 |  |
+| `AsyncRT_DeviceGraphMemoryPool_retain` | AppleGPURT.cpp:931 |  |
+| `AsyncRT_DeviceGraph_release` | AppleGPURT.cpp:933 |  |
+| `AsyncRT_DeviceGraph_retain` | AppleGPURT.cpp:934 |  |
+| `AsyncRT_DeviceMulticastBuffer_release` | AppleGPURT.cpp:940 |  |
+| `AsyncRT_DeviceMulticastBuffer_retain` | AppleGPURT.cpp:941 |  |
+
+## silent-zero (8)
+
+| symbol | where | note |
+|---|---|---|
+| `AsyncRT_AsyncValue_createFromDeviceBuffer` | AppleGPURT.cpp:901 |  |
+| `AsyncRT_AsyncValue_retainBufferStorage` | AppleGPURT.cpp:902 |  |
+| `AsyncRT_AsyncValue_retainHandle` | AppleGPURT.cpp:903 |  |
+| `AsyncRT_CompletionFlag_devicePtr` | AppleGPURT.cpp:908 |  |
+| `AsyncRT_DeviceContext_createGraphMemoryPool` | AppleGPURT.cpp:913 |  |
+| `AsyncRT_DeviceGraphBuilder_lastNodeIdOrNone` | AppleGPURT.cpp:924 |  |
+| `AsyncRT_DeviceGraphBuilder_numInputs` | AppleGPURT.cpp:925 |  |
+| `AsyncRT_DeviceGraphBuilder_numOutputs` | AppleGPURT.cpp:926 |  |
+
+## error (35)
+
+| symbol | where | note |
+|---|---|---|
+| `AsyncRT_AndThen` | AppleGPURT.cpp:906 |  |
+| `AsyncRT_DeviceContext_createExternalStream` | AppleGPURT.cpp:898 |  |
+| `AsyncRT_DeviceContext_createGraphBuilder` | AppleGPURT.cpp:911 |  |
+| `AsyncRT_DeviceContext_createGraphBuilderWithPool` | AppleGPURT.cpp:912 |  |
+| `AsyncRT_DeviceContext_cuda_context` | AppleGPURT.cpp:891 |  |
+| `AsyncRT_DeviceContext_cuda_current_context` | AppleGPURT.cpp:892 |  |
+| `AsyncRT_DeviceContext_hip_device` | AppleGPURT.cpp:893 |  |
+| `AsyncRT_DeviceContext_selectStream` | AppleGPURT.cpp:886 |  |
+| `AsyncRT_DeviceContext_setMetalPrintEnabled` | AppleGPURT.cpp:1047 |  |
+| `AsyncRT_DeviceContext_startMetalTraceCapture` | AppleGPURT.cpp:1048 |  |
+| `AsyncRT_DeviceContext_stopMetalTraceCapture` | AppleGPURT.cpp:1049 |  |
+| `AsyncRT_DeviceFunction_copyToConstantMemory` | AppleGPURT.cpp:887 |  |
+| `AsyncRT_DeviceFunction_cuda_module` | AppleGPURT.cpp:894 |  |
+| `AsyncRT_DeviceFunction_hip_module` | AppleGPURT.cpp:895 |  |
+| `AsyncRT_DeviceGraphBuilder_addCopyDeviceToDevice` | AppleGPURT.cpp:914 |  |
+| `AsyncRT_DeviceGraphBuilder_addCopyDeviceToHost` | AppleGPURT.cpp:915 |  |
+| `AsyncRT_DeviceGraphBuilder_addCopyHostToDevice` | AppleGPURT.cpp:916 |  |
+| `AsyncRT_DeviceGraphBuilder_addEmpty` | AppleGPURT.cpp:917 |  |
+| `AsyncRT_DeviceGraphBuilder_addFunction` | AppleGPURT.cpp:918 |  |
+| `AsyncRT_DeviceGraphBuilder_addFunctionDirect` | AppleGPURT.cpp:1050 |  |
+| `AsyncRT_DeviceGraphBuilder_addSetMemory` | AppleGPURT.cpp:919 |  |
+| `AsyncRT_DeviceGraphBuilder_instantiate` | AppleGPURT.cpp:923 |  |
+| `AsyncRT_DeviceGraphBuilder_recordingContext` | AppleGPURT.cpp:927 |  |
+| `AsyncRT_DeviceGraph_createBuffer` | AppleGPURT.cpp:929 |  |
+| `AsyncRT_DeviceGraph_replay` | AppleGPURT.cpp:932 |  |
+| `AsyncRT_DeviceMulticastBuffer_allocate` | AppleGPURT.cpp:937 |  |
+| `AsyncRT_DeviceMulticastBuffer_multicastBufferFor` | AppleGPURT.cpp:938 |  |
+| `AsyncRT_DeviceMulticastBuffer_unicastBufferFor` | AppleGPURT.cpp:939 |  |
+| `AsyncRT_DeviceStream_cuda_stream` | AppleGPURT.cpp:896 |  |
+| `AsyncRT_DeviceStream_enqueueFunctionDirect` | AppleGPURT.cpp:1051 |  |
+| `AsyncRT_DeviceStream_enqueueWaitOnHostValue` | AppleGPURT.cpp:907 |  |
+| `AsyncRT_DeviceStream_hip_stream` | AppleGPURT.cpp:897 |  |
+| `AsyncRT_cuda_tensorMapEncodeIm` | AppleGPURT.cpp:1053 |  |
+| `AsyncRT_cuda_tensorMapEncodeTiled` | AppleGPURT.cpp:1052 |  |
+| `AsyncRT_occupancyMaxActiveBlocksPerMultiprocessor` | AppleGPURT.cpp:888 |  |
+

@@ -1,3 +1,4 @@
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//bazel:api.bzl", "modular_cc_binary", "modular_cc_library")
 
 # AppleGPURT — our implementation of the AsyncRT device ABI, replacing the
@@ -33,4 +34,19 @@ modular_cc_binary(
     name = "applegpu_metal_smoke",
     srcs = ["applegpu_metal_smoke.c"],
     deps = [":MojoBindings"],
+)
+
+# The capability table is generated from the runtime source, so it can drift
+# the moment someone implements a stub and does not re-run the generator. A
+# table nobody trusts is worse than no table -- the whole point is to say what
+# an entry point will do BEFORE you call it -- so the check is a test.
+sh_test(
+    name = "abi_table_up_to_date",
+    srcs = ["tools/check-abi-table.sh"],
+    data = [
+        "ABI-NOTES.md",
+        "AppleGPUMetal.cpp",
+        "AppleGPURT.cpp",
+        "tools/gen-abi-table.py",
+    ],
 )
