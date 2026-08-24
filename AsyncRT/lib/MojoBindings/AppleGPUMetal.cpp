@@ -486,6 +486,33 @@ int AppleGPUMetal_getAttribute(AGMetalCtx *ctx, int attr, int *out) {
       *out = mt.w ? static_cast<int>(mt.w) : 1024;
     }
     return 0;
+  case 16: // MULTIPROCESSOR_COUNT
+    // Metal exposes no SM count, so this was unanswered -- and an unanswered
+    // attribute RAISES (DeviceContext.get_attribute wraps it in _checked), it
+    // does not return a sentinel. That is what blocks the Apple attention and
+    // KV-cache group, though not by the route it looks like: the MHA split-K
+    // heuristic already guards this query behind `api == "cuda" or "hip"`.
+    // The unconditional one is _softmax_gpu (softmax.mojo:1131), reached from
+    // mha_gpu_naive, which every one of those tests runs as its reference.
+    //
+    // Answer it with the physical GPU core count from IOKit -- a measured
+    // hardware property, not a CUDA constant. Cores are the honest analogue:
+    // each has its own scheduler, register file and threadgroup memory.
+    //
+    // The value is used three ways in _softmax_gpu, and only one of them cares
+    // what it is. Two are occupancy caps on a grid-stride kernel, where any
+    // count >= 1 is functionally correct. The third picks a split-K factor,
+    // and num_splits > 1 switches to a two-launch partial-max/partial-sum
+    // reducer -- mathematically equivalent, but a different floating-point
+    // reduction ORDER. A core count is small enough (32 here) that
+    // blocks_per_sm * sm_count stays below the row count on realistic
+    // attention shapes, so num_splits stays 1 and numerics are untouched.
+    // A large invented value would silently change which kernel runs.
+    if (ctx->caps.coreCount <= 0)
+      return -1; // unreadable: stay unsupported rather than invent one
+    // pad_gpu.mojo divides by this, so zero must never escape as a value.
+    *out = ctx->caps.coreCount;
+    return 0;
   case 10: // WARP_SIZE
     // Every Apple GPU family is 32-lane (upstream AppleMetalFamily:
     // warp_size=32), unlike the Vega II's wave64 that the x86-64 fork

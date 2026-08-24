@@ -1015,7 +1015,32 @@ extern "C" void AsyncRT_DeviceEvent_retain(const DeviceEvent *event) {
 
 // Kernel launches, ranged host functions, Metal capture, and tensor maps
 // arrive with later phases; linkable, legible stubs meanwhile.
-VR_STUB_ERR(AsyncRT_DeviceContext_enqueueHostFunctionRange)
+// The ranged form of enqueueHostFunction. Each element of `coroHandles` is a
+// coroutine already materialised for its own index, so there is nothing to
+// pass but the handle -- the index is captured.
+//
+// Synchronous, matching enqueueHostFunction above and the stream-level
+// enqueueHostFunc: this backend runs the work in place rather than queueing
+// it. That satisfies the ordering the tests require (a range must complete
+// relative to enqueues either side of it before synchronize() returns) and
+// makes `destroy` unreachable, since cancellation cannot happen when every
+// resume runs to completion before returning.
+//
+// Worth implementing rather than leaving stubbed: sync_parallelize ABORTS on
+// error rather than raising, so this stub turned a missing ABI entry point
+// into a hard process abort with no located diagnostic.
+extern "C" const char *AsyncRT_DeviceContext_enqueueHostFunctionRange(
+    const DeviceContext *, void (*resume)(void *), void (*destroy)(void *),
+    void **coroHandles, size_t count) {
+  (void)destroy;
+  if (count && !coroHandles)
+    return vrErrorf("AppleGPURT: enqueueHostFunctionRange(count=%zu) with a "
+                    "null handle array",
+                    count);
+  for (size_t i = 0; i < count; ++i)
+    resume(coroHandles[i]);
+  return VR_OK;
+}
 VR_STUB_ERR(AsyncRT_DeviceContext_setMetalPrintEnabled)
 VR_STUB_ERR(AsyncRT_DeviceContext_startMetalTraceCapture)
 VR_STUB_ERR(AsyncRT_DeviceContext_stopMetalTraceCapture)
