@@ -1082,6 +1082,100 @@ std::optional<std::string> verifyBeforeEmit(llvm::Module &m,
           msg).str();
 }
 
+// Mark the cross-lane and barrier families `convergent`.
+//
+// Without it the optimiser believes the call has no cross-thread meaning and
+// may sink it, hoist it, duplicate it, or move it across divergent control
+// flow. For a shuffle that silently changes which lanes take part; for a
+// BARRIER it means threads proceed before the threadgroup has finished
+// writing shared memory.
+//
+// That is not theoretical. test_matmul_1_sram tiles through threadgroup
+// memory with barrier() either side of the accumulate, and produced results
+// that depended on the ROW and nothing else -- 360 at row 503, 359 at 504,
+// one less per row -- which is the signature of threads reading a partially
+// written tile. Our `air.wg.barrier` declaration carried no attributes at all.
+//
+// Which families get it is measured, not guessed. From `xcrun metal -S
+// -emit-llvm` on a kernel using all of them at once:
+//
+//   air.fast_sqrt.f32         mustprogress nofree nosync nounwind readnone willreturn
+//   air.fast_fabs.f32         (same -- math is NOT convergent)
+//   air.wg.barrier            convergent mustprogress nounwind willreturn
+//   air.simdgroup.barrier     convergent mustprogress nounwind willreturn
+//   air.simd_shuffle_xor.f32  convergent mustprogress nounwind willreturn
+//   air.simd_sum.f32          convergent mustprogress nounwind willreturn
+//
+// Memory effects are deliberately NOT set here. `readnone` is the attribute
+// whose modern spelling the AIR reader predates, and math already works
+// without it; adding it would trade a fixed miscompile for a rejected module.
+// Drop the per-signature tag before emission. This is the real AIR symbol.
+//
+// AirLowering suffixes every `llvm.air.*` declaration with `$<hash>` so that
+// distinct operand signatures cannot collide on one symbol during MLIR
+// translation. That tag is an internal device and must never reach the
+// driver: `air.wg.barrier$FBACEBCDEBF03022` is a name Apple has never heard
+// of.
+//
+// mangleAirOps already strips it for the families it renames -- the converts
+// and the simdgroup matrix ops -- which is why those come out clean. Anything
+// it does NOT rename kept the tag all the way into the metallib. The barrier
+// is the important case: an unresolvable barrier is not a link error, it is a
+// barrier that does not synchronise, and test_matmul_1_sram was reading
+// partially written threadgroup memory because of it.
+//
+// Two symbols reduced to the same stem would be a genuine AIR-level conflict
+// -- AIR defines one signature per name -- so that is diagnosed rather than
+// silently merged.
+llvm::Error stripAirSignatureTags(llvm::Module &m) {
+  llvm::SmallVector<llvm::Function *, 8> tagged;
+  for (llvm::Function &fn : m)
+    if (fn.getName().starts_with("air.") && fn.getName().contains('$'))
+      tagged.push_back(&fn);
+  for (llvm::Function *fn : tagged) {
+    std::string stem = airStem(fn->getName()).str();
+    if (llvm::Function *existing = m.getFunction(stem)) {
+      if (existing->getFunctionType() != fn->getFunctionType())
+        return llvm::createStringError(
+            llvm::inconvertibleErrorCode(),
+            "two AIR declarations reduce to '%s' with different signatures; "
+            "AIR defines one signature per symbol, so one of them is wrong",
+            stem.c_str());
+      fn->replaceAllUsesWith(existing);
+      fn->eraseFromParent();
+      continue;
+    }
+    fn->setName(stem);
+  }
+  return llvm::Error::success();
+}
+
+
+bool isConvergentAirOp(llvm::StringRef name) {
+  return name == "air.wg.barrier" || name == "air.simdgroup.barrier" ||
+         name.starts_with("air.simd_") || name.starts_with("air.quad_") ||
+         name.starts_with("air.simdgroup_matrix_");
+}
+
+void applyAirCallAttributes(llvm::Module &m) {
+  for (llvm::Function &fn : m) {
+    if (!fn.isDeclaration() || !isConvergentAirOp(fn.getName()))
+      continue;
+    fn.setConvergent();
+    fn.setDoesNotThrow();
+    fn.setWillReturn();
+    fn.setMustProgress();
+    // Call sites carry their own copy of the attributes, and it is the CALL
+    // the optimiser consults when deciding whether it may move something.
+    for (llvm::User *u : fn.users())
+      if (auto *cb = llvm::dyn_cast<llvm::CallBase>(u)) {
+        cb->setConvergent();
+        cb->setDoesNotThrow();
+      }
+  }
+}
+
+
 void mangleAirOps(llvm::Module &m) {
   llvm::SmallVector<llvm::CallInst *, 16> calls;
   for (llvm::Function &fn : m)
@@ -1460,6 +1554,9 @@ llvm::Error legalizeModule(llvm::Module &m) {
   // Table-driven transforms, all off by default (APPLEGPU_AIR_XFORMS).
   Air::applyTransforms(m);
   mangleAirOps(m);
+  if (llvm::Error err = stripAirSignatureTags(m))
+    return err;
+  applyAirCallAttributes(m);
   eraseDeadIntrinsicDeclarations(m);
   lowerIntFloatConverts(m);
   remapAddressSpaces(m);
