@@ -24,19 +24,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import classify  # BUILD-derived relevance; see classify.py
-
-REPO = Path(__file__).resolve().parents[2]
-
-SKIP_RE = re.compile(r'^\s*(SKIP(?:PED)?|[Ss]kip(?:ping)?)\b[: ]', re.M)
-# lines that prove real work happened (test harness section markers / checks)
-WORK_RE = re.compile(r'^\s*(==\s+\S|PASS\b|ok\b|\[\s*OK\s*\])', re.M)
-# perf lines emitted by benches and some tests
-PERF_RE = re.compile(
-    r'([0-9]+\.?[0-9]*)\s*(GFLOP/s|GFLOPS|GB/s|TFLOP/s|ms\b|us\b|ns\b)', re.I)
-
-def sh(cmd, **kw):
-    return subprocess.run(cmd, shell=True, cwd=REPO, capture_output=True,
-                          text=True, **kw)
+# One copy of the skip/work/perf vocabulary, shared with run-tests.py: these
+# used to be private near-duplicates here, and the divergence meant the two
+# tools scored the same `Skipped:` log differently. See common.py.
+from common import REPO, SKIP_RE, WORK_RE, best_perf, sh
 
 
 def testlog_path(target):
@@ -48,7 +39,10 @@ def testlog_path(target):
 def classify_outcome(status, log):
     if status == "PASSED":
         if not log:
-            return "PASS", ""
+            # bazel says it passed but there is no output to show for it, so
+            # there is no way to tell real work from a body that skipped
+            # everything. That is what VACUOUS means.
+            return "VACUOUS", "passed with no test log to check"
         skip = SKIP_RE.search(log)
         work = WORK_RE.search(log)
         if skip and work:
@@ -77,21 +71,6 @@ def metallibs(target):
         return str(b.read_bytes().count(b"MTLB"))
     except OSError:
         return ""
-
-
-def perf_from(log):
-    if not log:
-        return ""
-    hits = PERF_RE.findall(log)
-    if not hits:
-        return ""
-    # prefer throughput units over raw times
-    for unit_pref in ("TFLOP/s", "GFLOP/s", "GFLOPS", "GB/s"):
-        best = [h for h in hits if h[1].upper() == unit_pref.upper()]
-        if best:
-            top = max(best, key=lambda h: float(h[0]))
-            return f"{top[0]} {unit_pref}"
-    return f"{hits[0][0]} {hits[0][1]}"
 
 
 def main():
@@ -133,7 +112,15 @@ def main():
                 log = lp.read_text(errors="replace")
             except OSError:
                 pass
-        status = statuses.get(t, "PASSED" if lp.exists() else "NO_STATUS")
+        # NOT `"PASSED" if lp.exists()`. bazel-testlogs persists across runs,
+        # so a target that is switched off, filtered out, or fails to build
+        # today still has yesterday's test.log sitting there -- and treating
+        # that as a pass is precisely the "a clean sweep can mean nothing ran"
+        # failure this tool exists to catch. Absent from the summary means we
+        # have no status for it, whatever is on disk.
+        status = statuses.get(t, "NO_STATUS")
+        if status == "NO_STATUS":
+            log = ""  # do not classify this run from a previous run's output
         outcome, why = classify_outcome(status, log)
         rel, rel_reason, tracker_id = classify.classify_target(t, cls_index)
         if rel == "excluded":
@@ -144,7 +131,7 @@ def main():
             "relevance": rel,
             "outcome": outcome,
             "metallibs": metallibs(t),
-            "perf": perf_from(log),
+            "perf": best_perf(log, fallback=True),
             "tracker_id": tracker_id,
             "note": why,
         })

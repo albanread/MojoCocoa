@@ -61,14 +61,25 @@ def main():
         cls, reason, tid = classify.classify_target(lbl, idx)
         pkg = lbl.split(":")[0].rsplit("/", 1)[-1]
         if st == "SKIPPED":
+            # One chain, in precedence order, with nothing overriding it
+            # afterwards. `off-on-apple` is the backlog this report exists to
+            # size, so a test switched off on Apple stays in that bucket even
+            # when it happens to live in a multi-GPU package -- the trailing
+            # `if pkg in MULTI_GPU_PKGS` that used to follow this quietly
+            # rewrote exactly those rows.
             if cls == "excluded":
                 bucket = "off-on-apple"
-            elif cls == "foreign" or pkg not in MULTI_GPU_PKGS:
+            elif cls == "foreign":
                 bucket = "other-vendor"
+            elif pkg in MULTI_GPU_PKGS:
+                bucket = "needs-more-gpus"
             else:
-                bucket = "needs-more-gpus"
-            if pkg in MULTI_GPU_PKGS:
-                bucket = "needs-more-gpus"
+                # Not switched off on Apple, not another vendor's, not a
+                # multi-GPU package -- and bazel refused it anyway. Sending
+                # these to `other-vendor` claimed they were somebody else's
+                # problem and shrank the denominator on no evidence; they are
+                # unexplained, and the report should say so.
+                bucket = "skipped-unclassified"
         elif lbl in build_failed or st == "FAILED TO BUILD":
             bucket = "build-failure"
         else:
@@ -106,6 +117,9 @@ def main():
              "has its own fork, out of scope here |")
     L.append(f"| needs-more-gpus | {c['needs-more-gpus']} | multi-GPU / NVSHMEM; "
              "single-GPU machine |")
+    L.append(f"| skipped-unclassified | {c['skipped-unclassified']} | bazel "
+             "refused it and the BUILD files do not say why \u2014 constraints "
+             "declared inline on the rule; needs a look |")
 
     fails = [r for r in rows if r["bucket"] in ("fail", "build-failure")]
     if fails:
@@ -114,6 +128,14 @@ def main():
         for r in sorted(fails, key=lambda r: (r["bucket"], r["target"])):
             L.append(f"| `{r['target'].split(':')[-1]}` "
                      f"({r['pkg']}) | {r['bucket']} |")
+
+    unexplained = [r for r in rows if r["bucket"] == "skipped-unclassified"]
+    if unexplained:
+        L.append("\n## Skipped for a reason the BUILD files do not state\n")
+        L.append("| target | class |\n|---|---|")
+        for r in sorted(unexplained, key=lambda r: r["target"]):
+            L.append(f"| `{r['target'].split(':')[-1]}` "
+                     f"({r['pkg']}) | {r['class']} |")
 
     off = [r for r in rows if r["bucket"] == "off-on-apple"]
     if off:
@@ -130,7 +152,8 @@ def main():
     print(f"  relevant: {relevant}  ->  pass {c['pass']}  fail {c['fail']}  "
           f"build-fail {c['build-failure']}")
     print(f"  off-on-apple {c['off-on-apple']}   other-vendor "
-          f"{c['other-vendor']}   needs-more-gpus {c['needs-more-gpus']}")
+          f"{c['other-vendor']}   needs-more-gpus {c['needs-more-gpus']}"
+          f"   skipped-unclassified {c['skipped-unclassified']}")
 
 
 if __name__ == "__main__":
