@@ -34,7 +34,6 @@ from max.gpu.sync import barrier
 from max.gpu.host import DeviceContext
 from layout import TileTensor, Coord, row_major
 from std.memory import unsafe_stack_allocation
-from std.testing import assert_false
 
 comptime tile_size = 32
 
@@ -95,7 +94,9 @@ def matmul_sram(
         c.store(Coord(Int(row), Int(col)), result)
 
 
-def check_shape[M: Int, N: Int, K: Int](ctx: DeviceContext, label: StaticString) raises:
+def check_shape[
+    M: Int, N: Int, K: Int
+](ctx: DeviceContext, label: StaticString) raises -> Int:
     var a_dev = ctx.enqueue_create_buffer[DType.float32](M * K)
     var b_dev = ctx.enqueue_create_buffer[DType.float32](K * N)
     var c_dev = ctx.enqueue_create_buffer[DType.float32](M * N)
@@ -141,17 +142,31 @@ def check_shape[M: Int, N: Int, K: Int](ctx: DeviceContext, label: StaticString)
             " first=[", first_r, ",", first_c, "]=", first_v,
             " want=", K,
         )
+    # Returned rather than raised: the point of this file is the whole
+    # dimension matrix, and stopping at the first ragged shape that breaks
+    # hides which of the others break too. main() raises once, at the end.
+    return bad
 
 
 def main() raises:
+    var failed = 0
     with DeviceContext() as ctx:
         # 512 is 16*32 exactly; 502/511/513 are deliberately ragged.
-        check_shape[512, 512, 512](ctx, "all aligned      ")
-        check_shape[513, 512, 512](ctx, "ragged M only    ")
-        check_shape[512, 502, 512](ctx, "ragged N only    ")
-        check_shape[512, 512, 511](ctx, "ragged K only    ")
-        check_shape[513, 502, 512](ctx, "ragged M+N       ")
-        check_shape[513, 512, 511](ctx, "ragged M+K       ")
-        check_shape[512, 502, 511](ctx, "ragged N+K       ")
-        check_shape[513, 502, 511](ctx, "all ragged       ")
+        failed += check_shape[512, 512, 512](ctx, "all aligned      ")
+        failed += check_shape[513, 512, 512](ctx, "ragged M only    ")
+        failed += check_shape[512, 502, 512](ctx, "ragged N only    ")
+        failed += check_shape[512, 512, 511](ctx, "ragged K only    ")
+        failed += check_shape[513, 502, 512](ctx, "ragged M+N       ")
+        failed += check_shape[513, 512, 511](ctx, "ragged M+K       ")
+        failed += check_shape[512, 502, 511](ctx, "ragged N+K       ")
+        failed += check_shape[513, 502, 511](ctx, "all ragged       ")
     print("dimension matrix complete")
+    # Without this the file was a report, not a test: every shape was compared
+    # element by element and a mismatch printed "FAIL", but main() still exited
+    # 0, so a ragged-shape regression would have been recorded as a pass.
+    if failed != 0:
+        raise Error(
+            "matmul dimension matrix: "
+            + String(failed)
+            + " mismatched element(s) across the shapes above"
+        )
