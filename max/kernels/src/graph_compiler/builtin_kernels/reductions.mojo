@@ -50,7 +50,6 @@ from nn.normalization import (
     rms_norm,
     row_mean_of_squares_qk,
     row_mean_of_squares,
-    rms_norm_gpu,
 )
 from nn.softmax import softmax
 from nn.topk import top_k, top_k_shape_impl
@@ -1050,53 +1049,6 @@ struct ReduceRMSNorm:
         # input strip (`_fuse`), avoiding a second global read of the input in
         # the map phase; a dynamic width falls back to streaming.
         comptime rms_cols = Int(input.static_spec.shape_tuple[rank - 1])
-
-        # The `rowwise` GPU implementation behind `rms_norm` is numerically
-        # wrong on Apple -- wrong at every row width, all-zeros at most widths
-        # above 32 -- while the older `rms_norm_gpu` family, compiled by the
-        # same backend, matches the closed form everywhere tried. See the
-        # SUSPECT note at the dispatch in nn/normalization.mojo.
-        #
-        # Rerouting inside `rms_norm` itself does not work: bridging the two
-        # calling conventions needs adapter closures, and the extra capture
-        # depth pushes the capture pack from by-value to by-pointer, which
-        # `legalizeKernel` then types as a device buffer while the host binds
-        # it as constant bytes. Here there is no adapter -- the closures wrap
-        # `input`/`output` directly, exactly as the working callers of
-        # `rms_norm_gpu` do -- so the pack stays by value.
-        @always_inline
-        @__copy_capture(input)
-        @__parameter
-        def rn_in[width: Int](coords: Coord) -> SIMD[dtype, width]:
-            return input._lambda_load[width=width, element_alignment=1](
-                rebind[IndexList[input.rank]](coord_to_index_list(coords))
-            )
-
-        @always_inline
-        @__copy_capture(output)
-        @__parameter
-        def rn_out[
-            width: SIMDLength, alignment: Int
-        ](coords: Coord, val: SIMD[dtype, width]) -> None:
-            output._lambda_store[width=width, element_alignment=alignment](
-                rebind[IndexList[output.rank]](coord_to_index_list(coords)),
-                rebind[SIMD[output.dtype, width]](val),
-            )
-
-        comptime if is_gpu[target]():
-            rms_norm_gpu[
-                rank,
-                rn_in,
-                rn_out,
-                multiply_before_cast=multiply_before_cast,
-            ](
-                input.shape_coord(),
-                gamma.to_tile_tensor[DType.int64](),
-                epsilon,
-                weight_offset,
-                ctx,
-            )
-            return
 
         comptime if rms_cols != UNKNOWN_VALUE:
             rms_norm[
