@@ -69,7 +69,9 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
+#include "llvm/Transforms/Scalar/Scalarizer.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -81,6 +83,78 @@
 
 namespace M::KGEN {
 namespace {
+
+/// A backend knob that can be flipped WITHOUT rebuilding anything.
+///
+/// The obvious way to gate an experimental pass is an environment variable,
+/// and under bazel that is a trap: bazel does not forward the shell
+/// environment into compile actions, so the only way to set one is
+/// `--action_env=FOO=1`, which enters the key of EVERY action and invalidates
+/// the entire graph. Flipping one boolean rebuilt 3,610 actions here --
+/// including all of LLVM -- and flipping it back costs the same again. That
+/// turns a two-minute A/B measurement into a two-hour one, so nobody runs the
+/// experiment.
+///
+/// So look in a FILE as well. The file is not a bazel input, so writing it
+/// invalidates nothing: the binary already contains both code paths, and the
+/// choice is made when the compiler runs. Toggle, re-measure, toggle back.
+///
+/// Search order, first hit wins:
+///   1. the environment variable (works outside bazel, and in CI)
+///   2. $APPLEGPU_XFORMS_FILE, if set
+///   3. /tmp/applegpu-xforms.conf
+///   4. $HOME/.applegpu-xforms
+///
+/// File format is one `key=value` per line; `#` starts a comment. Missing file
+/// or missing key means "unset", and the caller's default stands.
+static std::optional<std::string> airKnob(llvm::StringRef key) {
+  // 1. environment first: an explicit --action_env should always win.
+  {
+    llvm::SmallString<64> envName(key);
+    if (const char *v = ::getenv(envName.c_str()))
+      return std::string(v);
+  }
+  // 2-4. then the config file, parsed once per process.
+  static const llvm::StringMap<std::string> *table = [] {
+    auto *m = new llvm::StringMap<std::string>();
+    llvm::SmallVector<std::string, 3> paths;
+    if (const char *p = ::getenv("APPLEGPU_XFORMS_FILE"))
+      paths.push_back(p);
+    paths.push_back("/tmp/applegpu-xforms.conf");
+    if (const char *home = ::getenv("HOME"))
+      paths.push_back(std::string(home) + "/.applegpu-xforms");
+    for (const std::string &path : paths) {
+      auto buf = llvm::MemoryBuffer::getFile(path);
+      if (!buf)
+        continue;
+      llvm::SmallVector<llvm::StringRef, 16> lines;
+      (*buf)->getBuffer().split(lines, '\n');
+      for (llvm::StringRef line : lines) {
+        line = line.take_until([](char c) { return c == '#'; }).trim();
+        if (line.empty())
+          continue;
+        auto [k, v] = line.split('=');
+        if (!v.empty() || line.contains('='))
+          (*m)[k.trim()] = v.trim().str();
+      }
+      break; // first readable file wins
+    }
+    return m;
+  }();
+  auto it = table->find(key);
+  if (it == table->end())
+    return std::nullopt;
+  return it->second;
+}
+
+static bool airKnobEnabled(llvm::StringRef key, bool dflt) {
+  auto v = airKnob(key);
+  if (!v)
+    return dflt;
+  llvm::StringRef s(*v);
+  return !(s == "0" || s.equals_insensitive("off") ||
+           s.equals_insensitive("false") || s.equals_insensitive("no"));
+}
 
 // Verified against a golden sample from THIS machine's toolchain, the same
 // way the x86-64 fork derived its own (spike S1):
@@ -1157,6 +1231,50 @@ bool isConvergentAirOp(llvm::StringRef name) {
          name.starts_with("air.simdgroup_matrix_");
 }
 
+
+/// Give AIR kernels the function attributes Apple's own toolchain sets.
+///
+/// Our kernels carried NONE. Dumping the final AIR for the same source through
+/// this backend and through Modular's shipping 26.5.0 release, upstream's
+/// kernel `define` reads
+///
+///   mustprogress nofree norecurse nosync nounwind willreturn
+///   "approx-func-fp-math"="true" "no-infs-fp-math"="true"
+///   "no-nans-fp-math"="true" "no-signed-zeros-fp-math"="true"
+///   "no-trapping-math"="true" "unsafe-fp-math"="true"
+///   "memory"="argmem: readwrite" "metal.kernel"="true"
+///   "min-legal-vector-width"="0" "no-builtins"
+///
+/// and ours read `define void @kernel(...) {` with no attribute group at all.
+///
+/// The fast-math set is not an optimisation we are choosing to enable, it is
+/// the semantics Metal already has: MSL compiles with fast math unless the
+/// author opts out, so a kernel WITHOUT these attributes asks Apple's backend
+/// to preserve strict IEEE behaviour it was never promised -- forbidding
+/// reassociation and constraining scheduling for no benefit.
+///
+/// The `metal.thread_*_idx` attributes are deliberately NOT set here: they map
+/// a parameter position to a thread-builtin, our parameter layout differs from
+/// upstream's, and `!air.kernel` argument metadata already conveys it. Getting
+/// them wrong would be worse than omitting them.
+static void applyAirKernelFnAttributes(llvm::Function &fn) {
+  fn.setMustProgress();
+  fn.setDoesNotThrow();
+  fn.setWillReturn();
+  fn.setDoesNotFreeMemory();
+  fn.addFnAttr(llvm::Attribute::NoRecurse);
+  fn.addFnAttr(llvm::Attribute::NoSync);
+  fn.addFnAttr("no-builtins");
+  fn.addFnAttr("min-legal-vector-width", "0");
+  fn.addFnAttr("metal.kernel", "true");
+  fn.addFnAttr("approx-func-fp-math", "true");
+  fn.addFnAttr("no-infs-fp-math", "true");
+  fn.addFnAttr("no-nans-fp-math", "true");
+  fn.addFnAttr("no-signed-zeros-fp-math", "true");
+  fn.addFnAttr("no-trapping-math", "true");
+  fn.addFnAttr("unsafe-fp-math", "true");
+}
+
 void applyAirCallAttributes(llvm::Module &m) {
   for (llvm::Function &fn : m) {
     if (!fn.isDeclaration() || !isConvergentAirOp(fn.getName()))
@@ -1609,6 +1727,8 @@ llvm::Error legalizeModule(llvm::Module &m) {
     llvm::SmallVector<llvm::Metadata *, 8> argMD;
     llvm::Function *legal = legalizeKernel(*fn, argMD);
     legal->setCallingConv(llvm::CallingConv::C);
+    if (airKnobEnabled("APPLEGPU_AIR_KERNEL_FN_ATTRS", false))
+      applyAirKernelFnAttributes(*legal);
     airKernels->addOperand(llvm::MDNode::get(
         c, {llvm::ConstantAsMetadata::get(legal), llvm::MDNode::get(c, {}),
             llvm::MDNode::get(c, argMD)}));
@@ -1854,6 +1974,42 @@ public:
           fn.addFnAttr(llvm::Attribute::AlwaysInline);
         }
       mpm.addPass(llvm::AlwaysInlinerPass());
+
+      // Break wide float vector arithmetic into pieces the hardware has.
+      //
+      // An Apple GPU lane is scalar: the 32-wide SIMD is across THREADS, not
+      // within one. A `<64 x float>` fmul inside a thread has no vector unit to
+      // land on, so somebody must break it into 64 scalar operations before it
+      // can execute. Metal Shading Language tops out at four components, so
+      // anything wider than float4 is a shape Apple's own frontend never emits
+      // and their backend therefore rarely sees.
+      //
+      // Measured on an M4 Max against Modular's shipping 26.5.0 release, from
+      // the same source file (oracles bench/fma_peak_bench.mojo): upstream
+      // emits NO vector float ops at any width -- its loop is scalarised into
+      // 3*chains+4 scalar ops -- while this backend emitted exactly two, an
+      // `fmul <N x float>` and an `fadd <N x float>`, at every width. Upstream
+      // saturates at 16 chains where this port needs 64: an ILP deficit of the
+      // shape a poor scalarisation schedule produces.
+      //
+      // ScalarizeMinBits=128 fragments anything wider than float4 while
+      // leaving float2/3/4 intact, since those map to native MSL vector types.
+      // Loads and stores are left alone (the pass default): vector memory
+      // access is genuinely wide on this hardware, and splitting it would cost
+      // rather than gain.
+      if (airKnobEnabled("APPLEGPU_AIR_SCALARIZE_WIDE_VECTORS", false)) {
+        unsigned minBits = 128;
+        if (auto b = airKnob("APPLEGPU_AIR_SCALARIZE_MIN_BITS"))
+          minBits = static_cast<unsigned>(atoi(b->c_str()));
+        llvm::ScalarizerPassOptions opts;
+        opts.ScalarizeMinBits = minBits;
+        opts.ScalarizeLoadStore = false;
+        mpm.addPass(llvm::createModuleToFunctionPassAdaptor(
+            llvm::ScalarizerPass(opts)));
+        if (airKnobEnabled("APPLEGPU_AIR_TRACE_KNOBS", false))
+          llvm::errs() << "[applegpu] scalarize-wide-vectors ON, minBits="
+                       << minBits << "\n";
+      }
         mpm.run(module, mam);
 
         // Re-legalise address spaces now that inlining has run. legalizeModule
