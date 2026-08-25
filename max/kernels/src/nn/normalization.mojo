@@ -2963,6 +2963,90 @@ def rms_norm[
         # `gamma`/`inv_rms`/`weight_offset`/`output_fn` ride into `elementwise`.
         row.elementwise(write, load)
 
+    # SUSPECT: the `rowwise` GPU path is numerically wrong on Apple.
+    #
+    # Measured on an M4 Max against the closed form and against Modular's
+    # shipping 26.5.0 release on the same machine and the same inputs: this
+    # implementation returns wrong values at EVERY row width tried, and
+    # all-zeros at most widths above 32 (33, 40, 48, 54, 55, 56, 60, 63, 65,
+    # 66, 72, 80, 88, 96, 127, 129, 160, 192, 256 all zero; 32, 64 and 128 are
+    # merely wrong). At width 32 it is 2.5x off.
+    #
+    # It is not the AIR backend. `rms_norm_gpu` below -- the older
+    # hand-written kernel family, compiled by the same backend -- matches the
+    # closed form at every width tried, f32 and bf16, 32 through 16385,
+    # including the widths that zero here. Dumping the AIR of both toolchains
+    # confirms they instantiate different kernels entirely:
+    # `algorithm_gpu_rowwise__{BlockK,WarpKe,Pointw}` here against
+    # `rms_norm_gpu_{block,warp_per_row}` upstream.
+    #
+    # So route the GPU case to the implementation that works and leave the
+    # rowwise body for CPU, where it is correct (it is checked against the
+    # closed form in test_cpu_gpu_differential and agrees). Remove this when
+    # the rowwise GPU path is fixed; the differential test is the gate.
+    #
+    # Only the last-axis case is rerouted: `rms_norm_gpu` reduces the trailing
+    # dimension, so a caller asking for any other `reduce_dim` still goes
+    # through rowwise rather than silently getting the wrong axis reduced.
+    # BLOCKED, and therefore off. Rerouting is correct and the destination
+    # kernel is correct, but the adapter closures below build a capture pack
+    # that this fork's backend mis-marks: AirBackend.cpp:697 takes a pointer
+    # argument's address space from its LLVM type and defaults ANYTHING still
+    # generic to device (`as ? as : 1`). The capture pack is a host struct, so
+    # it is described as a device buffer, pipeline reflection reports device,
+    # and the runtime -- which treats reflection as authoritative for
+    # compiler-generated kernels -- binds a stack address as a device buffer:
+    #
+    #   [applegpu] 'rms_norm_gpu_block_float32_True_...' arg 4: caller says
+    #   constant, reflection says device; using reflection
+    #   AppleGPURT[metal]: launch arg 4: unknown device address 0x16f4b4238
+    #
+    # That is the same defect diagnosed for test_index_tensor. Directly
+    # written closures do not trip it -- `rms_norm_gpu` is correct when called
+    # straight, which is how the reference numbers in the SUSPECT note above
+    # were obtained -- only this adapter layer does.
+    #
+    # Failing to LAUNCH is worse than returning wrong numbers, so this stays
+    # off until the address space of capture-pack arguments is fixed. Flip the
+    # alias to True at that point; test_cpu_gpu_differential is the gate.
+    comptime reroute_gpu_to_rms_norm_gpu = False
+
+    comptime if (
+        reroute_gpu_to_rms_norm_gpu
+        and is_gpu[target]()
+        and reduce_dim == rank - 1
+    ):
+
+        @always_inline
+        @__parameter
+        def _rerouted_in[width: Int](coords: Coord) -> SIMD[dtype, width]:
+            return input_fn[width, 1, rank](
+                rebind[IndexList[rank]](coord_to_index_list(coords))
+            )
+
+        @always_inline
+        @__parameter
+        def _rerouted_out[
+            width: SIMDLength, alignment: Int
+        ](coords: Coord, val: SIMD[dtype, width]) -> None:
+            output_fn[width, rank, alignment](
+                rebind[IndexList[rank]](coord_to_index_list(coords)), val
+            )
+
+        rms_norm_gpu[
+            rank,
+            _rerouted_in,
+            _rerouted_out,
+            multiply_before_cast=multiply_before_cast,
+        ](
+            shape,
+            gamma,
+            epsilon.cast[DType.float32](),
+            weight_offset,
+            context.value(),
+        )
+        return
+
     rowwise.launch[
         axis=reduce_dim,
         simd_width=simd_width,
