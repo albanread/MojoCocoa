@@ -1,0 +1,162 @@
+[
+  {
+    "target": "//max/kernels/test/gpu/basics:test_metal_print.mojo.test",
+    "class": "apple",
+    "reason": "Metal GPU print tests (Apple only)",
+    "tracker_id": "",
+    "outcome": "fail",
+    "detail": "FileCheck command line:  ../+llvm_configure+llvm-project/llvm/FileCheck max/kernels/test/gpu/basics/test_metal_print.mojo",
+    "perf": "",
+    "seconds": 0.01
+  },
+  {
+    "target": "//max/kernels/test/gpu/compile:test_air_overload_symbols.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "pass",
+    "detail": "",
+    "perf": "",
+    "seconds": 0.01
+  },
+  {
+    "target": "//max/kernels/test/gpu/compile:test_air_target_profile.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "pass",
+    "detail": "",
+    "perf": "",
+    "seconds": 0.01
+  },
+  {
+    "target": "//max/kernels/test/gpu/layout:test_apple_mma_8x8.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "pass",
+    "detail": "",
+    "perf": "",
+    "seconds": 0.03
+  },
+  {
+    "target": "//max/kernels/test/gpu/layout:test_apple_mma_fragment.mojo.test",
+    "class": "apple",
+    "reason": "MSTDL-2592",
+    "tracker_id": "MSTDL-2592",
+    "outcome": "partial",
+    "detail": "SKIP: requires Apple M5 + Metal 4 == test_mma_1x1 SKIP: requires Apple M5 + Metal 4 == tes",
+    "perf": "",
+    "seconds": 0.02
+  },
+  {
+    "target": "//max/kernels/test/gpu/layout:test_tensor_core_apple.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "pass",
+    "detail": "",
+    "perf": "",
+    "seconds": 0.02
+  },
+  {
+    "target": "//max/kernels/test/gpu/linalg:test_apple_fp4_matmul.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "pso",
+    "detail": "== FAILED test_stage4_dispatch_paths: At max/mojo/max/gpu/host/_device_context_extras.mojo:168:17: AppleGPURT[metal]: newComputePipelineStateWithFunction: simdgroup_matrix<T,16,16x",
+    "perf": "",
+    "seconds": 0.08
+  },
+  {
+    "target": "//max/kernels/test/gpu/linalg:test_apple_gpu_matmul.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "fail",
+    "detail": "Unhandled exception caught during execution: enqueue_apple_matmul requires Apple M5 (compute_capability == 5); got compute_capability=4. Route M1-M4 to the naive matmul path; re-va",
+    "perf": "",
+    "seconds": 0.12
+  },
+  {
+    "target": "//max/kernels/test/gpu/linalg:test_apple_int8_matmul.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "fail",
+    "detail": "Unhandled exception caught during execution: FAILED: 3 of 3 stages",
+    "perf": "",
+    "seconds": 0.02
+  },
+  {
+    "target": "//max/kernels/test/gpu/linalg:test_fp8_gemv.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "pass",
+    "detail": "",
+    "perf": "",
+    "seconds": 0.02
+  },
+  {
+    "target": "//max/kernels/test/gpu/linalg:test_grouped_matmul_apple_fp8.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "fail",
+    "detail": "Unhandled exception caught during execution: matmul2d W4A16 (Apple M5 NVFP4) requires Apple M5 (compute_capability == 5); got compute_capability=4",
+    "perf": "",
+    "seconds": 0.02
+  },
+  {
+    "target": "//max/kernels/test/gpu/memory:test_apple_edge_masked_load.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "pass",
+    "detail": "",
+    "perf": "",
+    "seconds": 0.02
+  },
+  {
+    "target": "//max/kernels/test/gpu/nn:probe_block_scan_metal.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "pass",
+    "detail": "",
+    "perf": "",
+    "seconds": 0.02
+  },
+  {
+    "target": "//max/kernels/test/gpu/nn:test_apple_fa_prefill.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "pso",
+    "detail": "Unhandled exception caught during execution: At max/mojo/max/gpu/host/_device_context_extras.mojo:168:17: AppleGPURT[metal]: newComputePipelineStateWithFunction: simdgroup_matrix<T",
+    "perf": "",
+    "seconds": 0.04
+  },
+  {
+    "target": "//max/kernels/test/gpu/nn:test_apple_fa_softmax_unit.mojo.test",
+    "class": "apple",
+    "reason": "",
+    "tracker_id": "",
+    "outcome": "pass",
+    "detail": "",
+    "perf": "",
+    "seconds": 0.02
+  },
+  {
+    "target": "//max/kernels/test/gpu/nn:test_conv2d_im2col_apple.mojo.test",
+    "class": "apple",
+    "reason": "Apple M5 im2col conv2d \u2014 Metal only",
+    "tracker_id": "",
+    "outcome": "partial",
+    "detail": "SKIP: dispatcher declined this shape (1x1 / K<16 / N<16) == bf16 3x3 s1 same-pad C64->1",
+    "perf": "",
+    "seconds": 1.52
+  }
+]

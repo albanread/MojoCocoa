@@ -21,9 +21,9 @@ plan and should now be read as history rather than current status.
 | --- | --- | --- |
 | Cocoa compiler hook and `std.objc` | Working | `./spikes/run-cocoa-checks.sh`: 9 passed, 0 failed. |
 | Mojo/MAX → AIR → metallib | Working vertical slice | The source-built compiler emits metallibs accepted by the current Xcode toolchain. |
-| AppleGPURT pipeline and launch | Working vertical slice | Pipeline reflection, argument binding, coarse residency, and dispatch pass with Metal debug and shader validation enabled. Launch is still synchronous. |
+| AppleGPURT pipeline and launch | Working vertical slice | Pipeline reflection, argument binding, coarse residency, and dispatch pass with Metal debug and shader validation enabled. Launch is synchronous by default; `APPLEGPU_ASYNC_LAUNCH=1` defers the wait to `synchronize()` and is worth +29% on a 1-chain FMA kernel (exactly upstream's rate) falling to +2.9% at 64 chains. Same corpus failure set under both. Still opt-in: the per-dispatch command buffer is not yet batched, which is where the remaining 13-17% at 2-8 chains lives. |
 | Numerical smoke | Passing | Rebuilt Mandelbrot: CPU 95.214 ms, GPU 0.849 ms, 100% exact on the latest verification run. Timing is a smoke observation, not a stable benchmark. |
-| Apple MMA | Passing on exercised M4 paths | `test_apple_mma_8x8` and `test_tensor_core_apple`: 2/2 pass after signature-specific declaration uniquing. M5-only paths are not exercised on this machine. |
+| Apple MMA | Passing on the 8x8 path only | `test_apple_mma_8x8`: 19 sub-tests PASS, 0 SKIP, after signature-specific declaration uniquing. `test_tensor_core_apple` also reports PASS but is **vacuous here** — all 18 sub-tests print `SKIP: requires Apple M5 + Metal 4`, and its FileCheck pattern `{{PASS|SKIP}}` accepts a skip. It is not evidence for this machine. |
 | AIR overload regression | Passing in current uncommitted worktree | New compile-only `test_air_overload_symbols`: 1/1 pass across mixed dtype signatures; its two kernels are separate `_compile_code` invocations, so a same-module multi-function pass test is still needed. |
 | Broad MAX GPU surface | In triage | 740-target census: 79 pass, 21 build failure, 17 runtime failure, 623 skip. The census includes foreign-target and missing-package noise and is not an acceptance score. |
 

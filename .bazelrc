@@ -31,3 +31,46 @@ build:prebuilt-mojo --//:use_prebuilt_mojo_toolchain=true
 # Check for a local gitignored bazel config.
 # NOTE: Import this last so that local configs can override.
 try-import %workspace%/local.bazelrc
+
+# ---------------------------------------------------------------------------
+# Fast iteration on the compiler itself.
+#
+#   ./bazelw build //KGEN/tools/mojo:mojo --config=iter
+#
+# Drops the mypy aspect, which type-checks Python on every build including
+# pure-C++ ones, and trims test chatter. Safe to use while iterating; run a
+# plain build before trusting a result you intend to publish.
+build:iter --config=disable-lint
+build:iter --test_summary=terse
+# NOTE: deliberately no test_output setting here -- a config-set
+# --test_output=errors silently OVERRIDES an explicit
+# --test_output=all on the command line, which swallows the very
+# output you asked for. bazel warns, quietly, and you lose a run.
+
+# ---------------------------------------------------------------------------
+# NOTES ON WHY BUILDS HURT HERE, so the next person does not rediscover them.
+#
+# 1. `mojo` is ~170 MB and statically linked, so ANY change to a backend
+#    source relinks all of it. That is not an LLVM constraint -- it is
+#    `build --dynamic_mode=off` plus `--features=-supports_dynamic_linker` in
+#    bazel/internal/common.bazelrc:77-78. A shared libLLVM/libMLIR would cut
+#    the relink to the delta. Changing it re-keys the graph once (one full
+#    rebuild) and is cheaper every time after; worth measuring before adopting.
+#
+# 2. `--action_env=FOO=1` enters the key of EVERY action, so it invalidates
+#    the whole graph -- one boolean cost 3,610 actions here, LLVM included.
+#    local.bazelrc already warns about this. For toggling backend experiments
+#    use the file knob instead (no rebuild at all):
+#
+#      echo 'APPLEGPU_AIR_SCALARIZE_WIDE_VECTORS=1' > /tmp/applegpu-xforms.conf
+#
+#    See airKnob() in
+#    KGEN/lib/Compiler/ObjectCompiler/Target/Air/AirBackend.cpp. The binary
+#    carries both code paths; the file decides at run time and is not a bazel
+#    input, so nothing rebuilds.
+#
+# 3. The Mojo KERNEL cache (~/.cache/modular/.mojo_cache) is keyed on the
+#    kernel body, not on the compiler binary and not on the environment. A
+#    rebuilt compiler will happily serve you yesterday's kernel. Use
+#    ./clear_cache.sh, or ./rebuild.sh which does both and verifies the binary
+#    actually contains your change.
