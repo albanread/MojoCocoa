@@ -37,6 +37,16 @@ HARD_GUARD = re.compile(
 
 DID_NO_WORK = {"vacuous", "unverified"}
 
+# Packages this fork cannot build from source at all, and is not trying to.
+#
+# max/kernels/src/graph_compiler depends on Kernels/lib/{attn_res,matmul_rs,msa}
+# and Kernels/src/mega_ffn, none of which have source directories in the tree:
+# they arrive as precompiled .mojoc from the prebuilt wheel and our from-source
+# compiler rejects them on a version mismatch. There is no open-source graph
+# compiler, so a failure there is a missing closed dependency rather than a
+# defect, and counting it against this fork misreports the denominator.
+CLOSED_DEP_PATHS = ("/graph_compiler/",)
+
 
 def source_of(target):
     pkg, name = target[2:].split(":", 1)
@@ -45,6 +55,8 @@ def source_of(target):
 
 def out_of_scope(target, outcome=""):
     """Return a reason string if the test belongs to another vendor, else ''."""
+    if any(seg in target for seg in CLOSED_DEP_PATHS):
+        return "depends on a closed component with no source in this tree"
     leaf = target.split(":", 1)[-1].replace(".mojo.test", "")
     if NAME_VENDOR.search(leaf):
         return "vendor token in the test name"
