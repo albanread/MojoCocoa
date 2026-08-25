@@ -27,6 +27,33 @@ plan and should now be read as history rather than current status.
 | AIR overload regression | Passing in current uncommitted worktree | New compile-only `test_air_overload_symbols`: 1/1 pass across mixed dtype signatures; its two kernels are separate `_compile_code` invocations, so a same-module multi-function pass test is still needed. |
 | Broad MAX GPU surface | In triage | 740-target census: 79 pass, 21 build failure, 17 runtime failure, 623 skip. The census includes foreign-target and missing-package noise and is not an acceptance score. |
 
+## What cannot be tested here, and why
+
+Three separate reasons a target may be untestable in this fork. None of them
+is a defect, and all three have been mistaken for one:
+
+1. **No source.** `max/kernels/src/graph_compiler` depends on
+   `Kernels/lib/{attn_res,matmul_rs,msa}` and `Kernels/src/mega_ffn`, which
+   have no source directories at all — they ship as precompiled `.mojoc` in
+   the prebuilt wheel and our from-source compiler rejects them on a version
+   mismatch. There is no open-source graph compiler; when this project writes
+   one it will be in Mojo. `builtin_kernels` therefore fails with 29 errors
+   that are nothing to do with us. Out of scope, encoded in
+   `tools/corpus/scope.py` as `CLOSED_DEP_PATHS`.
+
+2. **No hardware.** The M5 paths — 16x16 `simdgroup_matrix` — compile here and
+   the metallib loads; the driver refuses the pipeline at creation with
+   "supported by GPUFamily10 and later". This M4 Max is Family9. Those kernels
+   are exercised as far as codegen and no further.
+
+3. **Another vendor's.** NVIDIA, AMD and Qualcomm targets each have their own
+   fork. A failure there is not this fork's concern.
+
+The rule underneath all three: **we cannot test what does not yet exist.**
+Before spending time on a red target, establish which of the three it is —
+`tools/corpus/report.py` separates them, and `ls` on a BUILD dependency with
+no `.mojo` files settles the first case in seconds.
+
 ## Verification commands
 
 ```bash
