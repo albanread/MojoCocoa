@@ -394,7 +394,13 @@ def test_tiled_matmul2d(ctx: DeviceContext) raises:
 def main() raises:
     var ctx = DeviceContext()
     if ctx.compute_capability() != 5:
-        print("SKIP: Apple M5 (compute_capability == 5) required")
+        # Pre-M5 (M1-M4): `enqueue_apple_fp8_matmul` has a hardware-neutral
+        # materialize -> dense route, so the launcher is testable here. The
+        # direct M5 GEMV (`enqueue_apple_fp8_gemv`) and the tiled
+        # `enqueue_matmul2d_fp8` are M5-only by design and stay gated.
+        print("== pre-M5: launcher (materialize -> dense) path only")
+        test_multi_row_launcher(ctx)
+        print("PRE-M5 LAUNCHER TESTS PASSED")
         return
     test_decode_gemv(ctx)
     test_multi_row_launcher(ctx)

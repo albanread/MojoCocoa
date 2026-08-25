@@ -17,9 +17,16 @@ Covers two paths:
 - The 8x8 `simdgroup_matrix` GEMM (`gemm_kernel_apple_8x8`), the M1-M4 dispatch
   path in `_matmul_gpu`. These tests run on any Apple GPU.
 - The M5 hardware-MMA simdgroup-tiled kernel (`AppleM5MatMul.run` /
-  `enqueue_apple_matmul`), which requires `compute_capability() == 5`. This
+  `enqueue_apple_matmul`), which targets `compute_capability() == 5`. This
   includes the split-K path (`enqueue_apple_matmul_split_k` and the
   `force_split_k` flag), folded in here from the former `test_apple_split_k`.
+
+The M5 group is NOT gated on compute capability. It used to early-return on
+anything but M5, which made the whole group a no-op that still reported PASSED.
+Every subtest now runs on whatever Apple GPU is attached; on M1-M4 the M5 group
+is expected to fail loudly (the kernel has no pre-M5 route), and a real failure
+is the point of running it. `main` prints a `== [pre-m5-ok] ...` or
+`== [m5-only] ...` marker before each group so the log shows how far it got.
 """
 
 from std.collections import Optional
@@ -2325,6 +2332,8 @@ def test_kernel_64x130x64_nn_fp16_fp16_oddn_bias_epilogue(
 
 
 def main() raises:
+    # Host-side helpers: pure index arithmetic, no GPU launch.
+    print("== [pre-m5-ok] Morton decode helpers")
     test_morton_decode_2d()
     test_morton_decode_2d_rect()
     comptime if "metal" not in _accelerator_arch():
@@ -2335,6 +2344,7 @@ def main() raises:
     # 8x8 simdgroup-matrix path (`gemm_kernel_apple_8x8`, the M1-M4 dispatch
     # path). Valid on every Apple GPU, so these run regardless of compute
     # capability.
+    print("== [pre-m5-ok] 8x8 simdgroup-matrix GEMM (gemm_kernel_apple_8x8)")
     _run_8x8_case[DType.bfloat16, DType.bfloat16, True](
         ctx, 64, 64, 16, "8x8 bf16 nt min"
     )
@@ -2369,6 +2379,7 @@ def main() raises:
 
     # Bias-add `elementwise_lambda_fn` epilogue (clean interior, odd NT edges,
     # and the NN odd-N load edge combined with the epilogue store).
+    print("== [pre-m5-ok] 8x8 bias-add elementwise_lambda_fn epilogue")
     _run_8x8_bias_case[DType.bfloat16, DType.bfloat16, True](
         ctx, 128, 128, 64, "8x8 bias nt"
     )
@@ -2382,6 +2393,7 @@ def main() raises:
     # f32 in/out: the 8x8 unit is full-precision for f32 (no fp19 truncation),
     # so these check against the tight f32 tolerance. Covers NT/NN, an odd edge,
     # and the epilogue store.
+    print("== [pre-m5-ok] 8x8 f32 in/out")
     _run_8x8_case[DType.float32, DType.float32, True](
         ctx, 256, 256, 128, "8x8 f32 nt"
     )
@@ -2395,13 +2407,16 @@ def main() raises:
         ctx, 128, 128, 64, "8x8 f32 bias nt"
     )
 
-    # M5 hardware-MMA path (`AppleM5MatMul` / `enqueue_apple_matmul`): Apple M5.
-    if ctx.compute_capability() != 5:
-        print(
-            "SKIP: M5 hardware-MMA matmul tests require Apple M5"
-            " (compute_capability == 5)"
-        )
-        return
+    # M5 hardware-MMA path (`AppleM5MatMul` / `enqueue_apple_matmul`).
+    #
+    # Deliberately UN-GATED. `AppleM5MatMul` has no pre-M5 route: the host
+    # entries (`enqueue_apple_matmul`, `enqueue_apple_matmul_split_k`) raise
+    # unless `ctx.compute_capability() == 5`, and the body issues 16x16x16
+    # `air.simdgroup_matrix` MMAs that need the M5 neural accelerator. So on
+    # M1-M4 this group is EXPECTED to fail -- but it fails with a message we
+    # can act on, instead of silently reporting PASSED for zero work done.
+    print("-- observed compute_capability:", ctx.compute_capability())
+    print("== [m5-only] AppleM5MatMul core shapes (enqueue_apple_matmul)")
     test_kernel_single_tile_nn_fp16(ctx)
     test_kernel_single_tile_k128_nn_fp16(ctx)
     test_kernel_64x64x17_nn_fp16(ctx)
@@ -2416,6 +2431,8 @@ def main() raises:
     test_kernel_ragged_100x200x64_nn_bf16_clamp_chain(ctx)
     test_kernel_128x128x32_nn_fp32(ctx)
     test_enqueue_helper_fp16(ctx)
+
+    print("== [m5-only] AppleM5MatMul dtype x epilogue matrix")
     test_kernel_128_nn_fp16_fp16_no_lambda(ctx)
     test_kernel_128_nn_fp16_bf16_no_lambda(ctx)
     test_kernel_128_nt_fp16_fp16_bias_epilogue(ctx)
@@ -2444,6 +2461,7 @@ def main() raises:
 
     # Split-K path (folded in from the former test_apple_split_k.mojo).
     # Explicit split counts via enqueue_apple_matmul_split_k:
+    print("== [m5-only] split-K (enqueue_apple_matmul_split_k / force_split_k)")
     _run_split_k_case[DType.float16, DType.float32, False](
         ctx, 64, 64, 4096, "splitk nn k4096", splits=4
     )

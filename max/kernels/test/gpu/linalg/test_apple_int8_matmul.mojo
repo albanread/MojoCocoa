@@ -12,7 +12,15 @@
 # ===----------------------------------------------------------------------=== #
 """Correctness tests for the Apple M5 int8 W8A8 matmul (`int8_matmul.mojo`).
 
-Three stages, all gated on Apple M5 (`compute_capability == 5`):
+Three stages. These used to early-return on any GPU with
+`compute_capability != 5`, which made the whole file a no-op that still reported
+PASSED on M1-M4. That gate is gone: `main()` now runs every stage on whatever
+Apple GPU is attached and reports what actually happened, because a real failure
+on pre-M5 hardware is a more useful result than a silent skip. Each stage is
+tagged in the log with `[m5-only]` or `[pre-m5-ok]` (see `main()`), and the
+stages run independently so one raise does not hide the other two.
+
+The stages:
 
 - Stage 1 (`_run_gemm_vs_quant_ref`): the W8A8 GEMM+dequant kernel vs an fp32
   reference that applies the IDENTICAL symmetric-absmax int8 quant to A and B,
@@ -369,10 +377,60 @@ def test_end_to_end(ctx: DeviceContext) raises:
 
 def main() raises:
     var ctx = DeviceContext()
-    if ctx.compute_capability() != 5:
-        print("SKIP: Apple M5 (compute_capability == 5) required")
-        return
-    test_gemm(ctx)
-    test_act_quant(ctx)
-    test_end_to_end(ctx)
+
+    # No compute-capability gate. On pre-M5 Apple silicon these kernels are
+    # EXPECTED to fail, and the failure mode is the point of running them.
+    # Both host entry points in `linalg/matmul/gpu/apple/int8_matmul.mojo`
+    # (`enqueue_apple_int8_matmul` and `enqueue_apple_int8_quantize_activation`)
+    # call `_require_apple_m5`, which raises on `compute_capability != 5` before
+    # anything is enqueued, so on M1-M4 every stage below raises from the host
+    # guard rather than from the device.
+    #
+    # Each stage runs inside its own `try` so the log shows all three outcomes
+    # instead of stopping at the first raise; the run still exits non-zero if
+    # any stage failed. Tolerances are unchanged -- nothing here can turn a
+    # numerical failure into a pass.
+    var cc = ctx.compute_capability()
+    print("== device compute_capability =", cc)
+    if cc != 5:
+        print(
+            "== NOTE: pre-M5 device; the [m5-only] stages need the 16x16"
+            " integer-widening simdgroup MMA and have no fallback"
+        )
+
+    var failures = 0
+
+    # [m5-only] The W8A8 GEMM feeds int8 straight into
+    # `_mma_apple_transposable`, the 16x16x16 integer-widening simdgroup MMA
+    # (Metal 4 / AIR 2.8.0, M5 only). The 8x8 Apple MMA that does exist on M1-M5
+    # is float-only, so there is no pre-M5 route in the kernel at all.
+    print("== [m5-only] test_gemm")
+    try:
+        test_gemm(ctx)
+    except e:
+        failures += 1
+        print("== FAILED test_gemm:", String(e))
+
+    # [pre-m5-ok] The activation-quant kernel body (`AppleInt8ActQuant.run`) is
+    # a per-row absmax reduce + round + int8 store with no simdgroup MMA of any
+    # kind, so the math itself is hardware-neutral. The only thing standing in
+    # its way pre-M5 is the shared `_require_apple_m5` host guard.
+    print("== [pre-m5-ok] test_act_quant")
+    try:
+        test_act_quant(ctx)
+    except e:
+        failures += 1
+        print("== FAILED test_act_quant:", String(e))
+
+    # [m5-only] End-to-end chains the pre-M5-capable quant kernel into the
+    # M5-only GEMM, so it inherits the GEMM's hardware requirement.
+    print("== [m5-only] test_end_to_end")
+    try:
+        test_end_to_end(ctx)
+    except e:
+        failures += 1
+        print("== FAILED test_end_to_end:", String(e))
+
+    if failures != 0:
+        raise Error("FAILED: ", failures, " of 3 stages")
     print("ALL TESTS PASSED")

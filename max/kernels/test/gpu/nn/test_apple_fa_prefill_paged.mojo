@@ -12,7 +12,18 @@
 # ===----------------------------------------------------------------------=== #
 """End-to-end correctness test for the Apple M5 MMA prefill kernels on PAGED KV.
 
-Apple silicon GPU (Metal 4, `compute_capability == 5`) only.
+Apple silicon GPU only. NOT compute-capability gated on purpose: every case
+below routes through `fa_prefill_apple` -> `MmaOpApple` ->
+`_mma_apple_transposable`, i.e. the `simdgroup_matrix_16x16x16_*` AIR
+intrinsics, which are M5 / Metal 4 (`compute_capability == 5`) only. That chain
+has NO pre-M5 route (`MmaOpApple` never reaches `_mma_apple_8x8`), so on M1-M4
+these cases are expected to fail rather than pass. They are still run: a skip
+that reports PASSED hides the gap, whereas a real failure is a result we can
+investigate. The `== [m5-only] ...` markers show how far a run got.
+
+The removed gate was `if ctx.compute_capability() != 5: return`, which was
+unconditionally true here -- the Apple backend always reports 0 -- so it also
+skipped on M5. See the note in `main`.
 
 Validates the paged-KV path of BOTH prefill kernels: a `PagedKVCacheCollection`
 (`page_size > 0`) wrapped in `KVCacheMHAOperand`, run through the ragged prefill
@@ -431,31 +442,45 @@ comptime kv_d128_h2 = KVCacheStaticParams(num_heads=2, head_size=128)
 
 
 def _cases(ctx: DeviceContext) raises:
-    """All `fa_prefill_apple` paged cases vs the independent fp32 reference."""
+    """All `fa_prefill_apple` paged cases vs the independent fp32 reference.
+
+    Every group is tagged `[m5-only]`: they all drive the one
+    `fa_prefill_apple` launcher, whose `MmaOpApple` GEMMs only ever emit the
+    16x16 `simdgroup_matrix_16x16x16_*` AIR intrinsics. There is no pre-M5
+    fallback anywhere in that chain, so on M1-M4 a group is expected to fail,
+    not skip. Groups run in order and the marker is printed BEFORE the group,
+    so the last marker in the log names the group that broke.
+    """
     print("== test_apple_fa_prefill_paged (paged MMA prefill vs fp32 host ref)")
 
     # --- page_size 16: a single Sk=32 KV tile spans TWO pages. The crux. ---
     # NullMask, fp16 + bf16, seq spanning many pages.
+    print("== [m5-only] test_page16_kv_tile_spans_two_pages_nullmask")
     _run[DType.float16, 16, 4, kv_d64_h4, NullMask, 0](NullMask(), [48], ctx)
     _run[DType.bfloat16, 16, 4, kv_d64_h4, NullMask, 0](NullMask(), [48], ctx)
+
     # CausalMask with page_size 16, seq=48 (3 pages).
+    print("== [m5-only] test_page16_causal_three_pages")
     _run[DType.float16, 16, 4, kv_d64_h4, CausalMask, 1](
         CausalMask(), [48], ctx
     )
 
     # --- page_size 32 == Sk: each KV tile maps to exactly one page. ---
+    print("== [m5-only] test_page32_kv_tile_equals_page_causal")
     _run[DType.float16, 32, 4, kv_d64_h4, CausalMask, 1](
         CausalMask(), [64], ctx
     )
 
     # --- partial last page: num_keys not a multiple of page_size. ---
     # seq=37, page_size=16 -> pages of 16,16,5 (last page 5/16 valid).
+    print("== [m5-only] test_partial_last_page")
     _run[DType.float16, 16, 4, kv_d64_h4, CausalMask, 1](
         CausalMask(), [37], ctx
     )
     _run[DType.bfloat16, 16, 2, kv_d64_h2, NullMask, 0](NullMask(), [29], ctx)
 
     # --- ragged: mixed sequence lengths across the batch, multiple pages. ---
+    print("== [m5-only] test_ragged_mixed_seq_lens")
     _run[DType.float16, 16, 4, kv_d64_h4, CausalMask, 1](
         CausalMask(), [20, 48, 35], ctx
     )
@@ -464,16 +489,19 @@ def _cases(ctx: DeviceContext) raises:
     )
 
     # --- GQA: num_q_heads > kv_heads, paged. ---
+    print("== [m5-only] test_gqa_paged")
     _run[DType.float16, 16, 8, kv_d64_h2, CausalMask, 1](
         CausalMask(), [40], ctx
     )
 
     # --- SlidingWindowCausalMask, paged. ---
+    print("== [m5-only] test_sliding_window_causal_paged")
     _run[DType.float16, 16, 2, kv_d64_h2, SlidingWindowCausalMask[16], 2, 16](
         SlidingWindowCausalMask[16](), [48], ctx
     )
 
     # --- depth 128, paged page_size 32. ---
+    print("== [m5-only] test_depth128_page32")
     _run[DType.float16, 32, 2, kv_d128_h2, CausalMask, 1](
         CausalMask(), [40, 33], ctx
     )
@@ -491,7 +519,20 @@ def main() raises:
         return
     seed(42)
     with DeviceContext() as ctx:
-        if ctx.compute_capability() != 5:
-            print("SKIP: Apple M5 required (16x16 simdgroup MMA)")
-            return
+        # Deliberately NOT gated on `compute_capability() == 5`.
+        #
+        # The old gate (`if ctx.compute_capability() != 5: return`) was
+        # unconditionally true on this fork:
+        # `AsyncRT_DeviceContext_computeCapability` (AppleGPURT.cpp) always
+        # writes 0 for the Apple backend, so the whole file was a no-op that
+        # still reported PASSED -- on M5 silicon too, not just pre-M5. Same
+        # finding as `test/gpu/linalg/test_apple_fa_frag_reduce.mojo`.
+        #
+        # Every group below is `[m5-only]`: `fa_prefill_apple` runs on the
+        # 16x16 `simdgroup_matrix_16x16x16_*` MMA and `MmaOpApple` has no
+        # pre-M5 route (it never reaches `_mma_apple_8x8`). So on M1-M4 these
+        # are expected to FAIL, not skip -- and a real failure is the finding
+        # worth seeing, which is the point of running the test.
+        var cc = ctx.compute_capability()
+        print("compute_capability =", cc, "(test runs on any Apple GPU)")
         test_apple_fa_prefill_paged(ctx)

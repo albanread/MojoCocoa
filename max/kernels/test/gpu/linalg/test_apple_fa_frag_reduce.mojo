@@ -34,6 +34,11 @@ per-lane reduce the 4 cols of each row-half, then a 2-step butterfly
 (`shuffle_xor` over masks 1 and 8) across those 4 lanes. No shared memory, no
 barriers (the Apple idiom). fp32 is shuffled at width 1 -- the only width the
 Apple shuffle intrinsic supports for non-half dtypes.
+
+This test is intentionally un-gated and runs on any Apple GPU. It reproduces the
+M5 fragment indexing arithmetically and never issues an MMA instruction, so the
+reduction it validates is hardware-neutral; a failure on M1-M4 is a genuine bug
+in the reduction rather than a missing-hardware skip.
 """
 
 from std.gpu import WARP_SIZE, lane_id
@@ -163,7 +168,30 @@ def main() raises:
         print("SKIP: Apple GPU required")
         return
     var ctx = DeviceContext()
-    if ctx.compute_capability() != 5:
-        print("SKIP: Apple M5 required (16x16 simdgroup MMA fragment)")
-        return
+
+    # Deliberately NOT gated on `compute_capability() == 5`.
+    #
+    # No 16x16 simdgroup-MMA instruction is emitted anywhere in this file.
+    # `_frag_reduce_kernel` only *emulates* the M5 fragment layout: it derives
+    # `row_lo` / `col_base` arithmetically from `lane_id()` and gathers the 8
+    # elements with ordinary scalar loads. The reduction itself is fp32 `max` /
+    # `+` plus `shuffle_xor` butterflies over the row-sharing lanes {1, 8}, and
+    # `shuffle_xor` at simd_width 1 lowers to `llvm.air.simd_shuffle_xor`, which
+    # every Apple GPU generation supports -- not just M5.
+    #
+    # The lane -> (row_lo, col_base) map is applied symmetrically on the load
+    # and on the host-side reference, so it is a self-consistent convention here
+    # rather than a hardware layout requirement. That makes the reduction
+    # algebra genuinely testable on M1-M4.
+    #
+    # The old gate was also unconditionally true on this fork:
+    # `AsyncRT_DeviceContext_computeCapability` (AppleGPURT.cpp) always writes 0
+    # for the Apple backend, so the test skipped on M5 silicon too.
+    #
+    # If this does break on pre-M5 silicon, that is a real finding worth seeing,
+    # which is the point of running the test rather than skipping it.
+    var cc = ctx.compute_capability()
+    print("compute_capability =", cc, "(test runs on any Apple GPU)")
+
+    print("== [pre-m5-ok] test_frag_row_reduce")
     test_frag_row_reduce(ctx)

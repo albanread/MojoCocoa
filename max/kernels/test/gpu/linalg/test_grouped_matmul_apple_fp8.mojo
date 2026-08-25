@@ -34,6 +34,12 @@ Coverage: aligned + tile-unaligned N/K, 0-token experts, an inactive
 c32-decode-like many-tiny-group pattern, and the real Nemotron-3-Nano-30B-A3B
 MoE expert dims (up-proj N=1856/K=2688, down-proj N=2688/K=1856) at a reduced
 expert count.
+
+This target is deliberately UN-GATED: it used to early-return unless
+`compute_capability() == 5`, which made the whole file a no-op that still
+reported PASSED on M1-M4. Every case now runs on any Apple GPU. `main` and
+`_run_case` print a per-entry-point marker (`[pre-m5-ok]` vs `[m5-only]`) so a
+pre-M5 log shows exactly how far it got and which entry point stopped it.
 """
 
 from std.collections import Optional
@@ -174,6 +180,7 @@ def _run_case[
     ctx.synchronize()
 
     # Reference: dtype-generic naive grouped matmul (fp32 accumulate).
+    print("  -- [pre-m5-ok] naive_grouped_matmul (reference)")
     naive_grouped_matmul(
         c_ref_dev,
         a_dev,
@@ -186,6 +193,9 @@ def _run_case[
     )
 
     # Under test 1: the production dispatch (routes W8A16 -> tiled on M5).
+    # Pre-M5 the dispatch's own `compute_capability() == 5` check sends W8A16 to
+    # `naive_grouped_matmul`, so this leg is naive-vs-naive there.
+    print("  -- [pre-m5-ok] grouped_matmul (dispatch)")
     grouped_matmul(
         c_disp_dev,
         a_dev,
@@ -198,6 +208,9 @@ def _run_case[
     )
 
     # Under test 2: the tiled launcher called directly (isolates the kernel).
+    # M5-only: `_require_apple_m5` raises at the host enqueue on pre-M5, and the
+    # body is 16x16 simdgroup MMA with no pre-M5 route. Called unconditionally.
+    print("  -- [m5-only] enqueue_grouped_matmul2d_fp8 (direct tiled)")
     enqueue_grouped_matmul2d_fp8[c_type=out_type](
         c_direct_dev,
         a_dev,
@@ -242,35 +255,63 @@ def _run_case[
 
 def main() raises:
     with DeviceContext() as ctx:
-        # Apple M5 only (the native fp8-operand simdgroup MMA); skip elsewhere so
-        # the target stays runnable on non-M5 Apple CI without a hard failure.
-        if ctx.compute_capability() != 5:
-            print("skip: grouped W8A16 tiled matmul requires Apple M5 (cc==5)")
-            return
+        # UN-GATED on purpose. This used to early-return unless
+        # `compute_capability() == 5`, which made the whole target a no-op that
+        # still reported PASSED on M1-M4. Every case below now runs on any Apple
+        # GPU, with all three entry points and the original tolerances intact.
+        #
+        # What each entry point does pre-M5 (see the `_run_case` markers):
+        #   naive_grouped_matmul         [pre-m5-ok] hardware-neutral: one
+        #       thread per (m, n), widens the fp8 weight byte, fp32 accumulate.
+        #   grouped_matmul (dispatch)    [pre-m5-ok] has its own pre-M5 route --
+        #       the Apple W8A16 branch in `linalg/grouped_matmul.mojo` checks
+        #       `ctx.compute_capability() == 5` and falls through to
+        #       `naive_grouped_matmul` otherwise, so pre-M5 this leg compares
+        #       naive against naive.
+        #   enqueue_grouped_matmul2d_fp8 [m5-only] NO pre-M5 route --
+        #       `_require_apple_m5` raises at the host enqueue, and the body is
+        #       the 16x16 simdgroup MMA
+        #       (`llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate`,
+        #       Metal 4 / AIR 2.8.0) which only M5 implements.
+        #
+        # Running the m5-only launcher pre-M5 is the point: a raise or a Metal
+        # pipeline-state failure is a real result -- a silent skip is not.
+        var cc = ctx.compute_capability()
+        print("compute_capability:", cc)
+        if cc != 5:
+            print(
+                "note: pre-M5 GPU -- the [m5-only] direct tiled launcher is"
+                " expected to fail here; running it anyway (un-gated)"
+            )
 
         comptime BF16 = DType.bfloat16
 
         # --- Small aligned: single group, tile-aligned N/K. ---
+        print("== [m5-only] case_small_aligned (N=64, K=32)")
         _run_case[BF16, num_experts=1, expert_shape=Index(64, 32)](
             1, [8], [0], ctx
         )
 
         # --- Small routing: multiple groups, incl. a 0-token group. ---
+        print("== [m5-only] case_small_routing_zero_token_group (N=128, K=64)")
         _run_case[BF16, num_experts=4, expert_shape=Index(128, 64)](
             4, [3, 0, 5, 2], [2, 0, 3, 1], ctx
         )
 
         # --- Tile-unaligned N and K (ragged store guard + K tail). ---
+        print("== [m5-only] case_tile_unaligned_nk (N=70, K=40)")
         _run_case[BF16, num_experts=4, expert_shape=Index(70, 40)](
             3, [7, 0, 20], [1, 0, 3], ctx
         )
 
         # --- Inactive LoRA group (expert_ids == -1) must produce zeros. ---
+        print("== [m5-only] case_inactive_lora_group (N=128, K=64)")
         _run_case[BF16, num_experts=2, expert_shape=Index(128, 64)](
             2, [16, 24], [0, -1], ctx
         )
 
         # --- c32-decode-like: many tiny (1-3 token) groups over many experts. ---
+        print("== [m5-only] case_c32_decode_many_tiny_groups (N=128, K=96)")
         _run_case[BF16, num_experts=16, expert_shape=Index(128, 96)](
             8, [1, 2, 1, 3, 1, 1, 2, 1], [0, 5, 2, 9, 1, 12, 7, 3], ctx
         )
@@ -278,11 +319,13 @@ def main() raises:
         # --- Real Nemotron-30B-A3B MoE up-proj dims (N=1856, K=2688). ---
         # Reduced expert count keeps the weight buffer small; per-group M is
         # tiny (batch-1 / c32 decode) incl. a 0-token group.
+        print("== [m5-only] case_nemotron_up_proj (N=1856, K=2688)")
         _run_case[BF16, num_experts=8, expert_shape=Index(1856, 2688)](
             6, [1, 1, 2, 0, 1, 1], [0, 3, 1, 4, 5, 2], ctx, rtol=2e-2
         )
 
         # --- Real Nemotron-30B-A3B MoE down-proj dims (N=2688, K=1856). ---
+        print("== [m5-only] case_nemotron_down_proj (N=2688, K=1856)")
         _run_case[BF16, num_experts=8, expert_shape=Index(2688, 1856)](
             6, [2, 1, 1, 0, 3, 1], [1, 0, 4, 2, 5, 3], ctx, rtol=2e-2
         )

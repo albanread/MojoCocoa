@@ -14,7 +14,15 @@
 
 Verifies `build_edge_mask` + `gmem_edge_masked_load` / `edge_masked_load`: a
 packed 32x3 bf16 input loaded 4-wide per row yields `[3l, 3l+1, 3l+2, 0]`, with
-col 3 masked to zero rather than leaking the next row. Apple M5 only.
+col 3 masked to zero rather than leaking the next row.
+
+Both subtests are AGX3 (M5) hardware paths: every entry point here lowers to
+`llvm.agx3.edgecheck` / `llvm.agx3.load.with.emask.global.*`, and
+`max/mojo/max/gpu/memory/masked_load_apple.mojo` carries no pre-M5 fallback.
+They are deliberately NOT gated on hardware anyway -- on pre-M5 silicon we want
+the real failure in the log, not a green skip. Note that `compute_capability()`
+reports 0 on *every* Apple device (AppleGPURT fills it in for CUDA only), so
+the old `!= 5` gate skipped on M5 as well and this test had never run.
 """
 
 from std.gpu import thread_idx
@@ -56,7 +64,19 @@ def _general_kernel(
 
 
 def _check(buf: HostBuffer[DType.bfloat16]) raises:
-    # Skip rows 0-1: a separate known M5 first-rows blit->compute hazard, not emask.
+    # Rows 0-1 are printed but not asserted: a separate known M5 first-rows
+    # blit->compute hazard, not emask. Reporting them keeps the values in the
+    # log without changing what this test asserts.
+    for l in range(2):
+        print(
+            "   row",
+            l,
+            "(reported, not asserted):",
+            Float32(buf[l * OUT_COLS + 0]),
+            Float32(buf[l * OUT_COLS + 1]),
+            Float32(buf[l * OUT_COLS + 2]),
+            Float32(buf[l * OUT_COLS + 3]),
+        )
     for l in range(2, ROWS):
         assert_equal(Float32(buf[l * OUT_COLS + 0]), Float32(3 * l))
         assert_equal(Float32(buf[l * OUT_COLS + 1]), Float32(3 * l + 1))
@@ -66,9 +86,14 @@ def _check(buf: HostBuffer[DType.bfloat16]) raises:
 
 def main() raises:
     var ctx = DeviceContext()
-    if ctx.compute_capability() != 5:
-        print("SKIP: Apple M5 (compute_capability == 5) required")
-        return
+    # Un-gated on purpose: run every subtest on whatever Apple GPU is present.
+    # A pipeline-state or codegen failure here is a result worth having.
+    print(
+        "device:",
+        ctx.name(),
+        "compute_capability:",
+        ctx.compute_capability(),
+    )
 
     var in_host = ctx.enqueue_create_host_buffer[DType.bfloat16](ROWS * IN_COLS)
     var out_host = ctx.enqueue_create_host_buffer[DType.bfloat16](
@@ -81,6 +106,7 @@ def main() raises:
     ctx.enqueue_copy(in_dev, in_host)
     ctx.synchronize()
 
+    print("== [m5-only] test_gmem_edge_masked_load")
     for i in range(ROWS * OUT_COLS):
         out_host[i] = Scalar[DType.bfloat16](-1)
     ctx.enqueue_copy(out_dev, out_host)
@@ -90,7 +116,9 @@ def main() raises:
     ctx.enqueue_copy(out_host, out_dev)
     ctx.synchronize()
     _check(out_host)
+    print("   ok: gmem_edge_masked_load")
 
+    print("== [m5-only] test_edge_masked_load_global")
     for i in range(ROWS * OUT_COLS):
         out_host[i] = Scalar[DType.bfloat16](-1)
     ctx.enqueue_copy(out_dev, out_host)
@@ -100,5 +128,6 @@ def main() raises:
     ctx.enqueue_copy(out_host, out_dev)
     ctx.synchronize()
     _check(out_host)
+    print("   ok: edge_masked_load")
 
     print("PASS: edge_masked_load 32x3 -> 32x4 = [3l, 3l+1, 3l+2, 0]")

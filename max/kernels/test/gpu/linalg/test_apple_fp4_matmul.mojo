@@ -12,9 +12,12 @@
 # ===----------------------------------------------------------------------=== #
 """Unit tests for the Apple M5 weight-only NVFP4 (W4A16) matmul.
 
-All stages require `compute_capability() == 5` (Apple M5, Metal 4). This file
-covers all three W4A16 dispatch paths: the fused in-register B-loader (Stages
-1-4) and the `matmul2d` deep-K path (Stage 5).
+Stages 1, 2, 4 and 5 require `compute_capability() == 5` (Apple M5, Metal 4);
+Stage 3 reaches the weight only through `enqueue_apple_fp4_matmul`, which has an
+explicit pre-M5 materialize->dense route, so it runs on M1-M4 too. `main()`
+carries NO compute-capability gate -- see the note there. This file covers all
+three W4A16 dispatch paths: the fused in-register B-loader (Stages 1-4) and the
+`matmul2d` deep-K path (Stage 5).
 
 Stage 1 (`_run_stage1_oracle`): proves the dequant MATH. Builds random packed
 FP4 weights + FP8-E4M3 block scales + a random bf16 activation, materializes the
@@ -843,13 +846,89 @@ def test_stage4_dispatch_paths(ctx: DeviceContext) raises:
 
 def main() raises:
     var ctx = DeviceContext()
-    if ctx.compute_capability() != 5:
-        print("SKIP: Apple M5 (compute_capability == 5) required")
-        return
-    test_stage1_oracle(ctx)
-    test_stage2_fused(ctx)
-    test_stage3_global_scale(ctx)
-    test_stage4_dispatch_paths(ctx)
-    # Stage 5 (`_parity_and_hostref` seeds internally): matmul2d deep-K path.
-    _run_stage5_matmul2d(ctx)
+
+    # No compute-capability gate. On pre-M5 Apple silicon the [m5-only] stages
+    # are EXPECTED to fail, and the failure mode is the point of running them.
+    # The M5 requirement is the 16x16x16 simdgroup MMA
+    # (`llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate`, Metal 4 / AIR
+    # 2.8.0); the 8x8 Apple MMA that does exist on M1-M4 is a different tile
+    # shape, so a kernel written against the 16x16 fragment has no fallback.
+    #
+    # Each stage runs inside its own `try` so the log shows every outcome
+    # instead of stopping at the first raise; the run still exits non-zero if
+    # any stage failed. Tolerances are unchanged -- nothing here can turn a
+    # numerical failure into a pass.
+    var cc = ctx.compute_capability()
+    print("== device compute_capability =", cc)
+    if cc != 5:
+        print(
+            "== NOTE: pre-M5 device; the [m5-only] stages need the 16x16"
+            " simdgroup MMA and have no fallback"
+        )
+
+    var failures = 0
+
+    # [m5-only] The dequant half (`enqueue_fp4_materialize`) is hardware-neutral
+    # -- a per-element `E2M1_TO_FLOAT32[nibble] * |scale|` store, no MMA of any
+    # kind -- but the oracle GEMM is `enqueue_apple_matmul`, whose host entry in
+    # `apple/matmul_kernel.mojo` raises on `compute_capability != 5` before
+    # anything is enqueued.
+    print("== [m5-only] test_stage1_oracle")
+    try:
+        test_stage1_oracle(ctx)
+    except e:
+        failures += 1
+        print("== FAILED test_stage1_oracle:", String(e))
+
+    # [m5-only] The path under test (`enqueue_apple_fp4_matmul`) DOES have a
+    # pre-M5 route -- `cc != 5` falls through to
+    # `_enqueue_apple_fp4_materialize_dense` -> `gemm_kernel_apple_8x8`
+    # (M1-M4). The stage is still m5-only because the bit-exact parity partner
+    # it is compared against is the in-test materialize +
+    # `enqueue_apple_matmul` oracle, which raises pre-M5.
+    print("== [m5-only] test_stage2_fused")
+    try:
+        test_stage2_fused(ctx)
+    except e:
+        failures += 1
+        print("== FAILED test_stage2_fused:", String(e))
+
+    # [pre-m5-ok] The only device work is `enqueue_apple_fp4_matmul`, which
+    # routes `cc != 5` to materialize->dense (`enqueue_fp4_materialize` +
+    # `gemm_kernel_apple_8x8`, both M1-M4 capable); the reference is a host fp32
+    # reduction. Every K here is a multiple of 16, which the pre-M5 8x8 GEMM
+    # requires (it truncates ragged K).
+    print("== [pre-m5-ok] test_stage3_global_scale")
+    try:
+        test_stage3_global_scale(ctx)
+    except e:
+        failures += 1
+        print("== FAILED test_stage3_global_scale:", String(e))
+
+    # [m5-only] Half (1), the production dispatch, is pre-M5-ok for the same
+    # reason Stage 3 is. Half (2) calls `_launch_apple_fp4_matmul[BM=128]`
+    # DIRECTLY, and that launcher has no host guard at all: it enqueues
+    # `AppleM5Fp4MatMul`, whose inner loop is `MmaOpApple` (the 16x16
+    # fragment), so pre-M5 the failure comes from the device/driver rather than
+    # from a host check.
+    print("== [m5-only] test_stage4_dispatch_paths")
+    try:
+        test_stage4_dispatch_paths(ctx)
+    except e:
+        failures += 1
+        print("== FAILED test_stage4_dispatch_paths:", String(e))
+
+    # [m5-only] Stage 5 (`_parity_and_hostref` seeds internally): matmul2d
+    # deep-K path. Both `enqueue_matmul2d_fp4` and `enqueue_matmul2d_fp4_smem`
+    # open with `_require_apple_m5`, and the parity oracle is again
+    # `enqueue_apple_matmul` -- two independent pre-M5 raises.
+    print("== [m5-only] _run_stage5_matmul2d")
+    try:
+        _run_stage5_matmul2d(ctx)
+    except e:
+        failures += 1
+        print("== FAILED _run_stage5_matmul2d:", String(e))
+
+    if failures != 0:
+        raise Error("FAILED: ", failures, " of 5 stages")
     print("ALL TESTS PASSED")

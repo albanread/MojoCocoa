@@ -22,6 +22,12 @@ M5 gates increment 3 of the prefill bring-up (DESIGN.md).
 
 `_run` drives the single `fa_prefill_apple` kernel (the wide-threadgroup no-SMEM
 prefill, `num_simdgroups=16`) against the fp32 reference for every shape/mask.
+
+This test is intentionally NOT gated on `compute_capability() == 5`: it runs on
+any Apple GPU. `fa_prefill_apple` has no pre-M5 fallback (both GEMMs are 16x16
+simdgroup MMA), so on M1-M4 the cases below are expected to fail loudly. Each
+group prints a `== [m5-only] <group>` marker first so the log shows exactly how
+far a pre-M5 run got before it broke.
 """
 
 from std.collections import OptionalReg
@@ -376,6 +382,7 @@ def _cases(ctx: DeviceContext) raises:
     print("== test_apple_fa_prefill (MMA prefill vs fp32 host attention)")
 
     # --- NullMask (full attention): aligned + ragged M/N, fp16 + bf16. ---
+    print("== [m5-only] nullmask_basic")
     _run[DType.float16, 64, 4, 4, NullMask, 0](NullMask(), 1, 32, 32, ctx)
     _run[DType.bfloat16, 64, 4, 4, NullMask, 0](NullMask(), 1, 32, 32, ctx)
     # ragged M (seq=20) and N (num_keys=37): exercises bounded edges.
@@ -383,6 +390,7 @@ def _cases(ctx: DeviceContext) raises:
     _run[DType.bfloat16, 32, 2, 2, NullMask, 0](NullMask(), 1, 17, 29, ctx)
 
     # --- depth sweep: multiples of 16 up to 256. ---
+    print("== [m5-only] depth_sweep")
     _run[DType.float16, 16, 2, 2, NullMask, 0](NullMask(), 1, 32, 48, ctx)
     _run[DType.float16, 128, 2, 2, NullMask, 0](NullMask(), 1, 33, 33, ctx)
     _run[DType.float16, 256, 2, 2, NullMask, 0](NullMask(), 1, 18, 50, ctx)
@@ -395,6 +403,7 @@ def _cases(ctx: DeviceContext) raises:
     # is partial). Group ratios 1/3/4, depths 64/128, fp16 + bf16. Mirrors the
     # `test_flash_attention.mojo` configs that previously NaN'd
     # (seq=1024/keys=100 group=3 d=128; seq=512/keys=37). ---
+    print("== [m5-only] oob_v_poison_regression")
     _run[DType.bfloat16, 128, 24, 8, NullMask, 0, oob_poison=True](
         NullMask(), 1, 1024, 100, ctx
     )
@@ -416,6 +425,7 @@ def _cases(ctx: DeviceContext) raises:
     )
 
     # --- CausalMask: aligned + ragged. ---
+    print("== [m5-only] causal_basic")
     _run[DType.float16, 64, 4, 4, CausalMask, 1](CausalMask(), 1, 32, 32, ctx)
     _run[DType.bfloat16, 64, 4, 4, CausalMask, 1](CausalMask(), 1, 48, 48, ctx)
     _run[DType.float16, 128, 2, 2, CausalMask, 1](CausalMask(), 1, 35, 35, ctx)
@@ -426,6 +436,7 @@ def _cases(ctx: DeviceContext) raises:
     # skip tiles 1 and 2 (kv0=128, 256) entirely, and a ragged tail
     # (seq=200 => 2 tiles, num_keys ragged) checks the partial diagonal tile
     # plus the bounded edge under a skip. ---
+    print("== [m5-only] causal_multi_sk_tile")
     _run[DType.float16, 64, 4, 4, CausalMask, 1](CausalMask(), 1, 300, 300, ctx)
     _run[DType.bfloat16, 64, 2, 2, CausalMask, 1](
         CausalMask(), 1, 200, 200, ctx
@@ -433,6 +444,7 @@ def _cases(ctx: DeviceContext) raises:
     _run[DType.float16, 64, 2, 2, CausalMask, 1](CausalMask(), 1, 257, 257, ctx)
 
     # --- SlidingWindowCausalMask. ---
+    print("== [m5-only] sliding_window")
     _run[DType.float16, 64, 2, 2, SlidingWindowCausalMask[16], 2, 16](
         SlidingWindowCausalMask[16](), 1, 48, 48, ctx
     )
@@ -446,12 +458,15 @@ def _cases(ctx: DeviceContext) raises:
     )
 
     # --- Grouped (GQA: num_heads > kv_heads). ---
+    print("== [m5-only] gqa_grouped")
     _run[DType.float16, 64, 8, 2, CausalMask, 1](CausalMask(), 1, 40, 40, ctx)
 
     # --- Multi-batch. ---
+    print("== [m5-only] multi_batch")
     _run[DType.float16, 64, 4, 4, CausalMask, 1](CausalMask(), 2, 32, 32, ctx)
 
     # --- Sink (attention sink as init-state): NullMask + CausalMask. ---
+    print("== [m5-only] sink")
     _run[DType.float16, 64, 2, 2, NullMask, 0, 0, use_sink=True](
         NullMask(), 1, 32, 32, ctx
     )
@@ -479,7 +494,18 @@ def main() raises:
         print("SKIP: Apple GPU required")
         return
     var ctx = DeviceContext()
-    if ctx.compute_capability() != 5:
-        print("SKIP: Apple M5 required (16x16 simdgroup MMA)")
-        return
+    # Deliberately NOT gated on `compute_capability() == 5`. Every case below
+    # goes through `fa_prefill_apple`, which is 16x16-simdgroup-MMA-only
+    # (`llvm.air.simdgroup_matrix_16x16x16_multiply_accumulate` via
+    # `_mma_apple_transposable`) with no pre-M5 route in the kernel source, so
+    # on M1-M4 these are expected to fail rather than silently pass. Running
+    # them anyway is the point: a real failure is a result, a skipped test that
+    # still reports PASSED is not.
+    var cc = ctx.compute_capability()
+    if cc != 5:
+        print(
+            "== pre-M5 device (compute_capability =",
+            cc,
+            "): running the M5-only prefill cases anyway; failures expected",
+        )
     test_apple_fa_prefill(ctx)

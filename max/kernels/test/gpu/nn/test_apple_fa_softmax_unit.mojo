@@ -234,7 +234,24 @@ def main() raises:
         print("SKIP: Apple GPU required")
         return
     var ctx = DeviceContext()
-    if ctx.compute_capability() != 5:
-        print("SKIP: Apple M5 required (16x16 simdgroup MMA fragment)")
-        return
+
+    # Deliberately NOT gated on `compute_capability() == 5`.
+    #
+    # This unit test drives only the register-resident online-softmax free funcs
+    # (`_softmax_update` -> `_softmax_row_max`, then `_softmax_normalize`).
+    # `MmaOpApple` appears solely as `AccumType` / `zero_accum()`, which is a
+    # plain `Array[SIMD[float32, 8], num_accum]`; `mma()` is never called, so no
+    # 16x16 simdgroup MMA instruction is emitted. What remains is fp32 SIMD
+    # arithmetic, `exp2`, and `shuffle_xor` butterflies over the row-sharing
+    # lanes {1, 8} -- all hardware-neutral across Apple GPUs. The lane ->
+    # (rb, cb) fragment map is applied symmetrically by the test on both the
+    # load and the store, so it is a self-consistent convention here rather than
+    # a hardware layout requirement.
+    #
+    # If this does break on pre-M5 silicon, that is a real finding worth seeing,
+    # which is the point of running the test rather than skipping it.
+    var cc = ctx.compute_capability()
+    print("compute_capability =", cc, "(test runs on any Apple GPU)")
+
+    print("== [pre-m5-ok] test_apple_fa_softmax_unit")
     test_apple_fa_softmax_unit(ctx)
