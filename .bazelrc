@@ -64,10 +64,16 @@ build:iter --test_summary=terse
 #
 #      echo 'APPLEGPU_AIR_SCALARIZE_WIDE_VECTORS=1' > /tmp/applegpu-xforms.conf
 #
+#    /tmp, not $HOME: bazel does not forward HOME into a compile action, so
+#    $HOME/.applegpu-xforms is invisible there. Outside bazel $HOME wins.
+#
 #    See airKnob() in
 #    KGEN/lib/Compiler/ObjectCompiler/Target/Air/AirBackend.cpp. The binary
 #    carries both code paths; the file decides at run time and is not a bazel
-#    input, so nothing rebuilds.
+#    input, so nothing rebuilds. It is not part of bazel's action key either,
+#    so the action has to be made to re-run some other way. The kernel cache in
+#    3 below does NOT apply here -- measured: bazel's sandboxed actions never
+#    populate it -- but it does apply to `mojo build` run by hand.
 #
 # 3. The Mojo KERNEL cache (~/.cache/modular/.mojo_cache) is keyed on the
 #    kernel body, not on the compiler binary and not on the environment. A
