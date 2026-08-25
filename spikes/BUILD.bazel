@@ -31,6 +31,7 @@ _COCOA_LINKOPTS = [
     "-framework", "AppKit",
     "-framework", "QuartzCore",
     "-framework", "Metal",
+    "-lz",  # PNG deflate + CRC for the fluid spike's save-shot
 ]
 
 [
@@ -46,6 +47,9 @@ _COCOA_LINKOPTS = [
         ("compute_smoke", "mandelbrot/compute_smoke.mojo"),
         ("window_smoke", "mandelbrot/window_smoke.mojo"),
         ("life", "life/life.mojo"),
+        ("fluid_smoke", "fluid/fluid_smoke.mojo"),
+        ("fluid", "fluid/fluid.mojo"),
+        ("fluidctl", "fluid/fluidctl.mojo"),
     ]
 ]
 
