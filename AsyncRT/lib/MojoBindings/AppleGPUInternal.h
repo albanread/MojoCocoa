@@ -21,6 +21,7 @@ const char *AppleGPUMetal_synchronize(AGMetalCtx *ctx);
 const char *AppleGPUMetal_memInfo(AGMetalCtx *ctx, size_t *freeMem, size_t *total);
 size_t AppleGPUMetal_maxAlloc(AGMetalCtx *ctx);
 int AppleGPUMetal_getAttribute(AGMetalCtx *ctx, int attr, int *out);
+int AppleGPUMetal_computeCapability(AGMetalCtx *ctx);
 const char *AppleGPUMetal_createBuffer(AGMetalBuf **out, void **devAddr,
                                      AGMetalCtx *ctx, size_t bytes, bool host);
 const char *AppleGPUMetal_createSubBuffer(AGMetalBuf **out, void **devAddr,

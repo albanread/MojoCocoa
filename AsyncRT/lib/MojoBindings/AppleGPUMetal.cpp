@@ -73,6 +73,22 @@ void objcRelease(id obj) {
     msg<void>(obj, "release");
 }
 
+/// Whether a dispatch may return before the GPU has finished it.
+///
+/// Off by default: every read path in this file has to drain first, and a
+/// missed drain is a data race that looks like flaky numerics. Read once.
+bool asyncLaunchEnabled() {
+  static const bool on = [] {
+    const char *v = ::getenv("APPLEGPU_ASYNC_LAUNCH");
+    return v && *v && v[0] != '0' && ::strcmp(v, "off") != 0;
+  }();
+  return on;
+}
+
+/// Number of command buffers allowed in flight before a launch blocks.
+/// Bounds memory and keeps error reporting close to the failing dispatch.
+constexpr size_t kMaxPending = 64;
+
 std::string nsstringToStd(id nsstr) {
   if (!nsstr)
     return "";
@@ -102,6 +118,7 @@ const char *errorFromNSError(const char *what, id nserror) {
               : "(no NSError)";
   return agmErrorf("AppleGPURT[metal]: %s: %s", what, desc.c_str());
 }
+
 
 // storage modes: MTLResourceStorageMode{Shared=0, Managed=1<<4, Private=2<<4}
 constexpr unsigned long kStorageShared = 0;
@@ -135,6 +152,9 @@ struct AGMetalCaps {
   /// apple-mN family string: this is the GPU ISA generation, and it is what
   /// Apple's own offline AIR translator wants for -arch.
   std::string gpuArch;
+  /// M-series generation, the Apple analogue of a CUDA compute capability:
+  /// M4 -> 4, M5 -> 5. Zero means the part could not be identified.
+  int generation = 0;
 };
 
 struct AGMetalCtx {
@@ -143,7 +163,40 @@ struct AGMetalCtx {
   std::string name;
   std::string arch;
   AGMetalCaps caps;
+  /// A drain failure seen on a path with no way to report it (hostPtr returns
+  /// a pointer, not a status). Surfaced by the next synchronize.
+  const char *deferredError = nullptr;
+  /// Command buffers committed but not yet waited on, each retained by us.
+  ///
+  /// Empty unless asynchronous launch is enabled. Kept as a list rather than
+  /// a single handle because a command buffer's `error` is only readable from
+  /// the buffer itself: buffers on one queue complete in commit order, so
+  /// waiting on the last implies the rest are done, but dropping the earlier
+  /// ones would silently discard their failures.
+  std::vector<id> pending;
 };
+
+/// Wait for every outstanding dispatch and surface the first failure.
+///
+/// Buffers on one queue complete in commit order, so this walks them in order
+/// and the waits after the first are already satisfied. Every buffer is
+/// released whatever the outcome; the first error found is returned, and the
+/// remainder are still drained so the queue is left clean for the caller.
+const char *drainPending(AGMetalCtx *ctx) {
+  if (!ctx || ctx->pending.empty())
+    return nullptr;
+  const char *firstErr = nullptr;
+  for (id cb : ctx->pending) {
+    msg<void>(cb, "waitUntilCompleted");
+    if (id err = msg<id>(cb, "error")) {
+      if (!firstErr)
+        firstErr = errorFromNSError("kernel launch failed", err);
+    }
+    objcRelease(cb);
+  }
+  ctx->pending.clear();
+  return firstErr;
+}
 
 struct AGMetalBuf {
   AGMetalCtx *ctx = nullptr;
@@ -404,6 +457,48 @@ std::string archForName(const std::string &name) {
   return "metal-unknown";
 }
 
+/// The Apple analogue of a CUDA compute capability: the M-series generation,
+/// so M4 -> 4 and M5 -> 5.
+///
+/// Exactly one distinction is load-bearing in the kernel library -- `== 5` --
+/// and it gates the 16x16 simdgroup MMA (`enqueue_apple_matmul`, the FP4/FP8
+/// tiled paths, the MMA flash-attention prefill). Metal answers that question
+/// itself: the driver refuses those pipelines with "simdgroup_matrix<T,16,16x16>
+/// operations are supported by GPUFamily10 and later", so MTLGPUFamilyApple10
+/// IS the M5 predicate and is used as one here rather than trusting a marketing
+/// name. Earlier parts come from the arch string `archForName` already derived.
+///
+/// Reporting 0 -- which this binding did unconditionally, with the comment
+/// "meaningful for CUDA only" -- is not a harmless default. Every guard in the
+/// kernels is spelled `compute_capability() != 5`, so a hard zero disables the
+/// M5 fast paths on M5 hardware and makes every Apple GPU report
+/// "got compute_capability=0" when it declines.
+int queryGpuGeneration(id device, const std::string &arch) {
+  // MTLGPUFamilyApple10 == 1010. M5 is the first part to advertise it, and it
+  // is precisely the family the 16x16 simdgroup MMA requires.
+  bool family10 = msg<bool>(device, "supportsFamily:", (long)1010);
+  int named = 0;
+  auto pos = arch.rfind("-m");
+  if (pos != std::string::npos && pos + 2 < arch.size()) {
+    char c = arch[pos + 2];
+    if (c >= '1' && c <= '9')
+      named = c - '0';
+  }
+  if (family10)
+    return named > 5 ? named : 5;
+  // No Family10: the 16x16 MMA is absent whatever the part is called, so never
+  // report 5 here. A part named M5+ without the family would be a Metal or
+  // naming change worth seeing rather than silently rounding away.
+  if (named >= 5) {
+    fprintf(stderr,
+            "[applegpu] warning: device arch '%s' names generation %d but the "
+            "driver does not advertise MTLGPUFamilyApple10; reporting 4\n",
+            arch.c_str(), named);
+    return 4;
+  }
+  return named;
+}
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -439,9 +534,12 @@ const char *AppleGPUMetal_createContext(AGMetalCtx **out, int id_,
   // Resolve capabilities once, here, rather than per query: the IOKit lookup
   // walks the registry and this is asked on every dispatch-shaping decision.
   ctx->caps.coreCount = queryGpuCoreCount();
+  ctx->caps.generation = queryGpuGeneration(ctx->device, ctx->arch);
   if (const char *t = ::getenv("APPLEGPU_TRACE_CAPS"))
-    (void)t, fprintf(stderr, "[applegpu] caps device='%s' arch=%s cores=%d\n",
-                     devName.c_str(), ctx->arch.c_str(), ctx->caps.coreCount);
+    (void)t, fprintf(stderr,
+                     "[applegpu] caps device='%s' arch=%s cores=%d gen=%d\n",
+                     devName.c_str(), ctx->arch.c_str(), ctx->caps.coreCount,
+                     ctx->caps.generation);
   snprintf(nameOut, nameCap, "%s", ctx->name.c_str());
   snprintf(archOut, archCap, "%s", ctx->arch.c_str());
   *out = ctx;
@@ -461,8 +559,16 @@ const char *AppleGPUMetal_mtlDevice(AGMetalCtx *ctx, void **out) {
 }
 
 const char *AppleGPUMetal_synchronize(AGMetalCtx *ctx) {
-  // Every op is currently synchronous; an empty command buffer round-trip
-  // still serializes against anything in flight.
+  // Drain whatever asynchronous launch left in flight. This is where a failed
+  // dispatch is reported when launches no longer wait individually.
+  if (const char *e = drainPending(ctx))
+    return e;
+  if (const char *e = ctx->deferredError) {
+    ctx->deferredError = nullptr;
+    return e;
+  }
+  // An empty command-buffer round trip still serialises against anything the
+  // queue holds that we did not submit ourselves.
   id cb = msg<id>(ctx->queue, "commandBuffer");
   msg<void>(cb, "commit");
   msg<void>(cb, "waitUntilCompleted");
@@ -483,6 +589,12 @@ const char *AppleGPUMetal_memInfo(AGMetalCtx *ctx, size_t *freeMem,
 size_t AppleGPUMetal_maxAlloc(AGMetalCtx *ctx) {
   return static_cast<size_t>(
       msg<unsigned long>(ctx->device, "maxBufferLength"));
+}
+
+/// M-series generation for this device (M4 -> 4, M5 -> 5), 0 if unidentified.
+/// Resolved once at context creation; see `queryGpuGeneration`.
+int AppleGPUMetal_computeCapability(AGMetalCtx *ctx) {
+  return ctx ? ctx->caps.generation : 0;
 }
 
 int AppleGPUMetal_getAttribute(AGMetalCtx *ctx, int attr, int *out) {
@@ -600,6 +712,13 @@ void AppleGPUMetal_destroyBuffer(AGMetalBuf *buf) {
 }
 
 void *AppleGPUMetal_hostPtr(AGMetalBuf *buf) {
+  // Device memory is about to be observed or overwritten from the host.
+  // With asynchronous launch a dispatch may still be running, and the
+  // unified-memory fast path below is a bare memcpy with no implicit
+  // ordering, so drain first or read a half-written buffer.
+  if (const char *e = drainPending(buf->ctx))
+    buf->ctx->deferredError = e;
+
   // Under unified memory a *device* buffer has a perfectly good CPU pointer
   // too, so this is keyed on storage rather than on the address kind.
   if (!buf->hostVisible)
@@ -610,6 +729,13 @@ void *AppleGPUMetal_hostPtr(AGMetalBuf *buf) {
 
 const char *AppleGPUMetal_copyHtoD(AGMetalBuf *dst, const void *src,
                                  size_t bytes) {
+  // Device memory is about to be observed or overwritten from the host.
+  // With asynchronous launch a dispatch may still be running, and the
+  // unified-memory fast path below is a bare memcpy with no implicit
+  // ordering, so drain first or read a half-written buffer.
+  if (const char *e = drainPending(dst->ctx))
+    return e;
+
   if (!bytes)
     return nullptr;
   AGMetalCtx *ctx = dst->ctx;
@@ -635,6 +761,13 @@ const char *AppleGPUMetal_copyHtoD(AGMetalBuf *dst, const void *src,
 }
 
 const char *AppleGPUMetal_copyDtoH(void *dst, AGMetalBuf *src, size_t bytes) {
+  // Device memory is about to be observed or overwritten from the host.
+  // With asynchronous launch a dispatch may still be running, and the
+  // unified-memory fast path below is a bare memcpy with no implicit
+  // ordering, so drain first or read a half-written buffer.
+  if (const char *e = drainPending(src->ctx))
+    return e;
+
   if (!bytes)
     return nullptr;
   AGMetalCtx *ctx = src->ctx;
@@ -664,6 +797,13 @@ const char *AppleGPUMetal_copyDtoH(void *dst, AGMetalBuf *src, size_t bytes) {
 
 const char *AppleGPUMetal_copyDtoD(AGMetalBuf *dst, AGMetalBuf *src,
                                  size_t bytes) {
+  // Device memory is about to be observed or overwritten from the host.
+  // With asynchronous launch a dispatch may still be running, and the
+  // unified-memory fast path below is a bare memcpy with no implicit
+  // ordering, so drain first or read a half-written buffer.
+  if (const char *e = drainPending(dst->ctx))
+    return e;
+
   if (!bytes)
     return nullptr;
   BlitOp op;
@@ -681,6 +821,13 @@ const char *AppleGPUMetal_copyDtoD(AGMetalBuf *dst, AGMetalBuf *src,
 // resolve through the same allocation registry the other raw copies use.
 const char *AppleGPUMetal_copyRawDtoD(AGMetalCtx *ctx, uint64_t dstAddr,
                                       uint64_t srcAddr, size_t bytes) {
+  // Device memory is about to be observed or overwritten from the host.
+  // With asynchronous launch a dispatch may still be running, and the
+  // unified-memory fast path below is a bare memcpy with no implicit
+  // ordering, so drain first or read a half-written buffer.
+  if (const char *e = drainPending(ctx))
+    return e;
+
   size_t dstOff = 0, srcOff = 0;
   id dstBuf = resolveAddress(dstAddr, &dstOff);
   id srcBuf = resolveAddress(srcAddr, &srcOff);
@@ -699,6 +846,13 @@ const char *AppleGPUMetal_copyRawDtoD(AGMetalCtx *ctx, uint64_t dstAddr,
 
 const char *AppleGPUMetal_copyRawHtoD(AGMetalCtx *ctx, uint64_t dstAddr,
                                     const void *src, size_t bytes) {
+  // Device memory is about to be observed or overwritten from the host.
+  // With asynchronous launch a dispatch may still be running, and the
+  // unified-memory fast path below is a bare memcpy with no implicit
+  // ordering, so drain first or read a half-written buffer.
+  if (const char *e = drainPending(ctx))
+    return e;
+
   size_t off = 0;
   id target = resolveAddress(dstAddr, &off);
   if (!target)
@@ -718,6 +872,13 @@ const char *AppleGPUMetal_copyRawHtoD(AGMetalCtx *ctx, uint64_t dstAddr,
 
 const char *AppleGPUMetal_copyRawDtoH(AGMetalCtx *ctx, void *dst,
                                     uint64_t srcAddr, size_t bytes) {
+  // Device memory is about to be observed or overwritten from the host.
+  // With asynchronous launch a dispatch may still be running, and the
+  // unified-memory fast path below is a bare memcpy with no implicit
+  // ordering, so drain first or read a half-written buffer.
+  if (const char *e = drainPending(ctx))
+    return e;
+
   size_t off = 0;
   id source = resolveAddress(srcAddr, &off);
   if (!source)
@@ -738,6 +899,13 @@ const char *AppleGPUMetal_copyRawDtoH(AGMetalCtx *ctx, void *dst,
 }
 
 const char *AppleGPUMetal_fill(AGMetalBuf *dst, uint64_t val, size_t valSize) {
+  // Device memory is about to be observed or overwritten from the host.
+  // With asynchronous launch a dispatch may still be running, and the
+  // unified-memory fast path below is a bare memcpy with no implicit
+  // ordering, so drain first or read a half-written buffer.
+  if (const char *e = drainPending(dst->ctx))
+    return e;
+
   size_t bytes = dst->bytes;
   if (!bytes)
     return nullptr;
@@ -1116,6 +1284,26 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
             blockSize);
   msg<void>(enc, "endEncoding");
   msg<void>(cb, "commit");
+
+  // Synchronous launch waits here, which costs a full CPU-GPU round trip per
+  // dispatch. Measured against Modular's shipping release on the same M4 Max,
+  // that tax is ~0.40ms and constant: it dominates short kernels and vanishes
+  // on long ones, which is exactly the curve that looked like a codegen gap.
+  //
+  // Asynchronous launch hands the buffer to the queue and returns. Every path
+  // that observes device memory -- synchronize, the D2H copies, hostPtr --
+  // drains first, so ordering is still guaranteed to the caller; what changes
+  // is only that ten dispatches no longer cost ten drains.
+  if (asyncLaunchEnabled()) {
+    if (ctx->pending.size() >= kMaxPending) {
+      if (const char *e = drainPending(ctx))
+        return e;
+    }
+    msg<id>(cb, "retain");
+    ctx->pending.push_back(cb);
+    return nullptr;
+  }
+
   msg<void>(cb, "waitUntilCompleted");
   id err = msg<id>(cb, "error");
   if (err)

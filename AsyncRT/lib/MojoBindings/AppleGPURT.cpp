@@ -254,7 +254,12 @@ extern "C" void AsyncRT_DeviceContext_deviceApi(void *resultStringRef,
 extern "C" const char *
 AsyncRT_DeviceContext_computeCapability(int32_t *result,
                                         const DeviceContext *ctx) {
-  *result = 0; // meaningful for CUDA only; CPU reports 0
+  // Apple reports the M-series generation here (M4 -> 4, M5 -> 5); the CPU
+  // device has none. This used to return 0 unconditionally, which made every
+  // `compute_capability() != 5` guard in the kernel library fire on every
+  // Apple GPU -- including an M5, where it would have disabled exactly the
+  // 16x16 simdgroup MMA paths those guards exist to enable.
+  *result = ctx && ctx->metal ? AppleGPUMetal_computeCapability(ctx->metal) : 0;
   return VR_OK;
 }
 
