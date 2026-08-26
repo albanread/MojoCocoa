@@ -348,8 +348,16 @@ Requires Apple Silicon, macOS 15+, and Xcode 16+.
 This README is the summary, and [`STATUS.md`](STATUS.md) is the honest current
 picture — read that before relying on anything here.
 
+**To learn the language and the API, start with the
+[CocoaMojo Programmer's Guide and Reference Manual](CocoaMojoGuide/)** — eight
+guide chapters from first program to a walked-through windowed demo, plus a
+reference covering the cocoa-mojo dialect, every `std.objc` entry point, every
+`cocoakb` query and every diagnostic. A built PDF sits beside the source.
+
 | Document | What it covers |
 | --- | --- |
+| [`CocoaMojoGuide/`](CocoaMojoGuide/) | The programmer's guide and reference manual. Written against this tree, not against upstream documentation. |
+| [`COCOA_LET_DESIGN.md`](COCOA_LET_DESIGN.md) | The design behind `let`, `fn` and keyword selectors — the cocoa-mojo language surface, with the decisions recorded at implementation time. |
 | [`STATUS.md`](STATUS.md) | Where the port stands right now, what is verified, and what remains open. The place to pick up. |
 | [`APPLE_GPU_LOWERING_REVIEW.md`](APPLE_GPU_LOWERING_REVIEW.md) | The current Mojo/MAX-to-AIR flow, systemic findings, specific adjustments, test architecture, and recommended implementation order. |
 | [`COCOA_ARM64.md`](COCOA_ARM64.md) | The Cocoa hook on Apple Silicon: comptime SDK queries, dispatch, and the ARM64 calling convention. |
