@@ -88,7 +88,29 @@ wrappers built on it; tomorrow: CoreFoundation handles).
   *"`let` declares a scope-bound reference-counted binding; for values use
   `var`"*.
 
-### Why trait-gated rather than general
+### DECISION RECORDED AT IMPLEMENTATION (2026-08-26): general, not trait-gated
+
+The section below argued for gating `let` on a `Retained` trait. When the
+keyword was implemented, the opposite was chosen, deliberately:
+
+1. **The machinery decided.** The compiler still contains the complete
+   immutable-binding pipeline from the original `let` era —
+   `PatternDeclKind::kBind` ("like an 'imm' arg convention"),
+   `VarDeclKind::Bind`/`Bound`, and `MBValue` enforcement; the `VarDeclKind`
+   enum's own comment still says "declared implicitly by the user via
+   non-var/let syntax". `let` maps onto it in a handful of mechanical parser
+   changes. A trait gate would have required NEW conformance machinery in the
+   elaborator for the sake of rejecting `let n = 42`.
+2. **The compatibility stance changed the argument.** Trait-gating was the
+   upstream-merge story; this fork has since declared itself cocoa-mojo. With
+   that settled, general `let` is the healed language — Swift muscle memory
+   included — and `let win = NSWindow(...)` and `let n = 42` both meaning
+   "immutable binding" is one rule instead of two.
+
+The ARC behaviour for Cocoa objects is unchanged either way: it lives in
+`ObjCRef`, not the keyword. What follows is kept as the original analysis.
+
+### Why trait-gated rather than general (superseded, see above)
 
 Upstream removed general `let` deliberately (two declaration keywords, no
 semantic difference). Reintroducing it *generally* re-litigates that decision

@@ -48,11 +48,11 @@ run_mustfail() {   # must FAIL TO COMPILE, and say why
 echo "must compile and run:"
 for f in check.mojo objc_smoke.mojo foundation_demo.mojo typecheck_test.mojo \
          ownership_test.mojo stret_test.mojo callback_probe.mojo \
-         weakref_test.mojo nserror_test.mojo fn_test.mojo dispatch_test.mojo; do run_ok "$f"; done
+         weakref_test.mojo nserror_test.mojo fn_test.mojo dispatch_test.mojo let_test.mojo; do run_ok "$f"; done
 
 echo
 echo "must be rejected at compile time:"
-for f in must_fail.mojo must_fail_argcount.mojo must_fail_fn_raises.mojo; do run_mustfail "$f"; done
+for f in must_fail.mojo must_fail_argcount.mojo must_fail_fn_raises.mojo must_fail_let_assign.mojo; do run_mustfail "$f"; done
 
 echo
 echo "$pass passed, $fail failed"
