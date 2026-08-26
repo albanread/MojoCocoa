@@ -58,14 +58,23 @@
 # RESULT, measured on an M4 Max: 5,191 actions, zero failures, first configure
 # succeeded without adjustment.
 #
-#   libLLVM.dylib   107.5 MB    37,493 exported symbols
-#   libMLIR.dylib   235.0 MB   145,605 exported symbols
-#   install tree      1.3 GB    libraries, headers, tools
+#   libLLVM.dylib    62.5 MB    37,493 exported symbols   (bazel's: 77.7 MB)
+#   libMLIR.dylib   106.2 MB   140,426 exported symbols   (bazel's: 159.5 MB)
 #
-# Larger than the bazel-built pair (77.7 MB / 159.5 MB) because those contain
-# only the 102 LLVM libraries the compiler happens to reach, while these are all
-# of LLVM and every MLIR dialect. For a library other projects link against,
-# complete is the right answer.
+# Smaller than the bazel-built pair, which is not what you would guess. The code
+# is the same size either way -- __TEXT is 55.9 MB against bazel's 55.3 for LLVM,
+# and for MLIR ours is actually less, 78.0 against 79.7. Every megabyte of the
+# difference is __LINKEDIT: the symbol table and export trie.
+#
+# Two things account for it. CMake keeps ~347,000 local symbols that nothing
+# needs at run time, so the install step strips them -- unstripped these are
+# 107.5 MB and 238.8 MB, and `strip -x` is the whole of the difference. And the
+# export surface is smaller because LLVM_ABI annotations export deliberately:
+# 140,426 MLIR symbols against bazel's 171,846, where bazel has to open
+# everything with -fvisibility=default to get a usable dylib at all.
+#
+# The build tree keeps its symbols; only the install tree is stripped. Debug
+# there, ship from here.
 #
 # libMLIR takes @rpath/libLLVM.24.0git.dylib rather than absorbing a second copy,
 # and neither has any reference to /opt/homebrew -- verify with otool -L before
@@ -133,6 +142,21 @@ ninja -C "$BUILD"
 echo
 echo "== installing =="
 ninja -C "$BUILD" install
+
+# Strip local symbols from the installed libraries. They are ~45 MB of libLLVM
+# and ~130 MB of libMLIR, they are not exports, and nothing loads them at run
+# time. The build tree is left alone so a debugger still has them.
+echo
+echo "== stripping the install tree =="
+for lib in "$INSTALL"/lib/*.dylib; do
+  [ -f "$lib" ] || continue
+  before=$(stat -f%z "$lib")
+  strip -x "$lib" 2>/dev/null || true
+  after=$(stat -f%z "$lib")
+  [ "$before" -ne "$after" ] && \
+    printf "   %-18s %.1f -> %.1f MB\n" "$(basename "$lib")" \
+      "$(echo "$before/1048576" | bc -l)" "$(echo "$after/1048576" | bc -l)"
+done
 
 echo
 for lib in libLLVM.dylib libMLIR.dylib; do

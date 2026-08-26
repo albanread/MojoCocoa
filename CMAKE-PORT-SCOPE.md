@@ -1,5 +1,15 @@
 <!-- Produced by a five-way survey of the build files, then spot-verified. -->
 
+> **Size, corrected.** An earlier note here said the CMake libraries were larger
+> than bazel's because they contain all of LLVM. That was wrong on measurement.
+> The code is the same size — `__TEXT` 55.9 MB against bazel's 55.3 for LLVM, and
+> for MLIR the CMake one is *smaller*, 78.0 against 79.7. The whole difference was
+> `__LINKEDIT`: ~347,000 local symbols CMake keeps and nothing needs at run time.
+> Stripped on install, the pair is **62.5 MB and 106.2 MB against bazel's 77.7 and
+> 159.5** — 20% and 33% smaller. LLVM_ABI annotations are why: 140,426 exported
+> MLIR symbols against bazel's 171,846, because bazel has to open everything with
+> `-fvisibility=default` to get a usable dylib at all.
+>
 > **Acted on already.** The `MLIR_USE_FALLBACK_TYPE_IDS` finding in §4 was a real
 > defect in `tools/build-llvm-cmake.sh` as first written, confirmed by measuring
 > the two libraries: 10,876 `TypeIDResolver` symbols in the bazel `libMLIR.dylib`
