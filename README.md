@@ -353,7 +353,8 @@ pointing the elaborator at a different `cocoa.sqlite` used to rebuild LLVM. The
 compiler reads those variables at run time instead.
 
 [`RELEASE.md`](RELEASE.md) documents the build, `./tools/check-dist.sh` verifies
-one.
+one, and [`IDE-EMBEDDING.md`](IDE-EMBEDDING.md) maps the compiler's phases for
+anything that wants to embed them rather than shell out.
 
 ### Changing the compiler
 

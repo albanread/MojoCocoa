@@ -553,9 +553,10 @@ single test would have missed.
   `libMojoCompiler.dylib` contains `:Elaborator`, `:Pipeline` and
   `:ObjectCompiler` as well as the parser, but only the parse path has a probe
   behind it. The others are believed reachable, not demonstrated.
-- **The JIT cannot run GPU programs**, embedded or otherwise. `cocoamojo --run`
-  builds and executes instead, which is why it works.
-- `mojo run` (the JIT) still cannot run GPU programs. `cocoamojo --run` builds
-  instead, which is why it works. The JIT path is filed, not fixed.
+- **Elaboration, lowering and AOT emission have no probe.** Only the parse path
+  is demonstrated from outside; see [`IDE-EMBEDDING.md`](IDE-EMBEDDING.md).
+- Executable *linking* is not in-process: `ObjectCompiler` emits objects and
+  archives, and producing an executable shells out to a linker, as the driver
+  does. See [`IDE-EMBEDDING.md`](IDE-EMBEDDING.md).
 - The distribution is not signed or notarized, so it will not run on another Mac
   without the user clearing quarantine.
