@@ -47,6 +47,7 @@ done
 # find it rather than guessing the path.
 echo "== LLVM =="
 LLVMLIB="$(find "$B" -name 'libLLVM.dylib' -type f 2>/dev/null | head -1)"
+MLIRLIB="$(find "$B" -name 'libMLIR.dylib' -type f 2>/dev/null | head -1)"
 # The external repo holding LLVM's sources. It sits beside execroot/ in the
 # output base, not inside it, and the +llvm_configure+ prefix is bzlmod's and can
 # change -- so cut the path at /execroot/ and glob for the repo.
@@ -59,6 +60,14 @@ nexp=$(nm -gU "$D/lib/libLLVM.dylib" | grep -c '4llvm') || true
 # a silent failure, so it is checked rather than assumed.
 [ "$nexp" -gt 10000 ] || { echo "   libLLVM.dylib exports only $nexp llvm:: symbols -- visibility regression"; exit 1; }
 echo "   $(du -h "$D/lib/libLLVM.dylib" | cut -f1), $nexp llvm:: symbols exported"
+
+# MLIR, on top of LLVM. The compiler links both; an in-process consumer that
+# wants to build IR rather than shell out needs this one too.
+[ -n "$MLIRLIB" ] || { echo "   no libMLIR.dylib -- build //bazel/mlir-shared:MLIR"; exit 1; }
+cp -f "$MLIRLIB" "$D/lib/"
+mexp=$(nm -gU "$D/lib/libMLIR.dylib" | grep -c '4mlir') || true
+[ "$mexp" -gt 10000 ] || { echo "   libMLIR.dylib exports only $mexp mlir:: symbols -- visibility regression"; exit 1; }
+echo "   $(du -h "$D/lib/libMLIR.dylib" | cut -f1), $mexp mlir:: symbols exported"
 
 # LLVM headers, so the dylib is something another project can actually compile
 # against. Two trees have to be merged, and the order matters:

@@ -156,7 +156,10 @@ modular_cc_binary(
     # cc_binary, and bazel takes care of not also linking those libraries
     # statically -- which is the part that matters, since two copies of LLVM in
     # one process means two ManagedStatic registries.
-    dynamic_deps = ["//bazel/llvm-shared:LLVM"],
+    dynamic_deps = [
+        "//bazel/llvm-shared:LLVM",
+        "//bazel/mlir-shared:MLIR",
+    ],
     linkopts = _MOJO_LINKOPTS,
     deps = [":mojo_common"],
 )

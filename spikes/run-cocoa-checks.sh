@@ -7,10 +7,20 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-# The raw binary cannot find std.mojoc on its own; //KGEN:mojo is the wrapper
-# that supplies the stdlib import paths (see bazel/docs/usage.md).
-MOJO_RUN=${MOJO_RUN:-"./bazelw run --ui_event_filters=-info,-stdout --noshow_progress //KGEN:mojo -- run"}
-MOJO=./bazel-bin/KGEN/tools/mojo/mojo-full
+# The raw binary cannot find std.mojoc on its own; something has to supply the
+# stdlib import paths. Prefer the built distribution, which supplies those and
+# everything else besides and needs no daemon; fall back to bazel when there is
+# no distribution yet.
+#
+# Override either explicitly:
+#   MOJO_RUN="dist/CocoaMojo/bin/cocoamojo --run" ./spikes/run-cocoa-checks.sh
+if [ -z "${MOJO_RUN:-}" ] && [ -x dist/CocoaMojo/bin/cocoamojo ]; then
+  MOJO_RUN="dist/CocoaMojo/bin/cocoamojo --run"
+  MOJO=dist/CocoaMojo/bin/cocoamojo-compiler
+else
+  MOJO_RUN=${MOJO_RUN:-"./bazelw run --ui_event_filters=-info,-stdout --noshow_progress //KGEN:mojo -- run"}
+  MOJO=${MOJO:-./bazel-bin/KGEN/tools/mojo/mojo-full}
+fi
 # Default assumes CocoaBaseMCP is checked out beside this repo. Override with
 # MODULAR_MOJO_MAX_COCOAKB_PATH if it lives elsewhere.
 export MODULAR_MOJO_MAX_COCOAKB_PATH=${MODULAR_MOJO_MAX_COCOAKB_PATH:-\

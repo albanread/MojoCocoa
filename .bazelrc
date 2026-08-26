@@ -59,8 +59,9 @@ build:release --host_cxxopt=-mcpu=apple-m4
 build:release --dynamic_mode=default
 build:release --features=supports_dynamic_linker
 
-# Compile LLVM with default symbol visibility, so //bazel/llvm-shared:LLVM is a
-# library other things can actually call.
+# Compile LLVM and MLIR with default symbol visibility, so
+# //bazel/llvm-shared:LLVM and //bazel/mlir-shared:MLIR are libraries other
+# things can actually call.
 #
 # bazel/internal/cc-toolchain/args/BUILD.bazel:124-125 applies -fvisibility=hidden
 # across the whole toolchain. For a single static binary that is free size; for a
@@ -73,8 +74,8 @@ build:release --features=supports_dynamic_linker
 # bazel/internal/common.bazelrc:175. -fno-visibility-inlines-hidden matters too:
 # without it LLVM's inline and template members stay hidden, which is exactly the
 # set a consumer needs and the hardest to notice missing.
-build:release --per_file_copt=external/.*llvm-project/llvm/.*@-fvisibility=default,-fno-visibility-inlines-hidden
-build:release --host_per_file_copt=external/.*llvm-project/llvm/.*@-fvisibility=default,-fno-visibility-inlines-hidden
+build:release --per_file_copt=external/.*llvm-project/(llvm|mlir)/.*@-fvisibility=default,-fno-visibility-inlines-hidden
+build:release --host_per_file_copt=external/.*llvm-project/(llvm|mlir)/.*@-fvisibility=default,-fno-visibility-inlines-hidden
 
 # zlib-ng and zstd are compression backends LLVM's Support links, so they land
 # inside libLLVM.dylib and have to be callable from outside it for the same

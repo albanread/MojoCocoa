@@ -15,7 +15,7 @@ echo "== 1/2  building the compiler (this is the long one) =="
 # named output.
 ./bazelw build --config=build-mojo --config=release \
     //KGEN/tools/mojo:mojo //KGEN:CompilerRT //bazel/llvm-shared:LLVM \
-    //KGEN/tools/mojo-lsp-server:mojo-lsp-server
+    //KGEN/tools/mojo-lsp-server:mojo-lsp-server //bazel/mlir-shared:MLIR
 
 echo
 echo "== 2/2  assembling dist/CocoaMojo =="

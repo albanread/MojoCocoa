@@ -187,9 +187,10 @@ Measured, one M4 Max:
 
 | | before (dbg, static) | after (release, dynamic LLVM) |
 |---|---|---|
-| compiler binary | 169.8 MB | **56.5 MB** |
+| compiler binary | 169.8 MB | **27.9 MB** |
 | libLLVM.dylib | — | **77.7 MB**, 37,113 `llvm::` symbols |
-| distribution | 439 MB | 449 MB (includes LLVM headers) |
+| libMLIR.dylib | — | **159.5 MB**, 170,816 `mlir::` symbols |
+| distribution | 439 MB | 645 MB (includes LLVM headers) |
 | compile a demo | 6.88 s | **5.74 s** |
 | LLVM backends built | AArch64, RISCV, X86 | **AArch64** |
 | full build | 8,527 actions | 7,999 actions, **882 s** |
@@ -377,6 +378,45 @@ Until then: the compiler shares the dylib, the language server does not, and
 `check-dist.sh` fails loudly with `duplicate LLVM CommandLine registry` if that
 ever changes by accident.
 
+### MLIR is a shared library too
+
+`//bazel/mlir-shared:MLIR` builds `libMLIR.dylib` — 159.5 MB, 170,816 exported
+`mlir::` symbols — and takes `libLLVM.dylib` as a `dynamic_deps` rather than
+absorbing a second copy of it. With both shared, the compiler is 27.9 MB.
+
+This is what in-process compilation needs. `cocoamojo --build` shells out and
+requires none of it; an editor that wants to compile inside its own process, or
+to build and inspect IR directly, links MLIR.
+
+It carried a risk worth recording, because it is subtler than the one that broke
+the language server. `libMSupportGlobals.dylib` links `mlir:Support` on purpose,
+and the comment above it is specifically about this:
+
+```
+# Always link and expose the FallbackTypeIDResolver::registerImplicitTypeID
+# function. This is used by downstream libraries to decide whether MLIR types
+# in different SOs are the same type or not.
+```
+
+MLIR identifies types by `TypeID`, and two shared objects that disagree about
+whether `mlir::IntegerType` is the same type do not crash — a `dyn_cast` returns
+null and the failure surfaces a long way from its cause. Modular anticipated
+MLIR across shared objects, which is why that function is force-linked, but
+"anticipated" is not "verified".
+
+So the verification is end-to-end rather than structural. `./spikes/run-cocoa-checks.sh`
+compiles and runs 16 checks that assert real values — `cocoakb_query` results,
+block ABI layout, weak-reference reloads, NSError bridging, and three that must
+fail to compile and still do. All 16 pass against the distribution, with no
+bazel involved:
+
+```bash
+./spikes/run-cocoa-checks.sh      # uses dist/CocoaMojo when it exists
+```
+
+A dylib that links and a demo that renders would not have been evidence of
+anything here. Sixteen assertions on values are.
+
 ### Cocoa completion
 
 The language server completes Objective-C classes and selectors out of
@@ -435,8 +475,12 @@ single test would have missed.
 
 ## What is not done
 
-- **MLIR is still static.** It is 468 more libraries and the same treatment
-  would work; nothing needed it yet.
+- **MLIR headers are not shipped**, only LLVM's. In-process compilation would
+  need them; see below.
+- **`mojo_common` is not exposed as a library.** Compiling in-process rather
+  than shelling out to `cocoamojo --build` means linking it, and it is a
+  `modular_cc_library` inside `//KGEN/tools/mojo`, not something the
+  distribution offers.
 - `mojo run` (the JIT) still cannot run GPU programs. `cocoamojo --run` builds
   instead, which is why it works. The JIT path is filed, not fixed.
 - The distribution is not signed or notarized, so it will not run on another Mac
