@@ -26,25 +26,46 @@ C++ compiles pass -MD -MF, so ninja reads the depfiles and gets header-accurate
 incremental rebuilds -- the same information bazel derives from its own
 dependency scanning.
 
-STATUS. The extraction is complete and ninja orders the graph correctly; a
-from-scratch ninja build gets through LLVM, MLIR and KGEN. What still fails is a
-handful of actions in third-party corners the compiler does not need at run
-time -- crashpad (whose mig.py wants a Mach interface generator, and whose
-handler this distribution does not ship), curl, and protobuf's own version
-check. Run with `ninja -k 0` to build past them.
+STATUS -- read this before relying on it.
 
-Two behaviours were needed to replay bazel's actions faithfully and are worth
-knowing if this ever misbehaves:
+Source edits: works. Change a .cpp, run ninja, get a rebuilt compiler with no
+bazel involved. This is the case that matters day to day and it is the case this
+was written for.
 
-  * Outputs are removed before each action. Bazel runs everything against a
-    fresh sandbox and some actions rely on it -- the crosstool module map is
-    generated with `exec 1>>"$1"`, so replaying it over an existing file appends
-    a second copy and produces a module map that will not parse.
+A cold build from nothing: not there. Successive fixes took the failure count
+from 748 to 40, and the last 40 are two classes -- one MLIR tablegen include
+path (OpenMP/OpenACC), and layering-check failures where the .cppmap files bazel
+writes from internal state have to be present and correct.
 
-  * Exec-configuration paths are normalised. aquery writes an action's outputs
-    under the real directory (bazel-out/mojo_host_platform-opt-exec/...) and its
-    inputs under the placeholder bazel-out/cfg/..., and ninja cannot connect a
-    tablegen binary to the objects it was linked from unless those agree.
+The shape of the problem is worth stating plainly, because it decides whether to
+invest further. Bazel's execution contract is implicit, and every clause of it
+had to be found by hitting it:
+
+  * it creates each action's output directories
+  * it runs actions against a fresh sandbox, and a few rely on that -- the
+    crosstool module map is generated with `exec 1>>"$1"` and doubles if
+    replayed over an existing file
+  * it strips the configuration segment from command lines and maps it back per
+    artifact, so one command can name an exec-config tool and a target-config
+    output both as bazel-out/cfg/...
+  * it symlinks external repositories into the execroot lazily, per invocation
+    (347 of them here)
+  * it writes module maps and symlink farms from internal state, with no command
+    line to replay
+
+Each was a small fix. There is no way to know how many remain. If a guaranteed
+from-scratch build with no bazel is the goal, CMake for LLVM and MLIR is the
+supported route -- upstream builds libLLVM.dylib natively with
+-DLLVM_BUILD_LLVM_DYLIB=ON -- and KGEN would need its own CMake for its 1,007
+tablegen rules. That is a real project, and it is a maintainable one, which this
+is not.
+
+Prerequisites for the source-edit case:
+
+    # once, to materialise every external repository in the execroot
+    for d in <output_base>/external/*/; do
+      ln -s "$d" execroot/_main/external/"$(basename "$d")"
+    done
 
 Bazel's outputs are read-only. Before the first ninja run:
 
@@ -129,21 +150,7 @@ def main():
         sys.exit(__doc__)
     graph = json.loads(Path(sys.argv[1]).read_text())
 
-    # aquery spells exec-configuration paths two ways: outputs get the real
-    # directory (bazel-out/mojo_host_platform-opt-exec/...) while inputs get the
-    # placeholder bazel-out/cfg/.... Ninja sees two different files and cannot
-    # connect a tablegen binary to the objects it is linked from. Unify them.
-    exec_cfg = next(
-        (c["mnemonic"] for c in graph.get("configuration", [])
-         if c.get("mnemonic", "").endswith("-exec")), None)
-
-    def normalize(path):
-        if exec_cfg and path.startswith("bazel-out/cfg/"):
-            return "bazel-out/" + exec_cfg + path[len("bazel-out/cfg"):]
-        return path
-
     paths = build_paths(graph["pathFragments"])
-    paths = {k: normalize(v) for k, v in paths.items()}
     artifact_path = {a["id"]: paths[a["pathFragmentId"]] for a in graph["artifacts"]}
     resolve_depset = flatten_depsets(graph.get("depSetOfFiles", []))
 
@@ -190,10 +197,36 @@ def main():
         inputs = set()
         for dep_id in action.get("inputDepSetIds", []):
             inputs |= resolve_depset(dep_id)
+        all_inputs = [artifact_path[i] for i in inputs]
         # Only depend on things this build actually produces. Sources and
         # snapshotted artifacts are already on disk; listing them would make
         # ninja demand rules for files nothing here builds.
         deps = sorted(artifact_path[i] for i in inputs if i in produced)
+
+        # Resolve bazel's path-mapping placeholder.
+        #
+        # Command lines carry `bazel-out/cfg/bin/...` where the artifact's real
+        # path has a configuration segment -- bazel strips it so an action's
+        # command is identical across configurations and can be cached once,
+        # then maps it back per artifact at execution time.
+        #
+        # The trap is that one command mixes configurations: generating
+        # GeneratedDialectChecksum.h names `bazel-out/cfg/bin/...` for both the
+        # tool, which lives in the exec configuration, and the output, which
+        # lives in the target one. A single global rewrite gets one of them
+        # wrong whichever way it goes. So resolve each token against this
+        # action's own inputs and outputs, matching on the part after the
+        # configuration segment.
+        suffix_to_real = {}
+        for real in list(all_inputs) + outputs:
+            parts = real.split("/", 2)
+            if len(parts) == 3 and parts[0] == "bazel-out":
+                suffix_to_real.setdefault(parts[2], real)
+
+        def resolve(token):
+            if not token.startswith("bazel-out/cfg/"):
+                return token
+            return suffix_to_real.get(token[len("bazel-out/cfg/"):], token)
 
         env = "".join(
             f"{e['key']}={shlex.quote(e['value'])} "
@@ -208,23 +241,38 @@ def main():
             script = scripts / f"action_{emitted}.sh"
             script.write_text(
                 "#!/bin/sh\nexec "
-                + " ".join(shlex.quote(normalize(a)) for a in args) + "\n")
+                + " ".join(shlex.quote(resolve(a)) for a in args) + "\n")
             script.chmod(0o755)
             cmd = env + shlex.quote(str(script))
         else:
-            cmd = env + " ".join(shlex.quote(normalize(a)) for a in args)
+            cmd = env + " ".join(shlex.quote(resolve(a)) for a in args)
 
         # A depfile is only usable when the command actually writes one next to
         # the object, which is the convention bazel's -MF follows.
         primary = artifact_path.get(action.get("primaryOutputId"))
         rule = "cmd_dep" if ("-MF" in args and primary and primary.endswith(".o")) else "cmd"
 
-        # Bazel runs every action against outputs that do not exist yet, and
-        # some of them rely on it -- the crosstool module map is generated with
+        # Bazel creates an action's output directories before running it and
+        # ninja does not, so tools that open their output for writing fail with
+        # "No such file or directory" on a tree built from scratch.
+        outdirs = sorted({os.path.dirname(o) for o in outputs if os.path.dirname(o)})
+        prefix = "mkdir -p " + " ".join(shlex.quote(dd) for dd in outdirs) + " && " if outdirs else ""
+
+        # Bazel also runs every action against outputs that do not exist yet,
+        # and a few rely on it: the crosstool module map is generated with
         # `exec 1>>"$1"`, so replaying it over an existing file appends a second
-        # copy and produces a module map that will not parse. Clear the outputs
-        # first, which is what a fresh sandbox gives.
-        cmd = "rm -rf " + " ".join(shlex.quote(o) for o in outputs) + " && " + cmd
+        # copy and yields a module map that will not parse.
+        #
+        # Only those get their outputs cleared. Doing it unconditionally is
+        # actively harmful -- an action that then fails leaves nothing behind,
+        # and if it is later reclassified as a snapshot there is nothing to
+        # snapshot. That mistake cost a bazel run to repair.
+        # Test the original arguments, not the assembled command: an action
+        # whose script went to a wrapper file has a one-token command line, and
+        # the `>>` that makes it append is invisible there.
+        if any(">>" in a for a in args):
+            prefix += "rm -rf " + " ".join(shlex.quote(o) for o in outputs) + " && "
+        cmd = prefix + cmd
 
         lines.append(f"build {' '.join(ninja_escape(o) for o in outputs)}: {rule}"
                      + (" | " + " ".join(ninja_escape(d) for d in deps) if deps else ""))
