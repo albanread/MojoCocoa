@@ -364,6 +364,66 @@ def unblock():
 
 # ------------------------------------------------------------------ classify
 
+def _kill_group(proc):
+    """SIGKILL the test's whole process group, then reap it.
+
+    `start_new_session` put the test in its own group; kill the group so
+    anything it spawned dies with it rather than holding the sweep open.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def run_one(cmd, env, cwd, timeout, tmpdir):
+    """Run one test binary under a timeout that actually bounds it.
+
+    Two deliberate departures from `subprocess.run(..., timeout=)`, both paid
+    for by a real incident: a GPU-wedged test ran for 4267 s under a 900 s
+    timeout and was ended only by an external SIGKILL. `subprocess.run`
+    returned NORMALLY with the kill's exit code, so TimeoutExpired had never
+    been raised at all -- the deadline was simply never enforced.
+
+      * output goes to FILES, not pipes. That removes the whole
+        selector-and-drain machinery from the timeout path (and with it any
+        chance of a full pipe buffer deadlocking a chatty test); what remains
+        is `proc.wait(timeout=...)`, which is a plain poll loop.
+      * the child gets its own session, so expiry can SIGKILL the process
+        GROUP. Killing the direct child is not enough when the thing that is
+        stuck is something it spawned.
+
+    Returns (returncode | None, combined output, timed_out).
+    """
+    op = Path(tmpdir) / "stdout.txt"
+    ep = Path(tmpdir) / "stderr.txt"
+    timed_out = False
+    with open(op, "wb") as fo, open(ep, "wb") as fe:
+        proc = subprocess.Popen(cmd, stdout=fo, stderr=fe, env=env, cwd=cwd,
+                                start_new_session=True)
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            rc = None
+            _kill_group(proc)
+
+    def _read(path):
+        try:
+            return path.read_text(errors="replace")
+        except OSError:
+            return ""
+
+    return rc, _read(op) + _read(ep), timed_out
+
+
 def classify_run(rc, out, elapsed, timed_out):
     if timed_out:
         return "timeout", ""
@@ -501,16 +561,10 @@ def main():
             rf = runfiles_dir(t["target"])
             cwd = str(rf) if rf.is_dir() else str(REPO)
             start = time.time()
-            timed_out = False
-            try:
-                cmd = [str(bp)] + targs.get(t["target"], [])
-                p = subprocess.run(cmd, capture_output=True, text=True,
-                                   timeout=args.timeout, env=env, cwd=cwd)
-                rc, out = p.returncode, (p.stdout or "") + (p.stderr or "")
-            except subprocess.TimeoutExpired as e:
-                rc, timed_out = None, True
-                out = (e.stdout or b"").decode(errors="replace") + \
-                      (e.stderr or b"").decode(errors="replace")
+            cmd = [str(bp)] + targs.get(t["target"], [])
+            rc, out, timed_out = run_one(
+                cmd, env, cwd, args.timeout, env["TEST_TMPDIR"]
+            )
             el = time.time() - start
             outcome, detail = classify_run(rc, out, el, timed_out)
             if outcome == "pass" and not has_check_mechanism(t["target"]):
