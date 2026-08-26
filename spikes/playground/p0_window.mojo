@@ -8,6 +8,7 @@
 # Set P0_AUTOCLOSE_TICKS=N to have the timer close the window after N ticks so
 # the whole lifecycle (launch -> ticks -> close -> terminate) runs unattended.
 from std.objc import (
+    load_framework,
     ObjCClass,
     ObjCObject,
     msg_send,
@@ -110,6 +111,10 @@ fn timer_tick(self_: P, cmd: P, timer: P):
 
 
 def main() raises:
+    # AppKit is not linked into a JIT-run process; without this the
+    # NSApplication lookup is nil and the app exits silently.
+    if not load_framework["AppKit"]():
+        raise Error("could not load AppKit")
     let env = getenv("P0_AUTOCLOSE_TICKS")
     if env != "":
         autoclose()[] = Int(env)

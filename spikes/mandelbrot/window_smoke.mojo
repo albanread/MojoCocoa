@@ -1,7 +1,7 @@
 # Step 1: prove an NSWindow can be created and the AppKit event loop pumped
 # from Mojo, entirely through std.objc. Headless-safe: it creates the objects,
 # pumps a few event cycles, and exits without requiring a visible display.
-from std.objc import ObjCClass, ObjCObject, msg_send, autoreleasepool
+from std.objc import load_framework, ObjCClass, ObjCObject, msg_send, autoreleasepool
 from std.ffi import external_call
 from std.memory import OpaquePointer
 
@@ -27,6 +27,11 @@ struct CGRect(Copyable, Movable):
 
 
 def main():
+    # AppKit is not linked into a JIT-run process; without this the
+    # NSApplication lookup is nil and the app exits silently.
+    if not load_framework["AppKit"]():
+        print("FATAL: could not load AppKit")
+        return
     with autoreleasepool():
         # [NSApplication sharedApplication]
         let NSApplication = ObjCClass.lookup["NSApplication"]()
