@@ -20,6 +20,19 @@ n=$(nm -gU dist/CocoaMojo/lib/libCocoaMojoGPU.dylib 2>/dev/null | grep -c AsyncR
 [ "$n" -gt 100 ] && ok libCocoaMojoGPU "$n AsyncRT symbols exported" \
                  || bad libCocoaMojoGPU "only $n AsyncRT symbols -- visibility regression"
 
+# Same check for LLVM, and for the same reason: under the toolchain's default
+# hidden visibility this lands near 200 instead of tens of thousands, the dylib
+# links, and nothing outside it can call in.
+l=$(nm -gU dist/CocoaMojo/lib/libLLVM.dylib 2>/dev/null | grep -c '4llvm') || l=0
+sz=$(du -h dist/CocoaMojo/lib/libLLVM.dylib 2>/dev/null | cut -f1)
+[ "$l" -gt 10000 ] && ok libLLVM "$l llvm:: symbols exported, $sz" \
+                   || bad libLLVM "only $l llvm:: symbols -- visibility regression"
+
+# And that the compiler is actually using it rather than carrying its own copy.
+otool -L dist/CocoaMojo/bin/cocoamojo-compiler 2>/dev/null | grep -q 'libLLVM.dylib' \
+  && ok "compiler link" "dynamic against libLLVM.dylib" \
+  || bad "compiler link" "LLVM is statically linked -- dynamic_deps not in effect"
+
 for src in spikes/mandelbrot/mandelbrot.mojo spikes/mandelbrot/window_smoke.mojo \
            spikes/playground/playground.mojo spikes/playground/p0_window.mojo \
            spikes/life/life.mojo; do

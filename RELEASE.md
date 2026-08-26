@@ -185,16 +185,79 @@ runtime's exports. What it should print:
 
 Measured, one M4 Max:
 
-| | before (dbg) | after (release) |
+| | before (dbg, static) | after (release, dynamic LLVM) |
 |---|---|---|
-| compiler binary | 169.8 MB | **104.8 MB** |
-| distribution | 439 MB | **378 MB** |
+| compiler binary | 169.8 MB | **56.5 MB** |
+| libLLVM.dylib | — | **77.7 MB**, 37,113 `llvm::` symbols |
+| distribution | 439 MB | 408 MB |
 | compile a demo | 6.88 s | **5.74 s** |
 | LLVM backends built | AArch64, RISCV, X86 | **AArch64** |
 | full build | 8,527 actions | 7,999 actions, **882 s** |
 | mandelbrot | GPU 0.9 ms, 60 fps | GPU 0.39 ms, 62 fps |
 
 The build is fifteen minutes, not the hour it used to feel like.
+
+## LLVM is a shared library
+
+`//bazel/llvm-shared:LLVM` builds `libLLVM.dylib`, and the compiler links
+against it rather than absorbing it. That is what took the binary from 104.8 MB
+to 56.5 MB, and it is the point of the exercise: LLVM is built once and stays
+built. An out-of-tree tool — an IDE, a language server — links the same dylib
+without building LLVM at all.
+
+Three things had to be true, and each failed loudly on the way:
+
+**Every LLVM library in the closure must be listed.** `cc_shared_library`
+refuses to guess. The list in `bazel/llvm-shared/BUILD.bazel` is the answer to
+
+```bash
+bazel query 'kind("cc_library rule", filter("llvm-project//llvm", deps(//KGEN/tools/mojo:mojo)))'
+```
+
+which is 102 targets today. Anything omitted gets linked statically into the
+binary *as well*, and two copies of LLVM in one process means two
+`ManagedStatic` registries and two sets of `cl::opt`. Bazel catches this at
+analysis time rather than letting it fail at startup.
+
+**zlib-ng and zstd come along.** LLVM's Support links them, so they land inside
+the dylib and have to be exported from it. They appear in `exports_filter` under
+their canonical `@@zlib-ng+` names — the plain `@zlib-ng` form is not visible
+from this module.
+
+**Visibility, again.** Covered below; without it the dylib exports 192 symbols
+instead of 37,113 and is useless to everything including the compiler.
+
+### Why it is 77.7 MB and not 30
+
+    __TEXT        55.3 MB     code
+    __LINKEDIT    21.7 MB     symbol table and export trie
+    __DATA         1.2 MB
+
+There is no debug information in it and nothing left for `strip` to remove.
+55 MB is what one AArch64-only LLVM costs at `-O2` with default visibility, and
+the 21.7 MB is the price of exporting 38,873 symbols — which is the point, since
+that is what a consumer links against.
+
+For scale, a distribution `libLLVM` with all sixteen backends runs around
+130 MB. Ours is one backend.
+
+The one lever that would shrink it is dropping
+`-fno-visibility-inlines-hidden`, which stops LLVM's inline and template members
+being emitted and exported. That is precisely the set an IDE needs, so it stays.
+
+### Using it from another project
+
+```bash
+clang++ -std=c++17 mytool.cpp \
+  -I <llvm-project>/llvm/include \
+  -L dist/CocoaMojo/lib -lLLVM \
+  -Wl,-rpath,$PWD/dist/CocoaMojo/lib
+```
+
+The headers are not in the distribution — they live in the bazel external repo
+at `external/+llvm_configure+llvm-project/llvm/include`, plus 43 generated
+headers under `bazel-bin`. Copying both into `dist/CocoaMojo/include` is the
+obvious next step and has not been done.
 
 ## One flag explains two different failures
 
@@ -223,15 +286,11 @@ visibility before anything else.
 
 ## What is not done
 
-- **LLVM is not a shared library.** `--config=release` re-enables dynamic
-  linking, but LLVM's bazel targets are `linkstatic`, so `--dynamic_mode` alone
-  cannot split them out; the 38% the binary lost came from `-c opt`, not from
-  dynamic linking. `bazel/llvm-shared/BUILD.bazel` gets most of the way and
-  records exactly what is left: flipping visibility for the llvm-project path
-  (one per-file copt, one LLVM rebuild), and then making the mojo binary
-  consume the dylib, which the transitive KGEN dep graph does not currently
-  allow. Worth knowing before starting: for a release that ships one tool this
-  saves no space. It buys relink time while working on the compiler.
+- **LLVM headers are not shipped.** The dylib is, and it is linkable, but a
+  consumer needs `llvm/include` and the generated config headers alongside it.
+  See "Using it from another project" above.
+- **MLIR is still static.** It is 468 more libraries and the same treatment
+  would work; nothing needed it yet.
 - `mojo run` (the JIT) still cannot run GPU programs. `cocoamojo --run` builds
   instead, which is why it works. The JIT path is filed, not fixed.
 - The distribution is not signed or notarized, so it will not run on another Mac

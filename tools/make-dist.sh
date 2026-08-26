@@ -32,6 +32,21 @@ for l in KGEN/libKGENCompilerRTShared.dylib \
   cp -f "$B/$l" "$D/lib/"
 done
 
+# LLVM. The compiler links against this rather than absorbing it, and it is here
+# to be linked against by other things too -- an IDE or language server can use
+# it without building LLVM at all. bazel puts the real file under _solib_*, so
+# find it rather than guessing the path.
+echo "== LLVM =="
+LLVMLIB="$(find "$B" -name 'libLLVM.dylib' -type f 2>/dev/null | head -1)"
+[ -n "$LLVMLIB" ] || { echo "   no libLLVM.dylib -- build //bazel/llvm-shared:LLVM"; exit 1; }
+cp -f "$LLVMLIB" "$D/lib/"
+nexp=$(nm -gU "$D/lib/libLLVM.dylib" | grep -c '4llvm') || true
+# Under the toolchain's default -fvisibility=hidden this lands near 200 rather
+# than tens of thousands, and the dylib is useless to anything outside. That is
+# a silent failure, so it is checked rather than assumed.
+[ "$nexp" -gt 10000 ] || { echo "   libLLVM.dylib exports only $nexp llvm:: symbols -- visibility regression"; exit 1; }
+echo "   $(du -h "$D/lib/libLLVM.dylib" | cut -f1), $nexp llvm:: symbols exported"
+
 # The GPU runtime, built here rather than taken from bazel-out on purpose.
 #
 # Bazel compiles these two files with -fvisibility=hidden, so every
