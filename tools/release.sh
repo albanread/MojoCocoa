@@ -1,26 +1,54 @@
 #!/usr/bin/env bash
 # Build a complete CocoaMojo release from a clean checkout.
 #
-#   ./tools/release.sh
+#   ./tools/release.sh              build, assemble and verify
+#   ./tools/release.sh --no-verify  skip the verification pass
 #
-# Two steps: bazel builds the compiler, then make-dist.sh assembles a
-# distribution that does not need bazel again. See RELEASE.md for why each
-# flag is there.
+# Three steps: bazel builds the compiler and its shared libraries, make-dist.sh
+# assembles a distribution that does not need bazel again, and check-dist.sh
+# proves the result works. See RELEASE.md for why each flag is there, and
+# IDE-EMBEDDING.md for what the shared libraries are for.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "== 1/2  building the compiler (this is the long one) =="
-# //KGEN:CompilerRT and //bazel/llvm-shared:LLVM as well as the compiler:
-# make-dist.sh ships both, and building the compiler alone produces neither as a
-# named output.
+verify=1
+[ "${1:-}" = "--no-verify" ] && verify=0
+
+# The SDK database is checked here rather than left to make-dist's warning,
+# which scrolls past in a long build log. Without it the compiler builds fine
+# and then cannot elaborate a single Cocoa program, which is a confusing way to
+# discover a missing file.
+KB="${COCOAKB:-$PWD/../CocoaBaseMCP/cocoa.sqlite}"
+if [ ! -f "$KB" ]; then
+  echo "no cocoa.sqlite at $KB"
+  echo
+  echo "It is generated, not checked in. Build it with:"
+  echo "  python3 ../CocoaBaseMCP/build.py        # ~12s"
+  echo
+  echo "or point COCOAKB at an existing one."
+  exit 1
+fi
+
+echo "== 1/3  building (this is the long one) =="
+# Everything make-dist.sh needs. The compiler target alone produces none of the
+# shared libraries and not CompilerRT.
 ./bazelw build --config=build-mojo --config=release \
-    //KGEN/tools/mojo:mojo //KGEN:CompilerRT //bazel/llvm-shared:LLVM \
-    //KGEN/tools/mojo-lsp-server:mojo-lsp-server //bazel/mlir-shared:MLIR \
-    //KGEN:MojoCompilerShared
+    //KGEN/tools/mojo:mojo \
+    //KGEN:CompilerRT \
+    //KGEN:MojoCompilerShared \
+    //KGEN/tools/mojo-lsp-server:mojo-lsp-server \
+    //bazel/llvm-shared:LLVM \
+    //bazel/mlir-shared:MLIR
 
 echo
-echo "== 2/2  assembling dist/CocoaMojo =="
-./tools/make-dist.sh
+echo "== 2/3  assembling dist/CocoaMojo =="
+COCOAKB="$KB" ./tools/make-dist.sh
 
-echo
-echo "Verify with:  ./tools/check-dist.sh"
+if [ "$verify" -eq 1 ]; then
+  echo
+  echo "== 3/3  verifying =="
+  MODULAR_MOJO_MAX_COCOAKB_PATH="$KB" ./tools/check-dist.sh
+else
+  echo
+  echo "Verify with:  ./tools/check-dist.sh"
+fi

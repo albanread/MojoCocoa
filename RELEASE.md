@@ -10,20 +10,35 @@ between you and your program.
 ## The whole thing, from a clean checkout
 
 ```bash
-./tools/release.sh
+python3 ../CocoaBaseMCP/build.py    # the SDK database, ~12s, generated not checked in
+./tools/release.sh                  # build, assemble, verify
 ```
 
-That runs the two steps below and prints what it produced. Everything after this
-section is why each step is the way it is.
+`release.sh` runs the three steps below and ends with `check-dist.sh`, so a
+release that finishes is a release that was verified. `--no-verify` skips that
+last part.
 
-## Step 1 — build the compiler (bazel, once)
+It checks for `cocoa.sqlite` before doing anything expensive. Without it the
+compiler builds perfectly and then cannot elaborate a single Cocoa program,
+which is a confusing way to discover a missing file.
+
+Everything after this section is why each step is the way it is.
+
+## Step 1 — build (bazel, once)
 
 ```bash
-./bazelw build --config=build-mojo --config=release //KGEN/tools/mojo:mojo //KGEN:CompilerRT
+./bazelw build --config=build-mojo --config=release \
+    //KGEN/tools/mojo:mojo \
+    //KGEN:CompilerRT \
+    //KGEN:MojoCompilerShared \
+    //KGEN/tools/mojo-lsp-server:mojo-lsp-server \
+    //bazel/llvm-shared:LLVM \
+    //bazel/mlir-shared:MLIR
 ```
 
-`//KGEN:CompilerRT` is in there because `make-dist.sh` needs that dylib and
-building the compiler alone does not produce it.
+All six, because the compiler target alone produces none of the shared libraries
+and not CompilerRT, and `make-dist.sh` refuses to assemble a distribution
+missing any of them.
 
 Bazel builds the compiler. That is the only job it has here, and after this
 command it has no further part to play.
