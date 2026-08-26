@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# CocoaMojo -- the Mojo compiler for Cocoa on Apple silicon.
+#
+#   cocoamojo --run   hello.mojo          compile and run
+#   cocoamojo --build hello.mojo          -> ./hello  (a normal double-clickable binary)
+#   cocoamojo --build hello.mojo -o app   -> ./app
+#   cocoamojo --version
+#
+# No bazel, no environment variables, no -I flags. Everything this needs lives
+# beside it in the distribution:
+#
+#   bin/cocoamojo-compiler          the compiler
+#   lib/libKGENCompilerRTShared     Mojo runtime
+#   lib/libCocoaMojoGPU             Metal/AsyncRT device runtime (GPU kernels)
+#   lib/mojo/{stdlib,max,kernels}   the packages
+#   share/cocoa.sqlite              the SDK database the elaborator reads
+#
+# Binaries produced by --build carry an rpath to lib/, so they run anywhere on
+# this machine without a wrapper. Copy the distribution and they keep working;
+# move it and rebuild.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMPILER="$HERE/bin/cocoamojo-compiler"
+LIB="$HERE/lib"
+PKG="$LIB/mojo"
+
+[ -x "$COMPILER" ] || { echo "cocoamojo: no compiler at $COMPILER" >&2; exit 1; }
+
+export MODULAR_MOJO_MAX_COCOAKB_PATH="${MODULAR_MOJO_MAX_COCOAKB_PATH:-$HERE/share/cocoa.sqlite}"
+export MODULAR_MOJO_MAX_COMPILERRT_PATH="${MODULAR_MOJO_MAX_COMPILERRT_PATH:-$LIB/libKGENCompilerRTShared.dylib}"
+# No crashpad handler ships here, and its absence is not news to anyone.
+export MODULAR_CRASH_REPORTING_ENABLED="${MODULAR_CRASH_REPORTING_ENABLED:-false}"
+export DYLD_LIBRARY_PATH="$LIB:${DYLD_LIBRARY_PATH:-}"
+# A program launched from here can find the toolchain it was built by --
+# the playground uses this to run your buffer with this same compiler.
+export COCOAMOJO_ROOT="$HERE"
+
+INC=(-I "$PKG/stdlib" -I "$PKG/max" -I "$PKG/kernels")
+
+# Cocoa is not a library you opt into here -- it is the platform. Every build
+# gets libobjc and the frameworks, and the GPU runtime that makes DeviceContext
+# resolve. A program that uses none of them pays nothing but a load command.
+LINK=(
+  -Xlinker -lobjc
+  -Xlinker -L"$LIB" -Xlinker -lCocoaMojoGPU
+  -Xlinker -rpath -Xlinker "$LIB"
+  -Xlinker -framework -Xlinker Foundation
+  -Xlinker -framework -Xlinker AppKit
+  -Xlinker -framework -Xlinker Metal
+  -Xlinker -framework -Xlinker QuartzCore
+)
+
+usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  --build|build)
+    src="${1:?cocoamojo: --build needs a .mojo file}"; shift
+    # Default the output name from the source, the way a person expects.
+    case " $* " in *" -o "*) out=("") && unset out ;; *) out=(-o "./$(basename "${src%.mojo}")") ;; esac
+    exec "$COMPILER" build "${INC[@]}" --target-accelerator apple-m4 \
+         "${LINK[@]}" ${out+"${out[@]}"} "$src" "$@"
+    ;;
+  --run|run)
+    src="${1:?cocoamojo: --run needs a .mojo file}"; shift
+    # Build to a temp binary and run it. `mojo run` JITs instead, and the JIT
+    # cannot resolve the GPU runtime's symbols -- building is what works.
+    tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+    "$COMPILER" build "${INC[@]}" --target-accelerator apple-m4 \
+        "${LINK[@]}" -o "$tmp/a.out" "$src" || exit $?
+    "$tmp/a.out" "$@"; exit $?
+    ;;
+  --version|version)
+    echo "CocoaMojo -- Mojo for Cocoa, Apple silicon"
+    "$COMPILER" --version 2>/dev/null | head -2
+    ;;
+  --help|-h|help|"") usage ;;
+  *) exec "$COMPILER" "$cmd" "${INC[@]}" "$@" ;;
+esac

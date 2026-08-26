@@ -15,6 +15,7 @@
 # ===----------------------------------------------------------------------=== #
 
 from std.objc import (
+    load_framework,
     ObjCClass,
     ObjCObject,
     msg_send,
@@ -492,6 +493,10 @@ def should_terminate(self_: P, cmd: P, app: P) abi("C") -> Bool:
 
 
 def main() raises:
+    # AppKit is not linked into a JIT-run process; without this the
+    # NSApplication lookup is nil and the app exits silently.
+    if not load_framework["AppKit"]():
+        raise Error("could not load AppKit")
     # Buffers owned outside Mojo -- see alloc_zeroed for why a List would be
     # freed out from under these pointers.
     g_alive()[] = alloc_zeroed(CELLS, 1)

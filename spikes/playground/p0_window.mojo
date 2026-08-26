@@ -8,6 +8,7 @@
 # Set P0_AUTOCLOSE_TICKS=N to have the timer close the window after N ticks so
 # the whole lifecycle (launch -> ticks -> close -> terminate) runs unattended.
 from std.objc import (
+    load_framework,
     ObjCClass,
     ObjCObject,
     msg_send,
@@ -55,25 +56,29 @@ comptime autoclose = named_global["p0.autoclose", Int]
 
 def set_label(text: String):
     with autoreleasepool():
-        var label = ObjCObject(label_addr()[])
+        let label = ObjCObject(label_addr()[])
         _ = msg_send[ObjCObject, "NSTextField", "setStringValue:"](
             label, nsstring(text).ptr()
         )
 
 
 # ── Mojo implementations of Cocoa methods ─────────────────────────────────────
+#
+# Each is an `fn`: foreign-callable by construction -- C ABI, non-raising, no
+# captured state -- which is exactly the contract class_addMethod requires.
+# The old spelling was `def ... abi("C")`; the keyword now says what it is.
 
 
-def did_finish_launching(self_: P, cmd: P, note: P) abi("C"):
+fn did_finish_launching(self_: P, cmd: P, note: P):
     print("delegate: applicationDidFinishLaunching: (Cocoa -> Mojo)")
 
 
-def should_terminate_after_last_window(self_: P, cmd: P, app: P) abi("C") -> Bool:
+fn should_terminate_after_last_window(self_: P, cmd: P, app: P) -> Bool:
     # Closing the window ends the app: this is what makes [NSApp run] finish.
     return True
 
 
-def will_terminate(self_: P, cmd: P, note: P) abi("C"):
+fn will_terminate(self_: P, cmd: P, note: P):
     print(
         "delegate: applicationWillTerminate: after",
         ticks()[],
@@ -84,13 +89,13 @@ def will_terminate(self_: P, cmd: P, note: P) abi("C"):
     print("P0-WINDOW: PASS" if ticks()[] > 0 else "P0-WINDOW: FAIL")
 
 
-def button_clicked(self_: P, cmd: P, sender: P) abi("C"):
+fn button_clicked(self_: P, cmd: P, sender: P):
     clicks()[] += 1
     print("action: buttonClicked: (Cocoa -> Mojo), clicks =", clicks()[])
     set_label(String("Clicked ") + String(clicks()[]) + " times")
 
 
-def timer_tick(self_: P, cmd: P, timer: P) abi("C"):
+fn timer_tick(self_: P, cmd: P, timer: P):
     ticks()[] += 1
     set_label(
         String("ticks: ")
@@ -98,21 +103,25 @@ def timer_tick(self_: P, cmd: P, timer: P) abi("C"):
         + "   clicks: "
         + String(clicks()[])
     )
-    var limit = autoclose()[]
+    let limit = autoclose()[]
     if limit > 0 and ticks()[] >= limit:
         print("timer: autoclosing after", ticks()[], "ticks")
-        var win = ObjCObject(window_addr()[])
+        let win = ObjCObject(window_addr()[])
         _ = msg_send[ObjCObject, "NSWindow", "performClose:"](win, win.ptr())
 
 
 def main() raises:
-    var env = getenv("P0_AUTOCLOSE_TICKS")
+    # AppKit is not linked into a JIT-run process; without this the
+    # NSApplication lookup is nil and the app exits silently.
+    if not load_framework["AppKit"]():
+        raise Error("could not load AppKit")
+    let env = getenv("P0_AUTOCLOSE_TICKS")
     if env != "":
         autoclose()[] = Int(env)
 
     with autoreleasepool():
-        var NSApplication = ObjCClass.lookup["NSApplication"]()
-        var app = msg_send[
+        let NSApplication = ObjCClass.lookup["NSApplication"]()
+        let app = msg_send[
             ObjCObject, "NSApplication", "sharedApplication", is_class=True
         ](NSApplication.as_object())
         _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
@@ -124,7 +133,7 @@ def main() raises:
             should_terminate_after_last_window
         )
         db.add_method["applicationWillTerminate:"](will_terminate)
-        var delegate = new_instance(db^.register())
+        let delegate = new_instance(db^.register())
         _ = msg_send[ObjCObject, "NSApplication", "setDelegate:"](
             app, delegate.ptr()
         )
@@ -133,10 +142,10 @@ def main() raises:
         var ab = ObjCClassBuilder("PlaygroundActions")
         ab.add_method["buttonClicked:", encoding="v@:@"](button_clicked)
         ab.add_method["timerTick:", encoding="v@:@"](timer_tick)
-        var actions = new_instance(ab^.register())
+        let actions = new_instance(ab^.register())
 
         # Window.
-        var NSWindow = ObjCClass.lookup["NSWindow"]()
+        let NSWindow = ObjCClass.lookup["NSWindow"]()
         var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
             NSWindow.as_object()
         )
@@ -155,11 +164,11 @@ def main() raises:
             win, nsstring(String("Mojo Mac Playground — P0")).ptr()
         )
         window_addr()[] = win.addr()
-        var content = msg_send[ObjCObject, "NSWindow", "contentView"](win)
+        let content = msg_send[ObjCObject, "NSWindow", "contentView"](win)
 
         # Label + button (AppKit's convenience constructors).
-        var NSTextField = ObjCClass.lookup["NSTextField"]()
-        var label = msg_send[
+        let NSTextField = ObjCClass.lookup["NSTextField"]()
+        let label = msg_send[
             ObjCObject, "NSTextField", "labelWithString:", is_class=True
         ](NSTextField.as_object(), nsstring(String("waiting…")).ptr())
         _ = msg_send[ObjCObject, "NSView", "setFrame:"](
@@ -168,8 +177,8 @@ def main() raises:
         label_addr()[] = label.addr()
         _ = msg_send[ObjCObject, "NSView", "addSubview:"](content, label.ptr())
 
-        var NSButton = ObjCClass.lookup["NSButton"]()
-        var button = msg_send[
+        let NSButton = ObjCClass.lookup["NSButton"]()
+        let button = msg_send[
             ObjCObject,
             "NSButton",
             "buttonWithTitle:target:action:",
@@ -186,7 +195,7 @@ def main() raises:
         _ = msg_send[ObjCObject, "NSView", "addSubview:"](content, button.ptr())
 
         # A repeating timer whose tick is a Mojo method.
-        var NSTimer = ObjCClass.lookup["NSTimer"]()
+        let NSTimer = ObjCClass.lookup["NSTimer"]()
         _ = msg_send[
             ObjCObject,
             "NSTimer",
@@ -209,7 +218,7 @@ def main() raises:
         ](app, Bool(True))
 
     print("entering [NSApp run]")
-    var app2 = msg_send[
+    let app2 = msg_send[
         ObjCObject, "NSApplication", "sharedApplication", is_class=True
     ](ObjCClass.lookup["NSApplication"]().as_object())
     _ = msg_send[ObjCObject, "NSApplication", "run"](app2)

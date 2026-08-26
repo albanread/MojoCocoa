@@ -2,10 +2,22 @@
 
 load("@llvm-raw//utils/bazel:configure.bzl", _llvm_configure = "llvm_configure")
 
+# This fork targets Apple silicon and nothing else, so it configures one
+# backend. AArch64 covers both halves of the job: the arm64 host code the
+# compiler emits, and the AArch64 MC layer the Apple GPU path leans on -- AIR
+# is emitted as bitcode against an air64 triple, not through a registered
+# LLVM target, so dropping backends does not touch it.
+#
+# X86 and RISCV were 57 MB of objects and several thousand compile actions for
+# code this machine will never execute. Nothing needs deleting to remove them:
+# InitializeAllTargets() expands from LLVM's generated Targets.def, so it now
+# registers AArch64 alone and every call site in KGEN/tools keeps compiling
+# unchanged.
+#
+# Adding one back is a tag, not an edit -- see the 'extra_targets' attribute
+# below, or append here if it should be unconditional.
 BACKENDS = [
     "AArch64",
-    "RISCV",
-    "X86",
 ]
 
 def _llvm_project_impl(module_ctx):

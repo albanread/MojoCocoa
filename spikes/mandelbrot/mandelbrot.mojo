@@ -19,6 +19,7 @@ from std.math import cos
 from max.gpu.host import DeviceContext
 from std.time import perf_counter_ns
 from std.objc import (
+    load_framework,
     ObjCClass,
     ObjCObject,
     msg_send,
@@ -212,7 +213,7 @@ def colorize(
 
 
 def nsstring(s: String) -> ObjCObject:
-    var NSString = ObjCClass.lookup["NSString"]()
+    let NSString = ObjCClass.lookup["NSString"]()
     var local = s
     return msg_send[
         ObjCObject, "NSString", "stringWithUTF8String:", is_class=True
@@ -220,6 +221,10 @@ def nsstring(s: String) -> ObjCObject:
 
 
 def main() raises:
+    # AppKit is not linked into a JIT-run process; without this the
+    # NSApplication lookup is nil and the app exits silently.
+    if not load_framework["AppKit"]():
+        raise Error("could not load AppKit")
     comptime cx = Float32(-0.743643)
     comptime cy = Float32(0.131826)
     var scale = Float32(3.0) / Float32(WIDTH)
@@ -264,13 +269,13 @@ def main() raises:
 
     # ── Window + Metal layer ────────────────────────────────────────────────
     with autoreleasepool():
-        var NSApplication = ObjCClass.lookup["NSApplication"]()
-        var app = msg_send[
+        let NSApplication = ObjCClass.lookup["NSApplication"]()
+        let app = msg_send[
             ObjCObject, "NSApplication", "sharedApplication", is_class=True
         ](NSApplication.as_object())
         _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
 
-        var NSWindow = ObjCClass.lookup["NSWindow"]()
+        let NSWindow = ObjCClass.lookup["NSWindow"]()
         var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
             NSWindow.as_object()
         )
@@ -330,7 +335,7 @@ def main() raises:
         )
 
         # Event-pump constants.
-        var NSDate = ObjCClass.lookup["NSDate"]()
+        let NSDate = ObjCClass.lookup["NSDate"]()
         var mode = nsstring(String("kCFRunLoopDefaultMode"))
 
         print("Rendering. Close the window to quit.")

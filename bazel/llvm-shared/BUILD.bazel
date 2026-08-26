@@ -1,0 +1,55 @@
+"""LLVM as a single shared library -- an experiment, not yet wired up.
+
+This builds, and it is NOT usable as-is. Two things stand between it and a
+compiler that links LLVM dynamically, both recorded in RELEASE.md:
+
+1. Symbol visibility. bazel/internal/cc-toolchain/args/BUILD.bazel:124-125
+   applies -fvisibility=hidden to the whole toolchain, LLVM included, so this
+   dylib comes out with ~13,000 defined text symbols and 192 exported. Nothing
+   outside it can call in. The fix is a per-file copt in the same style as the
+   nixl_upstream line in bazel/internal/common.bazelrc:175, scoped to the
+   llvm-project external path -- and it rebuilds LLVM.
+
+2. Making the mojo binary consume it. The deps flow transitively through many
+   KGEN cc_library targets, and _shared_library does not produce
+   CcSharedLibraryInfo, so bazel's dynamic_deps will not accept it. Linking
+   LLVM both statically and dynamically into one process duplicates its
+   ManagedStatic and cl::opt registries, which is its own class of crash.
+
+Before spending time on it, note what it does and does not buy. This release
+ships one tool. A dylib plus a thinner mojo weighs about what today's mojo
+weighs, so there is no size win. The win is incremental relink time while
+working on the compiler, and sharing one LLVM across kgen, kgen-opt,
+compilation-server and mojo if they are all built.
+"""
+
+load("//bazel:api.bzl", "modular_shared_library")
+
+package(default_visibility = ["//visibility:public"])
+
+modular_shared_library(
+    name = "LLVMShared",
+    srcs = [],
+    # With no srcs there are no undefined symbols, so the linker pulls nothing
+    # out of the deps' archives and the dylib comes out empty. -all_load takes
+    # every object rather than only those that resolve something.
+    linkopts = ["-Wl,-all_load"],
+    output_name = "LLVM",
+    tags = ["manual"],  # not part of //... -- see the note above
+    deps = [
+        "@llvm-project//llvm:AArch64CodeGen",
+        "@llvm-project//llvm:BitReader",
+        "@llvm-project//llvm:BitWriter",
+        "@llvm-project//llvm:CodeGen",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:ExecutionEngine",
+        "@llvm-project//llvm:IRReader",
+        "@llvm-project//llvm:JITLink",
+        "@llvm-project//llvm:MC",
+        "@llvm-project//llvm:OrcJIT",
+        "@llvm-project//llvm:Passes",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:Target",
+        "@llvm-project//llvm:TransformUtils",
+    ],
+)

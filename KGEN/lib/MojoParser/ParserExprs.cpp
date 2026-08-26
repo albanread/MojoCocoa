@@ -254,6 +254,8 @@ struct InfixInfo {
                  /*isRightAssociative=*/true);
     case Token::kw_var:
       return get(Precedence::kVarRefPat, ExprNode::kVarPat);
+    case Token::kw_let:
+      return get(Precedence::kVarRefPat, ExprNode::kLetPat);
     case Token::kw_ref:
       return get(Precedence::kVarRefPat, ExprNode::kRefPat);
     case Token::star_star:
@@ -391,6 +393,7 @@ bool ParserBase::isPrimaryExprStart(Token::Kind tokKind) {
   case Token::kw_await:
   case Token::kw_not:
   case Token::kw_var:
+  case Token::kw_let:
   case Token::kw_ref:
   case Token::kw_comptime:
   case Token::identifier:
@@ -446,6 +449,8 @@ getUnaryOpInfo(Token::Kind tokKind) {
     return {ExprNode::kBoolNot, Precedence::kBoolNot};
   case Token::kw_var:
     return {ExprNode::kVarPat, Precedence::kVarRefPat};
+  case Token::kw_let:
+    return {ExprNode::kLetPat, Precedence::kVarRefPat};
   case Token::kw_ref:
     return {ExprNode::kRefPat, Precedence::kVarRefPat};
   case Token::kw_comptime:
@@ -486,6 +491,7 @@ ParseResult ExprParser::parsePrimaryExpr(ExprNode *&result) {
   case Token::tilde:
   case Token::kw_await:
   case Token::kw_var:
+  case Token::kw_let:
   case Token::kw_ref:
   case Token::kw_comptime:
   case Token::kw_not: { // u_expr
@@ -511,7 +517,8 @@ ParseResult ExprParser::parsePrimaryExpr(ExprNode *&result) {
     ExprNode *expr = nullptr;
     // "var" and "ref" take a star list after them to handle "var x, y" as
     // "var (x, y)".
-    if (unaryKind == ExprNode::kVarPat || unaryKind == ExprNode::kRefPat) {
+    if (unaryKind == ExprNode::kVarPat || unaryKind == ExprNode::kRefPat ||
+        unaryKind == ExprNode::kLetPat) {
       if (parseStarredExprListAsTuple(expr, /*terminators*/ {},
                                       /*allowAssign=*/false))
         return failure();
@@ -1363,11 +1370,11 @@ ParseResult ExprParser::parseFunctionType(ExprNode *&result) {
 
   // Parse the function effects from the leading keyword.
   fnSignature.effects.setAsync(consumeIf(Token::kw_async));
-  // TODO(26.5): Remove support for 'fn' entirely.
-  if (getToken().is(Token::kw_fn)) {
-    emitError(getToken().getLoc(), "'fn' has been removed; use 'def' instead")
-        << FixIt::replaceToken(getToken().getLoc(), "def");
-  }
+  // cocoa-mojo: `fn(...) -> R` in type position is the foreign-callable
+  // function type -- sugar for `def(...) thin abi("C") -> R`, so the IMP
+  // typedef soup (`classes.mojo`) reads as what it is. Same revival as the
+  // declaration form; see COCOA_LET_DESIGN.md.
+  bool isFnKeyword = getToken().is(Token::kw_fn);
   consumeToken();
 
   // Parameter signature, argument list and the function effects next.
@@ -1376,6 +1383,11 @@ ParseResult ExprParser::parseFunctionType(ExprNode *&result) {
       fnSignature.parseArgumentListAndEffects(*this,
                                               ArgListKind::kFnTypeArgList))
     return failure();
+
+  if (isFnKeyword) {
+    fnSignature.effects.setCABI(true);
+    fnSignature.isThin = true;
+  }
 
   // Parse the capture origin set if present.
   ExprNode *originExpr = nullptr;

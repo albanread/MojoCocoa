@@ -1,7 +1,7 @@
 # Step 1: prove an NSWindow can be created and the AppKit event loop pumped
 # from Mojo, entirely through std.objc. Headless-safe: it creates the objects,
 # pumps a few event cycles, and exits without requiring a visible display.
-from std.objc import ObjCClass, ObjCObject, msg_send, autoreleasepool
+from std.objc import load_framework, ObjCClass, ObjCObject, msg_send, autoreleasepool
 from std.ffi import external_call
 from std.memory import OpaquePointer
 
@@ -27,10 +27,15 @@ struct CGRect(Copyable, Movable):
 
 
 def main():
+    # AppKit is not linked into a JIT-run process; without this the
+    # NSApplication lookup is nil and the app exits silently.
+    if not load_framework["AppKit"]():
+        print("FATAL: could not load AppKit")
+        return
     with autoreleasepool():
         # [NSApplication sharedApplication]
-        var NSApplication = ObjCClass.lookup["NSApplication"]()
-        var app = msg_send[
+        let NSApplication = ObjCClass.lookup["NSApplication"]()
+        let app = msg_send[
             ObjCObject, "NSApplication", "sharedApplication", is_class=True
         ](NSApplication.as_object())
         print("NSApp:", not app.is_nil())
@@ -39,7 +44,7 @@ def main():
         _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
 
         # NSWindow alloc + initWithContentRect:styleMask:backing:defer:
-        var NSWindow = ObjCClass.lookup["NSWindow"]()
+        let NSWindow = ObjCClass.lookup["NSWindow"]()
         var win_alloc = msg_send[
             ObjCObject, "NSWindow", "alloc", is_class=True
         ](NSWindow.as_object())
@@ -54,7 +59,7 @@ def main():
         print("NSWindow:", not win.is_nil())
 
         # [win setTitle:@"..."]
-        var NSString = ObjCClass.lookup["NSString"]()
+        let NSString = ObjCClass.lookup["NSString"]()
         var title_str = String("Mojo Mandelbrot")
         var title = msg_send[
             ObjCObject, "NSString", "stringWithUTF8String:", is_class=True
@@ -66,7 +71,7 @@ def main():
         print("window frame:", back.size.width, "x", back.size.height)
 
         # Pump a few event cycles (headless-safe: distantPast returns immediately).
-        var NSDate = ObjCClass.lookup["NSDate"]()
+        let NSDate = ObjCClass.lookup["NSDate"]()
         var past = msg_send[
             ObjCObject, "NSDate", "distantPast", is_class=True
         ](NSDate.as_object())
