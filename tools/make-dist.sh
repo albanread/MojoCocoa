@@ -38,6 +38,10 @@ done
 # find it rather than guessing the path.
 echo "== LLVM =="
 LLVMLIB="$(find "$B" -name 'libLLVM.dylib' -type f 2>/dev/null | head -1)"
+# The external repo holding LLVM's sources. It sits beside execroot/ in the
+# output base, not inside it, and the +llvm_configure+ prefix is bzlmod's and can
+# change -- so cut the path at /execroot/ and glob for the repo.
+LLVMSRC="$(echo "${B%%/execroot/*}"/external/*llvm_configure*llvm-project)"
 [ -n "$LLVMLIB" ] || { echo "   no libLLVM.dylib -- build //bazel/llvm-shared:LLVM"; exit 1; }
 cp -f "$LLVMLIB" "$D/lib/"
 nexp=$(nm -gU "$D/lib/libLLVM.dylib" | grep -c '4llvm') || true
@@ -46,6 +50,28 @@ nexp=$(nm -gU "$D/lib/libLLVM.dylib" | grep -c '4llvm') || true
 # a silent failure, so it is checked rather than assumed.
 [ "$nexp" -gt 10000 ] || { echo "   libLLVM.dylib exports only $nexp llvm:: symbols -- visibility regression"; exit 1; }
 echo "   $(du -h "$D/lib/libLLVM.dylib" | cut -f1), $nexp llvm:: symbols exported"
+
+# LLVM headers, so the dylib is something another project can actually compile
+# against. Two trees have to be merged, and the order matters:
+#
+#   1. the checked-out headers, which reach the build as a symlink farm into the
+#      llvm-raw repo -- hence 'cp -RL' rather than rsync, to follow them
+#   2. the generated ones on top: llvm-config.h, abi-breaking.h and the Config
+#      .def files that record which targets this LLVM was built with. The source
+#      tree carries .in templates for these; the generated versions must win, or
+#      a consumer gets a Targets.def listing backends that are not in the dylib.
+echo "== LLVM headers =="
+rm -rf "$D/include"
+mkdir -p "$D/include"
+cp -RL "$LLVMSRC/llvm/include/llvm" "$LLVMSRC/llvm/include/llvm-c" "$D/include/" 2>/dev/null
+GEN="$B/external/+llvm_configure+llvm-project/llvm/include"
+[ -d "$GEN" ] && cp -RL "$GEN/llvm" "$D/include/" 2>/dev/null
+nhdr=$(find "$D/include" -type f | wc -l | tr -d ' ')
+echo "   $nhdr headers ($(du -sh "$D/include" | cut -f1))"
+# The generated Config headers are the ones a consumer cannot do without.
+for f in llvm/Config/llvm-config.h llvm/Config/abi-breaking.h llvm/Config/Targets.def; do
+  [ -f "$D/include/$f" ] || { echo "   missing $f -- consumers will not compile"; exit 1; }
+done
 
 # The GPU runtime, built here rather than taken from bazel-out on purpose.
 #

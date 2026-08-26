@@ -33,6 +33,25 @@ otool -L dist/CocoaMojo/bin/cocoamojo-compiler 2>/dev/null | grep -q 'libLLVM.dy
   && ok "compiler link" "dynamic against libLLVM.dylib" \
   || bad "compiler link" "LLVM is statically linked -- dynamic_deps not in effect"
 
+# The out-of-tree consumer: compile and run a real LLVM program against the
+# distribution's headers and dylib, nothing else. This is what the IDE will do.
+if clang++ -std=c++17 -fno-rtti tools/ide-probe/ide_probe.cpp \
+     -I dist/CocoaMojo/include -L dist/CocoaMojo/lib -lLLVM \
+     -Wl,-rpath,"$PWD/dist/CocoaMojo/lib" -o "$TMP/ide_probe" \
+     >"$TMP/ide_probe.log" 2>&1; then
+  targets=$(env -i "$TMP/ide_probe" 2>&1 | grep '^registered targets:' | cut -d: -f2-)
+  if [ -z "$targets" ]; then
+    bad "llvm consumer" "built but produced no target list"
+  elif echo "$targets" | grep -qi 'x86\|riscv'; then
+    # Headers and dylib disagree about which LLVM this is.
+    bad "llvm consumer" "generated Targets.def is stale:$targets"
+  else
+    ok "llvm consumer" "compiles and runs against dist;$targets"
+  fi
+else
+  bad "llvm consumer" "$(grep -m1 -E 'error|fatal' "$TMP/ide_probe.log" || echo 'build failed')"
+fi
+
 for src in spikes/mandelbrot/mandelbrot.mojo spikes/mandelbrot/window_smoke.mojo \
            spikes/playground/playground.mojo spikes/playground/p0_window.mojo \
            spikes/life/life.mojo; do

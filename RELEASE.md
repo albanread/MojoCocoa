@@ -189,7 +189,7 @@ Measured, one M4 Max:
 |---|---|---|
 | compiler binary | 169.8 MB | **56.5 MB** |
 | libLLVM.dylib | — | **77.7 MB**, 37,113 `llvm::` symbols |
-| distribution | 439 MB | 408 MB |
+| distribution | 439 MB | 449 MB (includes LLVM headers) |
 | compile a demo | 6.88 s | **5.74 s** |
 | LLVM backends built | AArch64, RISCV, X86 | **AArch64** |
 | full build | 8,527 actions | 7,999 actions, **882 s** |
@@ -247,17 +247,37 @@ being emitted and exported. That is precisely the set an IDE needs, so it stays.
 
 ### Using it from another project
 
+The distribution carries the headers as well as the dylib, so this is the whole
+of it — no bazel, no LLVM source tree:
+
 ```bash
-clang++ -std=c++17 mytool.cpp \
-  -I <llvm-project>/llvm/include \
+clang++ -std=c++17 -fno-rtti mytool.cpp \
+  -I dist/CocoaMojo/include \
   -L dist/CocoaMojo/lib -lLLVM \
   -Wl,-rpath,$PWD/dist/CocoaMojo/lib
 ```
 
-The headers are not in the distribution — they live in the bazel external repo
-at `external/+llvm_configure+llvm-project/llvm/include`, plus 43 generated
-headers under `bazel-bin`. Copying both into `dist/CocoaMojo/include` is the
-obvious next step and has not been done.
+`tools/ide-probe/ide_probe.cpp` is a working example — it builds a module, runs
+the verifier and prints the registered targets — and `check-dist.sh` compiles and
+runs it on every check, so this path cannot rot quietly.
+
+`dist/CocoaMojo/include` is 2,395 headers, 41 MB, and it is two trees merged in
+this order:
+
+1. LLVM's checked-out headers. These reach the build as a symlink farm into the
+   `llvm-raw` repo, so they are copied with `cp -RL` rather than rsync.
+2. The 43 generated headers on top — `llvm-config.h`, `abi-breaking.h` and the
+   `llvm/Config/*.def` files that record which targets this LLVM was built
+   with.
+
+The order matters. The source tree ships `.in` templates for those Config
+headers, and if they win, a consumer compiles against a `Targets.def` listing
+backends that are not in the dylib. The probe catches exactly that: it should
+print the AArch64 family and nothing else.
+
+```
+registered targets: aarch64_32 aarch64_be aarch64 arm64_32 arm64
+```
 
 ## One flag explains two different failures
 
@@ -286,9 +306,6 @@ visibility before anything else.
 
 ## What is not done
 
-- **LLVM headers are not shipped.** The dylib is, and it is linkable, but a
-  consumer needs `llvm/include` and the generated config headers alongside it.
-  See "Using it from another project" above.
 - **MLIR is still static.** It is 468 more libraries and the same treatment
   would work; nothing needed it yet.
 - `mojo run` (the JIT) still cannot run GPU programs. `cocoamojo --run` builds
