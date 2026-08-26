@@ -105,9 +105,7 @@ def main() raises:
             "NSAppleEventDescriptor",
             "sendEventWithOptions:timeout:error:",
         ](event, Int(KAE_NO_REPLY), Float64(2.0), errbox)
-        print("  target nil?", target.is_nil(), " event nil?", event.is_nil(),
-              " reply nil?", reply.is_nil(), " err slot:", 
-              Pointer[Int, MutUntrackedOrigin](unsafe_from_address=Int(errbox))[])
+        _ = reply
         var errp = Pointer[Int, MutUntrackedOrigin](
             unsafe_from_address=Int(errbox)
         )

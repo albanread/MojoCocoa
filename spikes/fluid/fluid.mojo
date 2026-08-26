@@ -482,7 +482,6 @@ def _ae_event_id(event: P) -> Int:
 
 def on_apple_event(self_: P, cmd: P, event: P, reply: P) abi("C"):
     var eid = _ae_event_id(event)
-    print("  [ae] received", eid)
     if eid == AE_SNAP:
         g_cmd()[] |= CMD_SNAP
     elif eid == AE_CLEAR:
@@ -886,6 +885,9 @@ def main() raises:
             if frames % 120 == 0:
                 var now = perf_counter_ns()
                 var fps = Float64(frames) / (Float64(now - loop_start) / 1e9)
+                # Also to stdout: the title bar is invisible to a run captured
+                # in a log, which is every run that is not a person watching.
+                print("  frame", frames, "—", fps, "fps")
                 _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
                     win,
                     nsstring(
