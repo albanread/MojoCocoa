@@ -207,6 +207,11 @@ Honest gaps, each small, each reusable beyond the IDE:
 4. **`class_addProtocol` in `objc.classes`** — `NSTextInputClient` adoption
    needs the registered class to *conform*, not just implement. One
    external_call plus plumbing.
+   *(Milestone 0 closed a neighbouring gap: `IMP*Obj` shapes, for delegate
+   methods that answer with an object. They return `Int` rather than a pointer
+   because Objective-C delegates must be able to answer nil and Mojo's
+   `Pointer` is non-nullable by construction — an `id` as an address is the
+   same register and keeps the nullability where Objective-C put it.)*
 5. **FSEvents wrapper** — file watching for external-change detection.
 6. Core Text declarations — C API, plain `external_call`, no binding layer.
 
@@ -225,7 +230,7 @@ is simpler and crash-isolated.
 
 | # | lands | verified by |
 |---|---|---|
-| 0 | shell: window, native tabbing, menu, toolbar, status bar, sidebar | opens, tabs, quits clean; autoclose-ticks smoke |
+| 0 | **done** — shell: window, native tabbing, menu, toolbar, status bar, sidebar | `tools/check-ide.sh` — 7 checks green |
 | 1 | rope + GridView + full NSTextInputClient, undo, find | open 250k-line file < 100 ms; type-at-budget probe; Pinyin composes |
 | 2 | LSP: diagnostics, completion, definition, semantic tokens | scripted session completes `setTitle:` inside a msg_send string |
 | 3 | build/run, issues drawer, output pane — **self-hosting** | the IDE builds the IDE |

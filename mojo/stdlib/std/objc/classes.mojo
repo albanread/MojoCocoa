@@ -28,6 +28,38 @@ comptime IMP0Bool = fn(P, P, /) -> Bool
 comptime IMP1Bool = fn(P, P, P, /) -> Bool
 comptime IMP2 = fn(P, P, P, P, /) -> None
 
+# Methods that answer with an object. Every shape above returns void or BOOL,
+# which covers actions and lifecycle callbacks but not the delegate protocols
+# that are asked *for* something -- a toolbar delegate returns an NSArray of
+# identifiers and then an NSToolbarItem, an outline view's data source returns
+# each child.
+#
+# These return `Int`, not a pointer, and the reason is a real disagreement
+# between the two type systems rather than a shortcut. Objective-C delegates
+# must be able to answer nil -- "I have no item for that identifier" is a
+# normal answer, not an error -- and Mojo's Pointer is non-nullable by
+# construction: `Pointer(unsafe_from_address=0)` is rejected at comptime with
+# "use Optional[Pointer] to model nullability". Optional is the right answer
+# inside Mojo and the wrong one at an ABI boundary, where the C signature is a
+# single pointer-sized register.
+#
+# So the return is an `id` as an address: `obj.addr()` for an object, plain `0`
+# for nil. Identical ABI, and the nullability stays where Objective-C put it.
+comptime IMP1Obj = fn(P, P, P, /) -> Int
+comptime IMP2Obj = fn(P, P, P, P, /) -> Int
+comptime IMP3Obj = fn(P, P, P, P, P, /) -> Int
+
+# The counting half of a data source -- numberOfChildrenOfItem: and relatives
+# -- has the same shape, since an NSInteger and an id-as-address are the same
+# register. Aliases rather than distinct types, so the name at a call site can
+# say which one is meant without adding an ambiguous overload.
+comptime IMP1Int = IMP1Obj
+comptime IMP2Int = IMP2Obj
+
+# One mixed shape the toolbar needs by name: the trailing BOOL of
+# toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:.
+comptime IMP2ObjBool = fn(P, P, P, P, Bool, /) -> Int
+
 
 def _strip_offsets(enc: StaticString) -> String:
     """"v24@0:8@16" -> "v@:@": the runtime's @encode carries frame offsets
@@ -108,6 +140,26 @@ struct ObjCClassBuilder[superclass: StaticString = "NSObject"]:
     def add_method[
         selector: StaticString, encoding: StaticString = ""
     ](mut self, imp: IMP2):
+        self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
+
+    def add_method[
+        selector: StaticString, encoding: StaticString = ""
+    ](mut self, imp: IMP1Obj):
+        self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
+
+    def add_method[
+        selector: StaticString, encoding: StaticString = ""
+    ](mut self, imp: IMP2Obj):
+        self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
+
+    def add_method[
+        selector: StaticString, encoding: StaticString = ""
+    ](mut self, imp: IMP3Obj):
+        self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
+
+    def add_method[
+        selector: StaticString, encoding: StaticString = ""
+    ](mut self, imp: IMP2ObjBool):
         self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
 
     def register(deinit self) -> ObjCClass:
