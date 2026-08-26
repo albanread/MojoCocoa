@@ -212,7 +212,7 @@ def colorize(
 
 
 def nsstring(s: String) -> ObjCObject:
-    var NSString = ObjCClass.lookup["NSString"]()
+    let NSString = ObjCClass.lookup["NSString"]()
     var local = s
     return msg_send[
         ObjCObject, "NSString", "stringWithUTF8String:", is_class=True
@@ -264,13 +264,13 @@ def main() raises:
 
     # ── Window + Metal layer ────────────────────────────────────────────────
     with autoreleasepool():
-        var NSApplication = ObjCClass.lookup["NSApplication"]()
-        var app = msg_send[
+        let NSApplication = ObjCClass.lookup["NSApplication"]()
+        let app = msg_send[
             ObjCObject, "NSApplication", "sharedApplication", is_class=True
         ](NSApplication.as_object())
         _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
 
-        var NSWindow = ObjCClass.lookup["NSWindow"]()
+        let NSWindow = ObjCClass.lookup["NSWindow"]()
         var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
             NSWindow.as_object()
         )
@@ -330,7 +330,7 @@ def main() raises:
         )
 
         # Event-pump constants.
-        var NSDate = ObjCClass.lookup["NSDate"]()
+        let NSDate = ObjCClass.lookup["NSDate"]()
         var mode = nsstring(String("kCFRunLoopDefaultMode"))
 
         print("Rendering. Close the window to quit.")

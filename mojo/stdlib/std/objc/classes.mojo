@@ -20,11 +20,13 @@ from .runtime import ObjCClass, ObjCObject, msg_send, sel
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
 # The IMP shapes a Cocoa callback takes: (self, _cmd) then the message args.
-comptime IMP0 = def(P, P, /) thin abi("C") -> None
-comptime IMP1 = def(P, P, P, /) thin abi("C") -> None
-comptime IMP0Bool = def(P, P, /) thin abi("C") -> Bool
-comptime IMP1Bool = def(P, P, P, /) thin abi("C") -> Bool
-comptime IMP2 = def(P, P, P, P, /) thin abi("C") -> None
+# The revived `fn` in type position: sugar for `def(...) thin abi("C")`, i.e.
+# exactly what an IMP is. (self, _cmd) precede the message arguments.
+comptime IMP0 = fn(P, P, /) -> None
+comptime IMP1 = fn(P, P, P, /) -> None
+comptime IMP0Bool = fn(P, P, /) -> Bool
+comptime IMP1Bool = fn(P, P, P, /) -> Bool
+comptime IMP2 = fn(P, P, P, P, /) -> None
 
 
 def _strip_offsets(enc: StaticString) -> String:

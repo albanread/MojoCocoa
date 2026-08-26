@@ -23,6 +23,8 @@ from std.objc import (
     new_instance,
     named_global,
     sel,
+    msg_send_raising,
+    msg_send_raising_check,
 )
 from std.ffi import external_call, c_char
 from std.memory import OpaquePointer, Pointer
@@ -78,17 +80,9 @@ comptime g_task = named_global["pg.task", Int]
 comptime g_read_fd = named_global["pg.readfd", Int]
 comptime g_running = named_global["pg.running", Int]
 comptime g_path = named_global["pg.path", Int]  # heap C string, or 0
-comptime g_errslot = named_global["pg.errslot", Int]  # NSError** out-param sink
 comptime g_split = named_global["pg.split", Int]
 comptime g_outscroll = named_global["pg.outscroll", Int]
 comptime g_edscroll = named_global["pg.edscroll", Int]
-
-
-@always_inline
-def err_out() -> P:
-    """A writable slot for an `NSError **` argument we do not inspect. Mojo's
-    Pointer is non-nullable, so this stands in for NULL."""
-    return P(unsafe_from_address=Int(g_errslot()))
 
 
 
@@ -111,7 +105,7 @@ def _sym[name: StaticString]() -> P:
 def posix_read(fd: Int, buf: P, count: Int) -> Int:
     var sym = _sym["read"]()
     var call = Pointer(to=sym).unsafe_bitcast[
-        def(Int, P, Int, /) thin abi("C") -> Int
+        fn(Int, P, Int, /) -> Int
     ]()[]
     return call(fd, buf, count)
 
@@ -121,7 +115,7 @@ def set_nonblocking(fd: Int):
     # fcntl(fd, F_SETFL(4), O_NONBLOCK(4))
     var sym = _sym["fcntl"]()
     var call = Pointer(to=sym).unsafe_bitcast[
-        def(Int, Int, Int, /) thin abi("C") -> Int
+        fn(Int, Int, Int, /) -> Int
     ]()[]
     _ = call(fd, Int(4), Int(4))
 
@@ -329,12 +323,12 @@ def save_buffer_to(path: String) raises:
     with autoreleasepool():
         var editor = ObjCObject(g_editor()[])
         var text = msg_send[ObjCObject, "NSTextView", "string"](editor)
-        # -[NSString writeToFile:atomically:encoding:error:] (NSUTF8 = 4)
-        var ok = msg_send[
-            Bool, "NSString", "writeToFile:atomically:encoding:error:"
-        ](text, nsstring(path).ptr(), True, Int(4), err_out())
-        if not ok:
-            raise Error("could not write " + path)
+        # -[NSString writeToFile:atomically:encoding:error:] (NSUTF8 = 4).
+        # The raising bridge owns the NSError slot; on NO the raised message
+        # carries Cocoa's diagnosis instead of a bare "could not write".
+        msg_send_raising_check[
+            "NSString", "writeToFile:atomically:encoding:error:"
+        ](text, nsstring(path).ptr(), True, Int(4))
 
 
 def start_run(gpu: Bool) raises:
@@ -467,7 +461,7 @@ def check_finished():
 # ── Callbacks ────────────────────────────────────────────────────────────────
 
 
-def on_run(self_: P, cmd: P, sender: P) abi("C"):
+fn on_run(self_: P, cmd: P, sender: P):
     try:
         start_run(False)
     except e:
@@ -476,7 +470,7 @@ def on_run(self_: P, cmd: P, sender: P) abi("C"):
         )
 
 
-def on_run_gpu(self_: P, cmd: P, sender: P) abi("C"):
+fn on_run_gpu(self_: P, cmd: P, sender: P):
     try:
         start_run(True)
     except e:
@@ -485,23 +479,23 @@ def on_run_gpu(self_: P, cmd: P, sender: P) abi("C"):
         )
 
 
-def on_stop(self_: P, cmd: P, sender: P) abi("C"):
+fn on_stop(self_: P, cmd: P, sender: P):
     if g_running()[] != 0:
         var task = ObjCObject(g_task()[])
         _ = msg_send[ObjCObject, "NSTask", "terminate"](task)
         append_output(String("[stopped]\n"), OUT_STATUS)
 
 
-def on_tick(self_: P, cmd: P, timer: P) abi("C"):
+fn on_tick(self_: P, cmd: P, timer: P):
     drain_output()
     check_finished()
 
 
-def on_text_changed(self_: P, cmd: P, note: P) abi("C"):
+fn on_text_changed(self_: P, cmd: P, note: P):
     highlight_editor()
 
 
-def on_open(self_: P, cmd: P, sender: P) abi("C"):
+fn on_open(self_: P, cmd: P, sender: P):
     with autoreleasepool():
         var panel = msg_send[
             ObjCObject, "NSOpenPanel", "openPanel", is_class=True
@@ -511,35 +505,41 @@ def on_open(self_: P, cmd: P, sender: P) abi("C"):
             return
         var url = msg_send[ObjCObject, "NSSavePanel", "URL"](panel)
         var path = ns_to_string(msg_send[ObjCObject, "NSURL", "path"](url))
-        var loaded = msg_send[
-            ObjCObject,
-            "NSString",
-            "stringWithContentsOfFile:encoding:error:",
-            is_class=True,
-        ](
-            ObjCClass.lookup["NSString"]().as_object(),
-            nsstring(path).ptr(),
-            Int(4),
-            err_out(),
+        try:
+            let loaded = msg_send_raising[
+                "NSString",
+                "stringWithContentsOfFile:encoding:error:",
+                is_class=True,
+            ](
+                ObjCClass.lookup["NSString"]().as_object(),
+                nsstring(path).ptr(),
+                Int(4),
+            )
+            _open_loaded(loaded, path)
+        except e:
+            append_output(String("[open failed: ") + String(e) + "]\n", OUT_ERROR)
+
+
+def _open_loaded(loaded: ObjCObject, path: String):
+    """Install a successfully-loaded file: msg_send_raising has already
+    guaranteed `loaded` is non-nil."""
+    var path_copy = path
+    with autoreleasepool():
+        let editor = ObjCObject(g_editor()[])
+        _ = msg_send[ObjCObject, "NSTextView", "setString:"](
+            editor, loaded.ptr()
         )
-        if not loaded.is_nil():
-            var editor = ObjCObject(g_editor()[])
-            _ = msg_send[ObjCObject, "NSTextView", "setString:"](
-                editor, loaded.ptr()
-            )
-            g_path()[] = Int(
-                external_call["strdup", P](path.as_c_string_slice())
-            )
-            _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
-                ObjCObject(g_window()[]),
-                nsstring(String("Mojo Playground — ") + path).ptr(),
-            )
-            highlight_editor()
-        else:
-            append_output(String("[open failed: ") + path + "]\n", OUT_ERROR)
+        g_path()[] = Int(
+            external_call["strdup", P](path_copy.as_c_string_slice())
+        )
+        _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
+            ObjCObject(g_window()[]),
+            nsstring(String("Mojo Playground — ") + path).ptr(),
+        )
+        highlight_editor()
 
 
-def on_save(self_: P, cmd: P, sender: P) abi("C"):
+fn on_save(self_: P, cmd: P, sender: P):
     try:
         var path = source_path()
         if g_path()[] == 0:
@@ -563,7 +563,7 @@ def on_save(self_: P, cmd: P, sender: P) abi("C"):
         append_output(String("[save failed: ") + String(e) + "]\n", OUT_ERROR)
 
 
-def should_terminate(self_: P, cmd: P, app: P) abi("C") -> Bool:
+fn should_terminate(self_: P, cmd: P, app: P) -> Bool:
     return True
 
 
