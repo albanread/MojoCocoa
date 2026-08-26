@@ -342,27 +342,25 @@ def start_run(gpu: Bool) raises:
     var path = source_path()
     save_buffer_to(path)
     set_output(String(""))
+    # The driver always builds with --target-accelerator apple-m4, so a buffer
+    # that opens a DeviceContext reaches the GPU from either key. ⇧⌘R stays
+    # because the habit is real, and it labels the run rather than changing it.
     append_output(
-        String("$ mojo run ")
-        + (String("--target-accelerator=metal:4 ") if gpu else String(""))
+        String("$ cocoamojo --run ")
         + path
+        + (String("      [GPU]") if gpu else String(""))
         + "\n",
         OUT_COMMAND,
     )
 
     with autoreleasepool():
-        # Arguments: mojo run [--target-accelerator=...] <path>
+        # Arguments: cocoamojo --run <path>
         var args = msg_send[
             ObjCObject, "NSMutableArray", "array", is_class=True
         ](ObjCClass.lookup["NSMutableArray"]().as_object())
         _ = msg_send[ObjCObject, "NSMutableArray", "addObject:"](
-            args, nsstring(String("run")).ptr()
+            args, nsstring(String("--run")).ptr()
         )
-        if gpu:
-            _ = msg_send[ObjCObject, "NSMutableArray", "addObject:"](
-                args,
-                nsstring(String("--target-accelerator=metal:4")).ptr(),
-            )
         _ = msg_send[ObjCObject, "NSMutableArray", "addObject:"](
             args, nsstring(path).ptr()
         )
@@ -571,21 +569,29 @@ fn should_terminate(self_: P, cmd: P, app: P) -> Bool:
 # ── Building the UI ──────────────────────────────────────────────────────────
 
 
-# The compiler the playground shells out to at ⌘R. Not a comptime constant:
-# hardcoding an absolute path pinned the whole repo to one checkout location.
+# The toolchain the playground shells out to at ⌘R.
 #
-#   MOJOCOCOA_MOJO=/path/to/mojo   overrides it
+# This is the `cocoamojo` driver, not the bare compiler. The bare compiler needs
+# three -I paths, two environment variables and a fistful of -Xlinker flags
+# before it can build anything that touches Cocoa; the driver supplies all of
+# them. Pointing NSTask at the raw binary is what produced "unable to locate
+# module 'std'" in the output pane.
 #
-# Default is the Bazel output for a checkout whose root is the process's
-# working directory, which is what `bazel run //spikes:playground` gives.
-comptime MOJO_BIN_DEFAULT = "bazel-bin/KGEN/tools/mojo/mojo-full"
+#   MOJOCOCOA_MOJO=/path/to/cocoamojo   overrides it outright
+#   COCOAMOJO_ROOT=/path/to/CocoaMojo   set by the driver itself, so a playground
+#                                       started with `cocoamojo --run` runs your
+#                                       buffer with the same toolchain it came from
+comptime MOJO_BIN_DEFAULT = "dist/CocoaMojo/bin/cocoamojo"
 
 
 def mojo_bin() -> String:
-    """Absolute path to the Mojo compiler the ⌘R action launches."""
+    """Absolute path to the CocoaMojo driver the ⌘R action launches."""
     var override = getenv("MOJOCOCOA_MOJO")
     if override.byte_length() > 0:
         return override
+    var root = getenv("COCOAMOJO_ROOT")
+    if root.byte_length() > 0:
+        return root + "/bin/cocoamojo"
     var cwd = getenv("PWD")
     if cwd.byte_length() > 0:
         return cwd + "/" + String(MOJO_BIN_DEFAULT)
@@ -593,18 +599,23 @@ def mojo_bin() -> String:
 
 comptime STARTER = """# Welcome to the Mojo Mac Playground.
 #
-#   ⌘R   run on the CPU
-#   ⇧⌘R  run on the Apple M4 GPU
-#   ⌘O / ⌘S   open / save
-from std.time import perf_counter_ns
+#   \u2318R   run          \u2318O / \u2318S   open / save
+#
+# \u2318R hands this buffer to `cocoamojo --run`, which compiles and links it the
+# way every program here is built: Foundation, AppKit, Metal and the GPU runtime
+# are already on the link line, so nothing needs loading by hand. Objective-C
+# objects below are not wrapped Cocoa -- they are Cocoa.
+from std.objc import ObjCClass, msg_send, ObjCObject, autoreleasepool
 
 
 def main():
-    # AppKit is not linked into a JIT-run process; without this the
-    # NSApplication lookup is nil and the app exits silently.
-    if not load_framework["AppKit"]():
-        print("FATAL: could not load AppKit")
-        return
+    with autoreleasepool():
+        let info = msg_send[
+            ObjCObject, "NSProcessInfo", "processInfo", is_class=True
+        ](ObjCClass.lookup["NSProcessInfo"]().as_object())
+        let n = msg_send[Int, "NSProcessInfo", "processorCount"](info)
+        print("this Mac reports", n, "cores to Cocoa")
+
     var total = 0
     for i in range(1_000_000):
         total += i
