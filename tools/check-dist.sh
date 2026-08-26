@@ -23,6 +23,11 @@ n=$(nm -gU dist/CocoaMojo/lib/libCocoaMojoGPU.dylib 2>/dev/null | grep -c AsyncR
 # Same check for LLVM, and for the same reason: under the toolchain's default
 # hidden visibility this lands near 200 instead of tens of thousands, the dylib
 # links, and nothing outside it can call in.
+m=$(nm -gU dist/CocoaMojo/lib/libMLIR.dylib 2>/dev/null | grep -c '4mlir') || m=0
+msz=$(du -h dist/CocoaMojo/lib/libMLIR.dylib 2>/dev/null | cut -f1)
+[ "$m" -gt 10000 ] && ok libMLIR "$m mlir:: symbols exported, $msz" \
+                   || bad libMLIR "only $m mlir:: symbols -- visibility regression"
+
 l=$(nm -gU dist/CocoaMojo/lib/libLLVM.dylib 2>/dev/null | grep -c '4llvm') || l=0
 sz=$(du -h dist/CocoaMojo/lib/libLLVM.dylib 2>/dev/null | cut -f1)
 [ "$l" -gt 10000 ] && ok libLLVM "$l llvm:: symbols exported, $sz" \
@@ -95,6 +100,20 @@ if clang++ -std=c++17 -fno-rtti tools/ide-probe/ide_probe.cpp \
   fi
 else
   bad "llvm consumer" "$(grep -m1 -E 'error|fatal' "$TMP/ide_probe.log" || echo 'build failed')"
+fi
+
+# The same, for MLIR: an editor embedding compiler phases needs to build IR.
+if clang++ -std=c++17 -fno-rtti tools/ide-probe/mlir_probe.cpp \
+     -I dist/CocoaMojo/include -L dist/CocoaMojo/lib -lMLIR -lLLVM \
+     -Wl,-rpath,"$PWD/dist/CocoaMojo/lib" -o "$TMP/mlir_probe" \
+     >"$TMP/mlir_probe.log" 2>&1; then
+  if env -i "$TMP/mlir_probe" 2>&1 | grep -q 'mlir context ok'; then
+    ok "mlir consumer" "compiles and builds IR against dist"
+  else
+    bad "mlir consumer" "built but did not run"
+  fi
+else
+  bad "mlir consumer" "$(grep -m1 -E 'error|fatal' "$TMP/mlir_probe.log" || echo 'build failed')"
 fi
 
 for src in spikes/mandelbrot/mandelbrot.mojo spikes/mandelbrot/window_smoke.mojo \

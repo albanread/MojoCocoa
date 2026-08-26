@@ -85,6 +85,20 @@ cp -RL "$LLVMSRC/llvm/include/llvm" "$LLVMSRC/llvm/include/llvm-c" "$D/include/"
 GEN="$B/external/+llvm_configure+llvm-project/llvm/include"
 [ -d "$GEN" ] && cp -RL "$GEN/llvm" "$D/include/" 2>/dev/null
 nhdr=$(find "$D/include" -type f | wc -l | tr -d ' ')
+
+# MLIR headers, same two-tree merge. The generated half is much larger here --
+# MLIR's dialects are tablegen'd, so .inc files carry the actual declarations
+# and a consumer cannot compile without them.
+cp -RL "$LLVMSRC/mlir/include/mlir" "$LLVMSRC/mlir/include/mlir-c" "$D/include/" 2>/dev/null
+MGEN="$B/external/+llvm_configure+llvm-project/mlir/include"
+[ -d "$MGEN" ] && cp -RL "$MGEN/mlir" "$D/include/" 2>/dev/null
+
+# KGEN's own headers: the compiler phases an embedder calls into.
+cp -RL "$ROOT/KGEN/include/KGEN" "$D/include/" 2>/dev/null
+KGEN_GEN="$B/KGEN/include"
+[ -d "$KGEN_GEN" ] && cp -RL "$KGEN_GEN/." "$D/include/" 2>/dev/null
+
+nhdr=$(find "$D/include" -type f | wc -l | tr -d ' ')
 echo "   $nhdr headers ($(du -sh "$D/include" | cut -f1))"
 # The generated Config headers are the ones a consumer cannot do without.
 for f in llvm/Config/llvm-config.h llvm/Config/abi-breaking.h llvm/Config/Targets.def; do
