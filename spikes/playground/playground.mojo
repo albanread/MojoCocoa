@@ -601,20 +601,19 @@ comptime STARTER = """# Welcome to the Mojo Mac Playground.
 #
 #   \u2318R   run          \u2318O / \u2318S   open / save
 #
-# \u2318R hands this buffer to `cocoamojo --run`, which compiles and links it the
-# way every program here is built: Foundation, AppKit, Metal and the GPU runtime
-# are already on the link line, so nothing needs loading by hand. Objective-C
-# objects below are not wrapped Cocoa -- they are Cocoa.
+# \u2318R hands this buffer to `cocoamojo --run`. Foundation, AppKit and Metal are
+# already on the link line, so nothing needs loading by hand.
 from std.objc import ObjCClass, msg_send, ObjCObject, autoreleasepool
 
 
 def main():
     with autoreleasepool():
+        let NSProcessInfo = ObjCClass.lookup["NSProcessInfo"]()
         let info = msg_send[
             ObjCObject, "NSProcessInfo", "processInfo", is_class=True
-        ](ObjCClass.lookup["NSProcessInfo"]().as_object())
-        let n = msg_send[Int, "NSProcessInfo", "processorCount"](info)
-        print("this Mac reports", n, "cores to Cocoa")
+        ](NSProcessInfo.as_object())
+        let cores = msg_send[Int, "NSProcessInfo", "processorCount"](info)
+        print("this Mac reports", cores, "cores to Cocoa")
 
     var total = 0
     for i in range(1_000_000):
