@@ -19,8 +19,11 @@ section is why each step is the way it is.
 ## Step 1 — build the compiler (bazel, once)
 
 ```bash
-./bazelw build --config=build-mojo --config=release //KGEN/tools/mojo:mojo
+./bazelw build --config=build-mojo --config=release //KGEN/tools/mojo:mojo //KGEN:CompilerRT
 ```
+
+`//KGEN:CompilerRT` is in there because `make-dist.sh` needs that dylib and
+building the compiler alone does not produce it.
 
 Bazel builds the compiler. That is the only job it has here, and after this
 command it has no further part to play.
@@ -178,11 +181,57 @@ runtime's exports. What it should print:
     OK   life
     OK   libCocoaMojoGPU   125 AsyncRT symbols exported
 
+## What the release build actually changed
+
+Measured, one M4 Max:
+
+| | before (dbg) | after (release) |
+|---|---|---|
+| compiler binary | 169.8 MB | **104.8 MB** |
+| distribution | 439 MB | **378 MB** |
+| compile a demo | 6.88 s | **5.74 s** |
+| LLVM backends built | AArch64, RISCV, X86 | **AArch64** |
+| full build | 8,527 actions | 7,999 actions, **882 s** |
+| mandelbrot | GPU 0.9 ms, 60 fps | GPU 0.39 ms, 62 fps |
+
+The build is fifteen minutes, not the hour it used to feel like.
+
+## One flag explains two different failures
+
+`bazel/internal/cc-toolchain/args/BUILD.bazel:124-125` applies
+`-fvisibility=hidden` to the entire toolchain:
+
+```
+"-fvisibility-inlines-hidden",
+"-fvisibility=hidden",
+```
+
+That single setting is behind both of the hard-to-diagnose problems in this
+tree, and they looked nothing alike from the outside.
+
+It is why `AsyncRT_DeviceContext_create` and its 124 siblings were missing at
+run time: hidden makes them private externs, invisible the moment anything
+wants them across a JIT or dylib boundary. `make-dist.sh` works around it by
+recompiling those two files with `-fvisibility=default`.
+
+It is also why LLVM cannot currently be a shared library here — see
+`bazel/llvm-shared/BUILD.bazel`. Linked with `-all_load`, LLVM comes out with
+roughly 13,000 defined text symbols and 192 exported.
+
+If a symbol is defined, links, and then cannot be found at run time, check
+visibility before anything else.
+
 ## What is not done
 
-- LLVM is a shared library within the distribution, but the compiler is still a
-  single tool: there is no `llvm-config`, and nothing outside this tree links
-  against it.
+- **LLVM is not a shared library.** `--config=release` re-enables dynamic
+  linking, but LLVM's bazel targets are `linkstatic`, so `--dynamic_mode` alone
+  cannot split them out; the 38% the binary lost came from `-c opt`, not from
+  dynamic linking. `bazel/llvm-shared/BUILD.bazel` gets most of the way and
+  records exactly what is left: flipping visibility for the llvm-project path
+  (one per-file copt, one LLVM rebuild), and then making the mojo binary
+  consume the dylib, which the transitive KGEN dep graph does not currently
+  allow. Worth knowing before starting: for a release that ships one tool this
+  saves no space. It buys relink time while working on the compiler.
 - `mojo run` (the JIT) still cannot run GPU programs. `cocoamojo --run` builds
   instead, which is why it works. The JIT path is filed, not fixed.
 - The distribution is not signed or notarized, so it will not run on another Mac

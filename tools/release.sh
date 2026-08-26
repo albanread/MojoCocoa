@@ -10,7 +10,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "== 1/2  building the compiler (this is the long one) =="
-./bazelw build --config=build-mojo --config=release //KGEN/tools/mojo:mojo
+# //KGEN:CompilerRT as well as the compiler: make-dist.sh needs that dylib,
+# and building the compiler alone does not produce it.
+./bazelw build --config=build-mojo --config=release \
+    //KGEN/tools/mojo:mojo //KGEN:CompilerRT
 
 echo
 echo "== 2/2  assembling dist/CocoaMojo =="
