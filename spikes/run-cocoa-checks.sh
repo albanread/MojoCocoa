@@ -47,7 +47,8 @@ run_mustfail() {   # must FAIL TO COMPILE, and say why
 
 echo "must compile and run:"
 for f in check.mojo objc_smoke.mojo foundation_demo.mojo typecheck_test.mojo \
-         ownership_test.mojo stret_test.mojo callback_probe.mojo; do run_ok "$f"; done
+         ownership_test.mojo stret_test.mojo callback_probe.mojo \
+         weakref_test.mojo nserror_test.mojo; do run_ok "$f"; done
 
 echo
 echo "must be rejected at compile time:"
