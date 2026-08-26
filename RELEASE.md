@@ -377,18 +377,61 @@ Until then: the compiler shares the dylib, the language server does not, and
 `check-dist.sh` fails loudly with `duplicate LLVM CommandLine registry` if that
 ever changes by accident.
 
-### What is genuinely missing: Cocoa completion
+### Cocoa completion
 
-The language server knows Mojo. It does not know Cocoa — nothing under
-`KGEN/tools/mojo-lsp-server` references `cocoakb`.
+The language server completes Objective-C classes and selectors out of
+`cocoa.sqlite` — the same database the compiler answers `cocoakb_query` from at
+compile time. 28,814 classes and 522,170 selectors.
 
-This is the interesting gap rather than a defect. The compiler answers questions
-about the SDK at compile time through `cocoakb_query`, so the database already
-holds every class, selector, encoding and struct layout the editor would want to
-complete against. Wiring it into `completionProvider` means an editor that
-completes `NSWindow` selectors with real signatures, which no general Mojo
-tooling can do. `share/cocoa.sqlite` ships in the distribution and can be
-queried directly today, without touching the language server at all.
+Typing inside the string:
+
+```mojo
+msg_send[ObjCObject, "NSWindow", "setTit"]
+```
+
+offers
+
+    setTitle:                          (ObjCObject) -> None
+    setTitlebarHeight:                 (Float64) -> None
+    setTitleVisibility:                (Int) -> None
+    setTitleWithRepresentedFilename:   (ObjCObject) -> None
+
+Signatures are decoded from the raw `@encode` string into Mojo types, `self` and
+`_cmd` dropped, since what a reader wants is the arguments they have to supply.
+The raw encoding is kept in the hover documentation.
+
+Three positions are recognised:
+
+| where | what it offers |
+|---|---|
+| `ObjCClass.lookup["NSWin` | class names, with superclass |
+| `msg_send[T, "NSWindow", "setTit` | instance selectors |
+| `msg_send[T, "NSWindow", "allo", is_class=True` | class methods |
+
+Selectors include everything inherited: `alloc` and `init` live on `NSObject`,
+and a list that omitted them would be useless. The superclass chain is walked in
+SQL with a recursive CTE, and the depth it returns doubles as the ranking, so a
+selector declared on the class outranks one inherited from six levels up.
+
+`KGEN/lib/CocoaKB/CocoaCompletion.cpp` is a separate reader from the
+elaborator's. The elaborator asks the database point questions and gets one
+answer; completion asks for everything matching a prefix, ranked and bounded.
+Different queries, different indexes, and the language server should not have to
+link the elaborator to offer them.
+
+The context detection is textual, deliberately. Elaborating a half-typed
+`msg_send` to find the receiver would be the principled approach and would also
+make completion depend on the file compiling, which while typing it usually does
+not.
+
+`check-dist.sh` probes all three positions on every check. That is not
+ceremony — the first version of this shipped a bug the probe caught: the
+`is_class=True` lookahead ran a fixed 240 characters and read the *next*
+statement's arguments, so completing an instance selector on one line silently
+became a class-method lookup because the line below it passed `is_class=True`.
+Two of the three positions still worked, which is exactly the kind of failure a
+single test would have missed.
+
 
 ## What is not done
 

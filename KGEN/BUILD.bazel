@@ -1189,6 +1189,24 @@ modular_cc_library(
     ],
 )
 
+# COCOA: completion candidates read from cocoa.sqlite, for the language server.
+#
+# Separate from :Elaborator on purpose. The elaborator asks the database point
+# questions and gets one answer; completion asks for everything matching a
+# prefix, ranked and bounded. Different queries and different indexes, and the
+# language server should not have to link the elaborator to offer them.
+modular_cc_library(
+    name = "CocoaCompletion",
+    srcs = ["lib/CocoaKB/CocoaCompletion.cpp"],
+    hdrs = ["include/KGEN/CocoaKB/CocoaCompletion.h"],
+    # The macOS SDK ships sqlite3.h and libsqlite3.tbd, so no vendored copy.
+    linkopts = ["-lsqlite3"],
+    deps = [
+        ":Support",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
 modular_cc_library(
     name = "Elaborator",
     srcs = glob([

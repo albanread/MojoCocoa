@@ -52,6 +52,32 @@ else
   bad "mojo-lsp-server" "not in the distribution"
 fi
 
+# COCOA: completion from cocoa.sqlite. Three positions, one per path through
+# the code: a class name, an instance selector, and a class method that is only
+# reachable by walking the superclass chain (alloc is on NSObject, not NSWindow).
+# Positions are zero-based line/column into tools/lsp-probe/cocoa_completion.mojo.
+if [ -x dist/CocoaMojo/bin/mojo-lsp-server ]; then
+  probe() {  # <line> <col> <expected-label>
+    tools/lsp-probe/complete.py dist/CocoaMojo/bin/mojo-lsp-server \
+      tools/lsp-probe/cocoa_completion.mojo "$1" "$2" 2>/dev/null \
+      | awk -F'\t' -v want="$3" '$1 == want { print; exit }'
+    # Exact field match, not grep: a selector label ends in ':', and a regex
+    # word boundary after ':' never matches, which silently reported every
+    # selector as missing.
+  }
+  cls=$(probe 6 37 'NSWindow')
+  sel=$(probe 7 52 'setTitle:')
+  cm=$(probe  8 50 'alloc')
+  if [ -n "$cls" ] && [ -n "$sel" ] && [ -n "$cm" ]; then
+    ok "cocoa completion" "classes, selectors, inherited class methods"
+    printf '         %s\n' "$cls" "$sel" "$cm" | expand -t20
+  else
+    # Most likely cause is an unreachable cocoa.sqlite, which is a
+    # configuration problem rather than a code one.
+    bad "cocoa completion" "class=${cls:-none} selector=${sel:-none} classmethod=${cm:-none}"
+  fi
+fi
+
 # The out-of-tree consumer: compile and run a real LLVM program against the
 # distribution's headers and dylib, nothing else. This is what the IDE will do.
 if clang++ -std=c++17 -fno-rtti tools/ide-probe/ide_probe.cpp \
