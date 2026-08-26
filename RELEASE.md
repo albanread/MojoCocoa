@@ -417,6 +417,80 @@ bazel involved:
 A dylib that links and a demo that renders would not have been evidence of
 anything here. Sixteen assertions on values are.
 
+### Embedding the compiler
+
+`libMojoCompiler.dylib` is the front end as a library — 27.5 MB, 20,774 exported
+symbols, with LLVM and MLIR as `dynamic_deps` rather than absorbed copies. It
+holds four phases: `MojoTooling` (parse and diagnostics), `Elaborator` (comptime
+evaluation, `cocoakb_query`), `Pipeline` (lowering) and `ObjectCompiler` (AOT
+object emission), plus `Init` for the process context.
+
+Before it, the distribution shipped the parser's *headers* and no parser: the
+front end was linked statically inside `cocoamojo` and `mojo-lsp-server`, and
+nothing out of tree could call it.
+
+Syntax checking is the cleanest of the phases and the one an editor wants first.
+`tools/ide-probe/syntax_probe.cpp` is the whole of it in 60 lines:
+
+```bash
+clang++ -std=c++20 -fno-rtti -DLLVM_ON_UNIX=1 \
+  -DMODULAR_ASYNCRT_MAX_PROFILING_LEVEL=0000000 \
+  -DMAX_CONFIG_SECTION=max -DMOJO_CONFIG_SECTION=mojo-max \
+  tools/ide-probe/syntax_probe.cpp \
+  -I dist/CocoaMojo/include -L dist/CocoaMojo/lib \
+  -lMojoCompiler -lMLIR -lLLVM -Wl,-rpath,$PWD/dist/CocoaMojo/lib \
+  -o syntax_probe
+
+./syntax_probe bad.mojo -I dist/CocoaMojo/lib/mojo/stdlib
+```
+
+```
+bad.mojo:3:4: error: expression must be mutable in assignment
+bad.mojo:4:17: error: cannot implicitly convert 'StringLiteral["not an int"]' value to 'Int'
+bad.mojo:5:4: error: use of unknown declaration 'undefined_function'
+parsed: yes, errors: 3, warnings: 0
+```
+
+Every flag there is required. `-std=c++20` because Support's headers use
+`std::string::starts_with`; the three defines because KGEN's headers reference
+them unconditionally (`bazel/config.bzl`); `LLVM_ON_UNIX` because LLVM's own
+headers guard platform members on it.
+
+`M::MojoParserContext` (`KGEN/MojoTooling/ParserDriver.h`) is the seam. It takes
+an `llvm::SourceMgr` you own and a `LIT::ParserConfig`, which is
+`{MLIRContext*, const CompilationOptions&}` — and `CompilationOptions` is
+default-constructible, so there is no target registration, PassManager or
+pipeline to stand up. Diagnostics arrive through `SourceMgr::setDiagHandler` as
+ordinary `llvm::SMDiagnostic` values with kind, location, message, ranges and
+fix-its.
+
+Three orderings are load-bearing, and each is a real bug rather than a style
+preference:
+
+1. Add the buffer to the `SourceMgr` **before** constructing
+   `MojoParserContext` — its shared state snapshots existing buffers into an
+   identifier map used to reuse open buffers during import resolution.
+2. Install the diagnostic handler before parsing and clear it before the
+   handler's context object dies, or a later operation dereferences a dangling
+   pointer.
+3. Destroy the `MojoParserContext` before the `MLIRContext` and the
+   `SourceMgr`; its destructor finalizes imported bytecode modules.
+
+Use `parseFileForLSP`, not `parseFile`. The first body-resolves only what
+descends from the root and signature-resolves the rest; the second body-resolves
+the entire transitive stdlib closure. At keystroke rates that is the difference
+between usable and not.
+
+**The stdlib has to be there.** There is no cheap tokenize-only mode: the parser
+is lazily levelled — unparsed, then signature, then body — and syntax errors
+inside function bodies only surface at body resolution. A real syntax check is
+already the LSP-level parse, so an embedder inherits the `-I` paths.
+`ParserConfig::useBuiltinModule` can be turned off, but then real code produces
+nonsense diagnostics.
+
+`KGEN/docs/overviews/LSPParserInteraction.md` documents the parse flow in more
+detail, and `mojo-lsp-server` is a complete worked example.
+
 ### Cocoa completion
 
 The language server completes Objective-C classes and selectors out of
@@ -475,12 +549,12 @@ single test would have missed.
 
 ## What is not done
 
-- **MLIR headers are not shipped**, only LLVM's. In-process compilation would
-  need them; see below.
-- **`mojo_common` is not exposed as a library.** Compiling in-process rather
-  than shelling out to `cocoamojo --build` means linking it, and it is a
-  `modular_cc_library` inside `//KGEN/tools/mojo`, not something the
-  distribution offers.
+- **Elaboration and AOT are linkable but unproven from outside.**
+  `libMojoCompiler.dylib` contains `:Elaborator`, `:Pipeline` and
+  `:ObjectCompiler` as well as the parser, but only the parse path has a probe
+  behind it. The others are believed reachable, not demonstrated.
+- **The JIT cannot run GPU programs**, embedded or otherwise. `cocoamojo --run`
+  builds and executes instead, which is why it works.
 - `mojo run` (the JIT) still cannot run GPU programs. `cocoamojo --run` builds
   instead, which is why it works. The JIT path is filed, not fixed.
 - The distribution is not signed or notarized, so it will not run on another Mac

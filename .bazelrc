@@ -77,6 +77,12 @@ build:release --features=supports_dynamic_linker
 build:release --per_file_copt=external/.*llvm-project/(llvm|mlir)/.*@-fvisibility=default,-fno-visibility-inlines-hidden
 build:release --host_per_file_copt=external/.*llvm-project/(llvm|mlir)/.*@-fvisibility=default,-fno-visibility-inlines-hidden
 
+# The compiler's own code, for //KGEN:MojoCompilerShared. Without this the front
+# end links into libMojoCompiler.dylib and exports nothing, which is the same
+# silent failure as LLVM's: the dylib builds, and no embedder can call in.
+build:release --per_file_copt=^(KGEN|Support|Init|Config|Cache|AsyncRT)/.*@-fvisibility=default,-fno-visibility-inlines-hidden
+build:release --host_per_file_copt=^(KGEN|Support|Init|Config|Cache|AsyncRT)/.*@-fvisibility=default,-fno-visibility-inlines-hidden
+
 # zlib-ng and zstd are compression backends LLVM's Support links, so they land
 # inside libLLVM.dylib and have to be callable from outside it for the same
 # reason everything else does.

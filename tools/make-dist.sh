@@ -69,6 +69,17 @@ mexp=$(nm -gU "$D/lib/libMLIR.dylib" | grep -c '4mlir') || true
 [ "$mexp" -gt 10000 ] || { echo "   libMLIR.dylib exports only $mexp mlir:: symbols -- visibility regression"; exit 1; }
 echo "   $(du -h "$D/lib/libMLIR.dylib" | cut -f1), $mexp mlir:: symbols exported"
 
+# The Mojo front end. Without this the distribution shipped the parser's headers
+# and no parser -- it was statically linked inside the binaries and nothing
+# out-of-tree could call it.
+echo "== Mojo front end =="
+FE="$B/KGEN/libMojoCompiler.dylib"
+[ -f "$FE" ] || { echo "   no libMojoCompiler.dylib -- build //KGEN:MojoCompilerShared"; exit 1; }
+cp -f "$FE" "$D/lib/"
+fexp=$(nm -gU "$D/lib/libMojoCompiler.dylib" | grep -c 'MojoParserContext') || true
+[ "$fexp" -gt 10 ] || { echo "   exports only $fexp MojoParserContext symbols -- visibility regression"; exit 1; }
+echo "   $(du -h "$D/lib/libMojoCompiler.dylib" | cut -f1), parser API exported"
+
 # LLVM headers, so the dylib is something another project can actually compile
 # against. Two trees have to be merged, and the order matters:
 #
@@ -93,10 +104,19 @@ cp -RL "$LLVMSRC/mlir/include/mlir" "$LLVMSRC/mlir/include/mlir-c" "$D/include/"
 MGEN="$B/external/+llvm_configure+llvm-project/mlir/include"
 [ -d "$MGEN" ] && cp -RL "$MGEN/mlir" "$D/include/" 2>/dev/null
 
-# KGEN's own headers: the compiler phases an embedder calls into.
+# The compiler's own headers: the phases an embedder calls into. Support, Init
+# and Config come too -- KGEN's public headers include them, so an embedder
+# needs them whether or not it names them.
 cp -RL "$ROOT/KGEN/include/KGEN" "$D/include/" 2>/dev/null
-KGEN_GEN="$B/KGEN/include"
-[ -d "$KGEN_GEN" ] && cp -RL "$KGEN_GEN/." "$D/include/" 2>/dev/null
+for tree in Support Init Config Cache AsyncRT; do
+  [ -d "$ROOT/$tree/include" ] && cp -RL "$ROOT/$tree/include/." "$D/include/" 2>/dev/null
+done
+# ...and their generated halves. KGEN and Support are tablegen'd the same way
+# MLIR is: the .h.inc files carry real declarations, and MTypes.h includes
+# MTypes.h.inc unconditionally, so nothing compiles without them.
+for tree in KGEN Support Init Config Cache AsyncRT; do
+  [ -d "$B/$tree/include" ] && cp -RL "$B/$tree/include/." "$D/include/" 2>/dev/null
+done
 
 nhdr=$(find "$D/include" -type f | wc -l | tr -d ' ')
 echo "   $nhdr headers ($(du -sh "$D/include" | cut -f1))"

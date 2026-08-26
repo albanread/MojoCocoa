@@ -116,6 +116,34 @@ else
   bad "mlir consumer" "$(grep -m1 -E 'error|fatal' "$TMP/mlir_probe.log" || echo 'build failed')"
 fi
 
+# The compiler front end, embedded: parse a buffer in-process and collect
+# diagnostics, which is what an editor does on every keystroke.
+#
+# The flags are the build's own and an embedder needs all of them: -std=c++20
+# because Support's headers use std::string::starts_with, and the three defines
+# because KGEN's headers reference them unconditionally (bazel/config.bzl).
+EMBED_FLAGS="-std=c++20 -fno-rtti -DLLVM_ON_UNIX=1
+  -DMODULAR_ASYNCRT_MAX_PROFILING_LEVEL=0000000
+  -DMAX_CONFIG_SECTION=max -DMOJO_CONFIG_SECTION=mojo-max"
+if clang++ $EMBED_FLAGS tools/ide-probe/syntax_probe.cpp \
+     -I dist/CocoaMojo/include -L dist/CocoaMojo/lib \
+     -lMojoCompiler -lMLIR -lLLVM \
+     -Wl,-rpath,"$PWD/dist/CocoaMojo/lib" -o "$TMP/syntax_probe" \
+     >"$TMP/syntax_probe.log" 2>&1; then
+  printf 'def main():\n    let x = 1\n    x = 2\n' > "$TMP/bad.mojo"
+  out=$(MODULAR_CRASH_REPORTING_ENABLED=false "$TMP/syntax_probe" "$TMP/bad.mojo" \
+          -I dist/CocoaMojo/lib/mojo/stdlib 2>&1)
+  # Both halves matter: a diagnostic with a location, and the error actually
+  # counted. A parser that returns "parsed: yes, errors: 0" here is broken.
+  if echo "$out" | grep -q 'must be mutable' && echo "$out" | grep -q 'errors: 1'; then
+    ok "embedded parser" "in-process parse reports diagnostics with locations"
+  else
+    bad "embedded parser" "$(echo "$out" | grep -v Crashpad | tail -1)"
+  fi
+else
+  bad "embedded parser" "$(grep -m1 -E 'error|fatal|Undefined' "$TMP/syntax_probe.log" || echo 'build failed')"
+fi
+
 for src in spikes/mandelbrot/mandelbrot.mojo spikes/mandelbrot/window_smoke.mojo \
            spikes/playground/playground.mojo spikes/playground/p0_window.mojo \
            spikes/life/life.mojo; do
