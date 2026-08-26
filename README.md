@@ -65,6 +65,137 @@ error at the line that asked. An argument passed in the wrong register file is
 a compile error. None of that is a runtime surprise, and none of it was
 hand-written.
 
+## We are Mojo. We are Cocoa. We are MojoCocoa.
+
+Not Mojo *with* a Cocoa binding. Not Cocoa *wrapped* for Mojo. One language,
+in which an `NSWindow` is as ordinary as an `Int` and a GPU kernel is as
+ordinary as a `for` loop.
+
+### The compiler is the binding generator
+
+Every other language that talks to Cocoa does it by transcribing the SDK:
+someone writes down what `NSWindow` looks like, and their transcription rots.
+This compiler *reads the SDK* — at compile time, from the same metadata Apple
+ships — through an elaborator intrinsic (`cocoakb_query`) that answers, as
+compile-time constants:
+
+| question | answered by |
+| --- | --- |
+| does this class have this selector? | `cocoakb_selector_encoding` |
+| what does it return, and in which register file? | `cocoakb_method_ret_class`, `cocoakb_selector_arg_classes` |
+| which `objc_msgSend` variant does this ABI need? | `cocoakb_msgsend_variant` |
+| how big is that struct, where does that field sit? | `cocoakb_struct_size`, `cocoakb_field_offset` |
+| what is that enum's value? | `cocoakb_enum_value` |
+| what is that POSIX function's real signature? | `cocoakb_posix_sig` |
+| which SDK snapshot answered all of the above? | `cocoakb_db_hash` |
+
+So a selector typo is a compile error at the line that asked. A struct that
+drifts from the SDK fails to build. A float passed where the ABI wants an
+integer register is a compile error, not a corrupted frame three calls later.
+None of it is hand-written, and none of it can rot: the database is a build
+input, stamped into the artefact.
+
+### The language met it halfway
+
+Upstream removed two keywords. We brought them back, narrower, because the
+Cocoa boundary has exactly two directions and each wanted one:
+
+**`let` — the foreign object we hold.** An immutable, scope-bound binding.
+The object stays mutable; the binding does not. ARC rides underneath:
+retain on copy, release at scope exit, `autoreleasepool` integration.
+
+**`fn` — the code the foreign runtime holds.** Foreign-callable by keyword:
+C ABI, non-raising, no captured state — which is *precisely* the contract an
+ObjC IMP, a dispatch callback, or a block's invoke pointer requires. Declare
+one wrong and the compiler says so, at the definition:
+
+```
+error: 'fn' declares a foreign-callable (C ABI, non-raising) function in
+       cocoa-mojo and may not be marked 'raises'; use 'def'
+```
+
+A capture-less `fn` *is* a global block, bit for bit, so GCD and every
+block-taking API work with no adaptation layer.
+
+### What that looks like
+
+A window, its delegate, and a repeating timer — all of it Mojo, called by
+Cocoa through the real `[NSApp run]` loop
+([`spikes/playground/p0_window.mojo`](spikes/playground/p0_window.mojo)):
+
+```mojo
+fn did_finish_launching(self_: P, cmd: P, note: P):
+    print("delegate: applicationDidFinishLaunching: (Cocoa -> Mojo)")
+
+fn timer_tick(self_: P, cmd: P, timer: P):
+    ticks()[] += 1
+    set_label(String("ticks: ") + String(ticks()[]))
+
+def main() raises:
+    if not load_framework["AppKit"]():
+        raise Error("could not load AppKit")
+
+    with autoreleasepool():
+        let app = msg_send[ObjCObject, "NSApplication",
+                           "sharedApplication", is_class=True](NSApplication)
+
+        var db = ObjCClassBuilder("PlaygroundAppDelegate")
+        db.add_method["applicationDidFinishLaunching:"](did_finish_launching)
+        let delegate = new_instance(db^.register())
+```
+
+`add_method` looks the selector's type encoding up in the SDK and checks your
+`fn` against it. A delegate method with the wrong shape does not compile.
+
+Cocoa's error convention — a trailing `NSError**` and failure signalled by the
+*return value* — becomes Mojo's, because the two are the same idea wearing
+different clothes:
+
+```mojo
+try:
+    let loaded = msg_send_raising[
+        "NSString", "stringWithContentsOfFile:encoding:error:", is_class=True
+    ](NSString, nsstring(path).ptr(), Int(4))     # slot supplied for you
+    install(loaded)
+except e:
+    # "The file ... doesn't exist (NSCocoaErrorDomain 260)" -- Cocoa's own words
+    append_output(String("[open failed: ") + String(e) + "]\n", OUT_ERROR)
+```
+
+And weak references, because Cocoa delegates are weak by convention and an
+owning one is a retain cycle:
+
+```mojo
+let win = make_window()
+var weak = ObjCWeakRef(win.object())   # sees the object; nil once it dies
+```
+
+### The same compiler does the GPU
+
+The Metal path is the same idea pointed at silicon instead of frameworks:
+Mojo → MLIR → **AIR** (Apple's LLVM-bitcode IR) → `metallib`, through this
+fork's own backend and its own runtime, `AppleGPURT`. One source file, one
+compiler, one process — a Cocoa window whose pixels were computed by a Mojo
+kernel on the GPU a few microseconds earlier.
+
+Verified against the SDK the same way the Cocoa half is: the driver's own
+answer decides. When a kernel asks for something this hardware lacks, it is a
+diagnostic and not a corrupted frame —
+`simdgroup_matrix<T,16,16x16> operations are supported by GPUFamily10 and later`.
+
+### Where it actually is
+
+Sixteen checks green ([`spikes/run-cocoa-checks.sh`](spikes/run-cocoa-checks.sh)),
+covering both keywords, weak references, error bridging, GCD with real blocks,
+and — deliberately — the failures: a misspelled selector, a wrong argument
+count, an `fn` that raises, a reassigned `let`. **A check that cannot fail
+proves nothing, so the must-fail half is half the suite.**
+
+96 of 119 in-scope GPU tests pass; the rest is triaged, named, and written
+down in [`STATUS.md`](STATUS.md). GPU code under `mojo run` does not work yet —
+the runtime is a hidden-visibility archive the JIT cannot resolve — so GPU
+programs are built, not JIT-run. Cocoa under `mojo run` works fine.
+
 > [!IMPORTANT]
 > This is not a Modular product and is not affiliated with, endorsed by, or
 > supported by Modular or Apple. Please do not file issues, discussions or
