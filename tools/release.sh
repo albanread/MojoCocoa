@@ -14,7 +14,8 @@ echo "== 1/2  building the compiler (this is the long one) =="
 # make-dist.sh ships both, and building the compiler alone produces neither as a
 # named output.
 ./bazelw build --config=build-mojo --config=release \
-    //KGEN/tools/mojo:mojo //KGEN:CompilerRT //bazel/llvm-shared:LLVM
+    //KGEN/tools/mojo:mojo //KGEN:CompilerRT //bazel/llvm-shared:LLVM \
+    //KGEN/tools/mojo-lsp-server:mojo-lsp-server
 
 echo
 echo "== 2/2  assembling dist/CocoaMojo =="

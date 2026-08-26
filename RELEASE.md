@@ -304,6 +304,92 @@ roughly 13,000 defined text symbols and 192 exported.
 If a symbol is defined, links, and then cannot be found at run time, check
 visibility before anything else.
 
+## Integrating an editor
+
+Most of what an IDE needs is already in the distribution.
+
+### The language server
+
+`dist/CocoaMojo/bin/mojo-lsp-server` speaks LSP on stdin/stdout. Point an editor
+at it and it advertises eleven capabilities:
+
+    codeAction  completion  definition  documentSymbol  hover  inlayHint
+    references  rename  resolve  semanticTokens  signatureHelp
+
+That covers completion, diagnostics, jump-to-definition, rename, and semantic
+highlighting — an editor does not need to parse Mojo itself. `check-dist.sh`
+sends it a real `initialize` request on every check, since an editor's first
+move failing is the one bug that makes everything else look broken.
+
+### Build and run
+
+`cocoamojo --build` and `--run`, as above. `cocoamojo format` and
+`cocoamojo doc` are subcommands of the same driver.
+
+### Linking LLVM
+
+See "Using it from another project". This is what lets an editor's own
+tooling — an indexer, a custom analysis — work on the same IR the compiler
+produces, without building LLVM.
+
+### The language server is statically linked, deliberately
+
+It is 60.7 MB rather than 48.8 MB, because it carries its own LLVM instead of
+sharing `libLLVM.dylib`. That is not an oversight, and the reason is worth
+understanding before anyone "fixes" it.
+
+`Support/BUILD.bazel` builds `libMSupportGlobals.dylib` with a comment that says
+what it is for:
+
+```
+# NOTE: This library should not have any deps to avoid shared object linking issues
+```
+
+It links `llvm:Support` and `mlir:Support` on purpose, to be the single home for
+LLVM and MLIR global state shared across shared objects — that is what the
+`FallbackTypeIDResolver` note above it is about. It exports 1,699 `llvm::`
+symbols, seven of them CommandLine.
+
+`libLLVM.dylib` contains `llvm:Support` too, because every other LLVM library
+depends on it. So there are two copies, and there always were: before this work,
+`mojo` had LLVM statically linked *and* loaded `libMSupportGlobals.dylib`.
+Hidden visibility was quietly keeping them apart — neither copy exported
+anything, so each bound to its own.
+
+Turning visibility on for LLVM removed that accidental isolation. The compiler
+is fine. The language server is not, because it registers a `-I` option through
+`cl::opt` and both copies now reach the same registry:
+
+    : CommandLine Error: Option 'I' registered more than once!
+    LLVM ERROR: inconsistency in registered CommandLine options
+
+with `Program arguments:` printed twice, which is the tell — static initializers
+running in both copies.
+
+The real fix is for `libLLVM.dylib` to get Support from `libMSupportGlobals.dylib`
+rather than carry its own. Bazel cannot currently express that here:
+`Support:Globals` is a `modular_shared_library`, which does not produce
+`CcSharedLibraryInfo`, so `cc_shared_library`'s `dynamic_deps` will not accept
+it. Converting it is a change to Modular's code with cross-SO type-identity
+consequences, and it has not been made.
+
+Until then: the compiler shares the dylib, the language server does not, and
+`check-dist.sh` fails loudly with `duplicate LLVM CommandLine registry` if that
+ever changes by accident.
+
+### What is genuinely missing: Cocoa completion
+
+The language server knows Mojo. It does not know Cocoa — nothing under
+`KGEN/tools/mojo-lsp-server` references `cocoakb`.
+
+This is the interesting gap rather than a defect. The compiler answers questions
+about the SDK at compile time through `cocoakb_query`, so the database already
+holds every class, selector, encoding and struct layout the editor would want to
+complete against. Wiring it into `completionProvider` means an editor that
+completes `NSWindow` selectors with real signatures, which no general Mojo
+tooling can do. `share/cocoa.sqlite` ships in the distribution and can be
+queried directly today, without touching the language server at all.
+
 ## What is not done
 
 - **MLIR is still static.** It is 468 more libraries and the same treatment

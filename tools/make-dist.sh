@@ -25,6 +25,15 @@ echo "== compiler =="
 cp -f "$B/KGEN/tools/mojo/mojo" "$D/bin/cocoamojo-compiler"
 cp -f "$ROOT/tools/cocoamojo" "$D/bin/cocoamojo"; chmod +x "$D/bin/cocoamojo"
 
+# The language server, for editors. It speaks LSP on stdin/stdout and shares
+# libLLVM.dylib with the compiler rather than carrying a second copy.
+if [ -f "$B/KGEN/tools/mojo-lsp-server/mojo-lsp-server" ]; then
+  cp -f "$B/KGEN/tools/mojo-lsp-server/mojo-lsp-server" "$D/bin/"
+  echo "   mojo-lsp-server"
+else
+  echo "   no mojo-lsp-server (build //KGEN/tools/mojo-lsp-server:mojo-lsp-server)"
+fi
+
 echo "== runtime dylibs =="
 for l in KGEN/libKGENCompilerRTShared.dylib \
          AsyncRT/libAsyncRTRuntimeGlobals.dylib \

@@ -33,6 +33,25 @@ otool -L dist/CocoaMojo/bin/cocoamojo-compiler 2>/dev/null | grep -q 'libLLVM.dy
   && ok "compiler link" "dynamic against libLLVM.dylib" \
   || bad "compiler link" "LLVM is statically linked -- dynamic_deps not in effect"
 
+# The language server: hand it an LSP initialize request and read back the
+# capabilities. An editor's first move, so if this is broken nothing else works.
+if [ -x dist/CocoaMojo/bin/mojo-lsp-server ]; then
+  body='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"processId":null,"rootUri":null,"capabilities":{}}}'
+  printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body" > "$TMP/lsp_init"
+  timeout 30 dist/CocoaMojo/bin/mojo-lsp-server < "$TMP/lsp_init" >"$TMP/lsp_out" 2>"$TMP/lsp_err"
+  caps=$(grep -oE '"[a-zA-Z]+Provider"' "$TMP/lsp_out" 2>/dev/null | sort -u | wc -l | tr -d ' ')
+  if [ "${caps:-0}" -ge 8 ]; then
+    ok "mojo-lsp-server" "$caps capabilities advertised"
+  elif grep -q 'registered more than once' "$TMP/lsp_err" 2>/dev/null; then
+    # See RELEASE.md: two copies of LLVM's CommandLine in one process.
+    bad "mojo-lsp-server" "duplicate LLVM CommandLine registry"
+  else
+    bad "mojo-lsp-server" "initialize returned $caps capabilities"
+  fi
+else
+  bad "mojo-lsp-server" "not in the distribution"
+fi
+
 # The out-of-tree consumer: compile and run a real LLVM program against the
 # distribution's headers and dylib, nothing else. This is what the IDE will do.
 if clang++ -std=c++17 -fno-rtti tools/ide-probe/ide_probe.cpp \
