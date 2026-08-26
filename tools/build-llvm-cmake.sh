@@ -12,6 +12,24 @@
 # the result is ABI-compatible with the rest of this tree. The ones that matter,
 # and are silent failures if wrong:
 #
+#   fallback TypeIDs   -DMLIR_USE_FALLBACK_TYPE_IDS=1. This is the one that is
+#                      silent, total and retroactive if wrong. bazel applies it
+#                      to every compile action including MLIR's own
+#                      (bazel/internal/cc-toolchain/args/BUILD.bazel:134); the
+#                      header defaults it to false. It exists so MLIR objects can
+#                      cross a shared-library boundary, which is exactly what a
+#                      libMLIR.dylib plus a separate compiler library does.
+#
+#                      Without it the two libraries hold different definitions of
+#                      the same header template, link cleanly, and then compute
+#                      different TypeIDs than the ones baked into the dylib --
+#                      dialect, op, attribute and interface lookups quietly miss.
+#                      Measured here: 10,876 TypeIDResolver symbols in the bazel
+#                      libMLIR against 5,182 in a build without the flag.
+#
+#                      There is no CMake option for it. It goes in CMAKE_CXX_FLAGS
+#                      for the whole build or it is not applied at all.
+#
 #   assertions ON      bazel passes -UNDEBUG, so LLVM here has assertions
 #                      enabled even in an optimised build. Assertions change
 #                      LLVM's ABI, so a Release-without-assertions library
@@ -19,6 +37,9 @@
 #   no RTTI, no EH     -fno-rtti -fno-exceptions
 #   C++20, libc++
 #   AArch64 only       matches bazel/public-patches/llvm_project.bzl
+#   lld                KGEN's ObjectCompiler resolves ld64.lld to link what it
+#                      emits. An mlir-only install has no lld and the compiler
+#                      falls back to hunting PATH.
 #   -mcpu=apple-m4
 #
 # One divergence to know about: bazel compiles zstd from source, this links
@@ -84,7 +105,7 @@ cmake -G Ninja -S "$LLVM_SRC/llvm" -B "$BUILD" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$INSTALL" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
-  -DLLVM_ENABLE_PROJECTS=mlir \
+  -DLLVM_ENABLE_PROJECTS="mlir;lld" \
   -DLLVM_TARGETS_TO_BUILD=AArch64 \
   -DLLVM_BUILD_LLVM_DYLIB=ON \
   -DLLVM_LINK_LLVM_DYLIB=ON \
@@ -103,7 +124,7 @@ cmake -G Ninja -S "$LLVM_SRC/llvm" -B "$BUILD" \
   -DMLIR_INCLUDE_TESTS=OFF \
   -DMLIR_INCLUDE_INTEGRATION_TESTS=OFF \
   -DCMAKE_C_FLAGS="-mcpu=apple-m4" \
-  -DCMAKE_CXX_FLAGS="-mcpu=apple-m4 -std=c++20"
+  -DCMAKE_CXX_FLAGS="-mcpu=apple-m4 -std=c++20 -DMLIR_USE_FALLBACK_TYPE_IDS=1 -UNDEBUG"
 
 echo
 echo "== building (this is the long one) =="
