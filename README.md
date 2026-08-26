@@ -329,17 +329,49 @@ remaining risks are reviewed in
 
 ## Building
 
-Bazel, via the bundled wrapper — no toolchain install needed.
+There are two ways in, and which one you want depends on whether you are
+changing the compiler or using it.
+
+### Using it
+
+```bash
+./tools/release.sh                                    # builds the toolchain, once
+dist/CocoaMojo/bin/cocoamojo --run   spikes/mandelbrot/mandelbrot.mojo
+dist/CocoaMojo/bin/cocoamojo --build spikes/life/life.mojo    # -> ./life
+```
+
+`cocoamojo` is the whole interface. No `-I` flags, no `MODULAR_*` variables, no
+daemon: the distribution carries the compiler, its runtime dylibs, the Mojo
+packages, the Cocoa database and the Metal device runtime, and the driver wires
+them together. Binaries from `--build` carry an rpath into it, so `env -i
+./mandelbrot` opens its window and renders.
+
+Bazel builds the compiler and then has no further part to play. That separation
+is deliberate and it is load-bearing: handing a bazel action one environment
+variable via `--action_env` enters the key of *every* action in the graph, so
+pointing the elaborator at a different `cocoa.sqlite` used to rebuild LLVM. The
+compiler reads those variables at run time instead.
+
+[`RELEASE.md`](RELEASE.md) documents the build, `./tools/check-dist.sh` verifies
+one.
+
+### Changing the compiler
 
 ```bash
 python3 ../CocoaBaseMCP/build.py        # the SDK database, ~12s
 ./bazelw build //spikes:life
-./spikes/run-cocoa-checks.sh            # the 9 verification spikes
+./spikes/run-cocoa-checks.sh            # the verification spikes
 ```
 
 `local.bazelrc` selects `--config=build-mojo` and points the compiler at
 `cocoa.sqlite`. Rebuild the database after a macOS update;
 `cocoakb_query<"db_hash">` makes drift visible.
+
+LLVM is configured for one backend, AArch64, in
+`bazel/public-patches/llvm_project.bzl` — X86 and RISCV were 57 MB of objects
+for code this machine will never execute. `--config=release` additionally builds
+opt rather than dbg, tunes for `-mcpu=apple-m4`, and links LLVM and MLIR as
+shared libraries.
 
 Requires Apple Silicon, macOS 15+, and Xcode 16+.
 
