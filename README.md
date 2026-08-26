@@ -356,6 +356,10 @@ compiler reads those variables at run time instead.
 one, and [`IDE-EMBEDDING.md`](IDE-EMBEDDING.md) maps the compiler's phases for
 anything that wants to embed them rather than shell out.
 
+The first real cocoa-mojo application is designed in
+[`IDE-DESIGN.md`](IDE-DESIGN.md): a native Mac IDE, written in the language it
+edits, built by the compiler it drives.
+
 LLVM and MLIR also build with CMake and no bazel at all —
 [`tools/build-llvm-cmake.sh`](tools/build-llvm-cmake.sh). Doing the same for
 the compiler itself is scoped in [`CMAKE-PORT-SCOPE.md`](CMAKE-PORT-SCOPE.md).
