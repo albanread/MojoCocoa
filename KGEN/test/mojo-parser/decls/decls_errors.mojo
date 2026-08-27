@@ -1158,7 +1158,10 @@ struct UseTraitWithIntParamOnMethodReallyLongName(TraitWithIntParamOnMethodReall
 # Class
 ##===----------------------------------------------------------------------===##
 
-class SomeClass:  # expected-error {{classes are not supported yet}}
+# `class` declares an Objective-C class and resolves to a type -- there is no
+# error here any more. COCOA_CLASS_DESIGN.md; class_decl.mojo and
+# class_decl_errors.mojo cover it properly.
+class SomeClass:
   pass
 
 

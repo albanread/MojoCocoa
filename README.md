@@ -353,7 +353,16 @@ pointing the elaborator at a different `cocoa.sqlite` used to rebuild LLVM. The
 compiler reads those variables at run time instead.
 
 [`RELEASE.md`](RELEASE.md) documents the build, `./tools/check-dist.sh` verifies
-one.
+one, and [`IDE-EMBEDDING.md`](IDE-EMBEDDING.md) maps the compiler's phases for
+anything that wants to embed them rather than shell out.
+
+The first real cocoa-mojo application is designed in
+[`IDE-DESIGN.md`](IDE-DESIGN.md): a native Mac IDE, written in the language it
+edits, built by the compiler it drives.
+
+LLVM and MLIR also build with CMake and no bazel at all —
+[`tools/build-llvm-cmake.sh`](tools/build-llvm-cmake.sh). Doing the same for
+the compiler itself is scoped in [`CMAKE-PORT-SCOPE.md`](CMAKE-PORT-SCOPE.md).
 
 ### Changing the compiler
 
@@ -381,10 +390,11 @@ This README is the summary, and [`STATUS.md`](STATUS.md) is the honest current
 picture — read that before relying on anything here.
 
 **To learn the language and the API, start with the
-[CocoaMojo Programmer's Guide and Reference Manual](CocoaMojoGuide/)** — eight
-guide chapters from first program to a walked-through windowed demo, plus a
+[CocoaMojo Programmer's Guide and Reference Manual](CocoaMojoGuide/)** — nine
+guide chapters from first program to a walked-through windowed demo, a
 reference covering the cocoa-mojo dialect, every `std.objc` entry point, every
-`cocoakb` query and every diagnostic. A built PDF sits beside the source.
+`cocoakb` query and every diagnostic, and a section on writing Mojo functions
+that run on the Apple GPU. A built PDF sits beside the source.
 
 | Document | What it covers |
 | --- | --- |

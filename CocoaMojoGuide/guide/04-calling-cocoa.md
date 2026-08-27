@@ -1,4 +1,4 @@
-# 3. Calling Cocoa
+# 4. Calling Cocoa
 
 Every Objective-C method call is one C function call:
 

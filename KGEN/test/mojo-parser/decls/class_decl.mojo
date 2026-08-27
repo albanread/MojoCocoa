@@ -1,0 +1,135 @@
+# ===----------------------------------------------------------------------=== #
+# Copyright (c) 2026, Modular Inc. All rights reserved.
+#
+# Licensed under the Apache License v2.0 with LLVM Exceptions:
+# https://llvm.org/LICENSE.txt
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ===----------------------------------------------------------------------=== #
+
+# RUN: %parse-mojo-isolated %s | FileCheck %s
+
+# `class` declares an Objective-C class -- COCOA_CLASS_DESIGN.md.
+#
+# Sprint 2 resolves one to a type. What the IR should show, and what these
+# checks pin, is the design's central claim about representation: a class is a
+# **register-passable** struct -- a pointer, not a value -- carrying the
+# Objective-C names it was declared against. It is deliberately NOT a separate
+# op; see the sprint 1 decision in the design document.
+
+
+# A class holds exactly one thing: the pointer to the Objective-C object. The
+# fields an author declares go in a box behind it -- sprint 3.
+# CHECK-DAG: lit.struct.field __objc_id
+# CHECK-DAG: lit.struct.decl @Bare({{.*}}) register_passable attributes {objcClass
+class Bare:
+    pass
+
+
+# The bases survive parsing in source order: superclass first, protocols after.
+# They are strings, because they name things the Objective-C runtime resolves
+# and not Mojo traits -- reading them as traits would report `NSView` as an
+# undefined trait, which is a lie about a correct line.
+# CHECK-DAG: lit.struct.decl @WithSuper({{.*}}) register_passable attributes {objcBases = ["NSObject"], objcClass
+class WithSuper(NSObject):
+    pass
+
+
+# And the framework that declares the superclass, which registration needs
+# before it can ask the runtime anything: objc_getClass("NSView") is nil until
+# AppKit is loaded, and building against a nil superclass silently produces a
+# root class. Only BridgeSupport knows the attribution.
+# CHECK-DAG: lit.struct.decl @GridView({{.*}}) register_passable attributes {objcBases = ["NSView", "NSTextInputClient", "NSDraggingDestination"], objcClass, objcFrameworks = ["AppKit"]
+class GridView(NSView, NSTextInputClient, NSDraggingDestination):
+    pass
+
+
+# Every class carries the function that builds it in the runtime, and that
+# function constructs std.objc's ObjCClassRegistrar with the three things only
+# the compiler knows: the class name, the superclass, and the frameworks that
+# have to be loaded before the superclass can be resolved at all.
+# CHECK-DAG: lit.fn @"__objc_register__()"() -> !kgen.none
+# CHECK-DAG: lit.var.decl "registrar" var : !lit.ref<!ObjCClassRegistrar
+# CHECK-DAG: kgen.param.constant: !lit.struct<#StringLiteral <:string "GridView">>
+# CHECK-DAG: kgen.param.constant: !lit.struct<#StringLiteral <:string "AppKit">>
+# CHECK-DAG: ObjCClassRegistrar::@"__init__
+# CHECK-DAG: ObjCClassRegistrar::@"add_protocol
+# CHECK-DAG: ObjCClassRegistrar::@"register
+
+
+# A qualified name is kept whole rather than read as attribute access.
+# CHECK-DAG: lit.struct.decl @Qualified({{.*}}) register_passable attributes {objcBases = ["foundation.NSObject"], objcClass
+class Qualified(foundation.NSObject):
+    pass
+
+
+# An empty base list means the same as writing none at all: no objcBases.
+# CHECK-DAG: lit.struct.decl @EmptyBases({{.*}}) register_passable attributes {objcClass
+class EmptyBases():
+    pass
+
+
+# A base list wrapped over several lines, with the trailing comma such a list
+# is actually written with.
+# CHECK-DAG: lit.struct.decl @Multiline({{.*}}) register_passable attributes {objcBases = ["NSView", "NSTextInputClient"], objcClass
+class Multiline(
+    NSView,
+    NSTextInputClient,
+):
+    pass
+
+
+# Methods resolve, `self` is the class, and each one carries the selector the
+# runtime will dispatch to it by: every `_` in the name is a `:` in the
+# selector. Registering them is the rest of sprint 2; deriving the identity
+# correctly has to be true first.
+# `self` arrives by value in a register, not behind a reference. That is the
+# Objective-C ABI -- a method's receiver is an id in x0 -- and Mojo would
+# otherwise pass a non-trivially-register-passable type by reference, leaving
+# a trampoline to read a pointer to the pointer. The class stays non-trivial,
+# so a reference can still retain on copy; how a value travels and what
+# copying it costs are separate questions.
+# CHECK-DAG: lit.fn @"isFlipped(class_decl::TabBar)"({{.*}}%self: !TabBar
+#
+# The encoding beside each is looked up in the SDK database, not derived: the
+# runtime is what will send these messages, so its idea of their shape is the
+# only one that counts. Note drawRect:'s struct expansion, which is the string
+# ide/roast.mojo writes out by hand today.
+# CHECK-DAG: objcEncoding = "B16@0:8", objcSelector = "isFlipped"
+# CHECK-DAG: objcEncoding = "v48@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16", objcSelector = "drawRect:"
+# CHECK-DAG: objcEncoding = "@40@0:8@16q24@32", objcSelector = "outlineView:child:ofItem:"
+class TabBar(NSView):
+    """A docstring."""
+
+    # The C-ABI function the runtime will call: Objective-C sends
+    # (id self, SEL _cmd), the method wants (self), and `self` already lines up
+    # because a class reference travels in a register. The trampoline exists to
+    # drop _cmd -- and, later, to stop an exception before it unwinds into
+    # objc_msgSend, which is undefined.
+    # CHECK-DAG: lit.fn @"__objc_imp_isFlipped({{.*}}(%self: !TabBar, %_cmd: !Int{{.*}}) cabi -> !Bool
+    # CHECK-DAG: ObjCClassRegistrar::@"add_method
+    def isFlipped(self) -> Bool:
+        return True
+
+    def drawRect_(self, dirty: Int):
+        pass
+
+    def outlineView_child_ofItem_(self, view: Int, index: Int, item: Int) -> Int:
+        return 0
+
+    # A leading underscore means the method is Mojo's own and never reaches the
+    # runtime -- which is what keeps snake_case helpers legal in a language
+    # where snake_case is the norm.
+    # CHECK-NOT: objcSelector = "_tab:width"
+    def _tab_width(self, total: Int) -> Int:
+        return total
+
+
+# Structs are untouched: still memory-only, still no Objective-C attributes.
+# CHECK-DAG: lit.struct.decl @PlainStruct({{.*}}) attributes {sourceName
+struct PlainStruct:
+    var x: Int

@@ -14,7 +14,7 @@ from std.ffi import external_call
 from std.memory import OpaquePointer
 from std.collections.string.string_span import _get_kgen_string
 from std.sys._cocoakb import cocoakb_selector_encoding
-from .runtime import ObjCClass, ObjCObject, msg_send, sel
+from .runtime import ObjCClass, ObjCObject, msg_send, sel, load_framework_dynamic
 
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
@@ -27,6 +27,38 @@ comptime IMP1 = fn(P, P, P, /) -> None
 comptime IMP0Bool = fn(P, P, /) -> Bool
 comptime IMP1Bool = fn(P, P, P, /) -> Bool
 comptime IMP2 = fn(P, P, P, P, /) -> None
+
+# Methods that answer with an object. Every shape above returns void or BOOL,
+# which covers actions and lifecycle callbacks but not the delegate protocols
+# that are asked *for* something -- a toolbar delegate returns an NSArray of
+# identifiers and then an NSToolbarItem, an outline view's data source returns
+# each child.
+#
+# These return `Int`, not a pointer, and the reason is a real disagreement
+# between the two type systems rather than a shortcut. Objective-C delegates
+# must be able to answer nil -- "I have no item for that identifier" is a
+# normal answer, not an error -- and Mojo's Pointer is non-nullable by
+# construction: `Pointer(unsafe_from_address=0)` is rejected at comptime with
+# "use Optional[Pointer] to model nullability". Optional is the right answer
+# inside Mojo and the wrong one at an ABI boundary, where the C signature is a
+# single pointer-sized register.
+#
+# So the return is an `id` as an address: `obj.addr()` for an object, plain `0`
+# for nil. Identical ABI, and the nullability stays where Objective-C put it.
+comptime IMP1Obj = fn(P, P, P, /) -> Int
+comptime IMP2Obj = fn(P, P, P, P, /) -> Int
+comptime IMP3Obj = fn(P, P, P, P, P, /) -> Int
+
+# The counting half of a data source -- numberOfChildrenOfItem: and relatives
+# -- has the same shape, since an NSInteger and an id-as-address are the same
+# register. Aliases rather than distinct types, so the name at a call site can
+# say which one is meant without adding an ambiguous overload.
+comptime IMP1Int = IMP1Obj
+comptime IMP2Int = IMP2Obj
+
+# One mixed shape the toolbar needs by name: the trailing BOOL of
+# toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:.
+comptime IMP2ObjBool = fn(P, P, P, P, Bool, /) -> Int
 
 
 def _strip_offsets(enc: StaticString) -> String:
@@ -110,6 +142,64 @@ struct ObjCClassBuilder[superclass: StaticString = "NSObject"]:
     ](mut self, imp: IMP2):
         self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
 
+    def add_method[
+        selector: StaticString, encoding: StaticString = ""
+    ](mut self, imp: IMP1Obj):
+        self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
+
+    def add_method[
+        selector: StaticString, encoding: StaticString = ""
+    ](mut self, imp: IMP2Obj):
+        self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
+
+    def add_method[
+        selector: StaticString, encoding: StaticString = ""
+    ](mut self, imp: IMP3Obj):
+        self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
+
+    def add_method[
+        selector: StaticString, encoding: StaticString = ""
+    ](mut self, imp: IMP2ObjBool):
+        self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
+
+    def add_method_unchecked[
+        selector: StaticString, encoding: StaticString = "", F: AnyType = NoneType
+    ](mut self, imp: F):
+        """Add a method of any signature, with no shape checking.
+
+        The typed overloads above cover what Cocoa mostly asks for. They cannot
+        cover everything: NSTextInputClient's `selectedRange` returns an NSRange
+        by value, `insertText:replacementRange:` takes one, and
+        `firstRectForCharacterRange:actualRange:` returns an NSRect. Struct
+        arguments and returns are ordinary arm64 register passing, but each is a
+        distinct function type and enumerating them in the stdlib would be a
+        list with no end.
+
+        So this takes the function as-is. The encoding is what tells the runtime
+        the real signature, and getting it wrong is a mis-marshalled call rather
+        than a compile error -- which is why this is named for what it does not
+        do. Prefer a typed overload where one fits.
+        """
+        self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
+
+    def add_protocol[name: StaticString](mut self) -> Bool:
+        """Declare that this class conforms to a protocol.
+
+        Implementing a protocol's methods is not the same as conforming to it.
+        AppKit asks `conformsToProtocol:` in places -- NSTextInputClient among
+        them -- and a class that only responds to the selectors is refused.
+        Returns False if the protocol is not registered in this process, which
+        usually means the framework defining it has not been loaded.
+        """
+        var proto = external_call["objc_getProtocol", P](
+            _leak_cstr(String(name))
+        )
+        if Int(proto) == 0:
+            return False
+        return external_call["class_addProtocol", Bool](
+            P(unsafe_from_address=self._cls), proto
+        )
+
     def register(deinit self) -> ObjCClass:
         """Finish the class; it can be instantiated after this."""
         external_call["objc_registerClassPair", NoneType](
@@ -134,6 +224,106 @@ def _imp_ptr[F: AnyType](imp: F) -> P:
     """A function value as an opaque IMP pointer (the DLHandle bitcast trick,
     in reverse)."""
     return Pointer(to=imp).unsafe_bitcast[P]()[]
+
+
+struct ObjCClassRegistrar:
+    """Builds an Objective-C class from values known only at run time.
+
+    This is the compiler's entry point for `class` (COCOA_CLASS_DESIGN.md).
+    `ObjCClassBuilder` above is the one to use by hand: its selector and
+    superclass are compile-time parameters, so it can check them against the
+    SDK and pick an IMP overload. The compiler has already done all of that --
+    it derived the selector, looked the encoding up in the database, and found
+    the framework -- so what it needs is the opposite shape: every value an
+    ordinary argument, because emitting a call with plain arguments is far
+    simpler than emitting a parametric one.
+
+    Order matters and is the compiler's responsibility: frameworks first, or
+    `objc_getClass` returns nil for the superclass and the pair is allocated
+    against nothing, which yields a root class that silently does nothing.
+    """
+
+    var _cls: Int
+    var _ok: Bool
+
+    def __init__(
+        out self,
+        name: StringSlice,
+        superclass: StringSlice,
+        frameworks: StringSlice = "",
+    ):
+        """`frameworks` is a comma-separated list, loaded before anything else.
+
+        One argument rather than a separate call per framework, and the order
+        is not a detail: `objc_getClass` returns nil for a superclass whose
+        framework is not in the process, and allocating a pair against nil
+        yields a root class that answers nothing. Loading has to happen before
+        the lookup below, so it happens here.
+        """
+        for framework in frameworks.split(","):
+            if framework.byte_length() > 0:
+                _ = load_framework_dynamic(framework)
+
+        var sup = external_call["objc_getClass", P](
+            _leak_cstr(String(superclass))
+        )
+        if Int(sup) == 0:
+            # Registering against a nil superclass would build a root class
+            # that answers nothing. Refuse, and let `register` report it.
+            self._cls = 0
+            self._ok = False
+            return
+        var cls = external_call["objc_allocateClassPair", P](
+            sup, _leak_cstr(String(name)), Int(0)
+        )
+        self._cls = Int(cls)
+        self._ok = Int(cls) != 0
+
+    def add_method[
+        F: AnyType
+    ](mut self, selector: StringSlice, encoding: StringSlice, imp: F) -> Bool:
+        """`imp` is the C-ABI trampoline the compiler synthesized.
+
+        Taken as a function value rather than an already-converted pointer so
+        that `_imp_ptr` -- which is a bitcast Mojo knows how to spell and the
+        compiler would otherwise have to emit five operations for -- stays on
+        this side of the boundary.
+        """
+        if not self._ok:
+            return False
+        return external_call["class_addMethod", Bool](
+            P(unsafe_from_address=self._cls),
+            external_call["sel_registerName", P](
+                _leak_cstr(String(selector))
+            ),
+            _imp_ptr(imp),
+            _leak_cstr(String(encoding)),
+        )
+
+    def add_protocol(mut self, name: StringSlice) -> Bool:
+        """Conformance is not the same as implementing the methods: AppKit
+        asks `conformsToProtocol:` -- NSTextInputClient among them -- and
+        refuses a class that only responds to the selectors."""
+        if not self._ok:
+            return False
+        var proto = external_call["objc_getProtocol", P](
+            _leak_cstr(String(name))
+        )
+        if Int(proto) == 0:
+            return False
+        return external_call["class_addProtocol", Bool](
+            P(unsafe_from_address=self._cls), proto
+        )
+
+    def register(mut self) -> ObjCClass:
+        """Finish the class. Returns a null ObjCClass if anything above
+        failed, which is what a caller should check before instantiating."""
+        if not self._ok:
+            return ObjCClass(0)
+        external_call["objc_registerClassPair", NoneType](
+            P(unsafe_from_address=self._cls)
+        )
+        return ObjCClass(self._cls)
 
 
 def sel_dynamic(name: StaticString) -> P:

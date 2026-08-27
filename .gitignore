@@ -19,6 +19,11 @@ local.bazelrc
 # tablegen, without which //KGEN:mojo does not even analyse) plus the 30
 # files under KGEN/test/mojo-tool/build/. Same failure as `target/` below.
 /build/
+# What Roast writes when you press cmd-B in one of the shipped examples: the
+# binary lands in <project>/build/ beside its source. Spelled out per level
+# rather than as a bare `build/`, for the reason above.
+/examples/*/build/
+/examples/fern/fern.png
 develop-eggs/
 dist/
 downloads/

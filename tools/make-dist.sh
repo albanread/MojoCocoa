@@ -25,11 +25,104 @@ echo "== compiler =="
 cp -f "$B/KGEN/tools/mojo/mojo" "$D/bin/cocoamojo-compiler"
 cp -f "$ROOT/tools/cocoamojo" "$D/bin/cocoamojo"; chmod +x "$D/bin/cocoamojo"
 
+# The language server, for editors. It speaks LSP on stdin/stdout and shares
+# libLLVM.dylib with the compiler rather than carrying a second copy.
+if [ -f "$B/KGEN/tools/mojo-lsp-server/mojo-lsp-server" ]; then
+  cp -f "$B/KGEN/tools/mojo-lsp-server/mojo-lsp-server" "$D/bin/"
+  echo "   mojo-lsp-server"
+else
+  echo "   no mojo-lsp-server (build //KGEN/tools/mojo-lsp-server:mojo-lsp-server)"
+fi
+
 echo "== runtime dylibs =="
 for l in KGEN/libKGENCompilerRTShared.dylib \
          AsyncRT/libAsyncRTRuntimeGlobals.dylib \
          Support/libMSupportGlobals.dylib; do
   cp -f "$B/$l" "$D/lib/"
+done
+
+# LLVM. The compiler links against this rather than absorbing it, and it is here
+# to be linked against by other things too -- an IDE or language server can use
+# it without building LLVM at all. bazel puts the real file under _solib_*, so
+# find it rather than guessing the path.
+echo "== LLVM =="
+LLVMLIB="$(find "$B" -name 'libLLVM.dylib' -type f 2>/dev/null | head -1)"
+MLIRLIB="$(find "$B" -name 'libMLIR.dylib' -type f 2>/dev/null | head -1)"
+# The external repo holding LLVM's sources. It sits beside execroot/ in the
+# output base, not inside it, and the +llvm_configure+ prefix is bzlmod's and can
+# change -- so cut the path at /execroot/ and glob for the repo.
+LLVMSRC="$(echo "${B%%/execroot/*}"/external/*llvm_configure*llvm-project)"
+[ -n "$LLVMLIB" ] || { echo "   no libLLVM.dylib -- build //bazel/llvm-shared:LLVM"; exit 1; }
+cp -f "$LLVMLIB" "$D/lib/"
+nexp=$(nm -gU "$D/lib/libLLVM.dylib" | grep -c '4llvm') || true
+# Under the toolchain's default -fvisibility=hidden this lands near 200 rather
+# than tens of thousands, and the dylib is useless to anything outside. That is
+# a silent failure, so it is checked rather than assumed.
+[ "$nexp" -gt 10000 ] || { echo "   libLLVM.dylib exports only $nexp llvm:: symbols -- visibility regression"; exit 1; }
+echo "   $(du -h "$D/lib/libLLVM.dylib" | cut -f1), $nexp llvm:: symbols exported"
+
+# MLIR, on top of LLVM. The compiler links both; an in-process consumer that
+# wants to build IR rather than shell out needs this one too.
+[ -n "$MLIRLIB" ] || { echo "   no libMLIR.dylib -- build //bazel/mlir-shared:MLIR"; exit 1; }
+cp -f "$MLIRLIB" "$D/lib/"
+mexp=$(nm -gU "$D/lib/libMLIR.dylib" | grep -c '4mlir') || true
+[ "$mexp" -gt 10000 ] || { echo "   libMLIR.dylib exports only $mexp mlir:: symbols -- visibility regression"; exit 1; }
+echo "   $(du -h "$D/lib/libMLIR.dylib" | cut -f1), $mexp mlir:: symbols exported"
+
+# The Mojo front end. Without this the distribution shipped the parser's headers
+# and no parser -- it was statically linked inside the binaries and nothing
+# out-of-tree could call it.
+echo "== Mojo front end =="
+FE="$B/KGEN/libMojoCompiler.dylib"
+[ -f "$FE" ] || { echo "   no libMojoCompiler.dylib -- build //KGEN:MojoCompilerShared"; exit 1; }
+cp -f "$FE" "$D/lib/"
+fexp=$(nm -gU "$D/lib/libMojoCompiler.dylib" | grep -c 'MojoParserContext') || true
+[ "$fexp" -gt 10 ] || { echo "   exports only $fexp MojoParserContext symbols -- visibility regression"; exit 1; }
+echo "   $(du -h "$D/lib/libMojoCompiler.dylib" | cut -f1), parser API exported"
+
+# LLVM headers, so the dylib is something another project can actually compile
+# against. Two trees have to be merged, and the order matters:
+#
+#   1. the checked-out headers, which reach the build as a symlink farm into the
+#      llvm-raw repo -- hence 'cp -RL' rather than rsync, to follow them
+#   2. the generated ones on top: llvm-config.h, abi-breaking.h and the Config
+#      .def files that record which targets this LLVM was built with. The source
+#      tree carries .in templates for these; the generated versions must win, or
+#      a consumer gets a Targets.def listing backends that are not in the dylib.
+echo "== LLVM headers =="
+rm -rf "$D/include"
+mkdir -p "$D/include"
+cp -RL "$LLVMSRC/llvm/include/llvm" "$LLVMSRC/llvm/include/llvm-c" "$D/include/" 2>/dev/null
+GEN="$B/external/+llvm_configure+llvm-project/llvm/include"
+[ -d "$GEN" ] && cp -RL "$GEN/llvm" "$D/include/" 2>/dev/null
+nhdr=$(find "$D/include" -type f | wc -l | tr -d ' ')
+
+# MLIR headers, same two-tree merge. The generated half is much larger here --
+# MLIR's dialects are tablegen'd, so .inc files carry the actual declarations
+# and a consumer cannot compile without them.
+cp -RL "$LLVMSRC/mlir/include/mlir" "$LLVMSRC/mlir/include/mlir-c" "$D/include/" 2>/dev/null
+MGEN="$B/external/+llvm_configure+llvm-project/mlir/include"
+[ -d "$MGEN" ] && cp -RL "$MGEN/mlir" "$D/include/" 2>/dev/null
+
+# The compiler's own headers: the phases an embedder calls into. Support, Init
+# and Config come too -- KGEN's public headers include them, so an embedder
+# needs them whether or not it names them.
+cp -RL "$ROOT/KGEN/include/KGEN" "$D/include/" 2>/dev/null
+for tree in Support Init Config Cache AsyncRT; do
+  [ -d "$ROOT/$tree/include" ] && cp -RL "$ROOT/$tree/include/." "$D/include/" 2>/dev/null
+done
+# ...and their generated halves. KGEN and Support are tablegen'd the same way
+# MLIR is: the .h.inc files carry real declarations, and MTypes.h includes
+# MTypes.h.inc unconditionally, so nothing compiles without them.
+for tree in KGEN Support Init Config Cache AsyncRT; do
+  [ -d "$B/$tree/include" ] && cp -RL "$B/$tree/include/." "$D/include/" 2>/dev/null
+done
+
+nhdr=$(find "$D/include" -type f | wc -l | tr -d ' ')
+echo "   $nhdr headers ($(du -sh "$D/include" | cut -f1))"
+# The generated Config headers are the ones a consumer cannot do without.
+for f in llvm/Config/llvm-config.h llvm/Config/abi-breaking.h llvm/Config/Targets.def; do
+  [ -f "$D/include/$f" ] || { echo "   missing $f -- consumers will not compile"; exit 1; }
 done
 
 # The GPU runtime, built here rather than taken from bazel-out on purpose.
@@ -67,6 +160,19 @@ mkdir -p "$D/lib/mojo"
 rsync -a --delete "$ROOT/mojo/stdlib/"      "$D/lib/mojo/stdlib/"
 rsync -a --delete "$ROOT/max/mojo/"         "$D/lib/mojo/max/"
 rsync -a --delete "$ROOT/max/kernels/src/"  "$D/lib/mojo/kernels/"
+
+echo "== examples =="
+# Shipped with the toolchain because they are the answer to "what does a
+# project look like" -- each folder is one, with its main.mojo, and Roast
+# opens them as they are. Copied without build/ or anything a previous run
+# left behind, so a fresh distribution is sources only.
+# --delete-excluded as well as --delete: without it rsync protects excluded
+# files that are already in the destination, so a build/ from an earlier run
+# would survive every rebuild of the distribution.
+rsync -a --delete --delete-excluded \
+      --exclude 'build/' --exclude '*.png' --exclude '.DS_Store' \
+      "$ROOT/examples/" "$D/share/examples/"
+echo "   $(find "$D/share/examples" -name '*.mojo' | wc -l | tr -d ' ') files in $(ls "$D/share/examples" | grep -vc README) projects"
 
 echo "== cocoa database =="
 if [ -f "$KB" ]; then cp -f "$KB" "$D/share/cocoa.sqlite"

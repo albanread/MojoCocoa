@@ -64,12 +64,23 @@ case "$cmd" in
     ;;
   --run|run)
     src="${1:?cocoamojo: --run needs a .mojo file}"; shift
-    # Build to a temp binary and run it. `mojo run` JITs instead, and the JIT
-    # cannot resolve the GPU runtime's symbols -- building is what works.
-    tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
-    "$COMPILER" build "${INC[@]}" --target-accelerator apple-m4 \
-        "${LINK[@]}" -o "$tmp/a.out" "$src" || exit $?
-    "$tmp/a.out" "$@"; exit $?
+    # JIT it. This used to build to a temporary binary and exec that, because
+    # the JIT could not resolve the GPU runtime's symbols:
+    #
+    #   JIT session error: Symbols not found: [_AsyncRT_DeviceContext_create...]
+    #
+    # That was never a limitation of the JIT. ExecutionEngineOptions::libraryPaths
+    # feeds an ORC dynamic-library search generator, and -Xlinker -L/-l reach it;
+    # the symbols were missing because nothing exported them until
+    # libCocoaMojoGPU.dylib existed. Handed that dylib, the JIT runs GPU kernels
+    # and opens windows -- frameworks are dlopen'd at run time, so their absence
+    # from the JIT's link line does not matter.
+    #
+    # Only -L, -l, -rpath and absolute dylib paths reach the JIT; anything else
+    # is dropped with a warning, which is why the framework flags in LINK are
+    # not passed here.
+    exec "$COMPILER" run "${INC[@]}" --target-accelerator apple-m4 \
+        -Xlinker -L"$LIB" -Xlinker -lCocoaMojoGPU "$src" "$@"
     ;;
   --version|version)
     echo "CocoaMojo -- Mojo for Cocoa, Apple silicon"

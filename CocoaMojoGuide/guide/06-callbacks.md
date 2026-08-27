@@ -1,4 +1,4 @@
-# 5. Letting Cocoa call you
+# 6. Letting Cocoa call you
 
 Everything interactive in Cocoa works the same way: you supply an object, and
 the framework sends it a selector. Target/action, delegates, notification

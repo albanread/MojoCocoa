@@ -11,6 +11,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+#include "KGEN/CocoaKB/CocoaKBDatabase.h"
 #include "KGEN/MojoParser/DeclResolver.h"
 
 #include "ClosureEmitter.h"
@@ -1947,6 +1948,584 @@ AnyValue DeclResolver::resolveAnonymousClosure(const LambdaNode *node,
 
 /// funcdef   ::=  [decorators] "def" identifier [param_signature]
 ///                "(" [argument_list] ")" ["->" expression] ":" suite
+/// Synthesize the C-ABI function the Objective-C runtime will actually call
+/// for one method, and return it.
+///
+/// This is the adapter between two calling conventions that are nearly, but
+/// not quite, the same. Objective-C sends `(id self, SEL _cmd, args...)`;
+/// the Mojo method wants `(self, args...)`. `self` already lines up -- a class
+/// is one pointer passed in a register, which is what the borrow rule in
+/// Signatures.cpp was taught -- so the only structural difference is the
+/// `_cmd` slot, which nothing reads and which exists to occupy x1.
+///
+/// It cannot be skipped even so. A method body may raise, and unwinding into
+/// objc_msgSend is undefined, so the boundary is where an exception has to
+/// stop. That is what this function will grow next; today it forwards.
+static FnOp synthesizeObjCTrampoline(ASTDecl &structDecl, StructDeclOp structOp,
+                                     FnOp methodOp, StringRef selector,
+                                     DeclResolver &resolver) {
+  SharedState &shared = structDecl.getShared();
+  SMLoc declLoc = structDecl.getLoc();
+
+  ASTType selfType = structDecl.getTypeDeclSelf();
+  ASTType cmdType = shared.lookupBuiltinType("Int", structDecl, declLoc);
+  if (selfType.isNull() || cmdType.isNull() || cmdType.isTypeCheckErrorType())
+    return {};
+
+  // Arguments beyond the receiver are not forwarded yet, so a method that
+  // takes any is left unregistered rather than registered wrongly.
+  ASTType resultType = ASTType(methodOp.getUserResultType());
+
+  MLIRContext *ctx = shared.getContext();
+  auto selfName = StringAttr::get(ctx, "self");
+  auto cmdName = StringAttr::get(ctx, "_cmd");
+
+  FnEffects effects;
+  effects.setCABI(true);
+
+  // A name nobody can write, keyed by selector so two methods cannot collide.
+  std::string name = "__objc_imp_" + selector.str();
+  for (char &c : name)
+    if (c == ':')
+      c = '_';
+
+  StructEmitter structEmitter(structDecl);
+  auto [trampoline, trampolineDecl] = structEmitter.synthesizeMethodInStruct(
+      name,
+      /*argTypes=*/{selfType.mlirType, cmdType.mlirType},
+      /*argConvs=*/{ArgConvention::ReadReg, ArgConvention::ReadReg},
+      /*argListAttrs=*/
+      PogListAttr::get(ctx, {selfName, cmdName},
+                       {PassingKind::PosOnly, PassingKind::PosOnly}),
+      resultType, SpecialFunctionKind::kNormal, effects);
+  if (!trampoline)
+    return {};
+  // Deliberately not always-inline: this function is registered by address, so
+  // it has to exist as one.
+
+  // Forward to the method: the receiver is the first argument, and `_cmd` is
+  // dropped on the floor, which is the whole job.
+  ImplicitLocOpBuilder builder = ImplicitLocOpBuilder::atBlockEnd(
+      trampoline.getLoc(), trampoline.getBody());
+  builder.setInsertionPointToStart(trampoline.getBody());
+  builder.setLoc(trampoline->getLoc());
+  ASTDecl *resolved = shared.declResolver->getDeclForFuncSymbol(
+      getFullyResolvedSymbolRef(trampoline));
+  if (!resolved)
+    return {};
+  IREmitter emitter(*resolved, builder);
+  SyntheticNode loc(declLoc);
+
+  CallOperands operands(CallSyntax::kMethodCall, &loc,
+                        ExprDest(EC_ReturnValue));
+  operands.addSelf(ASTExprAnd<AnyValue>{
+      AnyValue(SBValue(trampoline.getBody()->getArgument(0))), &loc});
+  CValue result = emitter.emitNamedMethodCall(
+      methodOp.getSourceNameAttr().getValue(), std::move(operands));
+
+  // A register result comes back as an SRValue and is returned directly; a
+  // memory-only one has already been written to the result slot, so there is
+  // nothing to hand back.
+  IREmitter::emitNormalReturn(builder, result.getIfSRValue(),
+                              /*emitEndFunc=*/true);
+  (void)trampolineDecl;
+  return trampoline;
+}
+
+/// Give a class the one thing it is: a pointer to an Objective-C object.
+///
+/// Until this, a class was an empty struct -- a type with methods and nowhere
+/// for `self` to live, which is fine while nothing runs and impossible the
+/// moment something does. The field is named with a leading underscore so it
+/// cannot collide with anything written in the class body, and it is the only
+/// field a class has: the ones the author declares go in a box behind it
+/// (COCOA_CLASS_DESIGN.md), which is sprint 3.
+static void synthesizeObjCIdField(ASTDecl &structDecl, StructDeclOp structOp,
+                                  DeclResolver &resolver) {
+  SharedState &shared = structDecl.getShared();
+  ASTType intType =
+      shared.lookupBuiltinType("Int", structDecl, structDecl.getLoc());
+  if (intType.isNull() || intType.isTypeCheckErrorType())
+    return;
+
+  OpBuilder builder = OpBuilder::atBlockEnd(&structOp.getFields().front());
+  auto name = StringAttr::get(shared.getContext(), "__objc_id");
+  auto field =
+      StructFieldOp::create(builder, structOp.getLoc(), name, intType.mlirType);
+  resolver.addFullyResolvedDecl(&*field, field.getNameAttr(),
+                                structDecl.getLoc(), &structDecl);
+}
+
+/// Synthesize the function that builds this class in the Objective-C runtime.
+///
+/// PROBE (COCOA_CLASS_DESIGN.md sprint 2b): declaration only so far -- the body
+/// is empty. What it proves is that a class can carry a synthesized function at
+/// all, which every later step depends on.
+static void synthesizeObjCRegistration(ASTDecl &structDecl,
+                                       StructDeclOp structOp,
+                                       DeclResolver &resolver) {
+  StructEmitter structEmitter(structDecl);
+  SharedState &shared = structDecl.getShared();
+  auto [funcOp, funcDecl] = structEmitter.synthesizeMethodInStruct(
+      "__objc_register__",
+      /*argTypes=*/{},
+      /*argConvs=*/{},
+      /*argListAttrs=*/PogListAttr::get(shared.getContext(), /*numPogs=*/0),
+      shared.getNoneType());
+  if (!funcOp)
+    return;
+  funcOp.setInlineLevel(InlineLevel::AlwaysNoDebug);
+
+  ImplicitLocOpBuilder builder =
+      ImplicitLocOpBuilder::atBlockEnd(funcOp.getLoc(), funcOp.getBody());
+  builder.setInsertionPointToStart(funcOp.getBody());
+  builder.setLoc(funcOp->getLoc());
+  ASTDecl *resolved = shared.declResolver->getDeclForFuncSymbol(
+      getFullyResolvedSymbolRef(funcOp));
+  if (!resolved)
+    return;
+  IREmitter emitter(*resolved, builder);
+
+  DebugInfo::DIBuilder::ScopeGuard diScopeGuard;
+  if (shared.diBuilder)
+    diScopeGuard = shared.diBuilder->pushScopeGuard(funcOp.getLocScope());
+
+  SyntheticNode loc(structDecl.getLoc());
+
+  // A string constant, as `StringLiteral[value]` constructed -- the same route
+  // ClosureEmitter takes for a synthesized name.
+  ASTType strLitType =
+      shared.lookupBuiltinType("StringLiteral", structDecl, structDecl.getLoc());
+  auto *strLitTypeDecl = strLitType.getDecl(shared);
+  if (!strLitTypeDecl)
+    return;
+  auto strLitDecl = cast<StructDeclOp>(strLitTypeDecl->getIfOperation());
+  auto literal = [&](StringRef text) -> CValue {
+    Type bound = strLitDecl.bindReference(
+        {cast<TypedAttr>(StringAttr::get(
+            text, StringType::get(shared.getContext())))});
+    return emitter.emitConstructorCall(
+        ASTType(bound), CallOperands(CallSyntax::kTypeCall, &loc,
+                                     EC_CallArgValue));
+  };
+
+  // The registrar is std.objc's, and it is imported on demand: a class needs
+  // the Objective-C runtime whether or not the file that declares it thought
+  // to say so.
+  ASTType registrarType = shared.lookupStdlibType(
+      {"std", "objc"}, "ObjCClassRegistrar", structDecl.getLoc());
+  if (registrarType.isNull() || registrarType.isTypeCheckErrorType())
+    return;
+
+  // Frameworks are handed over as one comma-separated argument and loaded by
+  // the registrar before it resolves the superclass. The ordering is the whole
+  // reason the attribute exists: objc_getClass returns nil for a class whose
+  // framework is not in the process, and a pair allocated against nil is a
+  // root class that answers nothing.
+  std::string frameworks;
+  if (auto attr = structOp.getObjcFrameworksAttr())
+    for (auto fw : attr) {
+      if (!frameworks.empty())
+        frameworks += ',';
+      frameworks += cast<StringAttr>(fw).getValue();
+    }
+
+  StringRef superclass = "NSObject";
+  if (auto bases = structOp.getObjcBasesAttr())
+    superclass = cast<StringAttr>(bases[0]).getValue();
+
+  VarDeclOp registrarVar =
+      emitter.emitVarDecl("registrar", registrarType.mlirType,
+                          funcOp.getLoc(), VarDeclKind::Var);
+  if (!registrarVar)
+    return;
+
+  CallOperands ctorOperands(CallSyntax::kTypeCall, &loc,
+                            ExprDest(MLValue(registrarVar), EC_CallArgValue));
+  ctorOperands.add(ASTExprAnd<CValue>{literal(structOp.getSymName()), &loc});
+  ctorOperands.add(ASTExprAnd<CValue>{literal(superclass), &loc});
+  ctorOperands.add(ASTExprAnd<CValue>{literal(frameworks), &loc});
+  emitter.emitConstructorCall(registrarType, std::move(ctorOperands));
+
+  // A method call on the registrar, result discarded: these all report success
+  // through a Bool nobody here can act on -- the diagnostics that matter were
+  // issued at compile time, and a failure now means the machine is not the one
+  // the class was compiled against.
+  auto callOnRegistrar = [&](StringRef method, ArrayRef<StringRef> args) {
+    CallOperands operands(CallSyntax::kMethodCall, &loc,
+                          ExprDest(EC_TopLevelStmt));
+    operands.addSelf(ASTExprAnd<AnyValue>{AnyValue(MLValue(registrarVar)),
+                                          &loc});
+    for (StringRef arg : args)
+      operands.add(ASTExprAnd<AnyValue>{AnyValue(literal(arg)), &loc});
+    emitter.emitNamedMethodCall(method, std::move(operands));
+  };
+
+  // Protocols, after the class exists and before it is registered: AppKit
+  // asks conformsToProtocol: in places -- NSTextInputClient among them -- and
+  // refuses a class that merely answers the selectors.
+  if (auto bases = structOp.getObjcBasesAttr())
+    for (size_t i = 1, e = bases.size(); i != e; ++i)
+      callOnRegistrar("add_protocol", {cast<StringAttr>(bases[i]).getValue()});
+
+  // Every method that answers a selector. Collected in full before anything
+  // is synthesized: synthesizing a trampoline adds a declaration to this very
+  // scope, and doing that while walking it invalidates the walk -- which
+  // presents as the compiler segfaulting, not as a diagnostic.
+  //
+  // Their signatures have to be resolved first, too. The body path
+  // deliberately does not resolve functions, but the selector and the SDK
+  // encoding are recorded during signature resolution, so without this there
+  // is nothing yet to read.
+  struct ObjCMethod {
+    FnOp op;
+    StringRef selector;
+    StringRef encoding;
+  };
+  SmallVector<ObjCMethod> methods;
+  for (std::pair<StringAttr, TinyPtrVector<ASTDecl *>> entry :
+       structDecl.getDeclsInScope()) {
+    for (ASTDecl *methodDecl : entry.second) {
+      auto methodOp = dyn_cast_or_null<FnOp>(methodDecl->getIfOperation());
+      if (!methodOp || methodOp.getSynthetic())
+        continue;
+      if (failed(resolver.resolveSignature(*methodDecl, methodDecl->getLoc())))
+        continue;
+      auto selector = methodOp->getAttrOfType<StringAttr>("objcSelector");
+      auto encoding = methodOp->getAttrOfType<StringAttr>("objcEncoding");
+      if (!selector || !encoding)
+        continue; // Private to Mojo, or its shape could not be established.
+
+      // Only zero-argument methods so far: forwarding arguments through the
+      // trampoline is the next step, and a method registered without its
+      // arguments would answer its selector by reading rubbish.
+      if (methodOp.getBody()->getNumArguments() > 1)
+        continue;
+
+      methods.push_back({methodOp, selector.getValue(), encoding.getValue()});
+    }
+  }
+
+  for (const ObjCMethod &method : methods) {
+    FnOp trampoline = synthesizeObjCTrampoline(
+        structDecl, structOp, method.op, method.selector, resolver);
+    if (!trampoline)
+      continue;
+
+    // The trampoline as a value. It captures nothing, so the closure is just
+    // its address, which is exactly what class_addMethod wants -- std.objc
+    // does the final bitcast, because Mojo can spell that in one line and the
+    // compiler would need five operations for it.
+    Value imp = KGEN::CreateClosureOp::create(
+        builder, builder.getLoc(), trampoline.getFuncTypeGenerator(),
+        trampoline.getBoundSymbolRef(shared.getEvaluationContext()),
+        ValueRange());
+
+    CallOperands operands(CallSyntax::kMethodCall, &loc,
+                          ExprDest(EC_TopLevelStmt));
+    operands.addSelf(
+        ASTExprAnd<AnyValue>{AnyValue(MLValue(registrarVar)), &loc});
+    operands.add(ASTExprAnd<AnyValue>{AnyValue(literal(method.selector)), &loc});
+    operands.add(ASTExprAnd<AnyValue>{AnyValue(literal(method.encoding)), &loc});
+    operands.add(ASTExprAnd<AnyValue>{AnyValue(SRValue(imp)), &loc});
+    emitter.emitNamedMethodCall("add_method", std::move(operands));
+  }
+
+  callOnRegistrar("register", {});
+
+  IREmitter::emitNormalReturn(builder, Value(), /*emitEndFunc=*/true);
+}
+
+/// Attribute a class's bases to the frameworks that declare them, and check
+/// that the runtime has heard of the superclass at all.
+///
+/// This is not bookkeeping. Registration resolves a superclass with
+/// `objc_getClass("NSView")`, which returns nil until AppKit is in the
+/// process, and `objc_allocateClassPair` against a nil superclass cheerfully
+/// builds a *root* class that then silently does nothing --
+/// `load_framework`'s own docstring in `std/objc/runtime.mojo` records what
+/// that cost. So the framework has to be known before the class can be built,
+/// and only BridgeSupport knows it: the runtime dump cannot say where a class
+/// came from, and cannot see a framework that was not loaded when it ran. See
+/// "Two oracles" in COCOA_CLASS_DESIGN.md.
+static void attributeObjCBases(SharedState &shared, StructDeclOp structOp,
+                               ASTDecl &decl) {
+  auto bases = structOp.getObjcBasesAttr();
+  if (!bases || bases.empty())
+    return; // No bases means NSObject, which every process already has.
+
+  auto &database = CocoaKB::CocoaKBDatabase::get();
+
+  // Without the database there is nothing to check against, and every base
+  // would come back unknown -- reporting a correct `NSView` as a class the
+  // runtime has never heard of. Say what is actually wrong instead. The same
+  // lesson as the language server's "unable to locate module 'std'": a
+  // configuration error must not be dressed as a source error.
+  if (llvm::Error unavailable = database.availability()) {
+    shared.emitError(decl.getLoc())
+        << "declaring an Objective-C class needs the Cocoa metadata database: "
+        << llvm::toString(std::move(unavailable));
+    return;
+  }
+
+  SmallVector<Attribute> frameworks;
+  SmallPtrSet<Attribute, 4> seen;
+
+  for (auto baseAttr : bases) {
+    StringRef base = cast<StringAttr>(baseAttr).getValue();
+    // `foundation.NSView` names the same class as `NSView`; the qualifier says
+    // where the author found it, not what the runtime calls it.
+    base = base.rsplit('.').second.empty() ? base : base.rsplit('.').second;
+
+    auto framework = database.lookup("class_framework", {base});
+    if (!framework)
+      continue;
+    auto attr = StringAttr::get(shared.getContext(), *framework);
+    if (seen.insert(attr).second)
+      frameworks.push_back(attr);
+  }
+
+  // The superclass specifically has to exist, because a typo here does not
+  // fail -- it produces a root class and a window that never appears.
+  StringRef super = cast<StringAttr>(bases[0]).getValue();
+  super = super.rsplit('.').second.empty() ? super : super.rsplit('.').second;
+  if (!database.lookup("superclass", {super}) &&
+      !database.lookup("class_framework", {super})) {
+    shared.emitError(decl.getLoc())
+        << "the Objective-C runtime has no class '" << super
+        << "' to inherit from";
+    return;
+  }
+
+  if (!frameworks.empty())
+    structOp.setObjcFrameworksAttr(
+        ArrayAttr::get(shared.getContext(), frameworks));
+}
+
+/// The Objective-C type-encoding character for a Mojo type, for the few types
+/// a novel selector is built from. Deliberately small -- see
+/// `objcMethodEncoding` for why almost nothing comes through here.
+static std::optional<StringRef> encodeObjCType(SharedState &shared,
+                                               ASTType type) {
+  if (type.isNull() || type.isTypeCheckErrorType())
+    return std::nullopt;
+  if (type.isNoneType())
+    return StringRef("v");
+
+  ASTDecl *typeDecl = type.getDecl(shared);
+  if (!typeDecl)
+    return std::nullopt;
+
+  // A reference to another Objective-C class is an `id`.
+  if (auto structOp =
+          dyn_cast_or_null<StructDeclOp>(typeDecl->getIfOperation()))
+    if (structOp.getObjcClass())
+      return StringRef("@");
+
+  std::optional<StringRef> name = typeDecl->getUserNameIfOperation();
+  if (!name)
+    return std::nullopt;
+  return llvm::StringSwitch<std::optional<StringRef>>(*name)
+      .Case("Bool", "B")
+      .Case("ObjCObject", "@")
+      .Case("ObjCClass", "#")
+      .Case("SEL", ":")
+      .Default(std::nullopt);
+}
+
+/// Split an `@encode` signature into its components, discarding the byte
+/// offsets the runtime interleaves: `v48@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16`
+/// becomes `v`, `@`, `:`, `{CGRect={CGPoint=dd}{CGSize=dd}}`. The first is the
+/// result, then `@` for self and `:` for the selector, then the arguments.
+static SmallVector<StringRef> splitObjCEncoding(StringRef encoding) {
+  SmallVector<StringRef> parts;
+  size_t i = 0, n = encoding.size();
+  while (i < n) {
+    // Offsets and sizes, and the qualifiers that may precede a type.
+    if (llvm::isDigit(encoding[i]) ||
+        StringRef("rnNoORV").contains(encoding[i])) {
+      ++i;
+      continue;
+    }
+    size_t start = i;
+    while (i < n && encoding[i] == '^') // pointer to
+      ++i;
+    if (i >= n)
+      break;
+    char c = encoding[i];
+    if (c == '{' || c == '(' || c == '[') {
+      char close = c == '{' ? '}' : (c == '(' ? ')' : ']');
+      int depth = 0;
+      while (i < n) {
+        if (encoding[i] == c)
+          ++depth;
+        else if (encoding[i] == close && --depth == 0) {
+          ++i;
+          break;
+        }
+        ++i;
+      }
+    } else {
+      ++i;
+    }
+    parts.push_back(encoding.slice(start, i));
+  }
+  return parts;
+}
+
+/// Check a method's declared Mojo signature against the encoding the SDK says
+/// the selector has.
+///
+/// Partial on purpose, and honest about it: only types with an unambiguous
+/// encoding are compared, because Mojo's scalars are SIMD parameterisations
+/// with no encoding this layer can derive. What it does catch is the mistake
+/// that otherwise costs an afternoon -- a method that registers cleanly,
+/// receives a message built for a different shape, and reads its arguments out
+/// of the wrong registers.
+static void checkAgainstSDKEncoding(SharedState &shared, StringRef selector,
+                                    StringRef encoding,
+                                    ArrayRef<Type> declaredArgs,
+                                    ASTType resultType, SMLoc loc) {
+  SmallVector<StringRef> parts = splitObjCEncoding(encoding);
+  if (parts.size() < 3)
+    return; // Not a shape this understands; say nothing rather than guess.
+
+  auto disagree = [&](StringRef what, StringRef sdk, StringRef declared) {
+    shared.emitError(loc)
+        << "the SDK declares '" << selector << "' with " << what << " '" << sdk
+        << "', but this method declares '" << declared
+        << "'; the runtime will send the SDK's shape";
+  };
+
+  if (auto declaredRet = encodeObjCType(shared, resultType))
+    if (*declaredRet != parts[0])
+      disagree("a result of", parts[0], *declaredRet);
+
+  ArrayRef<StringRef> sdkArgs = ArrayRef<StringRef>(parts).drop_front(3);
+  for (auto [index, argType] : llvm::enumerate(declaredArgs)) {
+    if (index >= sdkArgs.size())
+      break;
+    if (auto declaredArg = encodeObjCType(shared, ASTType(argType)))
+      if (*declaredArg != sdkArgs[index])
+        disagree(("argument " + Twine(index + 1) + " of").str(),
+                 sdkArgs[index], *declaredArg);
+  }
+}
+
+/// The `@encode` signature `class_addMethod` will be given for a method.
+///
+/// Looked up, not derived, and the order matters. `method_encoding` walks the
+/// superclass chain, so an override gets the encoding the superclass actually
+/// declares -- which is the whole point, since that is what the framework will
+/// send. `selector_encoding` is the fallback for a selector that arrives from
+/// a protocol rather than an ancestor, taking the majority reading across
+/// every class that implements it.
+///
+/// Only when the SDK has never heard of the selector at all -- meaning we
+/// invented it, as with a target/action method -- is anything derived, and
+/// then only from types with an unambiguous encoding. Mojo's scalars are not
+/// among them: `Int` is `Scalar[DType.int]`, a SIMD parameterisation with no
+/// name to match on, so a mapping written here would be guesswork about the
+/// one thing this design says never to guess. See COCOA_CLASS_DESIGN.md.
+static std::optional<std::string>
+objcMethodEncoding(SharedState &shared, StringRef superclass,
+                   StringRef selector, ArrayRef<Type> argTypes,
+                   ASTType resultType, SMLoc loc) {
+  auto &database = CocoaKB::CocoaKBDatabase::get();
+  if (llvm::Error unavailable = database.availability()) {
+    // The class declaration itself has already said so; adding one complaint
+    // per method would bury it.
+    llvm::consumeError(std::move(unavailable));
+    return std::nullopt;
+  }
+
+  auto fromSDK = superclass.empty()
+                     ? std::nullopt
+                     : database.lookup("method_encoding",
+                                       {superclass, selector, "0"});
+  if (!fromSDK)
+    fromSDK = database.lookup("selector_encoding", {selector});
+  if (fromSDK) {
+    checkAgainstSDKEncoding(shared, selector, *fromSDK, argTypes, resultType,
+                            loc);
+    return fromSDK;
+  }
+
+  // Ours, then. Derive it, or say plainly which part could not be.
+  auto ret = encodeObjCType(shared, resultType);
+  if (!ret) {
+    shared.emitError(loc)
+        << "'" << selector
+        << "' is not a selector the SDK declares, and its result type has no "
+           "Objective-C encoding this compiler can derive";
+    return std::nullopt;
+  }
+
+  std::string encoding = ret->str();
+  encoding += "@:"; // self, _cmd
+  for (Type argType : argTypes) {
+    auto arg = encodeObjCType(shared, ASTType(argType));
+    if (!arg) {
+      shared.emitError(loc)
+          << "'" << selector
+          << "' is not a selector the SDK declares, and one of its argument "
+             "types has no Objective-C encoding this compiler can derive";
+      return std::nullopt;
+    }
+    encoding += arg->str();
+  }
+  return encoding;
+}
+
+/// The Objective-C selector a class method answers to, or nothing if the
+/// method is private to Mojo and never reaches the runtime.
+///
+/// Every `_` becomes `:` -- `drawRect_` is `drawRect:`,
+/// `outlineView_child_ofItem_` is `outlineView:child:ofItem:`. That is the
+/// PyObjC convention, mechanical and twenty years proven
+/// (COCOA_CLASS_DESIGN.md decision 2).
+///
+/// A leading underscore means the method is Mojo's own and is not exposed.
+/// That rule is doing real work. Without it, every snake_case helper in a
+/// class -- and Mojo is a snake_case language -- would derive a nonsense
+/// selector like `my:helper` and be rejected for having a colon it never
+/// wanted. With it, `_tab_width` is simply a private method, which is what
+/// both Mojo and Python already take a leading underscore to mean, and the
+/// dunders come along for free.
+///
+/// Returns nullopt for a private or dunder name. On a colon/argument mismatch
+/// it diagnoses and returns nullopt, because a wrong selector is worse than
+/// none: it registers, and then the message the framework sends goes nowhere.
+static std::optional<std::string>
+deriveObjCSelector(SharedState &shared, StringRef name, size_t argsAfterSelf,
+                   SMLoc loc) {
+  if (name.starts_with("_"))
+    return std::nullopt;
+
+  std::string selector;
+  selector.reserve(name.size());
+  size_t colons = 0;
+  for (char c : name) {
+    if (c == '_') {
+      selector += ':';
+      ++colons;
+    } else {
+      selector += c;
+    }
+  }
+
+  if (colons != argsAfterSelf) {
+    shared.emitError(loc)
+        << "method '" << name << "' derives the selector '" << selector
+        << "', which takes " << colons << " argument"
+        << (colons == 1 ? "" : "s") << ", but the method declares "
+        << argsAfterSelf << " after 'self'; an underscore in the name is a "
+           "colon in the selector";
+    return std::nullopt;
+  }
+  return selector;
+}
+
 LogicalResult DeclResolver::resolveSignature(FnOp funcOp, Lexer &lexer,
                                              ASTDecl &decl) {
   ParserBase p(shared, lexer);
@@ -2239,6 +2818,43 @@ LogicalResult DeclResolver::resolveSignature(FnOp funcOp, Lexer &lexer,
                            baseName, closureExternalRefConstraints);
   if (!signature)
     return failure();
+
+  // A method of an Objective-C class carries the selector the runtime will
+  // dispatch to it by. Derived here, where the signature is finally known,
+  // because the derivation is a claim about the argument count and this is the
+  // first point that can check it. Registration (later in sprint 2) reads the
+  // attribute rather than re-deriving it, so there is one rule in one place.
+  if (structOp && structOp.getObjcClass() && !funcOp.getSynthetic()) {
+    size_t argsAfterSelf = 0;
+    for (const ParsedArgument &arg : fnSignature.parsedArgs) {
+      // The result slot is not an argument anybody wrote.
+      if (arg.convention == ParsedArgument::kConventionByRefResult)
+        continue;
+      if (arg.name && arg.name.getValue() == "self")
+        continue;
+      ++argsAfterSelf;
+    }
+    if (auto selector = deriveObjCSelector(shared, baseName.getValue(),
+                                           argsAfterSelf, decl.getLoc())) {
+      funcOp->setAttr("objcSelector",
+                      StringAttr::get(getContext(), *selector));
+
+      // `argTypes` is what the author declared, so dropping `self` leaves
+      // exactly the arguments that follow `@:` in an encoding.
+      ArrayRef<Type> declaredArgs = tcSignature.argTypes;
+      if (!declaredArgs.empty() && tcSignature.selfType)
+        declaredArgs = declaredArgs.drop_front();
+
+      StringRef superclass;
+      if (auto bases = structOp.getObjcBasesAttr())
+        superclass = cast<StringAttr>(bases[0]).getValue();
+      if (auto encoding =
+              objcMethodEncoding(shared, superclass, *selector, declaredArgs,
+                                 tcSignature.resultType, decl.getLoc()))
+        funcOp->setAttr("objcEncoding",
+                        StringAttr::get(getContext(), *encoding));
+    }
+  }
 
   // Check for API author error: stable function should return stable types.
   checkStableFunctionReturnType(decl, ASTType(signature.getUserResultType()),
@@ -3168,6 +3784,30 @@ static LogicalResult buildTraitConstraintsMap(
 ///
 /// Set `allowConformanceConstraints` to `false` for declarations that don't
 /// support conditional conformance (traits and extensions).
+/// Step over `(Name, Name.Qualified, ...)` after a class name.
+///
+/// The statement parser has already read these into the decl's `objcBases`;
+/// this exists because signature resolution re-parses the same source and has
+/// to get past them. Deliberately not `parseOptionalConformanceListSyntax`:
+/// these are Objective-C names for the runtime to resolve, and reading them as
+/// Mojo traits would report `NSView` as an undefined trait -- a confusing lie
+/// about a line that is perfectly correct.
+static ParseResult skipObjCBaseList(ParserBase &p) {
+  if (!p.getToken().is(Token::l_paren) || p.getToken().isStartOfLine())
+    return success();
+  p.consumeToken(Token::l_paren);
+  while (!p.getToken().is(Token::r_paren)) {
+    if (p.parseIdentifier("expected base class or protocol name"))
+      return failure();
+    while (p.consumeIf(Token::dot))
+      if (p.parseIdentifier("expected name after '.'"))
+        return failure();
+    if (!p.consumeIf(Token::comma))
+      break;
+  }
+  return p.parseToken(Token::r_paren, "expected ')' in class base list");
+}
+
 static ParseResult parseOptionalConformanceListSyntax(
     ParserBase &p, SmallVectorImpl<ParsedConformanceEntry> &parsedConformances,
     std::optional<size_t> stmtIndent, bool allowConformanceConstraints) {
@@ -3608,6 +4248,20 @@ static LogicalResult parseExplicitDestroyMessage(SharedState &shared,
 ///
 LogicalResult DeclResolver::resolveSignature(StructDeclOp structOp,
                                              Lexer &lexer, ASTDecl &decl) {
+  // A class (COCOA_CLASS_DESIGN.md) shares this pipeline rather than getting a
+  // parallel one, and the reason is the design's own conclusion: a class type
+  // *is* a register-passable struct of one pointer, whose copy retains and
+  // whose destructor releases. Everything below that describes such a type --
+  // the self type, the injected AnyType/Deinitable/Movable, the canonical
+  // trait -- is as true of a class as of a struct. Three things differ, and
+  // they are marked `isClass` where they occur:
+  //
+  //   1. the keyword the re-parse expects;
+  //   2. the parenthesised list, which for a class holds Objective-C names
+  //      already captured at parse time, not Mojo traits to resolve;
+  //   3. the convention: a reference is passed in a register, not in memory.
+  const bool isClass = structOp.getObjcClass();
+
   ParserBase p(shared, lexer);
   auto decoratorExprs = p.parseDecorators(decl);
 
@@ -3625,16 +4279,22 @@ LogicalResult DeclResolver::resolveSignature(StructDeclOp structOp,
   SmallVector<ParsedConformanceEntry> parsedConformances;
   SmallVector<ParsedTraitConstraint> parsedConstraints;
   DenseSet<TraitSymbolAttr> explicitTraits;
-  if (p.parseToken(Token::kw_struct,
+  if (p.parseToken(isClass ? Token::kw_class : Token::kw_struct,
                    "internal error: checked by stmt parser") ||
       p.parseIdentifier("internal error: checked by stmt parser",
                         &identifierLoc) ||
       parsedParams.parseParametersIfPresent(p, ArgListKind::kParamList) ||
-      parseOptionalConformanceListSyntax(
-          p, parsedConformances, sigDecl.getIndentation(),
-          /*allowConformanceConstraints=*/true) ||
+      // (2) A class's bases are Objective-C class and protocol names, resolved
+      // against the runtime and not against Mojo's trait system. The statement
+      // parser already read them into `objcBases`; here they only have to be
+      // stepped over, because this re-parse walks the same source.
+      (isClass ? skipObjCBaseList(p)
+               : parseOptionalConformanceListSyntax(
+                     p, parsedConformances, sigDecl.getIndentation(),
+                     /*allowConformanceConstraints=*/true)) ||
       parsedParams.parseTrailingConstraintsIfPresent(p) ||
-      p.parseToken(Token::colon, "expected ':' in struct definition") ||
+      p.parseToken(Token::colon, isClass ? "expected ':' in class definition"
+                                         : "expected ':' in struct definition") ||
       decl.isErroneous())
     return failure();
 
@@ -3722,7 +4382,14 @@ LogicalResult DeclResolver::resolveSignature(StructDeclOp structOp,
   decl.setTypeDeclSelf(ASTDecl::computeSelfTypeForStruct(structOp));
 
   // Structs are memory-only unless they opt-in to being passed in registers.
-  structOp.setConvention(TypeConvention::MemoryOnly);
+  // (3) A class is a pointer, so it is passed in a register. Not *trivially*
+  // register-passable, though: a class reference retains when copied and
+  // releases when destroyed, which is what sprint 6 builds on. Those are two
+  // different questions -- how a value travels, and what copying it costs --
+  // and the borrow rule in Signatures.cpp is taught to keep them apart for
+  // Objective-C classes specifically.
+  structOp.setConvention(isClass ? TypeConvention::RegisterPassable
+                                 : TypeConvention::MemoryOnly);
 
   // Now that we have the basic struct set up, process signature decorators.
   Decorators(decl).applySignatureDecorators(
@@ -3764,6 +4431,9 @@ LogicalResult DeclResolver::resolveSignature(StructDeclOp structOp,
 
   // Always generate SourceName for structs (even on non-debug builds).
   structOp.setSourceNameAttr(shared.getSourceName(structOp));
+
+  if (isClass)
+    attributeObjCBases(shared, structOp, decl);
 
   if (std::optional<ConstraintAttr> deinitableConstraint =
           getConformanceCondition(decl, "Deinitable")) {
@@ -4095,12 +4765,35 @@ ParseResult DeclResolver::resolveBody(StructDeclOp structOp, Lexer &lexer,
       if (!fieldOp)
         continue;
 
+      // A class's fields belong in a box reached through one hidden ivar, not
+      // in the class type -- which is one pointer and nothing else
+      // (COCOA_CLASS_DESIGN.md, "Fields"). Letting one through here would not
+      // fail, which is the danger: it would quietly become part of the
+      // reference's own layout, so `class C: var n: Int` would make C an Int
+      // rather than something pointing at one. Sprint 3 builds the box.
+      if (structOp.getObjcClass()) {
+        emitError(decl->getLoc())
+            << "class fields are not implemented yet: '"
+            << fieldOp.getName()
+            << "' -- COCOA_CLASS_DESIGN.md sprint 3";
+        hasBadField = true;
+        continue;
+      }
+
       if (failed(resolveSignature(*decl, decl->getLoc()))) {
         hasBadField = true;
         continue;
       }
       structFields.push_back({fieldOp, decl});
     }
+  }
+
+  // An Objective-C class is built at run time, not linked: something has to
+  // call objc_allocateClassPair, add every method, adopt every protocol and
+  // register the pair. That is this function, synthesized per class.
+  if (structOp.getObjcClass()) {
+    synthesizeObjCIdField(structDecl, structOp, *this);
+    synthesizeObjCRegistration(structDecl, structOp, *this);
   }
 
   // Determine if there is an explicit conformance to Deinitable.

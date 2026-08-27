@@ -113,18 +113,87 @@ struct ObjCClassBuilder[superclass: StaticString = "NSObject"]:
 | Convention | Meaning |
 |:---|:---|
 | *(omitted)* | Immutable borrow. The default. |
+| `imm` | Immutable borrow, written explicitly. |
 | `mut` | Mutable borrow. |
 | `out` | Uninitialised result the callee must initialise. |
 | `var` | By value; callee owns it. |
 | `deinit` | Consumes the value, ending its lifetime. |
 
-`inout`, `borrowed` and `owned` do not exist.
+`read` is the deprecated spelling of `imm` and warns with a FixIt. `inout`,
+`borrowed` and `owned` do not exist.
+
+`imm`, `mut`, `out`, `deinit` and `where` are **contextual** — soft
+identifiers, not reserved words — so they remain usable as ordinary names.
+`var` is a reserved keyword.
+
+Function types do not accept `deinit`; use `var` there.
 
 The transfer sigil `^` moves a value into a consuming position:
 
 ```mojo
 var cls = builder^.register()
 ```
+
+## Reserved words
+
+The compiler reserves 64 keywords. Most you will use; a handful are lexed and
+classified but have no parse handling at all, and a block of double-underscore
+names are compiler internals.
+
+### Ordinary
+
+```text
+_        alias    and      as       assert   async    await    break
+comptime continue def      elif     else     except   finally  fn
+for      from     if       import   in       is       let      not
+or       pass     raise    ref      return   struct   trait    try
+var      while    with     lambda
+```
+
+`alias` warns and is superseded by `comptime`; `fn` and `let` have the
+cocoa-mojo meanings described above.
+
+### Reserved but not implemented
+
+```text
+class    del      global   match    case     nonlocal yield
+```
+
+`class` is the only one with a dedicated diagnostic:
+
+```text
+classes are not supported yet
+```
+
+The rest are lexed and classified as statement keywords and then never parsed,
+so they are unavailable as identifiers without buying you anything. There is no
+pattern matching, no `del`, no generators, and no `global`/`nonlocal`.
+
+### Compiler internals
+
+```text
+__comptime_assert       __extension              __functions_in_module
+__generator_type        __get_address_as_owned_value
+__get_address_as_uninit_lvalue                   __get_current_function_name
+__get_litref_as_mvalue  __get_mvalue_as_litref   __is_run_in_comptime_interpreter
+__mlir_region           __mojo_crash             __struct_field_ref
+conforms_to             origin_of                type_of
+```
+
+`conforms_to`, `origin_of` and `type_of` are the three you will actually
+write — they appear in `where` clauses and `comptime assert`s throughout the
+standard library. `__comptime_assert` is deprecated in favour of
+`comptime assert`. The rest are the compiler talking to itself.
+
+### Contextual, not reserved
+
+```text
+imm      mut      out      deinit   where    read
+```
+
+These are soft identifiers: they mean something in a signature and remain
+usable as ordinary names everywhere else. `read` is deprecated in favour of
+`imm`.
 
 ## Origins
 

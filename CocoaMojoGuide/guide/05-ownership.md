@@ -1,4 +1,4 @@
-# 4. Ownership and memory
+# 5. Ownership and memory
 
 Cocoa manages memory by reference counting. An object is created at +1, every
 `retain` adds one, every `release` takes one away, and at zero it is

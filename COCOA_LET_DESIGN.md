@@ -341,3 +341,27 @@ Ship syntax after the object model is proven, not before.
 - **This fork is not the only Mac fork.** MojoMacX64 (Vega II) shares the OS;
   the whole `std.objc` layer plus this design should remain cherry-pickable —
   another reason the parser diff stays minimal and guarded.
+
+
+## `let` binds; it does not copy
+
+Found while writing the editor's lexer, and worth stating plainly because the
+failure is silent.
+
+```mojo
+var i = 0
+let start = i          # binds to i, not a snapshot of it
+while ...:
+    i += 1
+# start is now whatever i is
+```
+
+That is the revived binding behaving exactly as designed -- an immutable
+binding to a place, which is what `PatternDeclKind::kBind` means -- and it is a
+trap wherever the intent was to remember a value before changing the original.
+The lexer's keyword span came out empty because `start` followed `i` to the end
+of the word, so `while k < i` never ran and no character was ever marked.
+Nothing warned, and the code reads correctly.
+
+Use `var` where a copy is meant. `let` on an expression (`let end = i + 1`) is
+a value and has no such hazard; only `let x = <another binding>` aliases.

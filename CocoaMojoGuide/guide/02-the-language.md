@@ -137,9 +137,14 @@ Use `comptime`. `alias` is gone from the standard library's own code.
 
 There is no `inout`, no `borrowed`, and no `owned`. The conventions are:
 
+Most of them are *contextual* — soft identifiers rather than reserved
+words — so `mut`, `imm`, `out` and `deinit` are all still available as ordinary
+variable names. Only `var` is a reserved keyword.
+
 | Convention | Meaning |
 |:---|:---|
 | *(none)* | Borrowed immutably. The default; you do not write it. |
+| `imm` | Borrowed immutably, said out loud. `read` is the deprecated spelling. |
 | `mut` | Borrowed mutably. |
 | `out` | An uninitialised result the function must initialise. Used for `__init__`. |
 | `var` | Taken by value; the callee owns it. |
@@ -235,7 +240,7 @@ One consequence worth knowing: **a thin `fn` is exactly a global block.** An
 Objective-C block with no captures is `_NSConcreteGlobalBlock` with no
 copy/dispose helpers, so the standard library can build a block around any
 `fn` at no cost. That is how block-only Cocoa APIs are reachable today — see
-[Concurrency and blocks](07-concurrency.md).
+[Concurrency and blocks](08-concurrency.md).
 
 ## Parameters and generics
 

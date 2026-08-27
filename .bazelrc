@@ -51,13 +51,43 @@ build:release --host_copt=-mcpu=apple-m4
 build:release --cxxopt=-mcpu=apple-m4
 build:release --host_cxxopt=-mcpu=apple-m4
 
-# Link LLVM and MLIR as shared libraries rather than folding them into every
-# binary. bazel/internal/common.bazelrc turns dynamic linking off globally with
-# a note about circular dependency linking issues; those bite the full Modular
-# graph, which this fork does not build. Re-enabling it here keeps the blast
-# radius inside this config: if the link fails, the dbg tree is untouched.
+# Link LLVM as a shared library rather than folding it into every binary.
+# bazel/internal/common.bazelrc turns dynamic linking off globally with a note
+# about circular dependency linking issues; those bite the full Modular graph,
+# which this fork does not build. Re-enabling it here keeps the blast radius
+# inside this config: if the link fails, the dbg tree is untouched.
 build:release --dynamic_mode=default
 build:release --features=supports_dynamic_linker
+
+# Compile LLVM and MLIR with default symbol visibility, so
+# //bazel/llvm-shared:LLVM and //bazel/mlir-shared:MLIR are libraries other
+# things can actually call.
+#
+# bazel/internal/cc-toolchain/args/BUILD.bazel:124-125 applies -fvisibility=hidden
+# across the whole toolchain. For a single static binary that is free size; for a
+# dylib it is fatal and silently so -- LLVM linked with -all_load under hidden
+# visibility produced ~13,000 defined text symbols and 192 exported ones, and
+# nothing outside could call in. Same setting, same shape of bug, as the AsyncRT
+# device symbols that link and then cannot be found at run time.
+#
+# Scoped to llvm-project/llvm by path, in the style of the nixl_upstream line in
+# bazel/internal/common.bazelrc:175. -fno-visibility-inlines-hidden matters too:
+# without it LLVM's inline and template members stay hidden, which is exactly the
+# set a consumer needs and the hardest to notice missing.
+build:release --per_file_copt=external/.*llvm-project/(llvm|mlir)/.*@-fvisibility=default,-fno-visibility-inlines-hidden
+build:release --host_per_file_copt=external/.*llvm-project/(llvm|mlir)/.*@-fvisibility=default,-fno-visibility-inlines-hidden
+
+# The compiler's own code, for //KGEN:MojoCompilerShared. Without this the front
+# end links into libMojoCompiler.dylib and exports nothing, which is the same
+# silent failure as LLVM's: the dylib builds, and no embedder can call in.
+build:release --per_file_copt=^(KGEN|Support|Init|Config|Cache|AsyncRT)/.*@-fvisibility=default,-fno-visibility-inlines-hidden
+build:release --host_per_file_copt=^(KGEN|Support|Init|Config|Cache|AsyncRT)/.*@-fvisibility=default,-fno-visibility-inlines-hidden
+
+# zlib-ng and zstd are compression backends LLVM's Support links, so they land
+# inside libLLVM.dylib and have to be callable from outside it for the same
+# reason everything else does.
+build:release --per_file_copt=external/.*(zlib-ng|zstd).*@-fvisibility=default
+build:release --host_per_file_copt=external/.*(zlib-ng|zstd).*@-fvisibility=default
 
 # Check for a local gitignored bazel config.
 # NOTE: Import this last so that local configs can override.

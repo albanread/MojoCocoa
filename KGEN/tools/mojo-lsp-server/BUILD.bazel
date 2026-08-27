@@ -18,6 +18,8 @@ modular_cc_binary(
         "//conditions:default": [],
     }),
     deps = [
+        # COCOA: completion candidates from cocoa.sqlite.
+        "//KGEN:CocoaCompletion",
         "//AsyncRT:Runtime",
         "//AsyncRT:RuntimeGlobals",
         "//Config",
