@@ -1204,9 +1204,16 @@ class RoastTabBar(NSView):
                     # drawn under it: a filename running through the × reads as
                     # a rendering fault, and truncating is what every editor
                     # does here.
+                    # Roughly seven points a character at the tab font. A
+                    # measured width would be exact, but it costs an
+                    # attributed-string measurement per tab per redraw, and
+                    # this only decides where to put an ellipsis.
                     let room = w - TAB_CLOSE - 20.0
                     var label = document.name_at(i)
-                    if Float64(label.byte_length()) * 7.0 > room:
+                    var glyphs = 0
+                    for _ in label.codepoints():
+                        glyphs += 1
+                    if Float64(glyphs) * 7.0 > room:
                         let keep = max(1, Int(room / 7.0) - 1)
                         label = String(label[codepoint=:keep]) + String("…")
                     _ = msg_send[
@@ -1786,7 +1793,7 @@ def build_examples_menu(bar: ObjCObject, actions: Int):
     """
     let menu = add_submenu(bar, String("Examples"))
     let projects = example_projects()
-    if projects.__len__() == 0:
+    if len(projects) == 0:
         let none = add_item(
             menu, String("No examples found"), String(""), String("")
         )
@@ -1794,7 +1801,7 @@ def build_examples_menu(bar: ObjCObject, actions: Int):
         return
     let base = examples_root()
     var i = 0
-    while i < projects.__len__():
+    while i < len(projects):
         let name = projects[i]
         let item = add_item(
             menu, name, String("roastOpenExample:"), String(""), actions
