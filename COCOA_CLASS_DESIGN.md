@@ -128,6 +128,47 @@ would silently join the *reference's* layout, making `class C: var n: Int` an
 Int rather than something pointing at one. Rejecting it until sprint 3 builds
 the box costs a diagnostic and prevents a wrong program from compiling.
 
+### DISCOVERED AT SPRINT 2 (2026-08-27): encodings are looked up, not derived — and that reorders the sprints
+
+The design said sprint 2 derives a method's type encoding from its Mojo
+signature, and sprint 4 later cross-checks that against the database. Trying it
+showed both halves of that to be backwards.
+
+**Derivation cannot work by inspecting Mojo types.** `Int` is not a struct
+named `Int`; it is `Scalar[DType.int]`, a SIMD parameterisation, and `Float64`
+and the rest are the same. There is no name to match on, the parser layer has
+no `DType` plumbing at all, and a mapping written here would be a guess about
+exactly the trivia this document says never to guess. The attempt failed on the
+most common type in the language, which is a good place to be stopped.
+
+**The database already has the answer, keyed by selector:**
+
+    drawRect:                 v48@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16
+    isFlipped                 B16@0:8
+    mouseDown:                v24@0:8@16
+    outlineView:child:ofItem: @40@0:8@16q24@32
+    roastBuild:               <not in database>
+
+Every selector a class overrides or adopts is already there, complete with
+argument offsets and the struct expansion nobody wants to write by hand. Only
+`roastBuild:` is missing — because we invented it. That is the real shape of
+the problem: **overrides and protocol methods are a lookup; novel selectors are
+the rare case**, and they are also the easy case, being target/action shapes
+like `v@:@`.
+
+So the rule is: look the encoding up by selector; derive only when the database
+has never heard of it, and then only from types that have an encoding. That
+also relocates the check — there is nothing to cross-check when the database is
+the source rather than a second opinion. What sprint 4 keeps is the *live
+runtime* as the second opinion, per **Two oracles**.
+
+**This makes sprint 4 a prerequisite of sprint 2, not a follow-on.**
+Registration needs encodings, encodings need `cocoakb_selector_encoding`, so
+the database work has to land before a class can be registered at all. The
+sprint table below is ordered as originally planned; the dependency is the
+correction. Selector derivation — which is genuine string work with a real
+diagnostic, and needs no database — landed and stands.
+
 ### The test harness had to be built too
 
 `./bazelw test //KGEN/test/mojo-parser:all` cannot build in this tree. All 357
@@ -432,7 +473,7 @@ Each lands alone, each is verifiable, each leaves the tree green
 | 1 | **done** — real grammar behind `parseClassStmt`: name, base list, nesting and parameter diagnostics, recorded on an attributed `StructDeclOp`; elaboration refuses cleanly with a note naming what it parsed. Body resolution deferred to sprint 2 with the registration it depends on. | S–M | `class_decl.mojo` + `class_decl_errors.mojo`; `tools/check-parser.sh` 331 pass / 1 known-stale fail; `structs.mojo` and `traits.mojo` green |
 | 2 | **Register it, and resolve the body.** Classes get their own signature/body path — no comptime params, bases resolved against the runtime rather than as traits, no injected value-type conformances — then registration + per-method trampolines: base framework loaded first (see **Two oracles**), selector derivation, encoding derivation, protocol adoption, raise-catch boundary, `ClassName()`. | L | an execution test class round-trips through `msg_send`; **RoastTabBar rewritten** (`drawRect:` exercises struct encodings); `check-ide.sh` green |
 | 3 | **Give it state.** `class_addIvar`, the box, synthesized init/dealloc, `self.field`. | M | a test class whose field's `deinit` flips a flag proves teardown; tab-bar and `RoastActions` globals become fields; `check-ide.sh` green |
-| 4 | **Check it against the SDK.** Encoding cross-check on inherited selectors via `cocoakb_selector_encoding`; `@objc` honored; BOOL spelling settled from the database; teaching diagnostics. | S–M | negative tests: a wrong `drawRect:` signature is a compile error quoting the database's encoding |
+| 4 | **Ask the SDK.** *Prerequisite of sprint 2's registration, not a follow-on — see the note above.* Encodings looked up by selector via `cocoakb_selector_encoding`; framework attribution from `bs_classes` so registration can load AppKit before resolving `NSView`; `@objc` honored; derivation only for selectors the database has never heard of. | M | negative tests: a signature that disagrees with the database's encoding is a compile error quoting both |
 | 5 | **Dogfood.** Migrate the remaining IDE delegates and subclasses (app delegate, outline data source, GridView + NSTextInputClient — the big one); delete migrated `named_global`s and the then-unused IMP shapes. | M–L | all suites green; the counts fall and are asserted: `encoding=` in `ide/` → 0, `named_global` 84 → the survivors are genuinely process-global; the 61-warning chip mostly closes as a side effect |
 | 6 | **Nil-aware references.** Smaller than first scoped: once the box is plain Mojo memory (sprint 3) an `ObjCRef` field retains and releases through its own copy/deinit with no special handling, and the class type's own retain/release is sprint 2's `copyInit`. What is left is genuinely new — nil as a first-class state in the pointer's niche, `NSTextView?`, and the zero-init-destructor hazard that currently forces every app-lifetime global to be an `Int`. | S–M | retain-count round-trip tests; the manual `objc_retain` count in `ide/` falls toward zero |
 

@@ -2304,6 +2304,9 @@ LogicalResult DeclResolver::resolveSignature(FnOp funcOp, Lexer &lexer,
         continue;
       ++argsAfterSelf;
     }
+    // The type encoding the runtime will be told is deliberately NOT derived
+    // from these types -- see the sprint 2 note in COCOA_CLASS_DESIGN.md. It
+    // comes from the SDK database, keyed by this selector.
     if (auto selector = deriveObjCSelector(shared, baseName.getValue(),
                                            argsAfterSelf, decl.getLoc()))
       funcOp->setAttr("objcSelector",
