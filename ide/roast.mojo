@@ -172,22 +172,30 @@ def toolbar_ids() -> ObjCObject:
 
 
 # ── Callbacks ────────────────────────────────────────────────────────────────
-fn did_finish_launching(self_: P, cmd: P, note: P):
-    print("roast: applicationDidFinishLaunching")
+class RoastAppDelegate:
+    """The application delegate.
 
+    A `class` declaration is a real Objective-C class: the compiler derives
+    each selector from the method name, takes its type encoding from the SDK,
+    and registers the lot when the class is first instantiated. Nothing here
+    names a selector, an encoding or an IMP.
+    """
 
-fn should_terminate_after_last_window(self_: P, cmd: P, app: P) -> Bool:
-    # A single-window IDE quits with its window. Tabs live in one window, so
-    # this stays true once tabbing is on.
-    return True
+    def applicationDidFinishLaunching_(self, note: ObjCObject):
+        print("roast: applicationDidFinishLaunching")
 
+    def applicationShouldTerminateAfterLastWindowClosed_(
+        self, app: ObjCObject
+    ) -> Bool:
+        # A single-window IDE quits with its window. Tabs live in one window,
+        # so this stays true once tabbing is on.
+        return True
 
-fn will_terminate(self_: P, cmd: P, note: P):
-    try:
+    def applicationWillTerminate_(self, note: ObjCObject):
+        # The body may raise; the boundary catches. Hence no `try` around a
+        # call that can only fail by the server having already gone.
         lsp.stop()
-    except:
-        pass
-    print("roast: applicationWillTerminate")
+        print("roast: applicationWillTerminate")
 
 
 # ── Console ─────────────────────────────────────────────────────────────────
@@ -256,13 +264,6 @@ def show_console(want: Bool):
             ).size.height,
         )
     g_console_open()[] = 1 if want else 0
-
-
-fn action_toggle_console(self_: P, cmd: P, sender: P):
-    try:
-        show_console(g_console_open()[] == 0)
-    except:
-        pass
 
 
 # ── Build and run ───────────────────────────────────────────────────────────
@@ -440,43 +441,408 @@ def _build_finished():
         set_status(String("Build failed (") + String(status) + String(")"))
 
 
-fn action_build(self_: P, cmd: P, sender: P):
-    try:
-        _start_build(False)
-    except:
-        set_status(String("Build failed to start"))
+class RoastActions:
+    """Every menu and toolbar action, the sidebar's data source, and the
+    timer -- one object, because one target is what AppKit wants.
 
+    This replaces twenty-three `add_method` calls and the twenty-one
+    encoding strings that went with them. The `roast*` selectors are ours,
+    so their `v@:@` shape is derived; the AppKit ones are looked up.
+    """
 
-fn action_run(self_: P, cmd: P, sender: P):
-    try:
-        _start_build(True)
-    except:
-        set_status(String("Run failed to start"))
+    def roastConsole_(self, sender: ObjCObject):
+        try:
+            show_console(g_console_open()[] == 0)
+        except:
+            pass
 
+    def roastBuild_(self, sender: ObjCObject):
+        try:
+            _start_build(False)
+        except:
+            set_status(String("Build failed to start"))
 
-fn action_stop(self_: P, cmd: P, sender: P):
-    try:
-        if not build.is_running():
-            set_status(String("Nothing running"))
-            return
-        let what = build.label()
-        build.stop()
-        g_build_seen()[] = build.serial()
-        build.append_output(String("\n─── stopped ───\n"))
-        console_sync()
-        set_status(what + String(" stopped"))
-    except:
-        pass
+    def roastRun_(self, sender: ObjCObject):
+        try:
+            _start_build(True)
+        except:
+            set_status(String("Run failed to start"))
 
+    def roastStop_(self, sender: ObjCObject):
+        try:
+            if not build.is_running():
+                set_status(String("Nothing running"))
+                return
+            let what = build.label()
+            build.stop()
+            g_build_seen()[] = build.serial()
+            build.append_output(String("\n─── stopped ───\n"))
+            console_sync()
+            set_status(what + String(" stopped"))
+        except:
+            pass
 
-fn action_new_tab(self_: P, cmd: P, sender: P):
-    """A new, empty document in a new tab."""
-    try:
-        # An empty document, which becomes real the first time it is saved.
-        _ = document.open_document(String(""), Rope(String("")))
-        after_switch()
-    except:
-        pass
+    def roastNewTab_(self, sender: ObjCObject):
+        """A new, empty document in a new tab."""
+        try:
+            # An empty document, which becomes real the first time it is saved.
+            _ = document.open_document(String(""), Rope(String("")))
+            after_switch()
+        except:
+            pass
+
+    def roastNextTab_(self, sender: ObjCObject):
+        try:
+            if document.count() < 2:
+                return
+            let next = (document.current_index() + 1) % document.count()
+            if document.switch_to(next):
+                after_switch()
+        except:
+            pass
+
+    def roastPrevTab_(self, sender: ObjCObject):
+        try:
+            if document.count() < 2:
+                return
+            let prev = (
+                document.current_index() + document.count() - 1
+            ) % document.count()
+            if document.switch_to(prev):
+                after_switch()
+        except:
+            pass
+
+    def roastCloseTab_(self, sender: ObjCObject):
+        """Close the current tab, refusing to lose unsaved work silently."""
+        try:
+            if document.dirty_at(document.current_index()):
+                set_status(String("Unsaved — save it first (⌘S)"))
+                return
+            if document.close_current():
+                after_switch()
+            else:
+                set_status(String("Last tab stays open"))
+        except:
+            pass
+
+    def outlineViewSelectionDidChange_(self, note: ObjCObject):
+        """Clicking a file opens it. Clicking a folder does nothing but expand."""
+        try:
+            with autoreleasepool():
+                if g_outline()[] == 0:
+                    return
+                let view = ObjCObject(g_outline()[])
+                let row = msg_send[Int, "NSTableView", "selectedRow"](view)
+                if row < 0:
+                    return
+                let item = msg_send[ObjCObject, "NSOutlineView", "itemAtRow:"](
+                    view, row
+                )
+                if item.addr() == 0:
+                    return
+                let path = ns_to_string(item)
+                if is_directory(path):
+                    return
+                _ = load_file(path)
+        except:
+            pass
+
+    def roastOpenFolder_(self, sender: ObjCObject):
+        try:
+            with autoreleasepool():
+                let NSOpenPanel = ObjCClass.lookup["NSOpenPanel"]()
+                let panel = msg_send[
+                    ObjCObject, "NSOpenPanel", "openPanel", is_class=True
+                ](NSOpenPanel.as_object())
+                _ = msg_send[ObjCObject, "NSOpenPanel", "setCanChooseFiles:"](
+                    panel, False
+                )
+                _ = msg_send[
+                    ObjCObject, "NSOpenPanel", "setCanChooseDirectories:"
+                ](panel, True)
+                if msg_send[Int, "NSSavePanel", "runModal"](panel) != 1:
+                    return
+                let url = msg_send[ObjCObject, "NSSavePanel", "URL"](panel)
+                open_folder(
+                    ns_to_string(msg_send[ObjCObject, "NSURL", "path"](url))
+                )
+        except:
+            pass
+
+    def roastOpen_(self, sender: ObjCObject):
+        """Open a file. The panel is Cocoa's, so it looks and behaves like every
+        other open panel on the machine."""
+        try:
+            with autoreleasepool():
+                let NSOpenPanel = ObjCClass.lookup["NSOpenPanel"]()
+                let panel = msg_send[
+                    ObjCObject, "NSOpenPanel", "openPanel", is_class=True
+                ](NSOpenPanel.as_object())
+                _ = msg_send[ObjCObject, "NSOpenPanel", "setCanChooseFiles:"](
+                    panel, True
+                )
+                _ = msg_send[
+                    ObjCObject, "NSOpenPanel", "setCanChooseDirectories:"
+                ](panel, False)
+                _ = msg_send[
+                    ObjCObject, "NSOpenPanel", "setAllowsMultipleSelection:"
+                ](panel, False)
+                # Modal, because there is one buffer: opening a second file while
+                # the first is still being chosen has nowhere to go until
+                # milestone 3 gives documents somewhere to live.
+                let answer = msg_send[Int, "NSSavePanel", "runModal"](panel)
+                if answer != 1:  # NSModalResponseOK
+                    return
+                let url = msg_send[ObjCObject, "NSSavePanel", "URL"](panel)
+                let path = msg_send[ObjCObject, "NSURL", "path"](url)
+                _ = load_file(ns_to_string(path))
+        except:
+            pass
+
+    def roastSave_(self, sender: ObjCObject):
+        try:
+            _ = save_current()
+        except:
+            pass
+
+    def roastSaveAll_(self, sender: ObjCObject):
+        """Write every dirty buffer.
+
+        There is one buffer, so today this is Save with a different name. It exists
+        now because the command belongs in the File menu from the start and because
+        the loop it will grow -- over documents, saving the dirty ones -- is easier
+        to add than to retrofit around callers who learned to call Save instead.
+        """
+        try:
+            let n = document.dirty_count()
+            if n == 0:
+                set_status(String("Nothing to save"))
+                return
+            let started_at = document.current_index()
+            var saved = 0
+            var i = 0
+            while i < document.count():
+                if document.dirty_at(i):
+                    # Switching makes it the working set; saving writes the working
+                    # set. One path for one document and for all of them.
+                    _ = document.switch_to(i)
+                    _ = save_current()
+                    saved += 1
+                i += 1
+            _ = document.switch_to(started_at)
+            refresh_tabs()
+            refresh_grid()
+            set_status(String("Saved ") + String(saved) + String(" files"))
+        except:
+            pass
+
+    def roastComplete_(self, sender: ObjCObject):
+        """Ask the server what could go here, at the caret."""
+        try:
+            if not lsp.is_ready() or document.current_uri() == "" or len(g_buffer()[]) == 0:
+                set_status(String("No language server"))
+                return
+            let buf = g_buffer()[][0]
+            let line = buf.line_of_offset(g_caret()[])
+            let col = byte_to_utf16(g_caret()[]) - byte_to_utf16(
+                buf.line_start(line)
+            )
+            # The server answers the document it was last told about, so an edit
+            # still sitting in the debounce would be answered against stale text.
+            if g_revision()[] != document.sent_revision():
+                lsp.did_change(
+                    document.current_uri(), g_revision()[], buf.to_string()
+                )
+                document.set_sent_revision(g_revision()[])
+            _ = lsp.request_completion(document.current_uri(), line, col)
+            g_pending_completion()[] = 1
+            set_status(String("Completing…"))
+        except:
+            pass
+
+    def roastFind_(self, sender: ObjCObject):
+        """Put the cursor in the toolbar's search field."""
+        try:
+            with autoreleasepool():
+                if g_findfield()[] == 0:
+                    return
+                _ = msg_send[Bool, "NSWindow", "makeFirstResponder:"](
+                    ObjCObject(g_window()[]), ObjCObject(g_findfield()[]).ptr()
+                )
+        except:
+            pass
+
+    def roastFindChanged_(self, sender: ObjCObject):
+        """The field's text changed, or Enter was pressed in it."""
+        try:
+            with autoreleasepool():
+                let field = ObjCObject(g_findfield()[])
+                let text = msg_send[ObjCObject, "NSTextField", "stringValue"](field)
+                set_query(ns_to_string(text))
+                print("roast: find", repr(query()), "matches", match_count())
+                _ = find_next()
+                report_matches()
+                scroll_to_caret()
+        except:
+            pass
+
+    def roastFindNext_(self, sender: ObjCObject):
+        try:
+            _ = find_next()
+            report_matches()
+            scroll_to_caret()
+        except:
+            pass
+
+    def roastFindPrevious_(self, sender: ObjCObject):
+        try:
+            _ = find_previous()
+            report_matches()
+            scroll_to_caret()
+        except:
+            pass
+
+    def roastHideFind_(self, sender: ObjCObject):
+        """Escape: clear the search and give the editor its focus back."""
+        try:
+            with autoreleasepool():
+                if g_findfield()[] != 0:
+                    _ = msg_send[ObjCObject, "NSControl", "setStringValue:"](
+                        ObjCObject(g_findfield()[]), nsstring(String("")).ptr()
+                    )
+                set_query(String())
+                if g_grid()[] != 0:
+                    _ = msg_send[Bool, "NSWindow", "makeFirstResponder:"](
+                        ObjCObject(g_window()[]), ObjCObject(g_grid()[]).ptr()
+                    )
+                set_status(String("Ready"))
+                refresh_grid()
+        except:
+            pass
+
+    def timerTick_(self, timer: ObjCObject):
+        g_ticks()[] += 1
+
+        # Read whatever the server has said. This is the whole reason the client
+        # reads without blocking: a language server thinking hard must not be an
+        # editor that has stopped responding.
+        try:
+            if lsp.is_running():
+                if lsp.poll() > 0:
+                    # A completion reply arrives as a bump in the serial; showing
+                    # the popup is the app's job, not the client's.
+                    if (
+                        g_pending_completion()[] != 0
+                        and lsp.g_comp_serial()[] != g_comp_seen()[]
+                    ):
+                        g_comp_seen()[] = lsp.g_comp_serial()[]
+                        g_pending_completion()[] = 0
+                        if g_grid()[] != 0:
+                            show_popup(ObjCObject(g_grid()[]))
+                        if lsp.completion_count() == 0:
+                            set_status(String("No completions"))
+                        else:
+                            set_status(
+                                String(lsp.completion_count())
+                                + String(" completions")
+                            )
+                    else:
+                        _report_diagnostics()
+                    refresh_grid()
+
+                # Tell the server about edits once the typing pauses. Sending on
+                # every keystroke would have it re-parsing text nobody has finished
+                # writing.
+                if g_revision()[] != document.sent_revision():
+                    _show_dirty()
+                    refresh_tabs()
+                    g_idle_ticks()[] += 1
+                    if g_idle_ticks()[] >= 3 and document.current_uri() != "":
+                        if len(g_buffer()[]) > 0:
+                            lsp.did_change(
+                                document.current_uri(),
+                                g_revision()[],
+                                g_buffer()[][0].to_string(),
+                            )
+                        document.set_sent_revision(g_revision()[])
+                        g_idle_ticks()[] = 0
+                else:
+                    g_idle_ticks()[] = 0
+        except:
+            pass
+
+        # The compiler, on the same terms as the server: drained without blocking,
+        # because a build that takes a minute must not be an editor that takes a
+        # minute. pump() also reaps the process, which is what moves the serial.
+        # CI, and a quick way to see the path work: fire Build or Run a few ticks
+        # in, once the window is really up, with nobody at the keyboard.
+        if g_ticks()[] == 3:
+            let auto = getenv("ROAST_AUTOBUILD")
+            if auto != "":
+                try:
+                    _start_build(auto == "run")
+                except:
+                    pass
+
+        try:
+            if build.is_running():
+                if build.pump() > 0:
+                    console_sync()
+            if build.serial() != g_build_seen()[]:
+                g_build_seen()[] = build.serial()
+                _build_finished()
+        except:
+            pass
+
+        let limit = g_autoclose()[]
+        if limit != 0 and g_ticks()[] >= limit:
+            print("roast: autoclose after", g_ticks()[], "ticks")
+            with autoreleasepool():
+                if g_window()[] != 0:
+                    _ = msg_send[ObjCObject, "NSWindow", "close"](
+                        ObjCObject(g_window()[])
+                    )
+
+    # ── The sidebar's data source and delegate ─────────────────────────────
+    # Items are NSStrings holding paths, so the file system is the model and
+    # there is no tree to keep in step with it. These used to be registered
+    # with `add_method_unchecked` and encodings written by hand -- `@@:@q@`
+    # and the like -- because the handlers returned an Int standing in for an
+    # object. Returning ObjCObject says the same thing in the type system, and
+    # the SDK check then agrees with the encoding rather than being told to
+    # look away.
+
+    def outlineView_numberOfChildrenOfItem_(
+        self, view: ObjCObject, item: ObjCObject
+    ) -> Int:
+        return outline_children_count(item)
+
+    def outlineView_isItemExpandable_(
+        self, view: ObjCObject, item: ObjCObject
+    ) -> Bool:
+        return outline_expandable(item)
+
+    def outlineView_child_ofItem_(
+        self, view: ObjCObject, index: Int, item: ObjCObject
+    ) -> ObjCObject:
+        return outline_child_at(index, item)
+
+    def outlineView_objectValueForTableColumn_byItem_(
+        self, view: ObjCObject, column: ObjCObject, item: ObjCObject
+    ) -> ObjCObject:
+        return outline_display_value(item)
+
+    # ── Toolbar delegate ───────────────────────────────────────────────────
+
+    def toolbarAllowedItemIdentifiers_(self, tb: ObjCObject) -> ObjCObject:
+        return toolbar_ids_object()
+
+    def toolbarDefaultItemIdentifiers_(self, tb: ObjCObject) -> ObjCObject:
+        return toolbar_ids_object()
+
+    def controlTextDidChange_(self, note: ObjCObject):
+        self.roastFindChanged_(note)
 
 
 def refresh_grid():
@@ -705,44 +1071,6 @@ def after_switch():
     )
 
 
-fn action_next_tab(self_: P, cmd: P, sender: P):
-    try:
-        if document.count() < 2:
-            return
-        let next = (document.current_index() + 1) % document.count()
-        if document.switch_to(next):
-            after_switch()
-    except:
-        pass
-
-
-fn action_prev_tab(self_: P, cmd: P, sender: P):
-    try:
-        if document.count() < 2:
-            return
-        let prev = (
-            document.current_index() + document.count() - 1
-        ) % document.count()
-        if document.switch_to(prev):
-            after_switch()
-    except:
-        pass
-
-
-fn action_close_tab(self_: P, cmd: P, sender: P):
-    """Close the current tab, refusing to lose unsaved work silently."""
-    try:
-        if document.dirty_at(document.current_index()):
-            set_status(String("Unsaved — save it first (⌘S)"))
-            return
-        if document.close_current():
-            after_switch()
-        else:
-            set_status(String("Last tab stays open"))
-    except:
-        pass
-
-
 comptime g_tab_attrs = named_global["roast.tab.attrs", Int]
 comptime g_tab_dim = named_global["roast.tab.dim", Int]
 
@@ -877,12 +1205,12 @@ def is_directory(path: String) -> Bool:
 # Items are NSStrings holding full paths. Using the path as the item means
 # there is no parallel model to keep in step with the tree, and no node objects
 # to own -- the file system is the model.
-fn outline_num_children(self_: P, cmd: P, view: P, item: P) -> Int:
+def outline_children_count(item: ObjCObject) -> Int:
     try:
         with autoreleasepool():
             var dir = project_root()
-            if Int(item) != 0:
-                dir = ns_to_string(ObjCObject(Int(item)))
+            if not item.is_nil():
+                dir = ns_to_string(item)
             if dir == "":
                 return 0
             return msg_send[Int, "NSArray", "count"](children_of(dir))
@@ -890,35 +1218,33 @@ fn outline_num_children(self_: P, cmd: P, view: P, item: P) -> Int:
         return 0
 
 
-fn outline_is_expandable(self_: P, cmd: P, view: P, item: P) -> Bool:
+def outline_expandable(item: ObjCObject) -> Bool:
     try:
-        if Int(item) == 0:
+        if item.is_nil():
             return True
         with autoreleasepool():
-            return is_directory(ns_to_string(ObjCObject(Int(item))))
+            return is_directory(ns_to_string(item))
     except:
         return False
 
 
-fn outline_child(self_: P, cmd: P, view: P, index: Int, item: P) -> Int:
+def outline_child_at(index: Int, item: ObjCObject) -> ObjCObject:
     """The nth entry. The string belongs to the cached array, which the cache
     dictionary retains, so it outlives this call -- and no pool here, for the
     same reason as outline_value."""
     try:
         var dir = project_root()
-        if Int(item) != 0:
-            dir = ns_to_string(ObjCObject(Int(item)))
+        if not item.is_nil():
+            dir = ns_to_string(item)
         let kids = children_of(dir)
         if index < 0 or index >= msg_send[Int, "NSArray", "count"](kids):
-            return 0
-        return msg_send[ObjCObject, "NSArray", "objectAtIndex:"](
-            kids, index
-        ).addr()
+            return ObjCObject(0)
+        return msg_send[ObjCObject, "NSArray", "objectAtIndex:"](kids, index)
     except:
-        return 0
+        return ObjCObject(0)
 
 
-fn outline_value(self_: P, cmd: P, view: P, column: P, item: P) -> Int:
+def outline_display_value(item: ObjCObject) -> ObjCObject:
     """What the row shows: the name, not the path.
 
     Deliberately not wrapped in an autorelease pool. The NSString returned here
@@ -929,35 +1255,12 @@ fn outline_value(self_: P, cmd: P, view: P, column: P, item: P) -> Int:
     let it autorelease into the caller's pool.
     """
     try:
-        if Int(item) == 0:
-            return 0
-        let path = ns_to_string(ObjCObject(Int(item)))
-        return nsstring(_basename(path)).addr()
+        if item.is_nil():
+            return ObjCObject(0)
+        let path = ns_to_string(item)
+        return nsstring(_basename(path))
     except:
-        return 0
-
-
-fn outline_selection_changed(self_: P, cmd: P, note: P):
-    """Clicking a file opens it. Clicking a folder does nothing but expand."""
-    try:
-        with autoreleasepool():
-            if g_outline()[] == 0:
-                return
-            let view = ObjCObject(g_outline()[])
-            let row = msg_send[Int, "NSTableView", "selectedRow"](view)
-            if row < 0:
-                return
-            let item = msg_send[ObjCObject, "NSOutlineView", "itemAtRow:"](
-                view, row
-            )
-            if item.addr() == 0:
-                return
-            let path = ns_to_string(item)
-            if is_directory(path):
-                return
-            _ = load_file(path)
-    except:
-        pass
+        return ObjCObject(0)
 
 
 def open_folder(var path: String):
@@ -974,60 +1277,6 @@ def open_folder(var path: String):
                 ObjCObject(g_outline()[])
             )
     set_status(String("Project: ") + project_root())
-
-
-fn action_open_folder(self_: P, cmd: P, sender: P):
-    try:
-        with autoreleasepool():
-            let NSOpenPanel = ObjCClass.lookup["NSOpenPanel"]()
-            let panel = msg_send[
-                ObjCObject, "NSOpenPanel", "openPanel", is_class=True
-            ](NSOpenPanel.as_object())
-            _ = msg_send[ObjCObject, "NSOpenPanel", "setCanChooseFiles:"](
-                panel, False
-            )
-            _ = msg_send[
-                ObjCObject, "NSOpenPanel", "setCanChooseDirectories:"
-            ](panel, True)
-            if msg_send[Int, "NSSavePanel", "runModal"](panel) != 1:
-                return
-            let url = msg_send[ObjCObject, "NSSavePanel", "URL"](panel)
-            open_folder(
-                ns_to_string(msg_send[ObjCObject, "NSURL", "path"](url))
-            )
-    except:
-        pass
-
-
-fn action_open(self_: P, cmd: P, sender: P):
-    """Open a file. The panel is Cocoa's, so it looks and behaves like every
-    other open panel on the machine."""
-    try:
-        with autoreleasepool():
-            let NSOpenPanel = ObjCClass.lookup["NSOpenPanel"]()
-            let panel = msg_send[
-                ObjCObject, "NSOpenPanel", "openPanel", is_class=True
-            ](NSOpenPanel.as_object())
-            _ = msg_send[ObjCObject, "NSOpenPanel", "setCanChooseFiles:"](
-                panel, True
-            )
-            _ = msg_send[
-                ObjCObject, "NSOpenPanel", "setCanChooseDirectories:"
-            ](panel, False)
-            _ = msg_send[
-                ObjCObject, "NSOpenPanel", "setAllowsMultipleSelection:"
-            ](panel, False)
-            # Modal, because there is one buffer: opening a second file while
-            # the first is still being chosen has nowhere to go until
-            # milestone 3 gives documents somewhere to live.
-            let answer = msg_send[Int, "NSSavePanel", "runModal"](panel)
-            if answer != 1:  # NSModalResponseOK
-                return
-            let url = msg_send[ObjCObject, "NSSavePanel", "URL"](panel)
-            let path = msg_send[ObjCObject, "NSURL", "path"](url)
-            _ = load_file(ns_to_string(path))
-    except:
-        pass
 
 
 def save_current() -> Bool:
@@ -1072,232 +1321,12 @@ def save_current() -> Bool:
         return False
 
 
-fn action_save(self_: P, cmd: P, sender: P):
-    try:
-        _ = save_current()
-    except:
-        pass
-
-
-fn action_save_all(self_: P, cmd: P, sender: P):
-    """Write every dirty buffer.
-
-    There is one buffer, so today this is Save with a different name. It exists
-    now because the command belongs in the File menu from the start and because
-    the loop it will grow -- over documents, saving the dirty ones -- is easier
-    to add than to retrofit around callers who learned to call Save instead.
-    """
-    try:
-        let n = document.dirty_count()
-        if n == 0:
-            set_status(String("Nothing to save"))
-            return
-        let started_at = document.current_index()
-        var saved = 0
-        var i = 0
-        while i < document.count():
-            if document.dirty_at(i):
-                # Switching makes it the working set; saving writes the working
-                # set. One path for one document and for all of them.
-                _ = document.switch_to(i)
-                _ = save_current()
-                saved += 1
-            i += 1
-        _ = document.switch_to(started_at)
-        refresh_tabs()
-        refresh_grid()
-        set_status(String("Saved ") + String(saved) + String(" files"))
-    except:
-        pass
-
-
-fn action_complete(self_: P, cmd: P, sender: P):
-    """Ask the server what could go here, at the caret."""
-    try:
-        if not lsp.is_ready() or document.current_uri() == "" or len(g_buffer()[]) == 0:
-            set_status(String("No language server"))
-            return
-        let buf = g_buffer()[][0]
-        let line = buf.line_of_offset(g_caret()[])
-        let col = byte_to_utf16(g_caret()[]) - byte_to_utf16(
-            buf.line_start(line)
-        )
-        # The server answers the document it was last told about, so an edit
-        # still sitting in the debounce would be answered against stale text.
-        if g_revision()[] != document.sent_revision():
-            lsp.did_change(
-                document.current_uri(), g_revision()[], buf.to_string()
-            )
-            document.set_sent_revision(g_revision()[])
-        _ = lsp.request_completion(document.current_uri(), line, col)
-        g_pending_completion()[] = 1
-        set_status(String("Completing…"))
-    except:
-        pass
-
-
-fn action_find(self_: P, cmd: P, sender: P):
-    """Put the cursor in the toolbar's search field."""
-    try:
-        with autoreleasepool():
-            if g_findfield()[] == 0:
-                return
-            _ = msg_send[Bool, "NSWindow", "makeFirstResponder:"](
-                ObjCObject(g_window()[]), ObjCObject(g_findfield()[]).ptr()
-            )
-    except:
-        pass
-
-
-fn action_find_changed(self_: P, cmd: P, sender: P):
-    """The field's text changed, or Enter was pressed in it."""
-    try:
-        with autoreleasepool():
-            let field = ObjCObject(g_findfield()[])
-            let text = msg_send[ObjCObject, "NSTextField", "stringValue"](field)
-            set_query(ns_to_string(text))
-            print("roast: find", repr(query()), "matches", match_count())
-            _ = find_next()
-            report_matches()
-            scroll_to_caret()
-    except:
-        pass
-
-
-fn action_find_next(self_: P, cmd: P, sender: P):
-    try:
-        _ = find_next()
-        report_matches()
-        scroll_to_caret()
-    except:
-        pass
-
-
-fn action_find_previous(self_: P, cmd: P, sender: P):
-    try:
-        _ = find_previous()
-        report_matches()
-        scroll_to_caret()
-    except:
-        pass
-
-
-fn action_hide_find(self_: P, cmd: P, sender: P):
-    """Escape: clear the search and give the editor its focus back."""
-    try:
-        with autoreleasepool():
-            if g_findfield()[] != 0:
-                _ = msg_send[ObjCObject, "NSControl", "setStringValue:"](
-                    ObjCObject(g_findfield()[]), nsstring(String("")).ptr()
-                )
-            set_query(String())
-            if g_grid()[] != 0:
-                _ = msg_send[Bool, "NSWindow", "makeFirstResponder:"](
-                    ObjCObject(g_window()[]), ObjCObject(g_grid()[]).ptr()
-                )
-            set_status(String("Ready"))
-            refresh_grid()
-    except:
-        pass
-
-
-fn timer_tick(self_: P, cmd: P, timer: P):
-    g_ticks()[] += 1
-
-    # Read whatever the server has said. This is the whole reason the client
-    # reads without blocking: a language server thinking hard must not be an
-    # editor that has stopped responding.
-    try:
-        if lsp.is_running():
-            if lsp.poll() > 0:
-                # A completion reply arrives as a bump in the serial; showing
-                # the popup is the app's job, not the client's.
-                if (
-                    g_pending_completion()[] != 0
-                    and lsp.g_comp_serial()[] != g_comp_seen()[]
-                ):
-                    g_comp_seen()[] = lsp.g_comp_serial()[]
-                    g_pending_completion()[] = 0
-                    if g_grid()[] != 0:
-                        show_popup(ObjCObject(g_grid()[]))
-                    if lsp.completion_count() == 0:
-                        set_status(String("No completions"))
-                    else:
-                        set_status(
-                            String(lsp.completion_count())
-                            + String(" completions")
-                        )
-                else:
-                    _report_diagnostics()
-                refresh_grid()
-
-            # Tell the server about edits once the typing pauses. Sending on
-            # every keystroke would have it re-parsing text nobody has finished
-            # writing.
-            if g_revision()[] != document.sent_revision():
-                _show_dirty()
-                refresh_tabs()
-                g_idle_ticks()[] += 1
-                if g_idle_ticks()[] >= 3 and document.current_uri() != "":
-                    if len(g_buffer()[]) > 0:
-                        lsp.did_change(
-                            document.current_uri(),
-                            g_revision()[],
-                            g_buffer()[][0].to_string(),
-                        )
-                    document.set_sent_revision(g_revision()[])
-                    g_idle_ticks()[] = 0
-            else:
-                g_idle_ticks()[] = 0
-    except:
-        pass
-
-    # The compiler, on the same terms as the server: drained without blocking,
-    # because a build that takes a minute must not be an editor that takes a
-    # minute. pump() also reaps the process, which is what moves the serial.
-    # CI, and a quick way to see the path work: fire Build or Run a few ticks
-    # in, once the window is really up, with nobody at the keyboard.
-    if g_ticks()[] == 3:
-        let auto = getenv("ROAST_AUTOBUILD")
-        if auto != "":
-            try:
-                _start_build(auto == "run")
-            except:
-                pass
-
-    try:
-        if build.is_running():
-            if build.pump() > 0:
-                console_sync()
-        if build.serial() != g_build_seen()[]:
-            g_build_seen()[] = build.serial()
-            _build_finished()
-    except:
-        pass
-
-    let limit = g_autoclose()[]
-    if limit != 0 and g_ticks()[] >= limit:
-        print("roast: autoclose after", g_ticks()[], "ticks")
-        with autoreleasepool():
-            if g_window()[] != 0:
-                _ = msg_send[ObjCObject, "NSWindow", "close"](
-                    ObjCObject(g_window()[])
-                )
-
-
 # ── Toolbar delegate ─────────────────────────────────────────────────────────
-fn toolbar_allowed_ids(self_: P, cmd: P, toolbar: P) -> Int:
+def toolbar_ids_object() -> ObjCObject:
     try:
-        return toolbar_ids().addr()
+        return toolbar_ids()
     except:
-        return NIL
-
-
-fn toolbar_default_ids(self_: P, cmd: P, toolbar: P) -> Int:
-    try:
-        return toolbar_ids().addr()
-    except:
-        return NIL
+        return ObjCObject(0)
 
 
 fn toolbar_item_for_id(
@@ -1625,74 +1654,14 @@ def main() raises:
         _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
 
         # Delegate.
-        var db = ObjCClassBuilder("RoastAppDelegate")
-        db.add_method["applicationDidFinishLaunching:"](did_finish_launching)
-        db.add_method["applicationShouldTerminateAfterLastWindowClosed:"](
-            should_terminate_after_last_window
-        )
-        db.add_method["applicationWillTerminate:"](will_terminate)
-        let delegate = new_instance(db^.register())
+        # Instantiating a class registers it, so both of these exist in the
+        # runtime by the time AppKit is handed them.
+        let delegate = ObjCObject(RoastAppDelegate().__objc_id)
         _ = msg_send[ObjCObject, "NSApplication", "setDelegate:"](
             app, delegate.ptr()
         )
 
-        # One object carries every menu and toolbar action, and doubles as the
-        # toolbar's delegate. Custom selectors need encodings; the SDK ones the
-        # database already knows.
-        var ab = ObjCClassBuilder("RoastActions")
-        ab.add_method["roastBuild:", encoding="v@:@"](action_build)
-        ab.add_method["roastConsole:", encoding="v@:@"](action_toggle_console)
-        ab.add_method["roastRun:", encoding="v@:@"](action_run)
-        ab.add_method["roastStop:", encoding="v@:@"](action_stop)
-        ab.add_method["roastNewTab:", encoding="v@:@"](action_new_tab)
-        ab.add_method["roastOpen:", encoding="v@:@"](action_open)
-        ab.add_method["roastOpenFolder:", encoding="v@:@"](action_open_folder)
-        ab.add_method["roastSaveAll:", encoding="v@:@"](action_save_all)
-        ab.add_method["roastNextTab:", encoding="v@:@"](action_next_tab)
-        ab.add_method["roastPrevTab:", encoding="v@:@"](action_prev_tab)
-        ab.add_method["roastCloseTab:", encoding="v@:@"](action_close_tab)
-        # The sidebar's data source and delegate. Items are NSStrings holding
-        # paths, so the file system is the model and there is no tree to keep
-        # in step with it.
-        ab.add_method_unchecked[
-            "outlineView:numberOfChildrenOfItem:", encoding="q@:@@"
-        ](outline_num_children)
-        ab.add_method_unchecked[
-            "outlineView:isItemExpandable:", encoding="B@:@@"
-        ](outline_is_expandable)
-        ab.add_method_unchecked[
-            "outlineView:child:ofItem:", encoding="@@:@q@"
-        ](outline_child)
-        ab.add_method_unchecked[
-            "outlineView:objectValueForTableColumn:byItem:", encoding="@@:@@@"
-        ](outline_value)
-        ab.add_method[
-            "outlineViewSelectionDidChange:", encoding="v@:@"
-        ](outline_selection_changed)
-        ab.add_method["roastSave:", encoding="v@:@"](action_save)
-        ab.add_method["roastComplete:", encoding="v@:@"](action_complete)
-        ab.add_method["roastFind:", encoding="v@:@"](action_find)
-        ab.add_method["roastFindChanged:", encoding="v@:@"](action_find_changed)
-        ab.add_method["roastFindNext:", encoding="v@:@"](action_find_next)
-        ab.add_method[
-            "roastFindPrevious:", encoding="v@:@"
-        ](action_find_previous)
-        ab.add_method["roastHideFind:", encoding="v@:@"](action_hide_find)
-        ab.add_method[
-            "controlTextDidChange:", encoding="v@:@"
-        ](action_find_changed)
-        ab.add_method["timerTick:", encoding="v@:@"](timer_tick)
-        ab.add_method[
-            "toolbarAllowedItemIdentifiers:", encoding="@@:@"
-        ](toolbar_allowed_ids)
-        ab.add_method[
-            "toolbarDefaultItemIdentifiers:", encoding="@@:@"
-        ](toolbar_default_ids)
-        ab.add_method[
-            "toolbar:itemForItemIdentifier:willBeInsertedIntoToolbar:",
-            encoding="@@:@@c",
-        ](toolbar_item_for_id)
-        let actions = new_instance(ab^.register())
+        let actions = ObjCObject(RoastActions().__objc_id)
         g_actions()[] = actions.addr()
 
         build_menu_bar(app, actions.addr())
