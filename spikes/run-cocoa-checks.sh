@@ -14,9 +14,14 @@ cd "$(dirname "$0")/.."
 #
 # Override either explicitly:
 #   MOJO_RUN="dist/CocoaMojo/bin/cocoamojo --run" ./spikes/run-cocoa-checks.sh
-if [ -z "${MOJO_RUN:-}" ] && [ -x dist/CocoaMojo/bin/cocoamojo ]; then
-  MOJO_RUN="dist/CocoaMojo/bin/cocoamojo --run"
-  MOJO=dist/CocoaMojo/bin/cocoamojo-compiler
+# COCOAMOJO points at the distribution to test. Overridable so compiler work
+# can build a private one and leave dist/CocoaMojo -- which a running Roast is
+# sitting on -- alone:
+#   COCOAMOJO=/tmp/mine/CocoaMojo/bin/cocoamojo ./spikes/run-cocoa-checks.sh
+COCOAMOJO="${COCOAMOJO:-dist/CocoaMojo/bin/cocoamojo}"
+if [ -z "${MOJO_RUN:-}" ] && [ -x "$COCOAMOJO" ]; then
+  MOJO_RUN="$COCOAMOJO --run"
+  MOJO="${COCOAMOJO}-compiler"
 else
   MOJO_RUN=${MOJO_RUN:-"./bazelw run --ui_event_filters=-info,-stdout --noshow_progress //KGEN:mojo -- run"}
   MOJO=${MOJO:-./bazel-bin/KGEN/tools/mojo/mojo-full}
@@ -71,11 +76,11 @@ echo "must agree with clang about the C ABI:"
 oracle_dir="$(mktemp -d)"
 trap 'rm -rf "$oracle_dir"' EXIT
 printf '  %-24s ' "abi_oracle_test.mojo"
-if [ ! -x dist/CocoaMojo/bin/cocoamojo ]; then
+if [ ! -x "$COCOAMOJO" ]; then
   echo "SKIP (needs ./tools/release.sh -- the driver owns the link line)"
 elif clang -dynamiclib -O1 -lobjc -o "$oracle_dir/liboracle.dylib" \
        "$PWD/spikes/s5-cocoakb/abi_oracle.c" 2>"$oracle_dir/cc.log" &&
-   out=$(dist/CocoaMojo/bin/cocoamojo --build \
+   out=$("$COCOAMOJO" --build \
           "$PWD/spikes/s5-cocoakb/abi_oracle_test.mojo" \
           -o "$oracle_dir/abi_oracle" \
           -Xlinker -L"$oracle_dir" -Xlinker -loracle \

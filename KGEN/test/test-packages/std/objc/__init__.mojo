@@ -27,6 +27,15 @@ struct ObjCClass:
         self._cls = cls
 
 
+struct _StubPointer(TrivialRegisterPassable):
+    var _mlir_value: __mlir_type.`!kgen.pointer<i8>`
+
+    def __init__(out self):
+        self._mlir_value = __mlir_op.`pop.pointer.bitcast`[
+            _type = __mlir_type.`!kgen.pointer<i8>`
+        ](__mlir_op.`lit.ref.to_pointer`(__get_mvalue_as_litref(self)))
+
+
 struct ObjCClassRegistrar:
     var _cls: Int
     var _ok: Bool
@@ -60,6 +69,12 @@ struct ObjCClassRegistrar:
 
     def box_offset_of(mut self) -> Int:
         return 0
+
+    # The compiler reaches through the result for `_mlir_value` -- it needs an
+    # address it can offset and bitcast -- so the stub has to be pointer
+    # SHAPED, not merely pointer named. std.memory is not importable here.
+    def box_of(mut self, id: Int, size: __mlir_type.index) -> _StubPointer:
+        return _StubPointer()
 
     def register(mut self) -> ObjCClass:
         return ObjCClass(0)

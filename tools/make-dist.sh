@@ -13,7 +13,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 B="$(readlink bazel-bin || echo bazel-bin)"
-D="$ROOT/dist/CocoaMojo"
+# Where the distribution goes. Overridable, and that is not a convenience:
+# rewriting dist/CocoaMojo pulls the binaries and the stdlib out from under a
+# running Roast, which is a genuinely unpleasant thing to do to someone who is
+# using the IDE at the time. Compiler work that only needs something to test
+# against should point this somewhere private:
+#   DIST_DIR=/tmp/mine ./tools/make-dist.sh
+D="${DIST_DIR:-$ROOT/dist/CocoaMojo}"
 KB="${COCOAKB:-$ROOT/../CocoaBaseMCP/cocoa.sqlite}"
 
 [ -x "$B/KGEN/tools/mojo/mojo" ] || { echo "build the compiler first:"; \

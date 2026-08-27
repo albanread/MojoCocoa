@@ -415,12 +415,26 @@ What a class field is today, stated so nobody discovers it the hard way:
 
 - **Storage**: inline in the object — one ivar of `sizeof(Self)`, 8-aligned,
   at the runtime-settled offset. No allocation beyond the object itself.
-- **Ground state**: zero-filled by the runtime's alloc. `__init__`
-  default-constructs every field in the returned local, so both views agree;
-  a field's type must therefore be default-constructible, and zero must be a
-  valid value for it — the `named_global` rule, now per instance.
-- **Field initializers** (`var x: Int = 3`) are not honoured yet: the value
-  in the box is the default, not the initializer.
+- **Ground state**: properly constructed. Every field's default constructor
+  now runs over the BOX, not only over the local `self` the constructor
+  returns. Until that landed, the box held whatever the runtime left there --
+  zeroes -- and the rule was "zero must be a valid value for the field's
+  type", which held for `Int`, `String` and `List` and would have silently
+  failed for anything else. The requirement is now just
+  default-constructible.
+
+  The address for that comes back from `ObjCClassRegistrar.box_of` as a
+  POINTER rather than an `Int`: there is no int-to-pointer operation at the
+  parser's level (Mojo itself spells it as a bitcast through a local), so the
+  crossing happens once, in std.objc, in a language that can say it in a
+  line. `Pointer` being non-nullable is why `box_of` answers a failed
+  registration with scratch instead of null — the caller is compiler-emitted
+  straight-line code with nowhere to branch to.
+- **Field initializers** (`var x: Int = 3`) do not PARSE yet -- the grammar
+  sketch above is still a promise. The field-construction machinery they need
+  is now in place (it is the same loop, with the initializer expression in
+  place of the default constructor), so this is the next small piece rather
+  than a design question.
 - **Destruction runs at `dealloc`.** The compiler emits `add_dealloc`, and
   std.objc's `_box_dealloc_imp` does two things in the one order that works:
   run T's destructor over the box, THEN `[super dealloc]`. Either half alone
