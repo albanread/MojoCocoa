@@ -234,16 +234,51 @@ fn draw_rect(self_: P, cmd: P):
                     CGPoint(GUTTER_W - num_w - TEXT_PAD, y),
                     gutter_attrs.ptr(),
                 )
-                # The line itself.
+                # The line, in runs of one colour each. Monospaced means a
+                # run's x is just its column times the advance, so drawing in
+                # pieces costs a few more calls and no layout at all.
                 let text = buf[][0].line(i)
                 if text.byte_length() > 0:
-                    _ = msg_send[
-                        ObjCObject, "NSString", "drawAtPoint:withAttributes:"
-                    ](
-                        nsstring(text),
-                        CGPoint(GUTTER_W + TEXT_PAD, y),
-                        attrs.ptr(),
-                    )
+                    let kinds = highlight(text)
+                    var col = 0
+                    var run = String()
+                    var run_kind = KIND_PLAIN
+                    var run_col = 0
+                    for c in text.codepoints():
+                        let k = kinds[col] if col < len(kinds) else KIND_PLAIN
+                        if k != run_kind and run.byte_length() > 0:
+                            _ = msg_send[
+                                ObjCObject,
+                                "NSString",
+                                "drawAtPoint:withAttributes:",
+                            ](
+                                nsstring(run),
+                                CGPoint(
+                                    GUTTER_W
+                                    + TEXT_PAD
+                                    + Float64(run_col) * advance(),
+                                    y,
+                                ),
+                                _attrs_for(run_kind).ptr(),
+                            )
+                            run = String()
+                            run_col = col
+                        if run.byte_length() == 0:
+                            run_col = col
+                        run_kind = k
+                        run += String(c)
+                        col += 1
+                    if run.byte_length() > 0:
+                        _ = msg_send[
+                            ObjCObject, "NSString", "drawAtPoint:withAttributes:"
+                        ](
+                            nsstring(run),
+                            CGPoint(
+                                GUTTER_W + TEXT_PAD + Float64(run_col) * advance(),
+                                y,
+                            ),
+                            _attrs_for(run_kind).ptr(),
+                        )
                 i += 1
 
             # Diagnostics from the language server. Drawn after the text so
@@ -650,6 +685,25 @@ def make_grid_view(frame: CGRect) -> ObjCObject:
     _ = external_call["objc_retain", P](gattrs.ptr())
     g_gutter_attrs()[] = gattrs.addr()
 
+    # Syntax colours. System colours rather than chosen ones, so the editor
+    # follows the appearance the rest of the machine is using.
+    let comment_c = msg_send[
+        ObjCObject, "NSColor", "systemGreenColor", is_class=True
+    ](NSColor.as_object())
+    let string_c = msg_send[
+        ObjCObject, "NSColor", "systemRedColor", is_class=True
+    ](NSColor.as_object())
+    let keyword_c = msg_send[
+        ObjCObject, "NSColor", "systemPurpleColor", is_class=True
+    ](NSColor.as_object())
+    let number_c = msg_send[
+        ObjCObject, "NSColor", "systemBlueColor", is_class=True
+    ](NSColor.as_object())
+    g_attr_comment()[] = _make_attrs(comment_c)
+    g_attr_string()[] = _make_attrs(string_c)
+    g_attr_keyword()[] = _make_attrs(keyword_c)
+    g_attr_number()[] = _make_attrs(number_c)
+
     # Advance: the width of one character in a face where they are all the
     # same width. Measured, not assumed.
     let probe = nsstring(String("0000000000"))
@@ -786,6 +840,160 @@ comptime g_popup_from = named_global["roast.popup.from", Int]
 comptime POPUP_ROW_H = 20.0
 comptime POPUP_MAX_ROWS = 12
 comptime POPUP_W = 460.0
+
+# Text colours, made once and kept: NSColor lookups in a draw loop are the
+# easy way to make a fast renderer slow.
+comptime g_col_plain = named_global["roast.col.plain", Int]
+comptime g_col_comment = named_global["roast.col.comment", Int]
+comptime g_col_string = named_global["roast.col.string", Int]
+comptime g_col_keyword = named_global["roast.col.keyword", Int]
+comptime g_col_number = named_global["roast.col.number", Int]
+
+# One attribute dictionary per colour, for the same reason.
+comptime g_attr_comment = named_global["roast.attr.comment", Int]
+comptime g_attr_string = named_global["roast.attr.string", Int]
+comptime g_attr_keyword = named_global["roast.attr.keyword", Int]
+comptime g_attr_number = named_global["roast.attr.number", Int]
+
+comptime KIND_PLAIN = 0
+comptime KIND_COMMENT = 1
+comptime KIND_STRING = 2
+comptime KIND_KEYWORD = 3
+comptime KIND_NUMBER = 4
+
+
+def _is_keyword(w: String) -> Bool:
+    """cocoa-mojo's keywords, `let` and `fn` among them -- this fork revived
+    both, and an editor that greys them out would be quietly wrong."""
+    return (
+        w == "def" or w == "fn" or w == "let" or w == "var" or w == "struct"
+        or w == "trait" or w == "comptime" or w == "alias" or w == "import"
+        or w == "from" or w == "as" or w == "if" or w == "elif" or w == "else"
+        or w == "while" or w == "for" or w == "in" or w == "return"
+        or w == "raise" or w == "raises" or w == "try" or w == "except"
+        or w == "with" or w == "yield" or w == "pass" or w == "break"
+        or w == "continue" or w == "and" or w == "or" or w == "not"
+        or w == "is" or w == "True" or w == "False" or w == "None"
+        or w == "self" or w == "Self" or w == "mut" or w == "out"
+        or w == "deinit" or w == "ref" or w == "where"
+    )
+
+
+def highlight(line: String) -> List[Int]:
+    """One kind per character of the line.
+
+    A lexer rather than a parser, and deliberately: this runs on every visible
+    line of every frame and has to be right about comments, strings and
+    keywords without knowing anything else. Semantic tokens from the server
+    layer on top when they arrive; this is what shows instantly, and what still
+    shows when there is no server at all.
+    """
+    var kinds = List[Int]()
+    var chars = List[String]()
+    for c in line.codepoints():
+        chars.append(String(c))
+        kinds.append(KIND_PLAIN)
+
+    var i = 0
+    let n = len(chars)
+    while i < n:
+        let c = chars[i]
+        if c == "#":
+            # To end of line, and nothing after it is anything else.
+            while i < n:
+                kinds[i] = KIND_COMMENT
+                i += 1
+            break
+        if c == '"' or c == "'":
+            let quote = c
+            kinds[i] = KIND_STRING
+            i += 1
+            while i < n:
+                kinds[i] = KIND_STRING
+                if chars[i] == "\\" and i + 1 < n:
+                    i += 1
+                    kinds[i] = KIND_STRING
+                elif chars[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        let b = Int(ord(c)) if len(c.as_bytes()) == 1 else 0x100
+        if b >= 0x30 and b <= 0x39:
+            while i < n:
+                let d = Int(ord(chars[i])) if len(chars[i].as_bytes()) == 1 else 0x100
+                if not (
+                    (d >= 0x30 and d <= 0x39)
+                    or d == 0x2E
+                    or d == 0x5F
+                    or (d >= 0x61 and d <= 0x7A)
+                    or (d >= 0x41 and d <= 0x5A)
+                ):
+                    break
+                kinds[i] = KIND_NUMBER
+                i += 1
+            continue
+        let ident = (
+            (b >= 0x41 and b <= 0x5A) or (b >= 0x61 and b <= 0x7A) or b == 0x5F
+        )
+        if ident:
+            # `var`, not `let`. In cocoa-mojo `let x = y` binds to y rather
+            # than copying it, so `let start = i` followed i as the loop
+            # advanced and the keyword span came out empty. That is the
+            # revived binding doing exactly what it says -- an immutable
+            # binding to a place -- and it is a trap wherever the intent was a
+            # snapshot of a value.
+            var start = i
+            var word = String()
+            while i < n:
+                let d = Int(ord(chars[i])) if len(chars[i].as_bytes()) == 1 else 0x100
+                if not (
+                    (d >= 0x41 and d <= 0x5A)
+                    or (d >= 0x61 and d <= 0x7A)
+                    or (d >= 0x30 and d <= 0x39)
+                    or d == 0x5F
+                ):
+                    break
+                word += chars[i]
+                i += 1
+            if _is_keyword(word):
+                var k = start
+                while k < i:
+                    kinds[k] = KIND_KEYWORD
+                    k += 1
+            continue
+        i += 1
+    return kinds^
+
+
+def _attrs_for(kind: Int) -> ObjCObject:
+    if kind == KIND_COMMENT:
+        return ObjCObject(g_attr_comment()[])
+    if kind == KIND_STRING:
+        return ObjCObject(g_attr_string()[])
+    if kind == KIND_KEYWORD:
+        return ObjCObject(g_attr_keyword()[])
+    if kind == KIND_NUMBER:
+        return ObjCObject(g_attr_number()[])
+    return ObjCObject(g_attrs()[])
+
+
+def _make_attrs(colour: ObjCObject) -> Int:
+    """An attribute dictionary for one colour, retained for the process."""
+    let NSMutableDictionary = ObjCClass.lookup["NSMutableDictionary"]()
+    var d = msg_send[
+        ObjCObject, "NSMutableDictionary", "dictionary", is_class=True
+    ](NSMutableDictionary.as_object())
+    _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
+        d, ObjCObject(g_font()[]).ptr(),
+        extern_object["NSFontAttributeName"]().ptr(),
+    )
+    _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
+        d, colour.ptr(),
+        extern_object["NSForegroundColorAttributeName"]().ptr(),
+    )
+    _ = external_call["objc_retain", P](d.ptr())
+    return d.addr()
 
 comptime g_blink_on = named_global["roast.blink", Int]
 comptime g_focused = named_global["roast.focused", Int]

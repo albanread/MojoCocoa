@@ -12,6 +12,12 @@ from gridview import (
     g_coalesce_at,
     display_column,
     offset_at_point,
+    highlight,
+    KIND_PLAIN,
+    KIND_COMMENT,
+    KIND_STRING,
+    KIND_KEYWORD,
+    KIND_NUMBER,
     set_query,
     find_next,
     find_previous,
@@ -215,6 +221,34 @@ def main() raises:
     failures += check_int("find fails cleanly", Int(find_next()), 0)
     set_query(String(""))
     failures += check_int("empty query finds nothing", Int(find_next()), 0)
+
+    print("edit: the lexer")
+
+    def kinds_of(src: String) -> String:
+        var out = String()
+        for k in highlight(src):
+            out += String(k)
+        return out^
+
+    # plain 0, comment 1, string 2, keyword 3, number 4.
+    failures += check("keyword", kinds_of(String("def f")), String("33300"))
+    failures += check(
+        "comment to end of line", kinds_of(String("a # b")), String("00111")
+    )
+    failures += check("string", kinds_of(String('x "ab"')), String("002222"))
+    failures += check("number", kinds_of(String("n = 42")), String("000044"))
+    # `let` and `fn` are this fork's, and an editor that greyed them out would
+    # be quietly wrong about the language it is for.
+    failures += check("let is a keyword", kinds_of(String("let")), String("333"))
+    failures += check("fn is a keyword", kinds_of(String("fn")), String("33"))
+    # A keyword inside a longer identifier is not a keyword.
+    failures += check(
+        "define is not def", kinds_of(String("define")), String("000000")
+    )
+    # A # inside a string is not a comment.
+    failures += check(
+        "hash in string", kinds_of(String('"#"')), String("222")
+    )
 
     print()
     if failures == 0:
