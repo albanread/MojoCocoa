@@ -156,18 +156,43 @@ cocoa-mojo meanings described above.
 ### Reserved but not implemented
 
 ```text
-class    del      global   match    case     nonlocal yield
+del      global   match    case     nonlocal   yield
 ```
 
-`class` is the only one with a dedicated diagnostic:
+Lexed and classified as statement keywords and then never parsed, so they are
+unavailable as identifiers without buying you anything. There is no pattern
+matching, no `del`, no generators, and no `global`/`nonlocal`.
+
+`class` was in this list and no longer is — see below.
+
+### `class`
+
+Declares an **Objective-C class**, not a Mojo one.
 
 ```text
-classes are not supported yet
+class Name(Superclass, Protocol, ...):
+    def method_(self, arg: T) -> R: ...     # may raise; the boundary catches
+    fn strict_(self, arg: T): ...           # fn's contract, unchanged
+    @objc("real:selector:")
+    def renamed(self, a: T, b: U): ...
 ```
 
-The rest are lexed and classified as statement keywords and then never parsed,
-so they are unavailable as identifiers without buying you anything. There is no
-pattern matching, no `del`, no generators, and no `global`/`nonlocal`.
+The first base is the superclass and defaults to `NSObject`; the rest are
+protocols, adopted through `class_addProtocol`. Method names map to selectors
+by turning a trailing `_` into `:`, with the underscore count required to match
+the argument count. A **leading** underscore marks a method as Mojo's own,
+never exposed to the runtime.
+
+Encodings are looked up from the SDK when the selector exists on the superclass
+chain — a disagreement is a compile error quoting the database — and derived
+from the Mojo signature otherwise.
+
+`ClassName()` registers the class if needed, then allocs and inits;
+registration is idempotent. `__objc_id` is the raw `id`. A class reference is
+register-passable, retains on copy and releases on destruction.
+
+Not in this version: fields (`var` members), nested classes, class-level
+`comptime` parameters, Mojo-trait conformances.
 
 ### Compiler internals
 

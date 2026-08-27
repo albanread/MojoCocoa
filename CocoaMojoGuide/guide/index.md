@@ -15,7 +15,7 @@ Read it in order the first time. Each chapter assumes the one before it.
 | [3. Mojo's own object model](03-objects.md) | Structs, traits, generics and lifetimes — what Mojo gives you before any Cocoa appears |
 | [4. Calling Cocoa](04-calling-cocoa.md) | Look up classes, send messages, pass arguments, get results back |
 | [5. Ownership and memory](05-ownership.md) | Hold Cocoa objects without leaking and without over-releasing |
-| [6. Letting Cocoa call you](06-callbacks.md) | Define Objective-C classes at runtime whose methods are Mojo functions |
+| [6. Letting Cocoa call you](06-callbacks.md) | Declare Objective-C classes with `class`, so Cocoa can send your code messages |
 | [7. A complete application](07-an-application.md) | Put a window on screen, handle events, and drive a run loop |
 | [8. Concurrency and blocks](08-concurrency.md) | Dispatch work across GCD queues, and call block-only Cocoa APIs |
 | [9. A demo, walked through](09-walkthrough.md) | Read a complete 225-line windowed program line by line |

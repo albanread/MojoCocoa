@@ -9,6 +9,14 @@ test.
 
 Everything below is quoted from the source. Nothing here has been simplified.
 
+**One thing to know before you start.** This program predates the `class`
+keyword, so its callbacks are `fn`s registered through `ObjCClassBuilder` with
+the `self_: P, cmd: P` prefix written by hand. That is still how the mechanism
+works underneath, which is exactly why it is worth reading once. For how the
+same program looks written today, see `examples/window/main.mojo` and
+`examples/life/main.mojo` in the fork, and
+[chapter 6](06-callbacks.md).
+
 ```blockgraph
 // @id p0-walkthrough
 // @name What the program builds

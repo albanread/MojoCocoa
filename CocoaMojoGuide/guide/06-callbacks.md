@@ -4,166 +4,199 @@ Everything interactive in Cocoa works the same way: you supply an object, and
 the framework sends it a selector. Target/action, delegates, notification
 observers, timers — all of it.
 
-To supply such an object from Mojo you define an Objective-C class at run time,
-add methods whose implementations are Mojo `fn` functions, and register
-it. `ObjCClassBuilder` wraps the three runtime calls that do this.
+To supply such an object you need an Objective-C class. In cocoa-mojo you
+declare one with `class`, and the compiler does the rest.
 
-## The shape of a callback
+## `class` declares an Objective-C class
 
-An Objective-C method implementation, an `IMP`, is a C function whose first two
-arguments are always the receiver and the selector:
-
-```c
-void method(id self, SEL _cmd, ...);
-```
-
-In cocoa-mojo you declare that with `fn`:
+The whole of it is a declaration:
 
 ```mojo
-fn button_clicked(self_: P, cmd: P, sender: P):
-    clicks()[] += 1
-    set_label(String("Clicked ") + String(clicks()[]) + " times")
-
-fn should_terminate_after_last_window(self_: P, cmd: P, app: P) -> Bool:
-    return True
+class ExampleActions:
+    def buttonClicked_(self, sender: ObjCObject):
+        clicks()[] += 1
 ```
 
-`fn` *is* the contract `class_addMethod` requires — thin, non-raising, C ABI —
-so the keyword now says what the function is instead of the old costume:
+That is a real Objective-C class. The compiler registers it with the runtime,
+derives the selector, works out the type encoding, builds the trampoline, and
+gives you an instance:
 
 ```mojo
-def button_clicked(self_: P, cmd: P, sender: P) abi("C"):   # the old spelling
-fn button_clicked(self_: P, cmd: P, sender: P):             # cocoa-mojo
+let actions = ObjCObject(ExampleActions().__objc_id)
 ```
 
-`self_` has a trailing underscore because `self` is reserved. `cmd` you will
-almost never use, but you must still declare it: the design proposes a
-trampoline that injects the `_cmd` slot for you, and that is **not implemented
-yet**. Write all three parameters.
+No `ObjCClassBuilder`, no encoding string, no `IMP`, and no `cmd: P` slot.
 
-Five IMP shapes are predeclared, and `add_method` overloads across them:
+### Method names become selectors
 
-| Alias | Signature |
+**A trailing underscore is a colon.**
+
+| Mojo method | Selector |
 |:---|:---|
-| `IMP0` | `fn(P, P, /) -> None` |
-| `IMP1` | `fn(P, P, P, /) -> None` |
-| `IMP0Bool` | `fn(P, P, /) -> Bool` |
-| `IMP1Bool` | `fn(P, P, P, /) -> Bool` |
-| `IMP2` | `fn(P, P, P, P, /) -> None` |
+| `acceptsFirstResponder` | `acceptsFirstResponder` |
+| `buttonClicked_` | `buttonClicked:` |
+| `mouseDown_` | `mouseDown:` |
+| `applicationShouldTerminateAfterLastWindowClosed_` | `applicationShouldTerminateAfterLastWindowClosed:` |
 
-If your callback does not fit one of these you are past what
-`ObjCClassBuilder` covers and into `class_addMethod` by hand — the pattern is
-in the fork's `callback_probe.mojo` spike.
+The number of underscores must equal the number of arguments after `self`, and
+a mismatch is a compile error naming both counts.
 
-### What `fn` will not let you write
+That diagnostic earns its place in the *other* direction. Writing `drawRect`
+where you meant `drawRect_` derives a nullary selector, registers perfectly,
+and then never receives a single draw — the framework keeps sending
+`drawRect:` to a class that answers `drawRect`. Nothing crashes, nothing
+appears. It is now a compile error.
 
-A callback that can raise is a compile error at the definition, not a crash
-inside Cocoa's event loop later:
+**A leading underscore means the method is Mojo's own** and never reaches the
+runtime. Without that rule every snake_case helper in a class would derive a
+nonsense selector like `my:helper` and then be rejected for a colon it never
+wanted — which would make a Cocoa class a hostile place to put a private
+method. `_tab_width` is simply private, exactly as Mojo and Python already read
+a leading underscore, and the dunders come along for free.
 
-```text
-'fn' declares a foreign-callable (C ABI, non-raising) function in cocoa-mojo
-and may not be marked 'raises'; use 'def' for an ordinary Mojo function
-```
-
-That is the point of the keyword. The C boundary has no error channel, so a
-raising callback was always a latent crash; now it does not compile.
-
-## Building a class
+To spell a selector that the underscore rule cannot produce, say so:
 
 ```mojo
-var b = ObjCClassBuilder("MyDelegate")             # subclass of NSObject
-b.add_method["applicationDidFinishLaunching:"](did_launch)
-var cls = b^.register()
-var delegate = new_instance(cls)
+    @objc("insertText:replacementRange:")
+    def insert_text(self, text: ObjCObject, range: NSRange): ...
 ```
 
-To subclass something other than `NSObject`, name it as a parameter:
+### Superclass and protocols
+
+```mojo
+class LifeView(NSView):          # subclass an SDK class
+class LifeDelegate:              # no base means NSObject
+class Editor(NSView, NSTextInputClient):   # first base is the superclass,
+                                            # the rest are protocols
+```
+
+Protocols are adopted through `class_addProtocol` — real conformance, not
+merely having the methods. AppKit does ask: `conformsToProtocol:` reportedly
+cost a day on `NSTextInputClient` before that was understood.
+
+An unknown superclass is caught at compile time, so a typo in a class name
+fails the build rather than producing a class that inherits from nothing.
+
+### Encodings are looked up, then derived
+
+If the selector already exists on the superclass chain, the encoding comes
+from the SDK database, and a signature that disagrees with it is a compile
+error **quoting the database's encoding**. If the SDK has never heard of the
+selector — which is the normal case for target/action and delegate methods you
+invent — the encoding is derived from your Mojo signature.
+
+Either way you do not write `"v@:@"` again.
+
+## Methods may raise
+
+This is the part that changes how the code reads:
+
+```mojo
+class ExampleActions:
+    def buttonClicked_(self, sender: ObjCObject):
+        with autoreleasepool():
+            _ = msg_send[ObjCObject, "NSTextField", "setStringValue:"](...)
+```
+
+No `try`, and no `fn`. A `class` method body is a `def` and **may raise**; the
+synthesized trampoline catches at the Objective-C boundary, because unwinding
+into `objc_msgSend` is undefined behaviour. On a raise the boundary reports —
+`NSLog` and continue, by default — and returns a zero value.
+
+You can still write `fn` methods where you want the strict contract and no
+catch machinery. But the reason the examples read cleanly is that the common
+case no longer needs one.
+
+## What a class does not have yet
+
+**Fields.** `var` members on a class are designed — one hidden ivar holding a
+boxed Mojo struct, with synthesized `init` and `dealloc` — but not implemented.
+Until they are, callback state lives where it always has:
+
+```mojo
+comptime clicks = named_global["example.clicks", Int]
+comptime label_addr = named_global["example.label", Int]
+```
+
+`examples/life/main.mojo` still carries fourteen of these for exactly this
+reason. When fields land, most of them become ordinary members with real
+construction and destruction — which is the thing `named_global` can never
+give you.
+
+Also not in this version: nested classes, class-level `comptime` parameters,
+and Mojo-trait conformances. A class is not a struct.
+
+## Instances
+
+`ClassName()` registers the class if it is not registered yet, then allocs and
+inits. Registration is idempotent — a second instance costs one
+`objc_getClass`.
+
+```mojo
+var probe = Probe()
+var obj = ObjCObject(probe.__objc_id)
+```
+
+`__objc_id` is the raw `id`. A class reference is register-passable, retains on
+copy and releases on destruction — which is what an Objective-C reference *is*,
+and the same shape `ObjCRef` already had.
+
+## Sending to your own selectors
+
+One asymmetry to know. `msg_send` checks the selector against the SDK, so it
+cannot send a selector you invented:
+
+```mojo
+# buttonClicked: is ours — msg_send will not have it
+var responds = msg_send[Bool, "NSObject", "respondsToSelector:"](
+    obj, sel_dynamic("buttonClicked:")
+)
+```
+
+`sel_dynamic` registers a selector by name at run time, and
+`respondsToSelector:` is what a button asks before it sends anything anyway.
+
+## The older way: `ObjCClassBuilder`
+
+Everything above replaces a mechanism that still exists and still works. You
+will meet it in `spikes/`, which predate `class`:
 
 ```mojo
 var vb = ObjCClassBuilder["NSView"]("LifeView")
 vb.add_method["mouseDown:"](on_mouse_down)
-vb.add_method["keyDown:"](on_key_down)
-vb.add_method["acceptsFirstResponder"](accepts_first_responder)
+vb.add_method["tick:", encoding="v@:@"](on_tick)
 var LifeView = vb^.register()
 ```
 
-`register()` takes `deinit self`, so it consumes the builder — hence `b^`. A
-class can be registered exactly once, and the type system enforces it.
-
-## Where the type encoding comes from
-
-`class_addMethod` needs a *method type encoding*: a string like `"v@:@"`
-telling the runtime the ABI of the implementation. Getting it wrong produces
-argument corruption, not a diagnostic.
-
-For any selector the SDK knows, you do not write it. The builder looks it up:
-
-```mojo
-b.add_method["applicationDidFinishLaunching:"](did_launch)
-```
-
-The database returns `"v24@0:8@16"` — the runtime's `@encode` carries frame
-offsets — and the builder strips the digits to leave `"v@:@"`, which is what
-`class_addMethod` wants.
-
-For a selector the SDK has never heard of, because you invented it, pass the
-encoding yourself:
-
-```mojo
-ab.add_method["tick:", encoding="v@:@"](on_tick)
-```
-
-Omitting `encoding=` on an unknown selector is a compile error telling you to
-supply it. That is the correct behaviour: the alternative is a guess.
-
-Reading `"v@:@"`: return `void`, then `self` (`@`), then `_cmd` (`:`), then one
-object argument (`@`). The common encodings are in the
-[reference](../reference/02-std-objc.md).
-
-## A worked example: a timer target
-
-```mojo
-fn on_tick(self_: P, cmd: P, timer: P):
-    step_simulation()
-    redraw()
-
-# ...
-
-var ab = ObjCClassBuilder("LifeActions")
-ab.add_method["tick:", encoding="v@:@"](on_tick)
-var actions = new_instance(ab^.register())
-_ = external_call["objc_retain", P](actions.ptr())
-```
-
-That last line matters. `new_instance` gives you a +1, but the value is about to
-go out of scope while Cocoa still holds a bare pointer to it. Retaining it
-deliberately, and never releasing, is correct for an object that must live as
-long as the application. It is a leak in the strict sense and the right answer
-in practice.
+with callbacks written as `fn`s carrying the `self_: P, cmd: P` prefix by hand.
+It is the layer `class` is built on, and it remains the escape hatch for a
+method shape the class syntax does not cover. For new code, declare a class.
 
 ## The round trip
 
 ```mermaid
 sequenceDiagram
-    participant App as Your main()
+    participant C as Compiler
     participant RT as objc runtime
     participant AK as AppKit
-    participant M as Your Mojo IMP
+    participant M as Your method body
 
-    App->>RT: objc_allocateClassPair("LifeView", NSView)
-    App->>RT: class_addMethod(cls, sel, imp, "v@:@")
-    App->>RT: objc_registerClassPair(cls)
-    App->>AK: setContentView: instance
-    App->>AK: [NSApplication run]
-    AK->>M: mouseDown: (self, _cmd, event)
+    C->>RT: register class, add methods
+    Note over C,RT: selectors derived, encodings looked up
+    C->>RT: alloc + init on first instantiation
+    C->>AK: setContentView: / target:action:
+    C->>AK: [NSApplication run]
+    AK->>RT: mouseDown: to your class
+    RT->>M: trampoline drops _cmd, forwards the rest
     M->>RT: objc_msgSend(event, "locationInWindow")
     RT-->>M: CGPoint
-    M-->>AK: return
+    M-->>AK: return (a raise is caught here)
 ```
 
-The encoding passed to `class_addMethod` in the second step is the one the SDK
-database supplied; nothing in that sequence was typed by hand except the
-selector names.
+The trampoline is the piece you never see. It carries the `(self, _cmd, args…)`
+shape the runtime requires, drops the `_cmd` slot, forwards the rest to your
+method, and catches anything the body raises so it cannot unwind into
+`objc_msgSend`.
 
 ## Verifying it worked
 
@@ -179,33 +212,47 @@ from the one you added, or a `register()` that never ran.
 
 ## Delegates
 
-A delegate is only an object implementing the right selectors. There is no
-protocol conformance to declare at run time:
+A delegate is an object implementing the right selectors — so it is a class
+with those methods on it:
 
 ```mojo
-var db = ObjCClassBuilder("LifeDelegate")
-db.add_method["applicationShouldTerminateAfterLastWindowClosed:"](
-    should_terminate
-)
-var delegate = new_instance(db^.register())
+class LifeDelegate:
+    def applicationShouldTerminateAfterLastWindowClosed_(
+        self, app: ObjCObject
+    ) -> Bool:
+        return True
+
+# ...
+let delegate = ObjCObject(LifeDelegate().__objc_id)
 _ = msg_send[ObjCObject, "NSApplication", "setDelegate:"](app, delegate.ptr())
 ```
 
 Because the selector is a real AppKit one, its encoding comes from the database
 and you never type `"c@:@"` — which, incidentally, is the encoding people most
-often get wrong, since `BOOL` is `c` and not `B`.
+often get wrong, since `BOOL` is `c` and not `B`. Get the signature wrong and
+you get a compile error quoting what the SDK expects.
+
+Where a delegate must *declare* conformance rather than merely have the
+methods, name the protocol as a base:
+
+```mojo
+class Editor(NSView, NSTextInputClient):
+    ...
+```
 
 ## Reading arguments out of an event
 
 Callback arguments arrive as raw pointers. Wrap and send:
 
 ```mojo
-def event_has_shift(event: P) -> Bool:
-    var flags = msg_send[Int, "NSEvent", "modifierFlags"](
-        ObjCObject(Int(event))
-    )
+def event_has_shift(event: ObjCObject) -> Bool:
+    var flags = msg_send[Int, "NSEvent", "modifierFlags"](event)
     return (flags & 131072) != 0    # NSEventModifierFlagShift
 ```
+
+Arguments arrive typed now — a `class` method declares `event: ObjCObject`
+rather than a raw `P` — so most of the wrapping the old callbacks needed is
+gone.
 
 That magic number should be `cocoakb_enum_value["NSEventModifierFlagShift"]()`.
 The example applications hardcode several of these, and it is the one habit in
@@ -214,7 +261,8 @@ them worth not copying.
 Reading a keystroke is the same pattern with a string on the end:
 
 ```mojo
-fn on_key_down(self_: P, cmd: P, event: P):
+class LifeView(NSView):
+  def keyDown_(self, event: ObjCObject):
     var chars = msg_send[
         ObjCObject, "NSEvent", "charactersIgnoringModifiers"
     ](ObjCObject(Int(event)))

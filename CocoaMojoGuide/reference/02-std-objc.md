@@ -210,6 +210,9 @@ The first two arguments are always `self` and `_cmd`.
 
 ### `ObjCClassBuilder`
 
+**Superseded by the `class` keyword** for new code; retained as the lower-level
+mechanism and as the escape hatch for method shapes `class` does not cover.
+
 ```mojo
 struct ObjCClassBuilder[superclass: StaticString = "NSObject"]
 ```

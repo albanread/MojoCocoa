@@ -5,24 +5,28 @@ its own — because it is not what most object-oriented experience will lead you
 to expect, and because the shape of the Cocoa layer is a direct response to the
 gap.
 
-Mojo has no classes. It has structs with methods, traits, and generics, and
-everything is resolved at compile time. There is no inheritance, no vtable, no
-runtime object graph, and no dynamic dispatch anywhere in the language.
+Mojo has no classes of its own. It has structs with methods, traits, and
+generics, and everything is resolved at compile time. There is no inheritance,
+no vtable, no runtime object graph, and no dynamic dispatch anywhere in the
+language.
 
 That is not a deficiency to work around. Most of what you want from objects is
 here; what is missing is precisely the part Objective-C is unusually good at,
 which is why the two compose so well.
 
-## There is no `class`
+## `class` means something specific here
 
-`class` is a reserved word — the token exists — and the parser's answer is
-unambiguous:
+In this fork `class` is not a Mojo class. It declares an **Objective-C**
+class — a real one, registered with the ObjC runtime, with dynamic dispatch and
+inheritance and everything else Mojo does not have.
 
-```text
-classes are not supported yet
-```
+That is the division of labour in one keyword. `struct` is Mojo's value type,
+resolved statically; `class` is Cocoa's reference type, resolved by the
+runtime. They are different animals and the language now says so.
 
-"Yet" is the compiler's word, not a promise. Write `struct`.
+This chapter is about `struct`, because that is what Mojo gives you on its own
+and what everything else is built from. [Chapter 6](06-callbacks.md) is about
+`class`.
 
 ## Structs
 
@@ -322,7 +326,8 @@ Lay the two models side by side and the division of labour is obvious.
 
 | | Mojo | Objective-C |
 |:---|:---|:---|
-| Unit | struct, value semantics | class, reference semantics |
+| Keyword here | `struct` | `class` |
+| Unit | value semantics | reference semantics |
 | Layout | fixed at compile time | object header plus ivars, discoverable at run time |
 | Inheritance | none | single, deep, pervasive |
 | Dispatch | static, always | dynamic, always — `objc_msgSend` |
@@ -339,10 +344,10 @@ struct with a `__deinit__` that calls `objc_release`. Cocoa's reference
 counting becomes Mojo's scope-based lifetime, with no new machinery on either
 side — the next chapter but one is entirely about this.
 
-**It builds real Objective-C classes at run time.** When Cocoa needs to send
-your code a message, `ObjCClassBuilder` calls `objc_allocateClassPair` and
-registers a genuine ObjC class whose method implementations are Mojo `fn`s.
-The dynamic dispatch is real; it just lands on static Mojo code.
+**It builds real Objective-C classes.** When Cocoa needs to send your code a
+message, a `class` declaration becomes a genuine registered ObjC class whose
+method implementations are Mojo. The dynamic dispatch is real; it just lands on
+static Mojo code.
 
 Everything in the rest of this guide is one of those two moves. Knowing which
 one you are looking at makes the rest considerably easier to read.
