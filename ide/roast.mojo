@@ -518,7 +518,14 @@ class RoastActions:
             pass
 
     def roastOpenExample_(self, sender: ObjCObject):
-        """Open a shipped example. The path came from the menu item itself."""
+        """Open a shipped example as a PROJECT, not as a loose file.
+
+        The example folder becomes the project root first, then its entry
+        point is opened. The order matters: the sidebar, the build target and
+        every relative path are read off the project root, so opening the file
+        first would build and browse against whatever folder was open before,
+        and the example would only look right until you pressed ⌘R.
+        """
         try:
             with autoreleasepool():
                 let path = msg_send[
@@ -528,15 +535,19 @@ class RoastActions:
                     set_status(String("That example has no path"))
                     return
                 let file = ns_to_string(path)
+                let cut = file.rfind("/")
+                if cut <= 0:
+                    set_status(String("Malformed example path"))
+                    return
+                let folder = String(file[byte=:cut])
+
+                open_folder(folder)
                 if not load_file(file):
                     set_status(String("Could not open ") + file)
                     return
-                # Open the folder too, so the sidebar shows the example rather
-                # than whatever happened to be open. An example is a project;
-                # opening one file out of it is half the point.
-                let cut = file.rfind("/")
-                if cut > 0:
-                    open_folder(String(file[byte=:cut]))
+                set_status(
+                    String("Example: ") + folder[byte=cut_name(folder):]
+                )
         except:
             pass
 
@@ -1655,6 +1666,13 @@ def outline_display_value(item: ObjCObject) -> ObjCObject:
         return ObjCObject(0)
 
 
+def cut_name(path: String) -> Int:
+    """The byte offset of the last path component, so a status line can name
+    the example rather than repeat its whole path."""
+    let cut = path.rfind("/")
+    return cut + 1 if cut >= 0 else 0
+
+
 def open_folder(var path: String):
     """Make a folder the project."""
     set_project_root(path^)
@@ -2098,11 +2116,13 @@ def main() raises:
         g_window()[] = win.addr()
 
         let content = msg_send[ObjCObject, "NSWindow", "contentView"](win)
-        let bounds = msg_send[CGRect, "NSView", "bounds"](content)
-        let w = bounds.size.width
-        let h = bounds.size.height
 
-        # Toolbar.
+        # Toolbar FIRST, because installing one changes the content view's
+        # height -- by 32 points on this system, measured, not assumed. Every
+        # frame below is computed from `h`, so reading it before the toolbar
+        # existed laid the whole window out against a height the content view
+        # never had: the tab strip sat 32 points below the top of the content
+        # and the gap between it and the toolbar was the error, made visible.
         let NSToolbar = ObjCClass.lookup["NSToolbar"]()
         var toolbar = msg_send[ObjCObject, "NSToolbar", "alloc", is_class=True](
             NSToolbar.as_object()
@@ -2114,6 +2134,10 @@ def main() raises:
             toolbar, actions.ptr()
         )
         _ = msg_send[ObjCObject, "NSWindow", "setToolbar:"](win, toolbar.ptr())
+
+        let bounds = msg_send[CGRect, "NSView", "bounds"](content)
+        let w = bounds.size.width
+        let h = bounds.size.height
 
         # Status bar: a label pinned to the bottom, and a hairline above it.
         comptime STATUS_H = 22.0
@@ -2467,6 +2491,19 @@ def main() raises:
             frame.origin.y,
         )
         print("roast: toolbar:", tb.addr() != 0)
+        # The strip has to sit flush under the toolbar. Installing a toolbar
+        # changes the content view's height, so laying out against the height
+        # read before it existed leaves a band of window background above the
+        # tabs -- visible, and easy to reintroduce. Report the distance so a
+        # regression is a failed check rather than something someone notices.
+        if g_tabbar()[] != 0:
+            let strip = msg_send[CGRect, "NSView", "frame"](
+                ObjCObject(g_tabbar()[])
+            )
+            let ch = msg_send[
+                CGRect, "NSView", "bounds"
+            ](msg_send[ObjCObject, "NSWindow", "contentView"](win)).size.height
+            print("roast: tab gap:", ch - (strip.origin.y + strip.size.height))
         # The items come from the factory method on RoastActions -- a count of
         # zero means identifiers registered but the factory never produced.
         print(

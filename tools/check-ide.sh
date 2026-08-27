@@ -167,6 +167,10 @@ fi
 check "split view"  "split panes: 2"        "sidebar + editor area"
 check "editor panes" "editor panes: 2"      "editor above the console"
 check "menu bar"    "menu bar items: 6"     "app, File, Edit, Build, Examples, Window"
+# Installing a toolbar changes the content view's height, so a layout computed
+# from the height read before it existed leaves a band above the tab strip.
+# Zero here means flush.
+check "tab strip"   "tab gap: 0.0"          "flush under the toolbar"
 check "lifecycle"   "applicationWillTerminate" "launch → close → terminate clean"
 # The first named_globals migrated onto class fields: the tab bar builds its
 # label attributes lazily in its own box, and says so exactly once.
