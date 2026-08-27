@@ -97,6 +97,37 @@ the note is the only window onto what the header was understood to mean. It is
 what `class_decl.mojo` asserts to prove the base list was captured rather than
 merely tolerated.
 
+### DECISION REVISED AT SPRINT 2 (2026-08-27): one pipeline, three branches
+
+Sprint 1 said classes would get their own signature path rather than teaching
+`resolveSignature` to be two things. Reading the whole function rather than its
+first forty lines reversed that, and the design's own refinement is why.
+
+If a class type genuinely *is* a register-passable struct of one pointer — the
+conclusion recorded above — then almost all of the value-type pipeline is
+already describing it correctly. The injected `AnyType`, `Deinitable` and
+`Movable` are true of a reference. `computeSelfTypeForStruct` gives the right
+`self`. The canonical trait, the source name, the signature remap: all correct
+as they stand. Exactly three things differ, and each is one line:
+
+1. the keyword the re-parse expects (`kw_class`);
+2. the parenthesised list — Objective-C names already captured at parse time,
+   stepped over by `skipObjCBaseList` rather than resolved as Mojo traits,
+   which would report `NSView` as an undefined trait and be a lie about a
+   correct line;
+3. `TypeConvention::RegisterPassable` instead of `MemoryOnly`.
+
+A parallel path would have duplicated sixty lines to change three. The lesson
+is the same one sprint 1 learned about the op: where the design says a class
+resembles a struct, the implementation should let it *be* one and mark the
+differences, rather than build a second thing that drifts.
+
+**Fields are diagnosed, not deferred.** A class field would resolve without
+complaint as an ordinary `StructFieldOp` — and that is the danger, because it
+would silently join the *reference's* layout, making `class C: var n: Int` an
+Int rather than something pointing at one. Rejecting it until sprint 3 builds
+the box costs a diagnostic and prevents a wrong program from compiling.
+
 ### The test harness had to be built too
 
 `./bazelw test //KGEN/test/mojo-parser:all` cannot build in this tree. All 357

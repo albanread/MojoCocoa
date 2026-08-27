@@ -11,86 +11,51 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-# RUN: %parse-mojo-isolated -verify-diagnostics %s
+# RUN: %parse-mojo-isolated %s | FileCheck %s
 
 # `class` declares an Objective-C class -- COCOA_CLASS_DESIGN.md.
 #
-# Sprint 1 is the declaration form: the header parses, the name is registered,
-# and lowering refuses. Every class below therefore carries the same refusal --
-# that IS the pass condition. What is being tested is that the grammar was
-# accepted, and -- through the note the refusal carries -- that the header was
-# understood to mean what it says.
+# Sprint 2 resolves one to a type. What the IR should show, and what these
+# checks pin, is the design's central claim about representation: a class is a
+# **register-passable** struct -- a pointer, not a value -- carrying the
+# Objective-C names it was declared against. It is deliberately NOT a separate
+# op; see the sprint 1 decision in the design document.
 
 
-# The simplest form: no bases, meaning NSObject.
-# expected-error @+1 {{class lowering is not implemented yet}}
+# CHECK-DAG: lit.struct.decl @Bare({{.*}}) register_passable attributes {objcClass
 class Bare:
     pass
 
 
-# A superclass.
-# expected-error @+2 {{class lowering is not implemented yet}}
-# expected-note @+1 {{superclass 'NSObject'}}
+# The bases survive parsing in source order: superclass first, protocols after.
+# They are strings, because they name things the Objective-C runtime resolves
+# and not Mojo traits -- reading them as traits would report `NSView` as an
+# undefined trait, which is a lie about a correct line.
+# CHECK-DAG: lit.struct.decl @WithSuper({{.*}}) register_passable attributes {objcBases = ["NSObject"], objcClass
 class WithSuper(NSObject):
     pass
 
 
-# A superclass and protocols. The first name is the superclass, the rest are
-# protocols; this is the shape Roast's GridView needs.
-# expected-error @+2 {{class lowering is not implemented yet}}
-# expected-note @+1 {{superclass 'NSView', protocols 'NSTextInputClient', 'NSDraggingDestination'}}
+# CHECK-DAG: lit.struct.decl @GridView({{.*}}) register_passable attributes {objcBases = ["NSView", "NSTextInputClient", "NSDraggingDestination"], objcClass
 class GridView(NSView, NSTextInputClient, NSDraggingDestination):
     pass
 
 
-# Qualified base names are kept whole rather than being read as attribute
-# access on something.
-# expected-error @+2 {{class lowering is not implemented yet}}
-# expected-note @+1 {{superclass 'foundation.NSObject'}}
+# A qualified name is kept whole rather than read as attribute access.
+# CHECK-DAG: lit.struct.decl @Qualified({{.*}}) register_passable attributes {objcBases = ["foundation.NSObject"], objcClass
 class Qualified(foundation.NSObject):
     pass
 
 
-# An empty base list is not an error; it means the same as writing none.
-# expected-error @+1 {{class lowering is not implemented yet}}
+# An empty base list means the same as writing none at all: no objcBases.
+# CHECK-DAG: lit.struct.decl @EmptyBases({{.*}}) register_passable attributes {objcClass
 class EmptyBases():
     pass
 
 
-# A body with fields and methods. None of it is resolved in sprint 1 -- the
-# body is skipped the same way a struct's is -- but it must not disturb the
-# header parse or the statement that follows.
-# expected-error @+2 {{class lowering is not implemented yet}}
-# expected-note @+1 {{superclass 'NSView'}}
-class WithBody(NSView):
-    """A docstring."""
-
-    var count: Int
-    var name: String = String("untitled")
-
-    def isFlipped(self) -> Bool:
-        return True
-
-    def drawRect_(self, dirty: CGRect):
-        pass
-
-    fn strict_(self, event: Int):
-        pass
-
-
-# Decorators are accepted before a class the same way they are before a struct.
-# @objc is not interpreted yet; sprint 4 makes it mean something.
-# expected-error @+3 {{class lowering is not implemented yet}}
-# expected-note @+2 {{superclass 'NSView'}}
-@objc("RoastTabBarV2")
-class Renamed(NSView):
-    pass
-
-
-# A base list spread over several lines with a trailing comma, which is how a
-# long protocol list actually gets written.
-# expected-error @+2 {{class lowering is not implemented yet}}
-# expected-note @+1 {{superclass 'NSView', protocols 'NSTextInputClient'}}
+# A base list wrapped over several lines, with the trailing comma such a list
+# is actually written with.
+# CHECK-DAG: lit.struct.decl @Multiline({{.*}}) register_passable attributes {objcBases = ["NSView", "NSTextInputClient"], objcClass
 class Multiline(
     NSView,
     NSTextInputClient,
@@ -98,7 +63,17 @@ class Multiline(
     pass
 
 
-# The declaration after all of the above still parses: refusing a class must
-# not derail the file.
-struct StillFine:
+# Methods resolve, and `self` is the class. Registering them with the runtime
+# is the rest of sprint 2; this is the half that has to be true first.
+# CHECK-DAG: lit.fn @"isFlipped(class_decl::TabBar)"{{.*}}%self: !lit.ref<!TabBar
+class TabBar(NSView):
+    """A docstring."""
+
+    def isFlipped(self) -> Bool:
+        return True
+
+
+# Structs are untouched: still memory-only, still no Objective-C attributes.
+# CHECK-DAG: lit.struct.decl @PlainStruct({{.*}}) attributes {sourceName
+struct PlainStruct:
     var x: Int

@@ -1158,9 +1158,10 @@ struct UseTraitWithIntParamOnMethodReallyLongName(TraitWithIntParamOnMethodReall
 # Class
 ##===----------------------------------------------------------------------===##
 
-# `class` now parses -- COCOA_CLASS_DESIGN.md. Lowering is sprint 2, and the
-# grammar itself is covered by class_decl.mojo and class_decl_errors.mojo.
-class SomeClass:  # expected-error {{class lowering is not implemented yet}}
+# `class` declares an Objective-C class and resolves to a type -- there is no
+# error here any more. COCOA_CLASS_DESIGN.md; class_decl.mojo and
+# class_decl_errors.mojo cover it properly.
+class SomeClass:
   pass
 
 

@@ -13,12 +13,12 @@
 
 # RUN: %parse-mojo-isolated -verify-diagnostics %s
 
-# Syntax diagnostics for `class` -- COCOA_CLASS_DESIGN.md sprint 1.
+# Diagnostics for `class` -- COCOA_CLASS_DESIGN.md.
 #
-# Each of these fires INSTEAD of the "class lowering is not implemented yet"
-# refusal, not as well as it: a header that does not parse never reaches
-# signature resolution. That is the property being pinned, and it is why these
-# live apart from class_decl.mojo.
+# A header that does not parse never reaches signature resolution, so these
+# fire alone rather than alongside anything from the resolver. That is the
+# property being pinned, and it is why these live apart from class_decl.mojo,
+# where every class is expected to resolve cleanly.
 
 
 # A name is required.
@@ -82,3 +82,12 @@ def some_function():
     # expected-error @+1 {{class inside a function not supported here}}
     class NestedInFunction:
         pass
+
+
+# Fields belong in a box reached through one hidden ivar, not in the class type
+# -- which is one pointer and nothing else. Accepting one would not fail; it
+# would quietly make `Boxed` an Int rather than something pointing at one,
+# which is why this is diagnosed rather than deferred.
+class Boxed(NSObject):
+    # expected-error @+1 {{class fields are not implemented yet: 'count'}}
+    var count: Int
