@@ -15,6 +15,7 @@
 # rope edit (measured: 2.4 us) and one line redrawn.
 from rope import Rope
 from lsp import (
+    diag_visible,
     completion_count,
     clear_completions,
     g_comp_label,
@@ -433,6 +434,11 @@ class RoastGridView(NSView, NSTextInputClient):
                     let NSColorD = ObjCClass.lookup["NSColor"]()
                     var di = 0
                     while di < dn:
+                        # The store holds every open document's diagnostics;
+                        # only this one's belong on this buffer.
+                        if not diag_visible(di):
+                            di += 1
+                            continue
                         let dline = g_diag_line()[][di]
                         if dline < first or dline >= last:
                             di += 1

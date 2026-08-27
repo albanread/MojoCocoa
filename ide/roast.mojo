@@ -1022,8 +1022,9 @@ def _report_diagnostics():
     """Say what the server found, unless a search is showing its own count."""
     if query().byte_length() > 0:
         return
-    let n = lsp.diagnostic_count()
-    if n == 0:
+    let n = lsp.visible_diagnostic_count()
+    let first = lsp.first_visible_diagnostic()
+    if n == 0 or first < 0:
         set_status(String("No issues"))
         return
     # The first diagnostic in full: a count alone tells you there is a problem
@@ -1032,9 +1033,9 @@ def _report_diagnostics():
         String(n)
         + String(" issue" if n == 1 else " issues")
         + String("  ·  line ")
-        + String(lsp.g_diag_line()[][0] + 1)
+        + String(lsp.g_diag_line()[][first] + 1)
         + String(": ")
-        + lsp.g_diag_msg()[][0]
+        + lsp.g_diag_msg()[][first]
     )
 
 
@@ -1063,6 +1064,7 @@ def load_file(path: String) -> Bool:
         document.set_sent_revision(g_revision()[])
         mark_clean()
         refresh_tabs()
+        lsp.set_shown_uri(uri)
         if lsp.is_ready():
             lsp.did_open(uri, g_buffer_text())
         if g_grid()[] != 0:
@@ -1444,6 +1446,9 @@ def refresh_tabs():
 
 def after_switch():
     """Everything that has to follow the current document changing."""
+    # The server holds diagnostics for every open tab; tell it which one is
+    # being looked at so the right set is drawn.
+    lsp.set_shown_uri(document.current_uri())
     reveal_tab(document.current_index())
     refresh_tabs()
     _show_dirty()
@@ -1722,6 +1727,7 @@ def start_lsp() -> Bool:
     lsp.stop()
     if not lsp.start(server, String("file://") + root, lsp_import_path()):
         return False
+    lsp.set_shown_uri(document.current_uri())
     lsp.did_open(document.current_uri(), g_buffer_text())
     let slot = g_lsp_root()
     if len(slot[]) == 0:

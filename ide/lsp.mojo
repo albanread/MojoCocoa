@@ -100,6 +100,15 @@ comptime g_diag_col = named_global["lsp.diag.col", List[Int]]
 comptime g_diag_end = named_global["lsp.diag.end", List[Int]]
 comptime g_diag_sev = named_global["lsp.diag.sev", List[Int]]
 comptime g_diag_msg = named_global["lsp.diag.msg", List[String]]
+# Which file each diagnostic belongs to, and which file is on screen.
+#
+# The server publishes for every document it has been told about, and it has
+# been told about every open tab. Without the uri these were one global set
+# that the newest publish overwrote, so the squiggles under your cursor could
+# belong to another file entirely -- drawn at those coordinates in this
+# buffer, which is worse than showing nothing.
+comptime g_diag_uri = named_global["lsp.diag.uri", List[String]]
+comptime g_shown_uri = named_global["lsp.shown.uri", List[String]]
 
 # Completion results, and the id of the request they answer. A reply that is
 # not the newest request is dropped: typing fast outruns the server, and a late
@@ -169,12 +178,85 @@ def request_completion(uri: String, line: Int, character: Int) -> Int:
     return id
 
 
+def set_shown_uri(var uri: String):
+    """Name the document on screen, so diagnostics for the others stay off it."""
+    let slot = g_shown_uri()
+    if len(slot[]) == 0:
+        slot[].append(uri^)
+    else:
+        slot[][0] = uri^
+
+
+def shown_uri() -> String:
+    let slot = g_shown_uri()
+    return slot[][0] if len(slot[]) > 0 else String()
+
+
+def diag_visible(i: Int) -> Bool:
+    """Is this diagnostic about the document on screen?"""
+    if i < 0 or i >= len(g_diag_uri()[]):
+        return False
+    return g_diag_uri()[][i] == shown_uri()
+
+
+def visible_diagnostic_count() -> Int:
+    var n = 0
+    var i = 0
+    while i < len(g_diag_uri()[]):
+        if diag_visible(i):
+            n += 1
+        i += 1
+    return n
+
+
+def first_visible_diagnostic() -> Int:
+    """Index of the first diagnostic about the shown document, or -1."""
+    var i = 0
+    while i < len(g_diag_uri()[]):
+        if diag_visible(i):
+            return i
+        i += 1
+    return -1
+
+
+def _drop_diagnostics_for(uri: String):
+    """Remove the set belonging to one document, leaving the others alone."""
+    let l = g_diag_line()
+    let c = g_diag_col()
+    let e = g_diag_end()
+    let sv = g_diag_sev()
+    let m = g_diag_msg()
+    let u = g_diag_uri()
+    var i = len(u[]) - 1
+    while i >= 0:
+        if u[][i] == uri:
+            # Order does not matter to the reader, so swap-with-last and pop
+            # rather than shifting five lists down for every removal.
+            let last = len(u[]) - 1
+            l[].swap_elements(i, last)
+            c[].swap_elements(i, last)
+            e[].swap_elements(i, last)
+            sv[].swap_elements(i, last)
+            m[].swap_elements(i, last)
+            u[].swap_elements(i, last)
+            _ = l[].pop()
+            _ = c[].pop()
+            _ = e[].pop()
+            _ = sv[].pop()
+            _ = m[].pop()
+            _ = u[].pop()
+        i -= 1
+
+
 def clear_diagnostics():
     let l = g_diag_line()
     let c = g_diag_col()
     let e = g_diag_end()
     let s = g_diag_sev()
     let m = g_diag_msg()
+    let u = g_diag_uri()
+    while len(u[]) > 0:
+        _ = u[].pop()
     while len(l[]) > 0:
         _ = l[].pop()
     while len(c[]) > 0:
@@ -501,7 +583,12 @@ def _collect_completions(items: JSON):
 
 
 def _take_diagnostics(params: JSON):
-    clear_diagnostics()
+    # A publish replaces that document's set and touches no other. The server
+    # sends one of these per document it is watching, so clearing everything
+    # here -- which is what this used to do -- meant the last file to be
+    # analysed owned the display.
+    let uri = params.get("uri")[].as_string()
+    _drop_diagnostics_for(uri)
     let list = params.get("diagnostics")[]
     var i = 0
     while i < list.count():
@@ -521,4 +608,5 @@ def _take_diagnostics(params: JSON):
         # 1 error, 2 warning, 3 information, 4 hint.
         g_diag_sev()[].append(d.get("severity")[].as_int())
         g_diag_msg()[].append(d.get("message")[].as_string())
+        g_diag_uri()[].append(uri)
         i += 1
