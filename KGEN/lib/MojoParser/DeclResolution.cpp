@@ -1948,6 +1948,90 @@ AnyValue DeclResolver::resolveAnonymousClosure(const LambdaNode *node,
 
 /// funcdef   ::=  [decorators] "def" identifier [param_signature]
 ///                "(" [argument_list] ")" ["->" expression] ":" suite
+/// Synthesize the C-ABI function the Objective-C runtime will actually call
+/// for one method, and return it.
+///
+/// This is the adapter between two calling conventions that are nearly, but
+/// not quite, the same. Objective-C sends `(id self, SEL _cmd, args...)`;
+/// the Mojo method wants `(self, args...)`. `self` already lines up -- a class
+/// is one pointer passed in a register, which is what the borrow rule in
+/// Signatures.cpp was taught -- so the only structural difference is the
+/// `_cmd` slot, which nothing reads and which exists to occupy x1.
+///
+/// It cannot be skipped even so. A method body may raise, and unwinding into
+/// objc_msgSend is undefined, so the boundary is where an exception has to
+/// stop. That is what this function will grow next; today it forwards.
+static FnOp synthesizeObjCTrampoline(ASTDecl &structDecl, StructDeclOp structOp,
+                                     FnOp methodOp, StringRef selector,
+                                     DeclResolver &resolver) {
+  SharedState &shared = structDecl.getShared();
+  SMLoc declLoc = structDecl.getLoc();
+
+  ASTType selfType = structDecl.getTypeDeclSelf();
+  ASTType cmdType = shared.lookupBuiltinType("Int", structDecl, declLoc);
+  if (selfType.isNull() || cmdType.isNull() || cmdType.isTypeCheckErrorType())
+    return {};
+
+  // Arguments beyond the receiver are not forwarded yet, so a method that
+  // takes any is left unregistered rather than registered wrongly.
+  ASTType resultType = ASTType(methodOp.getUserResultType());
+
+  MLIRContext *ctx = shared.getContext();
+  auto selfName = StringAttr::get(ctx, "self");
+  auto cmdName = StringAttr::get(ctx, "_cmd");
+
+  FnEffects effects;
+  effects.setCABI(true);
+
+  // A name nobody can write, keyed by selector so two methods cannot collide.
+  std::string name = "__objc_imp_" + selector.str();
+  for (char &c : name)
+    if (c == ':')
+      c = '_';
+
+  StructEmitter structEmitter(structDecl);
+  auto [trampoline, trampolineDecl] = structEmitter.synthesizeMethodInStruct(
+      name,
+      /*argTypes=*/{selfType.mlirType, cmdType.mlirType},
+      /*argConvs=*/{ArgConvention::ReadReg, ArgConvention::ReadReg},
+      /*argListAttrs=*/
+      PogListAttr::get(ctx, {selfName, cmdName},
+                       {PassingKind::PosOnly, PassingKind::PosOnly}),
+      resultType, SpecialFunctionKind::kNormal, effects);
+  if (!trampoline)
+    return {};
+  // Deliberately not always-inline: this function is registered by address, so
+  // it has to exist as one.
+
+  // Forward to the method: the receiver is the first argument, and `_cmd` is
+  // dropped on the floor, which is the whole job.
+  ImplicitLocOpBuilder builder = ImplicitLocOpBuilder::atBlockEnd(
+      trampoline.getLoc(), trampoline.getBody());
+  builder.setInsertionPointToStart(trampoline.getBody());
+  builder.setLoc(trampoline->getLoc());
+  ASTDecl *resolved = shared.declResolver->getDeclForFuncSymbol(
+      getFullyResolvedSymbolRef(trampoline));
+  if (!resolved)
+    return {};
+  IREmitter emitter(*resolved, builder);
+  SyntheticNode loc(declLoc);
+
+  CallOperands operands(CallSyntax::kMethodCall, &loc,
+                        ExprDest(EC_ReturnValue));
+  operands.addSelf(ASTExprAnd<AnyValue>{
+      AnyValue(SBValue(trampoline.getBody()->getArgument(0))), &loc});
+  CValue result = emitter.emitNamedMethodCall(
+      methodOp.getSourceNameAttr().getValue(), std::move(operands));
+
+  // A register result comes back as an SRValue and is returned directly; a
+  // memory-only one has already been written to the result slot, so there is
+  // nothing to hand back.
+  IREmitter::emitNormalReturn(builder, result.getIfSRValue(),
+                              /*emitEndFunc=*/true);
+  (void)trampolineDecl;
+  return trampoline;
+}
+
 /// Give a class the one thing it is: a pointer to an Objective-C object.
 ///
 /// Until this, a class was an empty struct -- a type with methods and nowhere
@@ -2084,10 +2168,21 @@ static void synthesizeObjCRegistration(ASTDecl &structDecl,
     for (size_t i = 1, e = bases.size(); i != e; ++i)
       callOnRegistrar("add_protocol", {cast<StringAttr>(bases[i]).getValue()});
 
-  // Every method that answers a selector. Their signatures have to be resolved
-  // first: the body path deliberately does not resolve functions, but the
-  // selector and the SDK encoding are recorded during signature resolution,
-  // so without this there is nothing yet to read.
+  // Every method that answers a selector. Collected in full before anything
+  // is synthesized: synthesizing a trampoline adds a declaration to this very
+  // scope, and doing that while walking it invalidates the walk -- which
+  // presents as the compiler segfaulting, not as a diagnostic.
+  //
+  // Their signatures have to be resolved first, too. The body path
+  // deliberately does not resolve functions, but the selector and the SDK
+  // encoding are recorded during signature resolution, so without this there
+  // is nothing yet to read.
+  struct ObjCMethod {
+    FnOp op;
+    StringRef selector;
+    StringRef encoding;
+  };
+  SmallVector<ObjCMethod> methods;
   for (std::pair<StringAttr, TinyPtrVector<ASTDecl *>> entry :
        structDecl.getDeclsInScope()) {
     for (ASTDecl *methodDecl : entry.second) {
@@ -2101,14 +2196,39 @@ static void synthesizeObjCRegistration(ASTDecl &structDecl,
       if (!selector || !encoding)
         continue; // Private to Mojo, or its shape could not be established.
 
-      // Everything add_method needs except the IMP, which is the piece still
-      // missing: it is a C-ABI trampoline around this method, and a method is
-      // registered only once there is a real function pointer to register.
-      // Adding it with a null IMP would produce a class that answers the
-      // selector by crashing, which is worse than not answering it.
-      (void)selector;
-      (void)encoding;
+      // Only zero-argument methods so far: forwarding arguments through the
+      // trampoline is the next step, and a method registered without its
+      // arguments would answer its selector by reading rubbish.
+      if (methodOp.getBody()->getNumArguments() > 1)
+        continue;
+
+      methods.push_back({methodOp, selector.getValue(), encoding.getValue()});
     }
+  }
+
+  for (const ObjCMethod &method : methods) {
+    FnOp trampoline = synthesizeObjCTrampoline(
+        structDecl, structOp, method.op, method.selector, resolver);
+    if (!trampoline)
+      continue;
+
+    // The trampoline as a value. It captures nothing, so the closure is just
+    // its address, which is exactly what class_addMethod wants -- std.objc
+    // does the final bitcast, because Mojo can spell that in one line and the
+    // compiler would need five operations for it.
+    Value imp = KGEN::CreateClosureOp::create(
+        builder, builder.getLoc(), trampoline.getFuncTypeGenerator(),
+        trampoline.getBoundSymbolRef(shared.getEvaluationContext()),
+        ValueRange());
+
+    CallOperands operands(CallSyntax::kMethodCall, &loc,
+                          ExprDest(EC_TopLevelStmt));
+    operands.addSelf(
+        ASTExprAnd<AnyValue>{AnyValue(MLValue(registrarVar)), &loc});
+    operands.add(ASTExprAnd<AnyValue>{AnyValue(literal(method.selector)), &loc});
+    operands.add(ASTExprAnd<AnyValue>{AnyValue(literal(method.encoding)), &loc});
+    operands.add(ASTExprAnd<AnyValue>{AnyValue(SRValue(imp)), &loc});
+    emitter.emitNamedMethodCall("add_method", std::move(operands));
   }
 
   callOnRegistrar("register", {});

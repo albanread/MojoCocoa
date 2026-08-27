@@ -40,9 +40,9 @@ struct ObjCClassRegistrar:
         self._cls = 0
         self._ok = False
 
-    def add_method(
-        mut self, selector: StringSlice, encoding: StringSlice, imp: Int
-    ) -> Bool:
+    def add_method[
+        F: AnyType
+    ](mut self, selector: StringSlice, encoding: StringSlice, imp: F) -> Bool:
         return False
 
     def add_protocol(mut self, name: StringSlice) -> Bool:

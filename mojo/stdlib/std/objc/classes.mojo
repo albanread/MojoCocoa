@@ -279,9 +279,16 @@ struct ObjCClassRegistrar:
         self._cls = Int(cls)
         self._ok = Int(cls) != 0
 
-    def add_method(
-        mut self, selector: StringSlice, encoding: StringSlice, imp: P
-    ) -> Bool:
+    def add_method[
+        F: AnyType
+    ](mut self, selector: StringSlice, encoding: StringSlice, imp: F) -> Bool:
+        """`imp` is the C-ABI trampoline the compiler synthesized.
+
+        Taken as a function value rather than an already-converted pointer so
+        that `_imp_ptr` -- which is a bitcast Mojo knows how to spell and the
+        compiler would otherwise have to emit five operations for -- stays on
+        this side of the boundary.
+        """
         if not self._ok:
             return False
         return external_call["class_addMethod", Bool](
@@ -289,7 +296,7 @@ struct ObjCClassRegistrar:
             external_call["sel_registerName", P](
                 _leak_cstr(String(selector))
             ),
-            imp,
+            _imp_ptr(imp),
             _leak_cstr(String(encoding)),
         )
 

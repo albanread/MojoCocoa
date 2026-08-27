@@ -20,7 +20,7 @@ def main() raises:
     # The registrar loads the framework itself, which is the point: the
     # superclass cannot be resolved before AppKit is in the process.
     var r = ObjCClassRegistrar("RegistrarProbeView", "NSView", "AppKit")
-    var added = r.add_method("isFlipped", "B16@0:8", Pointer(to=is_flipped).unsafe_bitcast[P]()[])
+    var added = r.add_method("isFlipped", "B16@0:8", is_flipped)
     var conformed = r.add_protocol("NSTextInputClient")
     var cls = r.register()
 

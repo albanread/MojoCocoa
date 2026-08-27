@@ -57,6 +57,8 @@ class GridView(NSView, NSTextInputClient, NSDraggingDestination):
 # CHECK-DAG: kgen.param.constant: !lit.struct<#StringLiteral <:string "GridView">>
 # CHECK-DAG: kgen.param.constant: !lit.struct<#StringLiteral <:string "AppKit">>
 # CHECK-DAG: ObjCClassRegistrar::@"__init__
+# CHECK-DAG: ObjCClassRegistrar::@"add_protocol
+# CHECK-DAG: ObjCClassRegistrar::@"register
 
 
 # A qualified name is kept whole rather than read as attribute access.
@@ -103,6 +105,13 @@ class Multiline(
 class TabBar(NSView):
     """A docstring."""
 
+    # The C-ABI function the runtime will call: Objective-C sends
+    # (id self, SEL _cmd), the method wants (self), and `self` already lines up
+    # because a class reference travels in a register. The trampoline exists to
+    # drop _cmd -- and, later, to stop an exception before it unwinds into
+    # objc_msgSend, which is undefined.
+    # CHECK-DAG: lit.fn @"__objc_imp_isFlipped({{.*}}(%self: !TabBar, %_cmd: !Int{{.*}}) cabi -> !Bool
+    # CHECK-DAG: ObjCClassRegistrar::@"add_method
     def isFlipped(self) -> Bool:
         return True
 
