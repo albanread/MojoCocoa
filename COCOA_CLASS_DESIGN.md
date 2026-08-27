@@ -430,11 +430,19 @@ What a class field is today, stated so nobody discovers it the hard way:
   line. `Pointer` being non-nullable is why `box_of` answers a failed
   registration with scratch instead of null — the caller is compiler-emitted
   straight-line code with nowhere to branch to.
-- **Field initializers** (`var x: Int = 3`) do not PARSE yet -- the grammar
-  sketch above is still a promise. The field-construction machinery they need
-  is now in place (it is the same loop, with the initializer expression in
-  place of the default constructor), so this is the next small piece rather
-  than a design question.
+- **Field initializers** (`var x: Int = 3`) work. Parsed with the field, where
+  its type is finally known; emitted by the synthesized `__init__` into the
+  box. A struct still refuses one, deliberately: a struct's initial values
+  belong in its `__init__`, where Mojo checks that every field is set exactly
+  once, and a class has no such place -- its `__init__` IS the compiler's,
+  which is the whole reason the declaration is allowed to carry the value.
+
+  The expression is evaluated twice per instance -- once into the local the
+  constructor returns, once into the box. The local is a copy nobody should
+  read a field through, but somebody will, and `Counter().hits` answering 0
+  while the object holds 41 is a worse lie than a second evaluation. It joins
+  the doubling already true of every field's constructor and destructor, and
+  it goes away with sprint 6's handle.
 - **Destruction runs at `dealloc`.** The compiler emits `add_dealloc`, and
   std.objc's `_box_dealloc_imp` does two things in the one order that works:
   run T's destructor over the box, THEN `[super dealloc]`. Either half alone
@@ -464,6 +472,26 @@ What a class field is today, stated so nobody discovers it the hard way:
   an app-lifetime object is fine, and a transient one must be released or
   autoreleased explicitly — after which the box is properly emptied. This is
   the last piece of the lifecycle and it is sprint 6's, not the box's.
+
+### The second instance
+
+Worth recording, because it is the shape of bug this whole area produces.
+Constructing the fields into the box was written, tested, and committed --
+and it initialised the FIRST instance of a class and left every instance
+after it holding zeroes. The registrar's constructor takes an early-out when
+`objc_getClass` finds the class already registered (the ordinary case after
+the first instance) and set `_has_box = False` on that path, which was true
+of everything it guarded until the box needed constructing per instance
+rather than per class.
+
+The fix is to ask the runtime rather than assume: `box_offset(cls) != 0`,
+where offset zero means no box because an ivar can never live there -- that
+is the isa pointer.
+
+The lesson is the one about test shape, not about the flag. Every box test up
+to that point made ONE instance. `field_init_test` makes a second and checks
+that the first one's mutation did not follow it, and that is the only reason
+this was found before it reached the IDE.
 
 ### Autorelease pools
 

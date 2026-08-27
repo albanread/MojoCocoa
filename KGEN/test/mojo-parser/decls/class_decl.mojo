@@ -131,6 +131,9 @@ class TabBar(NSView):
 # CHECK-DAG: lit.struct.decl @Boxed({{.*}}) attributes {objcBases = ["NSObject"], objcClass
 # CHECK-DAG: ObjCClassRegistrar::@"add_box
 # CHECK-DAG: get_sizeof
+# A field initializer -- `var count: Int = 3` -- is parsed with the field and
+# emitted by the synthesized __init__, into the box.
+# CHECK-DAG: lit.struct.field seeded
 # CHECK-DAG: vega.objc.boxoffset/Boxed
 # CHECK-DAG: pop.offset
 #
@@ -144,6 +147,7 @@ class TabBar(NSView):
 # CHECK-NOT: __objc_imp_isProxy{{.*}}!lit.ref<!Boxed
 class Boxed(NSObject):
     var count: Int
+    var seeded: Int = 7
 
     def isProxy(self) -> Bool:
         return self.count > 0

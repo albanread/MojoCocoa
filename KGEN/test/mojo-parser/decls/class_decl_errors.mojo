@@ -197,3 +197,12 @@ class TooManyArgs(NSView):
 @objc("NotAClass")
 struct PlainStruct:
     var x: Int
+
+
+# A field initializer is a `class` thing. A struct's initial values belong in
+# its `__init__`, where Mojo checks that every field is set exactly once; a
+# class has no such place, because its `__init__` is the compiler's, which is
+# the whole reason the declaration is allowed to say it.
+struct StructWithInit(Copyable, Movable):
+    # expected-error @+1 {{a struct field cannot have an initializer here; set it in '__init__'}}
+    var x: Int = 3
