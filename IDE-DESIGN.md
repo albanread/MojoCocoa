@@ -204,9 +204,10 @@ Honest gaps, each small, each reusable beyond the IDE:
 1. **`std.json`** — encode/decode for LSP. Strict, no reflection, hand-rolled.
 2. **`std.rope`** — the persistent rope belongs in the stdlib, not the app.
 3. **East Asian width table** — cell-width classification for the grid.
-4. **`class_addProtocol` in `objc.classes`** — `NSTextInputClient` adoption
-   needs the registered class to *conform*, not just implement. One
-   external_call plus plumbing.
+4. ~~**`class_addProtocol`**~~ — **done**, as `ObjCClassBuilder.add_protocol`,
+   with `add_method_unchecked` alongside it for signatures the typed IMP
+   shapes cannot express (`selectedRange` returns an NSRange by value,
+   `firstRectForCharacterRange:` an NSRect).
    *(Milestone 0 closed a neighbouring gap: `IMP*Obj` shapes, for delegate
    methods that answer with an object. They return `Int` rather than a pointer
    because Objective-C delegates must be able to answer nil and Mojo's
@@ -231,7 +232,7 @@ is simpler and crash-isolated.
 | # | lands | verified by |
 |---|---|---|
 | 0 | **done** — shell: window, native tabbing, menu, toolbar, status bar, sidebar | `tools/check-ide.sh` — 7 checks green |
-| 1 | rope **done** · GridView **done** · NSTextInputClient, undo, find to come | 250k lines built in 5 ms, keystroke 2.4 µs, snapshot 400 ns; Pinyin composes |
+| 1 | rope **done** · GridView **done** · NSTextInputClient **done** · undo, find, caret drawing to come | 250k lines in 5 ms, keystroke 2.4 µs, snapshot 400 ns; 26 editing checks; Pinyin still to try with a real IME |
 | 2 | LSP: diagnostics, completion, definition, semantic tokens | scripted session completes `setTitle:` inside a msg_send string |
 | 3 | build/run, issues drawer, output pane — **self-hosting** | the IDE builds the IDE |
 | 4 | AppleScript dictionary + `check-ide.sh` | osascript drives edit→build→diagnostics in CI |

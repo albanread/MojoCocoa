@@ -39,6 +39,19 @@ else
   bad "rope" "$(grep -m1 'error' "$TMP/rope_build.log" || echo 'build failed')"
 fi
 
+# Editing behaviour, also without a window: the text input client's risk is
+# the arithmetic, not the Objective-C plumbing.
+if "$CM" --build ide/edit_test.mojo -o "$TMP/edit_test" >"$TMP/edit_build.log" 2>&1; then
+  edit_out=$(timeout 120 "$TMP/edit_test" 2>&1)
+  if echo "$edit_out" | grep -q '^edit OK'; then
+    ok "editing" "$(echo "$edit_out" | grep -c '  OK ') checks — UTF-8 backspace, column keeping, UTF-16 offsets"
+  else
+    bad "editing" "$(echo "$edit_out" | grep -m1 FAIL || echo 'tests failed')"
+  fi
+else
+  bad "editing" "$(grep -m1 'error' "$TMP/edit_build.log" || echo 'build failed')"
+fi
+
 out=$(ROAST_AUTOCLOSE_TICKS=12 timeout 90 "$TMP/roast" 2>&1)
 
 check() {  # <label> <pattern> <description>
@@ -52,6 +65,14 @@ check "toolbar"     "toolbar: True"         "attached"
 check "split view"  "split panes: 2"        "sidebar + editor area"
 check "menu bar"    "menu bar items: 5"     "app, File, Edit, Build, Window"
 check "lifecycle"   "applicationWillTerminate" "launch → close → terminate clean"
+
+# Implementing the selectors is not conformance, and AppKit asks. The app says
+# so on startup when the protocol is missing.
+if echo "$out" | grep -q 'NSTextInputClient protocol not registered'; then
+  bad "input client" "class does not conform — IME will not work"
+else
+  ok "input client" "NSTextInputClient conformance registered"
+fi
 
 # The editor surface: a document sized from the rope, which only happens if the
 # buffer loaded, the font was measured and the view was installed.

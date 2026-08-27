@@ -162,6 +162,44 @@ struct ObjCClassBuilder[superclass: StaticString = "NSObject"]:
     ](mut self, imp: IMP2ObjBool):
         self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
 
+    def add_method_unchecked[
+        selector: StaticString, encoding: StaticString = "", F: AnyType = NoneType
+    ](mut self, imp: F):
+        """Add a method of any signature, with no shape checking.
+
+        The typed overloads above cover what Cocoa mostly asks for. They cannot
+        cover everything: NSTextInputClient's `selectedRange` returns an NSRange
+        by value, `insertText:replacementRange:` takes one, and
+        `firstRectForCharacterRange:actualRange:` returns an NSRect. Struct
+        arguments and returns are ordinary arm64 register passing, but each is a
+        distinct function type and enumerating them in the stdlib would be a
+        list with no end.
+
+        So this takes the function as-is. The encoding is what tells the runtime
+        the real signature, and getting it wrong is a mis-marshalled call rather
+        than a compile error -- which is why this is named for what it does not
+        do. Prefer a typed overload where one fits.
+        """
+        self._add(selector, _encoding_for[selector, encoding](), _imp_ptr(imp))
+
+    def add_protocol[name: StaticString](mut self) -> Bool:
+        """Declare that this class conforms to a protocol.
+
+        Implementing a protocol's methods is not the same as conforming to it.
+        AppKit asks `conformsToProtocol:` in places -- NSTextInputClient among
+        them -- and a class that only responds to the selectors is refused.
+        Returns False if the protocol is not registered in this process, which
+        usually means the framework defining it has not been loaded.
+        """
+        var proto = external_call["objc_getProtocol", P](
+            _leak_cstr(String(name))
+        )
+        if Int(proto) == 0:
+            return False
+        return external_call["class_addProtocol", Bool](
+            P(unsafe_from_address=self._cls), proto
+        )
+
     def register(deinit self) -> ObjCClass:
         """Finish the class; it can be instantiated after this."""
         external_call["objc_registerClassPair", NoneType](
