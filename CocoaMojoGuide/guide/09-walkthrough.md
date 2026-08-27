@@ -1,4 +1,4 @@
-# 8. A demo, walked through
+# 9. A demo, walked through
 
 This chapter reads one complete program line by line:
 `spikes/playground/p0_window.mojo` in the fork. It is 225 lines, it puts a real
@@ -51,7 +51,7 @@ struct CGPoint(Copyable, Movable):
 ```
 
 `CGSize` and `CGRect` follow the same shape. In a program you intend to keep,
-add the layout assertions from [chapter 3](03-calling-cocoa.md#struct-layouts) —
+add the layout assertions from [chapter 4](04-calling-cocoa.md#struct-layouts) —
 this demo omits them, and that is the one shortcut in it worth not copying.
 
 ## State the callbacks can reach

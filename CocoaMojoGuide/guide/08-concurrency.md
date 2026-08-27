@@ -1,4 +1,4 @@
-# 7. Concurrency and blocks
+# 8. Concurrency and blocks
 
 Grand Central Dispatch is the concurrency story for a Cocoa app: UI work
 belongs to the main queue and everything else hops between queues. It is a C
@@ -41,7 +41,7 @@ async_f(q, ctx, set_flag)    # returns immediately
 The context word is how you get data to the work function, because an `fn` has
 no closure. In practice you will often reach for `named_global` instead, the
 same way Cocoa callbacks do — see
-[Where callback state lives](04-ownership.md#where-callback-state-lives).
+[Where callback state lives](05-ownership.md#where-callback-state-lives).
 
 `Pointer` is non-nullable, so when the work function ignores its context you
 still have to hand it a real address rather than null. Any stable one will do.

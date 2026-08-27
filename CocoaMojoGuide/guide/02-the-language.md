@@ -235,7 +235,7 @@ One consequence worth knowing: **a thin `fn` is exactly a global block.** An
 Objective-C block with no captures is `_NSConcreteGlobalBlock` with no
 copy/dispose helpers, so the standard library can build a block around any
 `fn` at no cost. That is how block-only Cocoa APIs are reachable today — see
-[Concurrency and blocks](07-concurrency.md).
+[Concurrency and blocks](08-concurrency.md).
 
 ## Parameters and generics
 

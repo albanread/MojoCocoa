@@ -1,4 +1,4 @@
-# 6. A complete application
+# 7. A complete application
 
 Everything so far assembles into one shape. This chapter is that shape, in the
 order it has to happen, with the reasons.
@@ -189,4 +189,4 @@ released while Cocoa still held it. Look for an `ObjCRef` that went out of scope
 or a `new_instance` result that was never retained.
 
 The first two are configuration. The third is the one the compile-time checks
-cannot reach, which is why chapter 4 spends so long on it.
+cannot reach, which is why chapter 5 spends so long on it.

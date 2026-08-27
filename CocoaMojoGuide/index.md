@@ -24,7 +24,7 @@ var s = msg_send[
 
 | Document | What it is |
 |:---|:---|
-| [Programmer's Guide](guide/) | Read this first. Progressive, worked examples, ending in a complete windowed application. |
+| [Programmer's Guide](guide/) | Read this first. Nine chapters: the frozen dialect, Mojo's own object model, then Cocoa from first message to a walked-through windowed application. |
 | [Reference Manual](reference/) | Look things up here. The frozen language dialect, every `std.objc` entry point, every `cocoakb` query, and every diagnostic. |
 
 ## A warning about versions
