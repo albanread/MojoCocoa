@@ -298,11 +298,11 @@ def _save_dirty() -> Int:
     var i = 0
     while i < document.count():
         if document.dirty_at(i) and document.path_at(i) != "":
-            _ = document.switch_to(i)
+            _ = switch_document(i)
             _ = save_current()
             saved += 1
         i += 1
-    _ = document.switch_to(started_at)
+    _ = switch_document(started_at)
     refresh_tabs()
     refresh_grid()
     return saved
@@ -361,11 +361,17 @@ def _jump_to(path: String, line: Int, col: Int):
     if path == "":
         return
     let uri = String("file://") + path
-    if document.index_of(uri) >= 0:
-        if document.switch_to(document.index_of(uri)):
-            after_switch()
+    let tab = document.index_of(uri)
+    if tab >= 0:
+        _ = switch_document(tab)
     elif not load_file(path):
         return
+    # Either way, the error's file is now the current tab, and everything that
+    # follows a tab change has to happen: reveal it in the strip, point the
+    # server at it, redraw. Doing this only when `switch_document` returned
+    # true skipped it for a file that had just been opened -- which is the
+    # common case for a build error in a file you were not looking at.
+    after_switch()
     print("roast: jump to", _basename(path), "line", line, "col", col)
     # The compiler counts from one; the buffer counts from zero.
     var target = line - 1
@@ -503,7 +509,7 @@ class RoastActions:
             if document.count() < 2:
                 return
             let next = (document.current_index() + 1) % document.count()
-            if document.switch_to(next):
+            if switch_document(next):
                 after_switch()
         except:
             pass
@@ -515,19 +521,18 @@ class RoastActions:
             let prev = (
                 document.current_index() + document.count() - 1
             ) % document.count()
-            if document.switch_to(prev):
+            if switch_document(prev):
                 after_switch()
         except:
             pass
 
     def roastOpenExample_(self, sender: ObjCObject):
-        """Open a shipped example as a PROJECT, not as a loose file.
+        """Open a shipped example: the folder as the project, its files as tabs.
 
-        The example folder becomes the project root first, then its entry
-        point is opened. The order matters: the sidebar, the build target and
-        every relative path are read off the project root, so opening the file
-        first would build and browse against whatever folder was open before,
-        and the example would only look right until you pressed ⌘R.
+        An example is a project, and `fern` is three files. Opening only the
+        entry point makes the other two invisible until someone thinks to go
+        looking in the sidebar, which rather defeats shipping them as a worked
+        example.
         """
         try:
             with autoreleasepool():
@@ -544,12 +549,20 @@ class RoastActions:
                     return
                 let folder = String(file[byte=:cut])
 
+                # Root first: the sidebar and the build entry point are read
+                # off it, so opening files against the previous project would
+                # build the wrong thing.
                 open_folder(folder)
-                if not load_file(file):
+                let opened = open_folder_files(folder, file)
+                if opened == 0:
                     set_status(String("Could not open ") + file)
                     return
                 set_status(
-                    String("Example: ") + folder[byte=cut_name(folder):]
+                    String("Example: ")
+                    + folder[byte=cut_name(folder):]
+                    + String("  ·  ")
+                    + String(opened)
+                    + String(" file" if opened == 1 else " files")
                 )
         except:
             pass
@@ -659,11 +672,11 @@ class RoastActions:
                 if document.dirty_at(i):
                     # Switching makes it the working set; saving writes the working
                     # set. One path for one document and for all of them.
-                    _ = document.switch_to(i)
+                    _ = switch_document(i)
                     _ = save_current()
                     saved += 1
                 i += 1
-            _ = document.switch_to(started_at)
+            _ = switch_document(started_at)
             refresh_tabs()
             refresh_grid()
             set_status(String("Saved ") + String(saved) + String(" files"))
@@ -1065,6 +1078,9 @@ def load_file(path: String) -> Bool:
         mark_clean()
         refresh_tabs()
         lsp.set_shown_uri(uri)
+        # The strip scrolls now, so a tab opened past its right edge would be
+        # current and invisible at the same time.
+        reveal_tab(document.current_index())
         if lsp.is_ready():
             lsp.did_open(uri, g_buffer_text())
         if g_grid()[] != 0:
@@ -1388,7 +1404,7 @@ class RoastTabBar(NSView):
                 ):
                     close_tab_at(index)
                     return
-                if document.switch_to(index):
+                if switch_document(index):
                     after_switch()
         except:
             pass
@@ -1425,7 +1441,7 @@ def close_tab_at(index: Int):
     drift apart.
     """
     if document.dirty_at(index):
-        if document.switch_to(index):
+        if switch_document(index):
             after_switch()
         set_status(String("Unsaved — save it first (⌘S)"))
         return
@@ -1442,6 +1458,43 @@ def refresh_tabs():
         _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](
             ObjCObject(g_tabbar()[]), True
         )
+
+
+def flush_pending_edit():
+    """Send the buffer before leaving it.
+
+    Edits are debounced -- three idle ticks before a didChange goes out -- so a
+    tab edited and left quickly would strand its text here. The server would go
+    on reporting diagnostics for a version of the file that no longer exists in
+    the editor or on disk, which is exactly the case that looks like the tool
+    lying to you.
+    """
+    try:
+        if not lsp.is_ready():
+            return
+        if g_revision()[] == document.sent_revision():
+            return
+        if document.current_uri() == "" or len(g_buffer()[]) == 0:
+            return
+        lsp.did_change(
+            document.current_uri(), g_revision()[], g_buffer()[][0].to_string()
+        )
+        document.set_sent_revision(g_revision()[])
+    except:
+        pass
+
+
+def switch_document(index: Int) -> Bool:
+    """Change tabs, flushing the outgoing document first.
+
+    Every tab change goes through here rather than calling
+    `document.switch_to` directly, so the flush cannot be forgotten at one of
+    the nine places a tab can change.
+    """
+    if index == document.current_index():
+        return False
+    flush_pending_edit()
+    return document.switch_to(index)
 
 
 def after_switch():
@@ -1740,6 +1793,33 @@ def start_lsp() -> Bool:
 def _lsp_root_now() -> String:
     let slot = g_lsp_root()
     return slot[][0] if len(slot[]) > 0 else String()
+
+
+def open_folder_files(folder: String, entry: String) -> Int:
+    """Open every Mojo file directly in `folder`, leaving `entry` current.
+
+    Top level only. A project with subdirectories would otherwise put its
+    whole tree in the tab bar, and the sidebar is what a tree is for.
+
+    `entry` is opened last so it ends up the visible tab: `open_document`
+    makes what it opens current, and the file someone chose from the menu is
+    the one they meant to look at.
+    """
+    var opened = 0
+    let kids = children_of(folder)
+    let n = msg_send[Int, "NSArray", "count"](kids)
+    var i = 0
+    while i < n:
+        let full = ns_to_string(
+            msg_send[ObjCObject, "NSArray", "objectAtIndex:"](kids, i)
+        )
+        if full != entry and full.endswith(".mojo"):
+            if load_file(full):
+                opened += 1
+        i += 1
+    if load_file(entry):
+        opened += 1
+    return opened
 
 
 def cut_name(path: String) -> Int:
@@ -2525,6 +2605,20 @@ def main() raises:
         if project != "":
             open_folder(project)
 
+        # The same thing the Examples menu does, reachable without a click.
+        # This shipped opening one file of three because nothing could test
+        # it; now something can.
+        let example = getenv("ROAST_EXAMPLE")
+        if example != "":
+            open_folder(example)
+            # The count of files the EXAMPLE contributed, not the tab total:
+            # the scratch buffer the editor starts with is still there, and
+            # opening an example should not close what someone already had.
+            print(
+                "roast: example files:",
+                open_folder_files(example, example + String("/main.mojo")),
+            )
+
         _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
             win, grid.ptr()
         )
@@ -2564,6 +2658,7 @@ def main() raises:
             frame.origin.y,
         )
         print("roast: toolbar:", tb.addr() != 0)
+        print("roast: tabs:", document.count())
         # The strip has to sit flush under the toolbar. Installing a toolbar
         # changes the content view's height, so laying out against the height
         # read before it existed leaves a band of window background above the

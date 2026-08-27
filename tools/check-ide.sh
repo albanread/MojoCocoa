@@ -172,6 +172,17 @@ check "menu bar"    "menu bar items: 6"     "app, File, Edit, Build, Examples, W
 # Zero here means flush.
 check "tab strip"   "tab gap: 0.0"          "flush under the toolbar"
 check "lifecycle"   "applicationWillTerminate" "launch → close → terminate clean"
+
+# An example is a PROJECT: fern is three files, and opening one of them is the
+# bug this check exists to catch. Run separately because it needs its own
+# launch with ROAST_EXAMPLE set.
+exout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_EXAMPLE="$PWD/examples/fern" \
+        ROAST_AUTOCLOSE_TICKS=12 timeout 90 "$TMP/roast" 2>&1)
+if echo "$exout" | grep -q 'roast: example files: 3'; then
+  ok "example project" "fern opens its three files, not just main.mojo"
+else
+  bad "example project" "$(echo "$exout" | grep -m1 'example files:' || echo 'no count reported')"
+fi
 # The first named_globals migrated onto class fields: the tab bar builds its
 # label attributes lazily in its own box, and says so exactly once.
 check "box fields"  "tab attributes built in the box" "per-instance state, built on first draw"

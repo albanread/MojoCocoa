@@ -118,6 +118,12 @@ comptime g_comp_detail = named_global["lsp.comp.detail", List[String]]
 comptime g_comp_insert = named_global["lsp.comp.insert", List[String]]
 comptime g_comp_request = named_global["lsp.comp.request", Int]
 comptime g_comp_serial = named_global["lsp.comp.serial", Int]
+# Which document the outstanding completion request was made for. The id match
+# below already rejects a reply to a superseded request; this rejects a reply
+# to a live one that is no longer about the file on screen, which is what
+# happens when the user asks for completions and switches tab before the
+# server answers.
+comptime g_comp_uri = named_global["lsp.comp.uri", List[String]]
 
 
 def inbox() -> String:
@@ -175,6 +181,11 @@ def request_completion(uri: String, line: Int, character: Int) -> Int:
     params.set(String("position"), pos^)
     let id = request(String("textDocument/completion"), params^)
     g_comp_request()[] = id
+    let slot = g_comp_uri()
+    if len(slot[]) == 0:
+        slot[].append(uri)
+    else:
+        slot[][0] = uri
     return id
 
 
@@ -540,7 +551,14 @@ def _handle(var msg: JSON):
     if msg.has("id") and msg.has("result"):
         let id = msg.get("id")[].as_int()
         if id == g_comp_request()[] and id != 0:
-            _take_completions(msg.get("result")[])
+            # Answered, whatever we do with it: leaving the id live would let
+            # the next reply-shaped message be mistaken for this one.
+            g_comp_request()[] = 0
+            if _completion_still_wanted():
+                _take_completions(msg.get("result")[])
+            else:
+                clear_completions()
+                g_comp_serial()[] += 1
             return
 
     # A reply to initialize: tell the server we are ready, then we are.
@@ -549,6 +567,22 @@ def _handle(var msg: JSON):
             var empty = JSON.object()
             notify(String("initialized"), empty^)
             g_ready()[] = 1
+
+
+def _completion_still_wanted() -> Bool:
+    """Is the outstanding request still about the document on screen?
+
+    Both unknowns mean yes. A caller that never names a shown document -- the
+    test harness, and anything embedding this client without a tab bar -- gets
+    the old unconditional behaviour rather than silence.
+    """
+    let want = shown_uri()
+    if want == "":
+        return True
+    let slot = g_comp_uri()
+    if len(slot[]) == 0:
+        return True
+    return slot[][0] == want
 
 
 def _take_completions(result: JSON):
