@@ -52,9 +52,32 @@ invoking the compiler directly.
 
 ## Run a program
 
-There is a wrinkle worth knowing before it wastes your afternoon. The raw
-`mojo-full` binary cannot locate `std.mojoc` on its own. Run Mojo through the
-Bazel wrapper, which supplies the standard-library import paths:
+There are two ways in, and which you want depends on whether you are *using*
+CocoaMojo or *working on* it.
+
+### From a distribution
+
+`cocoamojo` is the whole interface — no `-I` flags, no `MODULAR_*` variables,
+no Bazel:
+
+```bash
+cocoamojo --run   hello.mojo         # compile and run
+cocoamojo --build hello.mojo         # -> ./hello
+cocoamojo --build hello.mojo -o app  # -> ./app
+```
+
+The distribution carries the compiler, the Mojo runtime, the Metal device
+runtime, the packages and `cocoa.sqlite` beside one another, and the driver
+wires them together. `--run` JITs; both paths work for Cocoa and for GPU code.
+Binaries from `--build` carry an rpath to `lib/`, so they run anywhere on the
+machine without a wrapper.
+
+### From the source tree
+
+Working in the repository there is a wrinkle worth knowing before it wastes
+your afternoon: the raw `mojo-full` binary cannot locate `std.mojoc` on its
+own. Run Mojo through the Bazel wrapper, which supplies the standard-library
+import paths:
 
 ```bash
 ./bazelw run //KGEN:mojo -- run /absolute/path/to/program.mojo

@@ -1,21 +1,67 @@
 # 3. Running and checking
 
-## Build, don't JIT
+## Running: JIT or build
 
-**GPU code does not work under `mojo run`.** The device runtime is a
-hidden-visibility archive the JIT cannot resolve, so a GPU program that
-compiles perfectly will fail to link when JIT-run, with an error a long way
-from anything you wrote.
+From a CocoaMojo distribution:
 
-Build it:
+```bash
+cocoamojo --run   prog.mojo        # JIT, straight into this process
+cocoamojo --build prog.mojo        # -> ./prog, a normal binary
+cocoamojo --build prog.mojo -o app # -> ./app
+```
+
+**Both paths run GPU kernels.** `cocoamojo` is the whole interface: no `-I`
+flags, no `MODULAR_*` environment variables, no Bazel. The distribution ships
+the compiler, the Mojo runtime, the Metal device runtime
+(`libCocoaMojoGPU`), the packages and `cocoa.sqlite` beside one another, and
+the driver points the compiler at them. Binaries from `--build` carry an rpath
+to `lib/`, so they run anywhere on the machine without a wrapper.
+
+### A correction worth knowing
+
+Earlier versions of this fork's documentation — including earlier versions of
+this guide — said that GPU code could not be JIT-run, because "the JIT cannot
+resolve the GPU runtime's symbols". **That was wrong**, and the mistake is
+worth understanding because it is a common shape.
+
+The JIT was never the problem. `ExecutionEngineOptions::libraryPaths` feeds an
+ORC dynamic-library search generator, and `-Xlinker -L`/`-l` reach it. The
+symbols were missing for the same reason so many things here were missing:
+nothing exported them. Once the device runtime existed as
+`libCocoaMojoGPU.dylib` rather than a hidden-visibility archive, the JIT
+resolved them like any other library and ran GPU kernels immediately:
+
+```text
+GPU: 0.413 ms   speedup: 197.96 x
+exact agreement: 100.0 % ( 0 boundary-band pixels differ)
+COMPUTE-SMOKE: PASS
+```
+
+All sixteen spike checks now pass through the JIT path.
+
+The lesson generalises: *"the JIT cannot do X"* is almost always *"nothing
+exported the symbol X needs"*, and the two have very different fixes.
+
+### One reason to prefer a subprocess anyway
+
+The argument for building and exec'ing does survive, in one specific form.
+JIT'd code runs in the **host process's address space**. A segfault is caught
+by `CrashRecoveryContext`, but a call to `exit()` is not, and it would take the
+host down with it.
+
+That matters if you are embedding the compiler in something long-lived — an
+editor, say. For running your own programs from a shell it is irrelevant.
+
+## Building against the source tree
+
+If you are working in the repository rather than from a distribution, you drive
+the compiler directly and supply what `cocoamojo` would have supplied:
 
 ```bash
 mojo build --target-accelerator apple-m4 \
   -I mojo/stdlib -I max/kernels/src -I max/mojo \
   -o /tmp/prog prog.mojo
 ```
-
-Cocoa under `mojo run` is unaffected — this is specific to the GPU runtime.
 
 ### `--target-accelerator` is required
 

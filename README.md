@@ -192,9 +192,11 @@ count, an `fn` that raises, a reassigned `let`. **A check that cannot fail
 proves nothing, so the must-fail half is half the suite.**
 
 96 of 119 in-scope GPU tests pass; the rest is triaged, named, and written
-down in [`STATUS.md`](STATUS.md). GPU code under `mojo run` does not work yet —
-the runtime is a hidden-visibility archive the JIT cannot resolve — so GPU
-programs are built, not JIT-run. Cocoa under `mojo run` works fine.
+down in [`STATUS.md`](STATUS.md). `cocoamojo --run` JITs GPU code as happily as
+it JITs Cocoa — the old claim that it could not was wrong, and the reason is
+recorded in [`IDE-EMBEDDING.md`](IDE-EMBEDDING.md): nothing had exported the
+device runtime's symbols until `libCocoaMojoGPU.dylib` existed, which was never
+a property of the JIT.
 
 > [!IMPORTANT]
 > This is not a Modular product and is not affiliated with, endorsed by, or

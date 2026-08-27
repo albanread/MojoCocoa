@@ -255,6 +255,50 @@ sprint 2b it was an empty struct -- a type with methods and nowhere for `self`
 to live, which is fine while nothing runs and impossible the moment something
 does. Author-declared fields still go in the box behind it (sprint 3).
 
+### SPRINT 2B COMPLETE (2026-08-27): a class registers, instantiates and answers
+
+`spikes/s5-cocoakb/class_test.mojo` declares a class, makes one, and lets the
+Objective-C runtime dispatch to it. No `ObjCClassBuilder`, no encoding string,
+no IMP, no `cmd: P` slot:
+
+```mojo
+class Probe(NSObject):
+    def isProxy(self) -> Bool:
+        return True
+
+    def isEqual_(self, other: Int) -> Bool:
+        return other == 0
+```
+
+Instantiating it registers the class; `msg_send` reaches both methods; a second
+instance finds the class already there. Compare that with the ten
+`ObjCClassBuilder` sites and forty-nine hand-written encodings the IDE carries
+today.
+
+What the compiler synthesizes per class: an `__init__` that drives
+`ObjCClassRegistrar` -- construct with name, superclass and frameworks, adopt
+each protocol, add each method, register, instantiate, keep the `id` -- and a
+C-ABI trampoline per method that drops the `_cmd` slot and forwards the rest.
+
+Three things learned finishing it, each of which cost something:
+
+- **Synthesizing into a scope you are walking invalidates the walk**, and it
+  presents as a segfault rather than a diagnostic. Methods are collected in
+  full before any trampoline is built.
+- **A trampoline must not be `always_inline`.** It is registered by address, so
+  it has to have one. Copying that flag from `synthesizeEmptyDtor` was a
+  reflex, and the wrong one.
+- **`__init__` returns `out self` by reference, not in a register.** A class is
+  register-passable but not *trivially* so, and loading one into an SSA
+  register is refused -- correctly, because that load is exactly where a retain
+  will have to happen when class references own what they point at.
+
+Registration is idempotent: the registrar looks the class up before building
+it, so the second instance costs one `objc_getClass`. Methods whose arguments
+Mojo passes in memory are still refused rather than registered wrongly --
+Objective-C passes arguments by value, and forwarding a reference would hand
+the method a pointer where it expects a value.
+
 ### The test harness had to be built too
 
 `./bazelw test //KGEN/test/mojo-parser:all` cannot build in this tree. All 357
@@ -557,7 +601,7 @@ Each lands alone, each is verifiable, each leaves the tree green
 | # | sprint | size | verified by |
 |---|---|---|---|
 | 1 | **done** — real grammar behind `parseClassStmt`: name, base list, nesting and parameter diagnostics, recorded on an attributed `StructDeclOp`; elaboration refuses cleanly with a note naming what it parsed. Body resolution deferred to sprint 2 with the registration it depends on. | S–M | `class_decl.mojo` + `class_decl_errors.mojo`; `tools/check-parser.sh` 331 pass / 1 known-stale fail; `structs.mojo` and `traits.mojo` green |
-| 2 | **Register it, and resolve the body.** Classes get their own signature/body path — no comptime params, bases resolved against the runtime rather than as traits, no injected value-type conformances — then registration + per-method trampolines: base framework loaded first (see **Two oracles**), selector derivation, encoding derivation, protocol adoption, raise-catch boundary, `ClassName()`. | L | an execution test class round-trips through `msg_send`; **RoastTabBar rewritten** (`drawRect:` exercises struct encodings); `check-ide.sh` green |
+| 2 | **done** — classes resolve to types and register with the runtime: an `__init__` driving `ObjCClassRegistrar`, a C-ABI trampoline per method, selector and SDK encoding per method, protocols adopted. | L | `spikes/s5-cocoakb/class_test.mojo` — declare, instantiate, and let the runtime dispatch to both a nullary and a one-argument method |
 | 3 | **Give it state.** `class_addIvar`, the box, synthesized init/dealloc, `self.field`. | M | a test class whose field's `deinit` flips a flag proves teardown; tab-bar and `RoastActions` globals become fields; `check-ide.sh` green |
 | 4 | **done** — `CocoaKBDatabase` extracted to `KGEN/lib/CocoaKB` so the parser can ask it; encodings looked up by selector (chain-walking for overrides); framework attribution from `bs_classes`; unknown-superclass typo catcher; SDK-disagreement diagnostic; derivation only for selectors the SDK has never heard of. | M | `class_decl.mojo` checks the SDK's own `drawRect:` encoding and `objcFrameworks = ["AppKit"]`; `class_decl_errors.mojo` covers both disagreement directions and the typo |
 | 5 | **Dogfood.** Migrate the remaining IDE delegates and subclasses (app delegate, outline data source, GridView + NSTextInputClient — the big one); delete migrated `named_global`s and the then-unused IMP shapes. | M–L | all suites green; the counts fall and are asserted: `encoding=` in `ide/` → 0, `named_global` 84 → the survivors are genuinely process-global; the 61-warning chip mostly closes as a side effect |

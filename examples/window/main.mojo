@@ -1,5 +1,7 @@
-# A Cocoa window, in Mojo. The button's action is a Mojo `fn` reached through a
-# class registered at run time -- no Objective-C, no bridging header.
+# A Cocoa window, in Mojo. The button's action is a method on a `class` -- an
+# Objective-C class the compiler declares, registers and instantiates. No
+# Objective-C, no bridging header, and nothing written by hand about selectors
+# or type encodings.
 from std.objc import (
     load_framework,
     ObjCClass,
@@ -7,14 +9,10 @@ from std.objc import (
     msg_send,
     nsstring,
     autoreleasepool,
-    ObjCClassBuilder,
-    new_instance,
     named_global,
     sel,
 )
-from std.memory import OpaquePointer
 
-comptime P = OpaquePointer[MutUntrackedOrigin]
 comptime clicks = named_global["example.clicks", Int]
 comptime label_addr = named_global["example.label", Int]
 
@@ -37,16 +35,26 @@ struct CGRect(ImplicitlyCopyable, Movable):
     var size: CGSize
 
 
-fn clicked(self_: P, cmd: P, sender: P):
-    clicks()[] += 1
-    try:
+class ExampleActions:
+    """The button's target.
+
+    `buttonClicked_` becomes the selector `buttonClicked:` -- an underscore is
+    a colon -- and the compiler derives its `v@:@` encoding, because this is a
+    selector we invented rather than one the SDK declares. There is no `_cmd`
+    argument to write and no IMP to register: `ExampleActions()` builds the
+    class in the runtime and hands back an instance.
+
+    The body may raise; the boundary catches. That is why there is no `try`
+    wrapped around a method that plainly cannot fail.
+    """
+
+    def buttonClicked_(self, sender: ObjCObject):
+        clicks()[] += 1
         with autoreleasepool():
             _ = msg_send[ObjCObject, "NSTextField", "setStringValue:"](
                 ObjCObject(label_addr()[]),
                 nsstring(String("clicked ") + String(clicks()[])).ptr(),
             )
-    except:
-        pass
 
 
 def main() raises:
@@ -62,9 +70,7 @@ def main() raises:
         ](NSApplication.as_object())
         _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
 
-        var b = ObjCClassBuilder("ExampleActions")
-        b.add_method["buttonClicked:", encoding="v@:@"](clicked)
-        let actions = new_instance(b^.register())
+        let actions = ObjCObject(ExampleActions().__objc_id)
 
         let NSWindow = ObjCClass.lookup["NSWindow"]()
         var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](

@@ -1972,13 +1972,38 @@ static FnOp synthesizeObjCTrampoline(ASTDecl &structDecl, StructDeclOp structOp,
   if (selfType.isNull() || cmdType.isNull() || cmdType.isTypeCheckErrorType())
     return {};
 
-  // Arguments beyond the receiver are not forwarded yet, so a method that
-  // takes any is left unregistered rather than registered wrongly.
   ASTType resultType = ASTType(methodOp.getUserResultType());
 
   MLIRContext *ctx = shared.getContext();
   auto selfName = StringAttr::get(ctx, "self");
   auto cmdName = StringAttr::get(ctx, "_cmd");
+
+  // The receiver, the selector slot, then the method's own arguments passed
+  // straight through.
+  SmallVector<Type> argTypes{selfType.mlirType, cmdType.mlirType};
+  SmallVector<ArgConvention> argConvs{ArgConvention::ReadReg,
+                                      ArgConvention::ReadReg};
+  SmallVector<StringAttr> argNames{selfName, cmdName};
+  SmallVector<PassingKind> argKinds{PassingKind::PosOnly,
+                                    PassingKind::PosOnly};
+
+  Block *methodBody = methodOp.getBody();
+  for (unsigned i = 1, e = methodBody->getNumArguments(); i != e; ++i) {
+    Type argType = methodBody->getArgument(i).getType();
+
+    // A reference-typed argument is one Mojo passes in memory. Objective-C
+    // passes its arguments by value, so forwarding one straight through would
+    // hand the method a pointer where it expects a value. Those are refused
+    // rather than registered wrongly -- see the note at the call site.
+    if (isa<RefType>(argType))
+      return {};
+
+    argTypes.push_back(argType);
+    argConvs.push_back(ArgConvention::ReadReg);
+    argNames.push_back(
+        StringAttr::get(ctx, "arg" + std::to_string(i)));
+    argKinds.push_back(PassingKind::PosOnly);
+  }
 
   FnEffects effects;
   effects.setCABI(true);
@@ -1991,13 +2016,9 @@ static FnOp synthesizeObjCTrampoline(ASTDecl &structDecl, StructDeclOp structOp,
 
   StructEmitter structEmitter(structDecl);
   auto [trampoline, trampolineDecl] = structEmitter.synthesizeMethodInStruct(
-      name,
-      /*argTypes=*/{selfType.mlirType, cmdType.mlirType},
-      /*argConvs=*/{ArgConvention::ReadReg, ArgConvention::ReadReg},
-      /*argListAttrs=*/
-      PogListAttr::get(ctx, {selfName, cmdName},
-                       {PassingKind::PosOnly, PassingKind::PosOnly}),
-      resultType, SpecialFunctionKind::kNormal, effects);
+      name, argTypes, argConvs,
+      /*argListAttrs=*/PogListAttr::get(ctx, argNames, argKinds), resultType,
+      SpecialFunctionKind::kNormal, effects);
   if (!trampoline)
     return {};
   // Deliberately not always-inline: this function is registered by address, so
@@ -2020,6 +2041,10 @@ static FnOp synthesizeObjCTrampoline(ASTDecl &structDecl, StructDeclOp structOp,
                         ExprDest(EC_ReturnValue));
   operands.addSelf(ASTExprAnd<AnyValue>{
       AnyValue(SBValue(trampoline.getBody()->getArgument(0))), &loc});
+  // Argument 1 is _cmd, which is dropped: that is the whole job.
+  for (unsigned i = 2, e = trampoline.getBody()->getNumArguments(); i != e; ++i)
+    operands.add(ASTExprAnd<AnyValue>{
+        AnyValue(SBValue(trampoline.getBody()->getArgument(i))), &loc});
   CValue result = emitter.emitNamedMethodCall(
       methodOp.getSourceNameAttr().getValue(), std::move(operands));
 
@@ -2066,15 +2091,28 @@ static void synthesizeObjCRegistration(ASTDecl &structDecl,
                                        DeclResolver &resolver) {
   StructEmitter structEmitter(structDecl);
   SharedState &shared = structDecl.getShared();
+  ASTType selfType = structDecl.getTypeDeclSelf();
+  if (selfType.isNull())
+    return;
+
+  // The class's initializer. Registration is lazy in the sense that matters:
+  // it happens when a class is first instantiated, and the registrar itself
+  // is idempotent, so the second instance costs one objc_getClass.
+  // `out self` by reference rather than returned in a register. A class is
+  // register-passable but not *trivially* so, and loading one into an SSA
+  // register is refused -- which is right: the load is where a retain would
+  // have to happen once class references own what they point at.
+  auto selfName = StringAttr::get(shared.getContext(), "self");
   auto [funcOp, funcDecl] = structEmitter.synthesizeMethodInStruct(
-      "__objc_register__",
-      /*argTypes=*/{},
-      /*argConvs=*/{},
-      /*argListAttrs=*/PogListAttr::get(shared.getContext(), /*numPogs=*/0),
-      shared.getNoneType());
+      "__init__",
+      /*argTypes=*/{selfType.getRefForArgument("self", /*isMut=*/true)},
+      /*argConvs=*/{ArgConvention::ByRefResult},
+      /*argListAttrs=*/
+      PogListAttr::get(shared.getContext(), {selfName},
+                       {PassingKind::Implicit}),
+      shared.getNoneType(), SpecialFunctionKind::kInit);
   if (!funcOp)
     return;
-  funcOp.setInlineLevel(InlineLevel::AlwaysNoDebug);
 
   ImplicitLocOpBuilder builder =
       ImplicitLocOpBuilder::atBlockEnd(funcOp.getLoc(), funcOp.getBody());
@@ -2196,12 +2234,6 @@ static void synthesizeObjCRegistration(ASTDecl &structDecl,
       if (!selector || !encoding)
         continue; // Private to Mojo, or its shape could not be established.
 
-      // Only zero-argument methods so far: forwarding arguments through the
-      // trampoline is the next step, and a method registered without its
-      // arguments would answer its selector by reading rubbish.
-      if (methodOp.getBody()->getNumArguments() > 1)
-        continue;
-
       methods.push_back({methodOp, selector.getValue(), encoding.getValue()});
     }
   }
@@ -2231,9 +2263,29 @@ static void synthesizeObjCRegistration(ASTDecl &structDecl,
     emitter.emitNamedMethodCall("add_method", std::move(operands));
   }
 
-  callOnRegistrar("register", {});
+  // Register, make an instance, and keep its `id`: the three things that
+  // turn a declaration into something Cocoa can be handed.
+  CallOperands finish(CallSyntax::kMethodCall, &loc,
+                      ExprDest(EC_CallArgValue));
+  finish.addSelf(ASTExprAnd<AnyValue>{AnyValue(MLValue(registrarVar)), &loc});
+  CValue objcId =
+      emitter.emitNamedMethodCall("register_and_instantiate", std::move(finish));
 
-  IREmitter::emitNormalReturn(builder, Value(), /*emitEndFunc=*/true);
+  StructFieldOp idField;
+  for (StructFieldOp field : structOp.getFieldDecls())
+    if (field.getName() == "__objc_id")
+      idField = field;
+  if (!idField)
+    return;
+
+  Value selfValue = funcOp.getBody()->getArgument(
+      funcOp.getBody()->getNumArguments() - 1);
+  auto fieldRef = RefStructGEROp::create(builder, selfValue, idField);
+  emitter.emitStoreToLValue({objcId, &loc}, MLValue(fieldRef),
+                            EC_AttributeRefBase);
+  emitter.emitNormalReturn(funcOp.getLoc());
+  return;
+
 }
 
 /// Attribute a class's bases to the frameworks that declare them, and check
