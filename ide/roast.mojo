@@ -42,6 +42,8 @@ from gridview import (
 )
 from rope import Rope
 from gridview import (
+    set_caret,
+    document_size,
     g_revision,
     g_buffer,
     g_caret,
@@ -83,6 +85,19 @@ comptime g_findfield = named_global["roast.findfield", Int]
 comptime g_uri = named_global["roast.uri", List[String]]
 comptime g_sent_revision = named_global["roast.sent.revision", Int]
 comptime g_idle_ticks = named_global["roast.idle", Int]
+
+# The project: a folder, and the outline view showing what is in it. Children
+# are listed on demand and cached per directory, so opening a folder never
+# walks it -- a tree with a quarter of a million files under it costs whatever
+# has been expanded and nothing more.
+comptime g_root = named_global["roast.root", List[String]]
+comptime g_outline = named_global["roast.outline", Int]
+comptime g_tree_cache = named_global["roast.tree.cache", Int]
+
+# The revision the file on disk matches. The buffer is dirty whenever the rope
+# has moved past it, which is one comparison rather than a flag someone has to
+# remember to set.
+comptime g_saved_revision = named_global["roast.saved.revision", Int]
 comptime g_pending_completion = named_global["roast.completing", Int]
 comptime g_comp_seen = named_global["roast.comp.seen", Int]
 
@@ -177,16 +192,17 @@ fn action_stop(self_: P, cmd: P, sender: P):
 
 
 fn action_new_tab(self_: P, cmd: P, sender: P):
-    # Native tabbing: AppKit moves a new window into the existing tab group
-    # when both share a tabbingIdentifier.
-    print("roast: newTab")
-    with autoreleasepool():
-        if g_window()[] == 0:
-            return
-        let win = ObjCObject(g_window()[])
-        _ = msg_send[ObjCObject, "NSWindow", "addTabbedWindow:ordered:"](
-            win, win.ptr(), Int(1)
-        )
+    """Not yet: a tab needs a second document, and there is one buffer.
+
+    Native tabbing is already switched on and the window carries a tabbing
+    identifier, so this costs almost nothing once milestone 3 gives documents
+    somewhere to live. Saying so is better than adding a window showing the
+    same buffer, which is what the previous version did.
+    """
+    try:
+        set_status(String("Tabs arrive with documents — milestone 3"))
+    except:
+        pass
 
 
 def refresh_grid():
@@ -242,6 +258,385 @@ def report_matches():
         set_status(String("no matches for ") + repr(query()))
     else:
         set_status(String(n) + String(" matches for ") + repr(query()))
+
+
+def load_file(path: String) -> Bool:
+    """Read a file into the buffer and tell the server about it."""
+    try:
+        var text = String()
+        with open(path, "r") as f:
+            text = f.read()
+        set_rope(Rope(text^))
+        set_caret(0)
+        let uri = String("file://") + path
+        let slot = g_uri()
+        if len(slot[]) == 0:
+            slot[].append(uri)
+        else:
+            slot[][0] = uri
+        g_sent_revision()[] = g_revision()[]
+        mark_clean()
+        if lsp.is_ready():
+            lsp.did_open(uri, g_buffer_text())
+        if g_grid()[] != 0:
+            let grid = ObjCObject(g_grid()[])
+            let frame = msg_send[CGRect, "NSView", "frame"](grid)
+            _ = msg_send[ObjCObject, "NSView", "setFrameSize:"](
+                grid, document_size(frame.size.width)
+            )
+            _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](grid, True)
+        if g_window()[] != 0:
+            _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
+                ObjCObject(g_window()[]), nsstring(_basename(path)).ptr()
+            )
+        set_status(path + String("  ·  ") + String(g_buffer_lines()) + String(" lines"))
+        return True
+    except:
+        set_status(String("could not open ") + path)
+        return False
+
+
+def is_dirty() -> Bool:
+    return g_revision()[] != g_saved_revision()[]
+
+
+def mark_clean():
+    g_saved_revision()[] = g_revision()[]
+    _show_dirty()
+
+
+def _show_dirty():
+    """The close button's dot: AppKit's own way of saying unsaved, so it looks
+    like every other document window rather than a convention of ours."""
+    if g_window()[] == 0:
+        return
+    with autoreleasepool():
+        _ = msg_send[ObjCObject, "NSWindow", "setDocumentEdited:"](
+            ObjCObject(g_window()[]), is_dirty()
+        )
+
+
+def _basename(path: String) -> String:
+    let cut = path.rfind(String("/"))
+    if cut < 0:
+        return path
+    return String(path[byte = cut + 1 : path.byte_length()])
+
+
+def project_root() -> String:
+    if len(g_root()[]) == 0:
+        return String()
+    return g_root()[][0]
+
+
+def set_project_root(var path: String):
+    let slot = g_root()
+    if len(slot[]) == 0:
+        slot[].append(path^)
+    else:
+        slot[][0] = path^
+
+
+def children_of(dir: String) -> ObjCObject:
+    """The entries of a directory, as full paths, cached.
+
+    The outline view asks for a child by index over and over while it draws,
+    so listing the directory each time would turn scrolling the sidebar into a
+    syscall storm. Hidden files and build output are left out: a project is the
+    files someone wrote.
+    """
+    if g_tree_cache()[] == 0:
+        let NSMutableDictionary = ObjCClass.lookup["NSMutableDictionary"]()
+        let d = msg_send[
+            ObjCObject, "NSMutableDictionary", "dictionary", is_class=True
+        ](NSMutableDictionary.as_object())
+        _ = external_call["objc_retain", P](d.ptr())
+        g_tree_cache()[] = d.addr()
+    let cache = ObjCObject(g_tree_cache()[])
+    var key = dir
+    let hit = msg_send[ObjCObject, "NSDictionary", "objectForKey:"](
+        cache, nsstring(key).ptr()
+    )
+    if hit.addr() != 0:
+        return hit
+
+    let NSFileManager = ObjCClass.lookup["NSFileManager"]()
+    let fm = msg_send[
+        ObjCObject, "NSFileManager", "defaultManager", is_class=True
+    ](NSFileManager.as_object())
+    var dirpath = dir
+    let names = msg_send[
+        ObjCObject, "NSFileManager", "contentsOfDirectoryAtPath:error:"
+    ](fm, nsstring(dirpath).ptr(), ObjCObject(0).ptr())
+
+    let NSMutableArray = ObjCClass.lookup["NSMutableArray"]()
+    var out = msg_send[
+        ObjCObject, "NSMutableArray", "array", is_class=True
+    ](NSMutableArray.as_object())
+    if names.addr() != 0:
+        let count = msg_send[Int, "NSArray", "count"](names)
+        var i = 0
+        while i < count:
+            let nm = msg_send[ObjCObject, "NSArray", "objectAtIndex:"](
+                names, i
+            )
+            let name = ns_to_string(nm)
+            let skip = (
+                name.startswith(".")
+                or name == "bazel-bin"
+                or name == "bazel-out"
+                or name.endswith(".o")
+            )
+            if not skip:
+                var full = dir
+                full += "/"
+                full += name
+                _ = msg_send[ObjCObject, "NSMutableArray", "addObject:"](
+                    out, nsstring(full).ptr()
+                )
+            i += 1
+        # Alphabetical, which is what a person expects and what makes a file
+        # findable twice in the same place.
+        _ = msg_send[ObjCObject, "NSMutableArray", "sortUsingSelector:"](
+            out, sel["compare:"]().ptr()
+        )
+    _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
+        cache, out.ptr(), nsstring(key).ptr()
+    )
+    return out
+
+
+def is_directory(path: String) -> Bool:
+    with autoreleasepool():
+        let NSFileManager = ObjCClass.lookup["NSFileManager"]()
+        let fm = msg_send[
+            ObjCObject, "NSFileManager", "defaultManager", is_class=True
+        ](NSFileManager.as_object())
+        var p2 = path
+        # A bool out-parameter would be better; asking the URL is simpler and
+        # does not need a pointer to a stack BOOL.
+        let names = msg_send[
+            ObjCObject, "NSFileManager", "contentsOfDirectoryAtPath:error:"
+        ](fm, nsstring(p2).ptr(), ObjCObject(0).ptr())
+        return names.addr() != 0
+
+
+# ── Outline view data source ────────────────────────────────────────────────
+# Items are NSStrings holding full paths. Using the path as the item means
+# there is no parallel model to keep in step with the tree, and no node objects
+# to own -- the file system is the model.
+fn outline_num_children(self_: P, cmd: P, view: P, item: P) -> Int:
+    try:
+        with autoreleasepool():
+            var dir = project_root()
+            if Int(item) != 0:
+                dir = ns_to_string(ObjCObject(Int(item)))
+            if dir == "":
+                return 0
+            return msg_send[Int, "NSArray", "count"](children_of(dir))
+    except:
+        return 0
+
+
+fn outline_is_expandable(self_: P, cmd: P, view: P, item: P) -> Bool:
+    try:
+        if Int(item) == 0:
+            return True
+        with autoreleasepool():
+            return is_directory(ns_to_string(ObjCObject(Int(item))))
+    except:
+        return False
+
+
+fn outline_child(self_: P, cmd: P, view: P, index: Int, item: P) -> Int:
+    """The nth entry. The string belongs to the cached array, which the cache
+    dictionary retains, so it outlives this call -- and no pool here, for the
+    same reason as outline_value."""
+    try:
+        var dir = project_root()
+        if Int(item) != 0:
+            dir = ns_to_string(ObjCObject(Int(item)))
+        let kids = children_of(dir)
+        if index < 0 or index >= msg_send[Int, "NSArray", "count"](kids):
+            return 0
+        return msg_send[ObjCObject, "NSArray", "objectAtIndex:"](
+            kids, index
+        ).addr()
+    except:
+        return 0
+
+
+fn outline_value(self_: P, cmd: P, view: P, column: P, item: P) -> Int:
+    """What the row shows: the name, not the path.
+
+    Deliberately not wrapped in an autorelease pool. The NSString returned here
+    is autoreleased, and a pool of ours would drain it on the way out -- AppKit
+    then reads freed memory, and the crash lands in
+    -[NSTableView preparedCellAtColumn:row:], nowhere near the method that
+    returned the object. A method that hands back an autoreleased object must
+    let it autorelease into the caller's pool.
+    """
+    try:
+        if Int(item) == 0:
+            return 0
+        let path = ns_to_string(ObjCObject(Int(item)))
+        return nsstring(_basename(path)).addr()
+    except:
+        return 0
+
+
+fn outline_selection_changed(self_: P, cmd: P, note: P):
+    """Clicking a file opens it. Clicking a folder does nothing but expand."""
+    try:
+        with autoreleasepool():
+            if g_outline()[] == 0:
+                return
+            let view = ObjCObject(g_outline()[])
+            let row = msg_send[Int, "NSTableView", "selectedRow"](view)
+            if row < 0:
+                return
+            let item = msg_send[ObjCObject, "NSOutlineView", "itemAtRow:"](
+                view, row
+            )
+            if item.addr() == 0:
+                return
+            let path = ns_to_string(item)
+            if is_directory(path):
+                return
+            _ = load_file(path)
+    except:
+        pass
+
+
+def open_folder(var path: String):
+    """Make a folder the project."""
+    set_project_root(path^)
+    if g_tree_cache()[] != 0:
+        with autoreleasepool():
+            _ = msg_send[ObjCObject, "NSMutableDictionary", "removeAllObjects"](
+                ObjCObject(g_tree_cache()[])
+            )
+    if g_outline()[] != 0:
+        with autoreleasepool():
+            _ = msg_send[ObjCObject, "NSOutlineView", "reloadData"](
+                ObjCObject(g_outline()[])
+            )
+    set_status(String("Project: ") + project_root())
+
+
+fn action_open_folder(self_: P, cmd: P, sender: P):
+    try:
+        with autoreleasepool():
+            let NSOpenPanel = ObjCClass.lookup["NSOpenPanel"]()
+            let panel = msg_send[
+                ObjCObject, "NSOpenPanel", "openPanel", is_class=True
+            ](NSOpenPanel.as_object())
+            _ = msg_send[ObjCObject, "NSOpenPanel", "setCanChooseFiles:"](
+                panel, False
+            )
+            _ = msg_send[
+                ObjCObject, "NSOpenPanel", "setCanChooseDirectories:"
+            ](panel, True)
+            if msg_send[Int, "NSSavePanel", "runModal"](panel) != 1:
+                return
+            let url = msg_send[ObjCObject, "NSSavePanel", "URL"](panel)
+            open_folder(
+                ns_to_string(msg_send[ObjCObject, "NSURL", "path"](url))
+            )
+    except:
+        pass
+
+
+fn action_open(self_: P, cmd: P, sender: P):
+    """Open a file. The panel is Cocoa's, so it looks and behaves like every
+    other open panel on the machine."""
+    try:
+        with autoreleasepool():
+            let NSOpenPanel = ObjCClass.lookup["NSOpenPanel"]()
+            let panel = msg_send[
+                ObjCObject, "NSOpenPanel", "openPanel", is_class=True
+            ](NSOpenPanel.as_object())
+            _ = msg_send[ObjCObject, "NSOpenPanel", "setCanChooseFiles:"](
+                panel, True
+            )
+            _ = msg_send[
+                ObjCObject, "NSOpenPanel", "setCanChooseDirectories:"
+            ](panel, False)
+            _ = msg_send[
+                ObjCObject, "NSOpenPanel", "setAllowsMultipleSelection:"
+            ](panel, False)
+            # Modal, because there is one buffer: opening a second file while
+            # the first is still being chosen has nowhere to go until
+            # milestone 3 gives documents somewhere to live.
+            let answer = msg_send[Int, "NSSavePanel", "runModal"](panel)
+            if answer != 1:  # NSModalResponseOK
+                return
+            let url = msg_send[ObjCObject, "NSSavePanel", "URL"](panel)
+            let path = msg_send[ObjCObject, "NSURL", "path"](url)
+            _ = load_file(ns_to_string(path))
+    except:
+        pass
+
+
+fn action_save(self_: P, cmd: P, sender: P):
+    """Write the buffer back. Asks where if it has no home yet."""
+    try:
+        with autoreleasepool():
+            var path = String()
+            if len(g_uri()[]) > 0:
+                let uri = g_uri()[][0]
+                if uri.startswith("file://"):
+                    path = String(uri[byte=7 : uri.byte_length()])
+            if path == "":
+                let NSSavePanel = ObjCClass.lookup["NSSavePanel"]()
+                let panel = msg_send[
+                    ObjCObject, "NSSavePanel", "savePanel", is_class=True
+                ](NSSavePanel.as_object())
+                if msg_send[Int, "NSSavePanel", "runModal"](panel) != 1:
+                    return
+                let url = msg_send[ObjCObject, "NSSavePanel", "URL"](panel)
+                path = ns_to_string(
+                    msg_send[ObjCObject, "NSURL", "path"](url)
+                )
+                let slot = g_uri()
+                let uri = String("file://") + path
+                if len(slot[]) == 0:
+                    slot[].append(uri)
+                else:
+                    slot[][0] = uri
+            # The rope is written from a snapshot, so a save cannot tear even
+            # if the keyboard is busy -- which is the whole point of the tree
+            # being immutable.
+            let text = g_buffer_text()
+            with open(path, "w") as f:
+                f.write(text)
+            mark_clean()
+            set_status(
+                String("Saved ")
+                + _basename(path)
+                + String("  ·  ")
+                + String(text.byte_length())
+                + String(" bytes")
+            )
+    except:
+        set_status(String("could not save"))
+
+
+fn action_save_all(self_: P, cmd: P, sender: P):
+    """Write every dirty buffer.
+
+    There is one buffer, so today this is Save with a different name. It exists
+    now because the command belongs in the File menu from the start and because
+    the loop it will grow -- over documents, saving the dirty ones -- is easier
+    to add than to retrofit around callers who learned to call Save instead.
+    """
+    try:
+        if not is_dirty():
+            set_status(String("Nothing to save"))
+            return
+        action_save(self_, cmd, sender)
+    except:
+        pass
 
 
 fn action_complete(self_: P, cmd: P, sender: P):
@@ -366,6 +761,7 @@ fn timer_tick(self_: P, cmd: P, timer: P):
             # every keystroke would have it re-parsing text nobody has finished
             # writing.
             if g_revision()[] != g_sent_revision()[]:
+                _show_dirty()
                 g_idle_ticks()[] += 1
                 if g_idle_ticks()[] >= 3 and len(g_uri()[]) > 0:
                     if len(g_buffer()[]) > 0:
@@ -619,7 +1015,20 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     let file = add_submenu(bar, String("File"))
     _ = add_item(file, String("New Tab"), String("roastNewTab:"), String("t"), actions)
     _ = add_item(file, String("Open…"), String("roastOpen:"), String("o"), actions)
+    let folder_item = add_item(
+        file, String("Open Folder…"), String("roastOpenFolder:"), String("O"),
+        actions,
+    )
+    _ = msg_send[ObjCObject, "NSMenuItem", "setKeyEquivalentModifierMask:"](
+        folder_item, Int(0x20000 | 0x100000)
+    )
     _ = add_item(file, String("Save"), String("roastSave:"), String("s"), actions)
+    let save_all = add_item(
+        file, String("Save All"), String("roastSaveAll:"), String("S"), actions
+    )
+    _ = msg_send[ObjCObject, "NSMenuItem", "setKeyEquivalentModifierMask:"](
+        save_all, Int(0x20000 | 0x100000)
+    )
     _ = add_item(file, String("Close Tab"), String("performClose:"), String("w"))
 
     # Edit — the standard responder-chain selectors, free of charge.
@@ -713,6 +1122,28 @@ def main() raises:
         ab.add_method["roastRun:", encoding="v@:@"](action_run)
         ab.add_method["roastStop:", encoding="v@:@"](action_stop)
         ab.add_method["roastNewTab:", encoding="v@:@"](action_new_tab)
+        ab.add_method["roastOpen:", encoding="v@:@"](action_open)
+        ab.add_method["roastOpenFolder:", encoding="v@:@"](action_open_folder)
+        ab.add_method["roastSaveAll:", encoding="v@:@"](action_save_all)
+        # The sidebar's data source and delegate. Items are NSStrings holding
+        # paths, so the file system is the model and there is no tree to keep
+        # in step with it.
+        ab.add_method_unchecked[
+            "outlineView:numberOfChildrenOfItem:", encoding="q@:@@"
+        ](outline_num_children)
+        ab.add_method_unchecked[
+            "outlineView:isItemExpandable:", encoding="B@:@@"
+        ](outline_is_expandable)
+        ab.add_method_unchecked[
+            "outlineView:child:ofItem:", encoding="@@:@q@"
+        ](outline_child)
+        ab.add_method_unchecked[
+            "outlineView:objectValueForTableColumn:byItem:", encoding="@@:@@@"
+        ](outline_value)
+        ab.add_method[
+            "outlineViewSelectionDidChange:", encoding="v@:@"
+        ](outline_selection_changed)
+        ab.add_method["roastSave:", encoding="v@:@"](action_save)
         ab.add_method["roastComplete:", encoding="v@:@"](action_complete)
         ab.add_method["roastFind:", encoding="v@:@"](action_find)
         ab.add_method["roastFindChanged:", encoding="v@:@"](action_find_changed)
@@ -860,6 +1291,54 @@ def main() raises:
         )
         # Source-list styling: SidebarStyle = 1 on modern AppKit.
         _ = msg_send[ObjCObject, "NSTableView", "setStyle:"](outline, Int(1))
+        # A column, or the view has nowhere to draw. One column, no header:
+        # this is a file list, not a table.
+        let NSTableColumn = ObjCClass.lookup["NSTableColumn"]()
+        var column = msg_send[
+            ObjCObject, "NSTableColumn", "alloc", is_class=True
+        ](NSTableColumn.as_object())
+        column = msg_send[
+            ObjCObject, "NSTableColumn", "initWithIdentifier:"
+        ](column, nsstring(String("name")).ptr())
+        _ = msg_send[ObjCObject, "NSTableColumn", "setWidth:"](
+            column, Float64(220.0)
+        )
+        # A column made in code has no data cell, and a cell-based table view
+        # dereferences it on the first draw -- the crash is inside
+        # -[NSTableView preparedCellAtColumn:row:], a long way from the column
+        # that lacks one. The view is cell-based because the delegate does not
+        # implement outlineView:viewForTableColumn:item:, which is what AppKit
+        # looks for to decide.
+        let NSTextFieldCell = ObjCClass.lookup["NSTextFieldCell"]()
+        var cell = msg_send[
+            ObjCObject, "NSTextFieldCell", "alloc", is_class=True
+        ](NSTextFieldCell.as_object())
+        cell = msg_send[ObjCObject, "NSTextFieldCell", "initTextCell:"](
+            cell, nsstring(String("")).ptr()
+        )
+        _ = msg_send[ObjCObject, "NSCell", "setEditable:"](cell, False)
+        _ = msg_send[ObjCObject, "NSTableColumn", "setDataCell:"](
+            column, cell.ptr()
+        )
+        _ = msg_send[ObjCObject, "NSTableView", "addTableColumn:"](
+            outline, column.ptr()
+        )
+        _ = msg_send[ObjCObject, "NSOutlineView", "setOutlineTableColumn:"](
+            outline, column.ptr()
+        )
+        _ = msg_send[ObjCObject, "NSTableView", "setHeaderView:"](
+            outline, ObjCObject(0).ptr()
+        )
+        _ = msg_send[ObjCObject, "NSOutlineView", "setDataSource:"](
+            outline, actions.ptr()
+        )
+        _ = msg_send[ObjCObject, "NSOutlineView", "setDelegate:"](
+            outline, actions.ptr()
+        )
+        _ = msg_send[ObjCObject, "NSTableView", "setRowHeight:"](
+            outline, Float64(20.0)
+        )
+        g_outline()[] = outline.addr()
         _ = msg_send[ObjCObject, "NSScrollView", "setDocumentView:"](
             side_scroll, outline.ptr()
         )
@@ -966,6 +1445,13 @@ def main() raises:
                 print("roast: language server started")
         elif server == "":
             print("roast: no language server (set ROAST_LSP or COCOAMOJO_ROOT)")
+
+        # A project, if one was named. ROAST_PROJECT is a folder; use the
+        # sandbox rather than the source tree, which tools/roast-sandbox.sh
+        # exists to make.
+        let project = getenv("ROAST_PROJECT")
+        if project != "":
+            open_folder(project)
 
         _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
             win, grid.ptr()

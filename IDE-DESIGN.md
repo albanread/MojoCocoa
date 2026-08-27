@@ -235,9 +235,51 @@ is simpler and crash-isolated.
 | 0 | **done** — shell: window, native tabbing, menu, toolbar, status bar, sidebar | `tools/check-ide.sh` — 7 checks green |
 | 1 | **done** — rope, GridView, NSTextInputClient, caret, selection, undo, find | 250k lines in 5 ms, keystroke 2.4 µs, snapshot 400 ns; 59 editing checks + 37 rope checks; Pinyin still to try with a real IME |
 | 2 | LSP: **diagnostics and completion done**; definition and semantic tokens to come | `check-ide.sh` completes `setTitle: (ObjCObject) -> None` inside a msg_send string |
-| 3 | build/run, issues drawer, output pane — **self-hosting** | the IDE builds the IDE |
-| 4 | AppleScript dictionary + `check-ide.sh` | osascript drives edit→build→diagnostics in CI |
-| 5 | (optional) Metal glyph renderer | 120 Hz scroll measurement says it's needed, or it isn't built |
+| 3 | **documents**: open, save, multiple buffers, tabs | open two files, edit both, save both; each keeps its own undo |
+| 4 | build/run, issues drawer, output pane — **self-hosting** | the IDE builds the IDE |
+| 5 | **projects**: folder tree in the sidebar, project-wide search | open `ide/`, click through the files, search across them |
+| 6 | AppleScript dictionary + `check-ide.sh` | osascript drives edit→build→diagnostics in CI |
+| 7 | (optional) Metal glyph renderer | 120 Hz scroll measurement says it's needed, or it isn't built |
+
+### Documents, and why they are their own milestone
+
+Milestones 0–2 were written as though there were one buffer, and there is: the
+rope, the caret, the selection, the undo stack, the marked range, the revision
+and the document URI are all process globals. That was the right shape for
+proving the editor works and it is exactly wrong for tabs.
+
+So milestone 3 is a refactor before it is a feature. A `Document` gathers what
+is currently spread across roughly forty globals; the app holds a list of them
+and an index; the grid view draws the current one. Tabs then cost almost
+nothing, because AppKit's native tabbing is already switched on and the window
+already has a tabbing identifier — what was missing was ever having a second
+thing to show.
+
+It comes before build and run rather than after, for a reason that only shows
+up when you try: building compiles a file on disk, so Run on an unsaved buffer
+is a question that has to be answered before the Run button can mean anything.
+
+### A project is a folder
+
+No project file, no workspace format, no index to rebuild. Open a folder and it
+is a project; the files in it are the project's files. `ide/` is the working
+example, and the test: open it, see `roast.mojo`, `rope.mojo`, `gridview.mojo`,
+`lsp.mojo`, `json.mojo` and their tests, click one, edit it.
+
+The sidebar is an `NSOutlineView` whose items are paths. Children are listed
+lazily and cached per directory, so opening a folder never walks it — a tree
+with a quarter of a million files under it costs whatever is expanded and
+nothing else, which is the other reading of the original requirement and the
+one that decides the design. Dotfiles and build output are hidden.
+
+Selecting a row opens that file, which is the whole interaction: no drag, no
+context menu, no rename in v1. `mojoproject.toml` can arrive later to name an
+entry point and build flags; until something needs it, a folder is enough.
+
+Opening and saving are the small half and land first. Until they do, the File
+menu is advertising three commands that do not exist -- `Open…` and `Save` have
+no implementation at all, and `New Tab` calls `addTabbedWindow:` with the window
+itself, which duplicates a window rather than opening a document.
 
 Rough effort: 0 is a week, 1 is the long pole at two to three, 2 and 3 a week
 or two each, 4 a week. A dogfoodable editor in roughly two months; the
