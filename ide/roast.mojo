@@ -944,86 +944,95 @@ def tab_width(total: Float64) -> Float64:
     return max(TAB_MIN, min(TAB_MAX, total / Float64(n)))
 
 
-fn draw_tabs(self_: P, cmd: P):
-    try:
-        with autoreleasepool():
-            let view = ObjCObject(Int(self_))
-            let bounds = msg_send[CGRect, "NSView", "bounds"](view)
-            let NSColorT = ObjCClass.lookup["NSColor"]()
+class RoastTabBar(NSView):
+    """The tab strip.
 
-            # The bar, a shade back from the editor so the active tab can be
-            # the one that matches it.
-            let back = msg_send[
-                ObjCObject, "NSColor", "windowBackgroundColor", is_class=True
-            ](NSColorT.as_object())
-            _ = msg_send[ObjCObject, "NSColor", "setFill"](back)
-            _ = external_call["NSRectFill", NoneType](bounds)
+    `drawRect_` has to declare the dirty rectangle now. The old
+    registration passed the encoding `v@:{CGRect={CGPoint=dd}{CGSize=dd}}`
+    while the function took only `(self, cmd)` -- harmless, because the
+    rect arrives in registers the callee never reads, but it was a claim
+    about a shape nothing checked. The SDK supplies the encoding now, and
+    the signature has to match it.
+    """
 
-            let w = tab_width(bounds.size.width)
-            let active = document.current_index()
-            var i = 0
-            while i < document.count():
-                let x = Float64(i) * w
-                if x > bounds.size.width:
-                    break
-                if i == active:
-                    let front = msg_send[
-                        ObjCObject, "NSColor", "textBackgroundColor",
-                        is_class=True,
-                    ](NSColorT.as_object())
-                    _ = msg_send[ObjCObject, "NSColor", "setFill"](front)
-                    _ = external_call["NSRectFill", NoneType](
-                        rect(x, 0.0, w, TAB_H)
-                    )
-                # A separator, so tabs read as tabs and not as a run of words.
-                let line = msg_send[
-                    ObjCObject, "NSColor", "separatorColor", is_class=True
+    def drawRect_(self, dirty: CGRect):
+        try:
+            with autoreleasepool():
+                let view = ObjCObject(self.__objc_id)
+                let bounds = msg_send[CGRect, "NSView", "bounds"](view)
+                let NSColorT = ObjCClass.lookup["NSColor"]()
+
+                # The bar, a shade back from the editor so the active tab can be
+                # the one that matches it.
+                let back = msg_send[
+                    ObjCObject, "NSColor", "windowBackgroundColor", is_class=True
                 ](NSColorT.as_object())
-                _ = msg_send[ObjCObject, "NSColor", "setFill"](line)
-                _ = external_call["NSRectFill", NoneType](
-                    rect(x + w - 1.0, 4.0, 1.0, TAB_H - 8.0)
+                _ = msg_send[ObjCObject, "NSColor", "setFill"](back)
+                _ = external_call["NSRectFill", NoneType](bounds)
+
+                let w = tab_width(bounds.size.width)
+                let active = document.current_index()
+                var i = 0
+                while i < document.count():
+                    let x = Float64(i) * w
+                    if x > bounds.size.width:
+                        break
+                    if i == active:
+                        let front = msg_send[
+                            ObjCObject, "NSColor", "textBackgroundColor",
+                            is_class=True,
+                        ](NSColorT.as_object())
+                        _ = msg_send[ObjCObject, "NSColor", "setFill"](front)
+                        _ = external_call["NSRectFill", NoneType](
+                            rect(x, 0.0, w, TAB_H)
+                        )
+                    # A separator, so tabs read as tabs and not as a run of words.
+                    let line = msg_send[
+                        ObjCObject, "NSColor", "separatorColor", is_class=True
+                    ](NSColorT.as_object())
+                    _ = msg_send[ObjCObject, "NSColor", "setFill"](line)
+                    _ = external_call["NSRectFill", NoneType](
+                        rect(x + w - 1.0, 4.0, 1.0, TAB_H - 8.0)
+                    )
+
+                    # An unsaved document is marked where the close box goes in
+                    # every other editor, which is where the eye already looks.
+                    var label = document.name_at(i)
+                    if document.dirty_at(i):
+                        label = String("• ") + label
+                    _ = msg_send[
+                        ObjCObject, "NSString", "drawAtPoint:withAttributes:"
+                    ](
+                        nsstring(label),
+                        CGPoint(x + 10.0, 6.0),
+                        ObjCObject(
+                            g_tab_attrs()[] if i == active else g_tab_dim()[]
+                        ).ptr(),
+                    )
+                    i += 1
+        except:
+            pass
+
+    def isFlipped(self) -> Bool:
+        return True
+
+    def mouseDown_(self, event: ObjCObject):
+        """Click a tab to show it."""
+        try:
+            with autoreleasepool():
+                let view = ObjCObject(self.__objc_id)
+                let win_pt = msg_send[CGPoint, "NSEvent", "locationInWindow"](
+                    event
                 )
-
-                # An unsaved document is marked where the close box goes in
-                # every other editor, which is where the eye already looks.
-                var label = document.name_at(i)
-                if document.dirty_at(i):
-                    label = String("• ") + label
-                _ = msg_send[
-                    ObjCObject, "NSString", "drawAtPoint:withAttributes:"
-                ](
-                    nsstring(label),
-                    CGPoint(x + 10.0, 6.0),
-                    ObjCObject(
-                        g_tab_attrs()[] if i == active else g_tab_dim()[]
-                    ).ptr(),
+                let local = msg_send[CGPoint, "NSView", "convertPoint:fromView:"](
+                    view, win_pt, ObjCObject(0).ptr()
                 )
-                i += 1
-    except:
-        pass
-
-
-fn tabs_is_flipped(self_: P, cmd: P) -> Bool:
-    return True
-
-
-fn tabs_mouse_down(self_: P, cmd: P, event: P):
-    """Click a tab to show it."""
-    try:
-        with autoreleasepool():
-            let view = ObjCObject(Int(self_))
-            let win_pt = msg_send[CGPoint, "NSEvent", "locationInWindow"](
-                ObjCObject(Int(event))
-            )
-            let local = msg_send[CGPoint, "NSView", "convertPoint:fromView:"](
-                view, win_pt, ObjCObject(0).ptr()
-            )
-            let bounds = msg_send[CGRect, "NSView", "bounds"](view)
-            let index = Int(local.x / tab_width(bounds.size.width))
-            if document.switch_to(index):
-                after_switch()
-    except:
-        pass
+                let bounds = msg_send[CGRect, "NSView", "bounds"](view)
+                let index = Int(local.x / tab_width(bounds.size.width))
+                if document.switch_to(index):
+                    after_switch()
+        except:
+            pass
 
 
 def refresh_tabs():
@@ -1991,17 +2000,10 @@ def main() raises:
         show_console(False)
         # Added to the window's content view, above the split, so it spans the
         # editor pane and stays put while the editor scrolls.
-        var tabbuilder = ObjCClassBuilder["NSView"]("RoastTabBar")
-        tabbuilder.add_method[
-            "drawRect:", encoding="v@:{CGRect={CGPoint=dd}{CGSize=dd}}"
-        ](draw_tabs)
-        tabbuilder.add_method["isFlipped"](tabs_is_flipped)
-        tabbuilder.add_method["mouseDown:", encoding="v@:@"](tabs_mouse_down)
-        let tabcls = tabbuilder^.register()
-        var realtabs = msg_send[
-            ObjCObject, "NSObject", "alloc", is_class=True
-        ](tabcls.as_object())
-        realtabs = msg_send[ObjCObject, "NSView", "initWithFrame:"](
+        # Already allocated and initialised, so the frame is set rather than
+        # passed to initWithFrame:.
+        var realtabs = ObjCObject(RoastTabBar().__objc_id)
+        _ = msg_send[ObjCObject, "NSView", "setFrame:"](
             realtabs, rect(240.0, h - TAB_H, w - 240.0, TAB_H)
         )
         _ = msg_send[ObjCObject, "NSView", "setAutoresizingMask:"](

@@ -1974,6 +1974,20 @@ static FnOp synthesizeObjCTrampoline(ASTDecl &structDecl, StructDeclOp structOp,
 
   ASTType resultType = ASTType(methodOp.getUserResultType());
 
+  // A memory-only RESULT is refused for now, and the reason is ABI, not
+  // laziness. AAPCS returns a small aggregate in x0/x1 or v0-v3 and a large
+  // one through x8 -- MacModula2's cocoa-send notes record that getting x8
+  // wrong bus-errors -- while a Mojo memory-only result becomes a by-ref
+  // slot in the signature, which is neither. selectedRange (NSRange, x0/x1)
+  // is the first real customer; until results are classified and lowered per
+  // the C ABI, a method with such a result goes unregistered rather than
+  // registered to return garbage.
+  if (!resultType.isNull() && !resultType.isNoneType() &&
+      !resultType.isTypeCheckErrorType() &&
+      resultType.getRegisterPassability(declLoc, shared) ==
+          TypeConvention::MemoryOnly)
+    return {};
+
   MLIRContext *ctx = shared.getContext();
   auto selfName = StringAttr::get(ctx, "self");
   auto cmdName = StringAttr::get(ctx, "_cmd");
@@ -1991,12 +2005,16 @@ static FnOp synthesizeObjCTrampoline(ASTDecl &structDecl, StructDeclOp structOp,
   for (unsigned i = 1, e = methodBody->getNumArguments(); i != e; ++i) {
     Type argType = methodBody->getArgument(i).getType();
 
-    // A reference-typed argument is one Mojo passes in memory. Objective-C
-    // passes its arguments by value, so forwarding one straight through would
-    // hand the method a pointer where it expects a value. Those are refused
-    // rather than registered wrongly -- see the note at the call site.
+    // A memory-only argument -- CGRect in drawRect: is the canonical case --
+    // reaches the Mojo method as a reference (Mojo passes such values in
+    // memory), but Objective-C sends it BY VALUE in registers: CGRect is a
+    // homogeneous aggregate of four doubles and arrives in v0-v3. So the
+    // trampoline declares the value type and receives it per the C ABI, and
+    // the forwarding code below materialises it -- stores the registers into
+    // a local and passes the borrow -- because a register value cannot become
+    // a memory borrow by wishing (the emitter asserts, correctly, if asked).
     if (isa<RefType>(argType))
-      return {};
+      argType = ASTType(argType).getReferenceElementType().mlirType;
 
     argTypes.push_back(argType);
     argConvs.push_back(ArgConvention::ReadReg);
@@ -2039,12 +2057,31 @@ static FnOp synthesizeObjCTrampoline(ASTDecl &structDecl, StructDeclOp structOp,
 
   CallOperands operands(CallSyntax::kMethodCall, &loc,
                         ExprDest(EC_ReturnValue));
-  operands.addSelf(ASTExprAnd<AnyValue>{
-      AnyValue(SBValue(trampoline.getBody()->getArgument(0))), &loc});
-  // Argument 1 is _cmd, which is dropped: that is the whole job.
+  // Registers at the boundary, memory inside. The trampoline's arguments are
+  // the C ABI's -- everything by value, the receiver in x0, a CGRect spread
+  // over v0-v3 -- but a Mojo method takes anything non-trivial as a memory
+  // borrow, `self` included, because inside Mojo a borrowed class has to be
+  // addressable (`self.__objc_id` is a field projection). So each such value
+  // is stored into a local and the borrow of the local is what is passed:
+  // the store is the conversion between the two calling conventions.
+  // Argument 1, `_cmd`, is dropped -- that is the rest of the job.
+  Block *calleeBody = methodOp.getBody();
+  auto forward = [&](unsigned trampIndex,
+                     unsigned calleeIndex) -> ASTExprAnd<AnyValue> {
+    Value arg = trampoline.getBody()->getArgument(trampIndex);
+    Type calleeType = calleeBody->getArgument(calleeIndex).getType();
+    if (isa<RefType>(calleeType)) {
+      VarDeclOp local = emitter.emitVarDecl(
+          "arg" + std::to_string(trampIndex), arg.getType(),
+          trampoline.getLoc(), VarDeclKind::Var);
+      RefStoreOp::create(builder, arg, local);
+      return {AnyValue(MBValue(local)), &loc};
+    }
+    return {AnyValue(SBValue(arg)), &loc};
+  };
+  operands.addSelf(forward(0, 0));
   for (unsigned i = 2, e = trampoline.getBody()->getNumArguments(); i != e; ++i)
-    operands.add(ASTExprAnd<AnyValue>{
-        AnyValue(SBValue(trampoline.getBody()->getArgument(i))), &loc});
+    operands.add(forward(i, i - 1));
   CValue result = emitter.emitNamedMethodCall(
       methodOp.getSourceNameAttr().getValue(), std::move(operands));
 

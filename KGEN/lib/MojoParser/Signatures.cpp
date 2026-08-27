@@ -1910,10 +1910,6 @@ static ASTType typeCheckVariadicList(ParsedArgument &arg, IREmitter &emitter,
 /// their type+default value expressions as PValues, so we need to ensure that
 /// they are emitted and have declarations registered in the scope so that later
 /// lookups can find them.
-/// Is this an Objective-C class declared with `class`?
-///
-/// One pointer, whose lifetime belongs to the runtime while it is borrowed.
-/// See the borrow-convention note below for why that earns an exception.
 static bool isObjCClassType(ASTType type, SharedState &shared) {
   if (type.isNull() || type.isTypeCheckErrorType())
     return false;
@@ -2120,18 +2116,15 @@ static void typeCheckOneArgument(size_t idx, ASTDecl *fnDecl,
     // pass non-trivial ones because we cannot diagnose ownership and have other
     // lifetime issues.
     //
-    // An Objective-C class reference is the exception, and deliberately so.
-    // The restriction above is about lifetime tracking, not about how a value
-    // fits in a register -- see the FIXME. A class is one pointer, and when it
-    // is borrowed the object's lifetime is the runtime's to guarantee: a
-    // receiver is alive for the duration of the message send by construction.
-    // It also has to be this way. Objective-C hands a method its receiver by
-    // value in x0, so a `self` passed by reference would have the trampoline
-    // reading a pointer to the pointer. Passing it in a register is what the
-    // ABI already says; letting the class be non-trivial is what keeps retain
-    // and release on copy and destroy. See COCOA_CLASS_DESIGN.md.
-    if (conv == TypeConvention::RegisterPassableTrivial ||
-        isObjCClassType(type, shared))
+    // An Objective-C class stays on this path on purpose, though it is one
+    // pointer and an earlier attempt sent it ReadReg. Inside Mojo a borrowed
+    // class has to be addressable -- `self.__objc_id` is a field projection,
+    // and a register borrow of a non-trivial type cannot produce an address
+    // (the emitter asserts). The C ABI's registers-only view exists at exactly
+    // one place, the synthesized trampoline, which receives the receiver by
+    // value and materialises it before calling in. Registers at the boundary,
+    // memory inside; see COCOA_CLASS_DESIGN.md.
+    if (conv == TypeConvention::RegisterPassableTrivial)
       arg.kgenConvention = ArgConvention::ReadReg;
     break;
   }

@@ -245,10 +245,27 @@ costs. For a borrowed Objective-C receiver the lifetime concern does not
 arise -- the runtime guarantees the receiver outlives the message send, by
 construction.
 
-So `Signatures.cpp` now grants exactly that exception: a borrowed argument is
-passed in a register when it is trivially register-passable **or when it is an
-Objective-C class**. `self` arrives as `!TabBar` in a register, the class stays
-non-trivial, and retain-on-copy is still there to be built on.
+`Signatures.cpp` briefly granted that exception, and porting the IDE revoked
+it. With `self` arriving as a register borrow, `self.__objc_id` — a field
+projection, which needs an address — hit the same emitter assertion from the
+other side: a register borrow of a non-trivial type cannot produce one. The
+resolution is the rule MacModula2's cocoa-send notes arrive at from the ABI
+end: **registers at the boundary, memory inside**. The C ABI's registers-only
+view exists at exactly one place, the synthesized trampoline, which receives
+everything by value — the receiver in x0, a CGRect spread over v0–v3 — and
+stores each non-trivial value into a local before calling in. The store is the
+conversion between the two calling conventions. Inside Mojo, a borrowed class
+travels by memory like any non-trivial type, so field projection just works.
+`spikes/s5-cocoakb/struct_arg_test.mojo` proves the round trip: a `drawRect:`
+sent with `{7, 9, 321, 87}` is seen by the method as exactly those numbers.
+
+Struct **returns** are refused for now, deliberately: AAPCS returns a small
+aggregate in x0/x1 or v0–v3 and a large one through x8, while a Mojo
+memory-only result becomes a by-ref slot — neither matches, and MacModula2's
+notes record that getting x8 wrong bus-errors. `selectedRange` (NSRange in
+x0/x1) is the first real customer; until results are classified per the C ABI,
+such methods go unregistered rather than registered to return garbage. This is
+what blocks converting the grid view's NSTextInputClient methods.
 
 A class also gained the one thing it is: a single `__objc_id` field. Until
 sprint 2b it was an empty struct -- a type with methods and nowhere for `self`

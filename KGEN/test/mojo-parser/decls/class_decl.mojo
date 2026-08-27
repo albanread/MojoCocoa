@@ -87,13 +87,14 @@ class Multiline(
 # runtime will dispatch to it by: every `_` in the name is a `:` in the
 # selector. Registering them is the rest of sprint 2; deriving the identity
 # correctly has to be true first.
-# `self` arrives by value in a register, not behind a reference. That is the
-# Objective-C ABI -- a method's receiver is an id in x0 -- and Mojo would
-# otherwise pass a non-trivially-register-passable type by reference, leaving
-# a trampoline to read a pointer to the pointer. The class stays non-trivial,
-# so a reference can still retain on copy; how a value travels and what
-# copying it costs are separate questions.
-# CHECK-DAG: lit.fn @"isFlipped(class_decl::TabBar)"({{.*}}%self: !TabBar
+# Registers at the boundary, memory inside. The METHOD takes `self` as a
+# memory borrow like any non-trivial type -- inside Mojo a borrowed class has
+# to be addressable, because `self.__objc_id` is a field projection. The
+# TRAMPOLINE is where the C ABI's registers-only view lives: it receives the
+# receiver by value in x0 and stores it to a local before calling in. The
+# store is the conversion between the two calling conventions.
+# CHECK-DAG: lit.fn @"isFlipped(class_decl::TabBar)"[{{.*}}%self: !lit.ref<!TabBar
+# CHECK-DAG: lit.fn @"__objc_imp_isFlipped({{.*}}(%self: !TabBar, %_cmd: !Int{{.*}}) cabi
 #
 # The encoding beside each is looked up in the SDK database, not derived: the
 # runtime is what will send these messages, so its idea of their shape is the
@@ -105,12 +106,6 @@ class Multiline(
 class TabBar(NSView):
     """A docstring."""
 
-    # The C-ABI function the runtime will call: Objective-C sends
-    # (id self, SEL _cmd), the method wants (self), and `self` already lines up
-    # because a class reference travels in a register. The trampoline exists to
-    # drop _cmd -- and, later, to stop an exception before it unwinds into
-    # objc_msgSend, which is undefined.
-    # CHECK-DAG: lit.fn @"__objc_imp_isFlipped({{.*}}(%self: !TabBar, %_cmd: !Int{{.*}}) cabi -> !Bool
     # CHECK-DAG: ObjCClassRegistrar::@"add_method
     def isFlipped(self) -> Bool:
         return True
