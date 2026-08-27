@@ -37,6 +37,23 @@ HARD_GUARD = re.compile(
 
 DID_NO_WORK = {"vacuous", "unverified"}
 
+# A build error in which bazel or the compiler says, in its own words, that the
+# target is not this fork's.
+#
+# This is a FOURTH signal, and the strongest of them, because it is not a
+# mention in a branch that was never taken -- it is the stated reason the thing
+# did not build. STATUS.md names these as reasons 3 and 1 respectively; without
+# them a test that cannot compile because it targets AMD's ISA, or because it
+# needs a component that ships only as a precompiled .mojoc, is counted as a
+# defect of this port.
+FOREIGN_BUILD_ERR = re.compile(
+    r"target '(amdgcn|nvptx|spir|r600)[^']*' is not supported"
+    r"|no such package '(Kernels/lib/(attn_res|matmul_rs|msa)"
+    r"|Kernels/src/mega_ffn)'"
+    r"|unsupported (target|architecture) '(amdgcn|nvptx)", re.I)
+CLOSED_PKG_ERR = re.compile(
+    r"no such package '(Kernels/lib/\w+|Kernels/src/\w+)'")
+
 # Packages this fork cannot build from source at all, and is not trying to.
 #
 # max/kernels/src/graph_compiler depends on Kernels/lib/{attn_res,matmul_rs,msa}
@@ -53,10 +70,16 @@ def source_of(target):
     return REPO / pkg / name.replace(".mojo.test", ".mojo")
 
 
-def out_of_scope(target, outcome=""):
+def out_of_scope(target, outcome="", build_error=""):
     """Return a reason string if the test belongs to another vendor, else ''."""
     if any(seg in target for seg in CLOSED_DEP_PATHS):
         return "depends on a closed component with no source in this tree"
+    if build_error:
+        m = CLOSED_PKG_ERR.search(build_error)
+        if m:
+            return f"needs {m.group(1)}, which has no source in this tree"
+        if FOREIGN_BUILD_ERR.search(build_error):
+            return "does not build here because it targets another vendor's ISA"
     leaf = target.split(":", 1)[-1].replace(".mojo.test", "")
     if NAME_VENDOR.search(leaf):
         return "vendor token in the test name"

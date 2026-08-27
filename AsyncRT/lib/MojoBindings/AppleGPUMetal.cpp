@@ -163,6 +163,14 @@ struct AGMetalCtx {
   std::string name;
   std::string arch;
   AGMetalCaps caps;
+  /// Guards `pending` and `deferredError`.
+  ///
+  /// The synchronous path kept no mutable per-context state, so it needed no
+  /// lock; asynchronous launch adds some. This backend is already reached from
+  /// more than one thread -- the address registry below takes a mutex for
+  /// exactly that reason -- and an unguarded `pending.push_back` from two
+  /// launches at once corrupts the vector rather than merely racing.
+  std::mutex mu;
   /// A drain failure seen on a path with no way to report it (hostPtr returns
   /// a pointer, not a status). Surfaced by the next synchronize.
   const char *deferredError = nullptr;
@@ -182,8 +190,11 @@ struct AGMetalCtx {
 /// and the waits after the first are already satisfied. Every buffer is
 /// released whatever the outcome; the first error found is returned, and the
 /// remainder are still drained so the queue is left clean for the caller.
-const char *drainPending(AGMetalCtx *ctx) {
-  if (!ctx || ctx->pending.empty())
+/// The body; the caller must already hold `ctx->mu`. The wait happens under
+/// the lock deliberately: a second thread must not reach device memory while
+/// a drain is only half done.
+const char *drainPendingLocked(AGMetalCtx *ctx) {
+  if (ctx->pending.empty())
     return nullptr;
   const char *firstErr = nullptr;
   for (id cb : ctx->pending) {
@@ -196,6 +207,25 @@ const char *drainPending(AGMetalCtx *ctx) {
   }
   ctx->pending.clear();
   return firstErr;
+}
+
+const char *drainPending(AGMetalCtx *ctx) {
+  if (!ctx)
+    return nullptr;
+  std::lock_guard<std::mutex> lock(ctx->mu);
+  return drainPendingLocked(ctx);
+}
+
+/// Park a drain failure that has nowhere to be returned.
+///
+/// First error wins. Overwriting would discard the failure that actually
+/// corrupted the data the caller is about to read, in favour of a later one.
+void deferError(AGMetalCtx *ctx, const char *e) {
+  if (!ctx || !e)
+    return;
+  std::lock_guard<std::mutex> lock(ctx->mu);
+  if (!ctx->deferredError)
+    ctx->deferredError = e;
 }
 
 struct AGMetalBuf {
@@ -484,8 +514,21 @@ int queryGpuGeneration(id device, const std::string &arch) {
     if (c >= '1' && c <= '9')
       named = c - '0';
   }
-  if (family10)
-    return named > 5 ? named : 5;
+  if (family10) {
+    // Family10 IS the predicate, so it answers 5 whatever the part is called.
+    // Returning `named` for a later part would be worse than useless: every
+    // fast path in the kernel library is spelled `== 5` -- grouped_matmul.mojo,
+    // matmul/gpu/__init__.mojo, fp8_gemv.mojo, fp4_matmul.mojo,
+    // matmul_kernel.mojo -- so an M6 reporting 6 would silently disable on
+    // newer hardware precisely the paths Family10 says that hardware has.
+    if (named > 5)
+      fprintf(stderr,
+              "[applegpu] note: device arch '%s' names generation %d; the "
+              "driver advertises MTLGPUFamilyApple10, so reporting 5, the "
+              "generation the kernel guards are written against\n",
+              arch.c_str(), named);
+    return 5;
+  }
   // No Family10: the 16x16 MMA is absent whatever the part is called, so never
   // report 5 here. A part named M5+ without the family would be a Metal or
   // naming change worth seeing rather than silently rounding away.
@@ -549,6 +592,13 @@ const char *AppleGPUMetal_createContext(AGMetalCtx **out, int id_,
 void AppleGPUMetal_destroyContext(AGMetalCtx *ctx) {
   if (!ctx)
     return;
+  // Asynchronous launch may still have command buffers in flight, and waiting
+  // is not optional here: each is retained by us so dropping it leaks, its
+  // error is readable only from the buffer itself, and the GPU is still
+  // writing through the queue we are about to release. There is no status to
+  // return from a destructor, so say it out loud instead of losing it.
+  if (const char *e = drainPending(ctx))
+    fprintf(stderr, "[applegpu] %s (during context teardown)\n", e);
   objcRelease(ctx->queue);
   delete ctx;
 }
@@ -563,9 +613,12 @@ const char *AppleGPUMetal_synchronize(AGMetalCtx *ctx) {
   // dispatch is reported when launches no longer wait individually.
   if (const char *e = drainPending(ctx))
     return e;
-  if (const char *e = ctx->deferredError) {
-    ctx->deferredError = nullptr;
-    return e;
+  {
+    std::lock_guard<std::mutex> lock(ctx->mu);
+    if (const char *e = ctx->deferredError) {
+      ctx->deferredError = nullptr;
+      return e;
+    }
   }
   // An empty command-buffer round trip still serialises against anything the
   // queue holds that we did not submit ourselves.
@@ -717,7 +770,7 @@ void *AppleGPUMetal_hostPtr(AGMetalBuf *buf) {
   // unified-memory fast path below is a bare memcpy with no implicit
   // ordering, so drain first or read a half-written buffer.
   if (const char *e = drainPending(buf->ctx))
-    buf->ctx->deferredError = e;
+    deferError(buf->ctx, e);
 
   // Under unified memory a *device* buffer has a perfectly good CPU pointer
   // too, so this is keyed on storage rather than on the address kind.
@@ -1294,13 +1347,20 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   // that observes device memory -- synchronize, the D2H copies, hostPtr --
   // drains first, so ordering is still guaranteed to the caller; what changes
   // is only that ten dispatches no longer cost ten drains.
+  //
+  // Take ownership of the buffer FIRST. It is already committed, so any path
+  // that returns without recording it leaves work running that no later drain
+  // can wait on -- and the copy-out that follows then memcpys a buffer the GPU
+  // is still writing, which is the very race these drains exist to prevent.
   if (asyncLaunchEnabled()) {
-    if (ctx->pending.size() >= kMaxPending) {
-      if (const char *e = drainPending(ctx))
-        return e;
-    }
     msg<id>(cb, "retain");
+    std::lock_guard<std::mutex> lock(ctx->mu);
     ctx->pending.push_back(cb);
+    // Backpressure: once the queue is deep enough, drain it -- this buffer
+    // included, so one launch in kMaxPending pays a full round trip and the
+    // rest pay none. Errors from anything in the window surface here.
+    if (ctx->pending.size() >= kMaxPending)
+      return drainPendingLocked(ctx);
     return nullptr;
   }
 

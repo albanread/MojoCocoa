@@ -45,7 +45,7 @@ of the attractor is x in [-2.182, 2.656], y in [0, 9.998].
 from std.gpu import global_idx
 from std.math import ceildiv, sqrt
 from std.random import NormalRandom, Random
-from std.sys import has_apple_gpu_accelerator
+from std.sys import bit_width_of, has_apple_gpu_accelerator
 from std.testing import assert_almost_equal, assert_true
 
 from max.gpu.host import DeviceContext
@@ -273,16 +273,24 @@ def run_fern(ctx: DeviceContext) raises:
     )
 
 
-def run_distribution_checks(ctx: DeviceContext) raises:
+def run_distribution_checks[dtype: DType](ctx: DeviceContext) raises:
     """Keep the plain statistical coverage the old file gestured at.
 
     The fern exercises `step_uniform` through its branch thresholds; these two
     check the raw moments, and that `step_normal` is wired up at all.
+
+    Parametric on dtype so the dtype matrix the old file ran -- float16 and
+    float32 everywhere, float64 off Apple -- survives the rewrite. The fern
+    itself is float32 only, and deliberately: it is an instrument for the
+    generator's *distribution*, which is a property of the generator and not
+    of the type the samples are stored in. An RNG lowering defect specific to
+    a narrow dtype shows up here instead.
     """
     comptime N = 4096
+    print("-- distribution checks:", dtype)
 
     def uniform_kernel(
-        out_ptr: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
+        out_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
         var tid = Int(global_idx.x)
         if tid >= N // 4:
@@ -290,10 +298,10 @@ def run_distribution_checks(ctx: DeviceContext) raises:
         var rng = Random(seed=UInt64(SEED), subsequence=UInt64(tid))
         var v = rng.step_uniform()
         comptime for i in range(4):
-            out_ptr[tid * 4 + i] = v[i]
+            out_ptr[tid * 4 + i] = v[i].cast[dtype]()
 
     def normal_kernel(
-        out_ptr: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
+        out_ptr: UnsafePointer[Scalar[dtype], MutAnyOrigin],
     ):
         var tid = Int(global_idx.x)
         if tid >= N // 8:
@@ -301,10 +309,10 @@ def run_distribution_checks(ctx: DeviceContext) raises:
         var rng = NormalRandom(seed=UInt64(SEED), subsequence=UInt64(tid))
         var v = rng.step_normal()
         comptime for i in range(8):
-            out_ptr[tid * 8 + i] = v[i]
+            out_ptr[tid * 8 + i] = v[i].cast[dtype]()
 
-    var dev = ctx.enqueue_create_buffer[DType.float32](N)
-    var host = ctx.enqueue_create_host_buffer[DType.float32](N)
+    var dev = ctx.enqueue_create_buffer[dtype](N)
+    var host = ctx.enqueue_create_host_buffer[dtype](N)
 
     ctx.enqueue_function[uniform_kernel](
         dev, grid_dim=(ceildiv(N // 4, BLOCK),), block_dim=(BLOCK,)
@@ -314,7 +322,14 @@ def run_distribution_checks(ctx: DeviceContext) raises:
     var usum = Float64(0.0)
     for i in range(N):
         var u = Float64(host[i])
-        assert_true(u >= 0.0 and u < 1.0, "step_uniform left [0,1)")
+        # The interval is half-open in the generator, but not necessarily in
+        # the storage type: the largest float32 below 1.0 rounds to exactly
+        # 1.0 when narrowed to float16, so only f32 and wider can assert the
+        # open upper bound.
+        comptime if bit_width_of[dtype]() >= 32:
+            assert_true(u >= 0.0 and u < 1.0, "step_uniform left [0,1)")
+        else:
+            assert_true(u >= 0.0 and u <= 1.0, "step_uniform left [0,1]")
         usum += u
     var umean = usum / Float64(N)
     print("uniform mean:", umean, "(want 0.5)")
@@ -342,5 +357,9 @@ def run_distribution_checks(ctx: DeviceContext) raises:
 def main() raises:
     with DeviceContext() as ctx:
         run_fern(ctx)
-        run_distribution_checks(ctx)
+        run_distribution_checks[DType.float32](ctx)
+        run_distribution_checks[DType.float16](ctx)
+        comptime if not has_apple_gpu_accelerator():
+            # Metal does not support DType.float64
+            run_distribution_checks[DType.float64](ctx)
         print("ALL RANDOM TESTS PASSED")

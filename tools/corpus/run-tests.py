@@ -30,37 +30,37 @@ blocked backlog can be measured instead of assumed. BUILD files are restored
 in a finally block, and `--unblock` refuses to run if a previous restore was
 left incomplete.
 """
-import argparse, json, os, re, shutil, signal, subprocess, sys, time
+import argparse, json, os, re, shutil, signal, subprocess, sys, tempfile, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import classify  # BUILD-derived relevance
 import scope     # vendor-ownership filter
+from common import (REPO, SKIP_RE, WORK_RE, best_perf, log_leaf, sh,
+                    source_of)
 
-REPO = Path(__file__).resolve().parents[2]
-TMP_ROOT = os.environ.get(
-    "CORPUS_RUNNER_TMP",
-    "/private/tmp/claude-501/-Volumes-xb-mojo2026/"
-    "cb05ab9f-9835-42ac-ab60-7e4a65a7521a/scratchpad/testtmp")
 BACKUP_SUFFIX = ".corpus-runner-backup"
 
-# Case-insensitive: the corpus uses SKIP:, skip:, Skipping: and
-# SKIPPED: interchangeably, and a case-sensitive pattern silently
-# scores the 'Skipping:' spellings as ordinary passes.
-SKIP_RE = re.compile(r'^\s*(SKIP(?:PED)?|skip(?:ping)?)\b[: ]',
-                     re.M | re.IGNORECASE)
-WORK_RE = re.compile(r'^\s*(==\s+\S|PASS\b|ok\b|\[\s*OK\s*\])', re.M)
+_TMP_ROOT = os.environ.get("CORPUS_RUNNER_TMP")
+
+
+def tmp_root():
+    """Where TEST_TMPDIR lives, resolved on first use.
+
+    A fresh directory under the system temp dir per run. A fixed absolute path
+    here is one machine's accident: it means nothing anywhere else, and every
+    later run inherits whatever the last one left in it. Resolved lazily so
+    that --help and --restore do not create one they never use.
+    """
+    global _TMP_ROOT
+    if not _TMP_ROOT:
+        _TMP_ROOT = tempfile.mkdtemp(prefix="corpus-runner-")
+    return _TMP_ROOT
+
 PSO_RE = re.compile(
     r'newComputePipelineStateWithFunction|newLibraryWithData|'
     r'XPC_ERROR_CONNECTION_INTERRUPTED|Compiler encountered an internal error',
     re.I)
-PERF_RE = re.compile(
-    r'([0-9]+\.?[0-9]*)\s*(TFLOP/s|GFLOP/s|GFLOPS|GB/s|ms|us|ns)\b', re.I)
-
-
-def sh(cmd, timeout=None, cwd=REPO):
-    return subprocess.run(cmd, shell=True, cwd=cwd, capture_output=True,
-                          text=True, timeout=timeout)
 
 
 # ---------------------------------------------------------------- discovery
@@ -106,11 +106,6 @@ CHECK_MECHANISM = re.compile(
     re.M | re.I)
 
 
-def source_of(target):
-    pkg, name = target[2:].split(":", 1)
-    return REPO / pkg / name.replace(".mojo.test", ".mojo")
-
-
 def has_check_mechanism(target):
     """Whether the test source contains anything that could fail it.
 
@@ -127,11 +122,6 @@ def has_check_mechanism(target):
         return bool(CHECK_MECHANISM.search(src.read_text(errors="replace")))
     except OSError:
         return True
-
-
-def log_name(target):
-    """Filesystem-safe leaf for a target label."""
-    return target.split(":", 1)[-1].replace("/", "__")
 
 
 def runfiles_dir(target):
@@ -159,7 +149,12 @@ def query_args(targets, chunk=200):
     for i in range(0, len(targets), chunk):
         batch = targets[i:i + chunk]
         # bazel query takes ONE expression, not a list of labels
-        r = sh("./bazelw query --output=build 'set(" + " ".join(batch) + ")'")
+        # --keep_going: one un-analysable target in the batch otherwise loses
+        # the answer for all 200, silently -- query exits without writing the
+        # rest. A lit test that then runs without its TEST_PATH argument scores
+        # as a failure of the code under test, which it is not.
+        r = sh("./bazelw query --keep_going --output=build 'set("
+               + " ".join(batch) + ")'")
         cur = None
         for line in r.stdout.splitlines():
             m = re.match(r'^\s*name = "([^"]+)"', line)
@@ -190,7 +185,7 @@ def bazel_test_env(target, runfiles, timeout):
     a test failure and is really a harness omission. TEST_TMPDIR must be a real
     writable directory for the same reason.
     """
-    tmp = Path(TMP_ROOT) / target.replace("//", "").replace(":", "_") \
+    tmp = Path(tmp_root()) / target.replace("//", "").replace(":", "_") \
         .replace("/", "_")
     tmp.mkdir(parents=True, exist_ok=True)
     xml = tmp / "test.xml"
@@ -231,8 +226,14 @@ def query_env(targets, chunk=120):
     for i in range(0, len(targets), chunk):
         batch = targets[i:i + chunk]
         q = " ".join(batch)
-        r = sh(f"./bazelw cquery 'set({q})' --output=starlark "
+        # --keep_going for the same reason as query_args: without it a single
+        # target whose package cannot be analysed (`Kernels/lib/*` has no
+        # source here) empties the whole batch, and every filecheck wrapper in
+        # it then runs with no BINARY/FILECHECK and fails for want of its
+        # environment rather than for anything in the kernel.
+        r = sh(f"./bazelw cquery --keep_going 'set({q})' --output=starlark "
                f"--starlark:expr='{expr}'")
+        got = 0
         for line in r.stdout.splitlines():
             if "\t" not in line:
                 continue
@@ -240,9 +241,77 @@ def query_env(targets, chunk=120):
             label = label.replace("@@", "", 1)
             try:
                 env[label] = json.loads(blob)
+                got += 1
             except ValueError:
                 pass
+        if got < len(batch):
+            print(f"  note: RunEnvironmentInfo for {got} of {len(batch)} "
+                  "target(s) in this batch", file=sys.stderr)
     return env
+
+
+def build_errors(build_log, targets):
+    """target -> the first build error bazel or the compiler reported for it.
+
+    "No binary produced" is not a diagnosis. bazel already says WHY, and the
+    reason decides whether the row is this fork's problem at all: a target that
+    cannot compile because it wants AMD's ISA, or because it needs a package
+    that ships only as precompiled .mojoc, is out of scope by the rules in
+    STATUS.md -- and indistinguishable from a real defect once the log is
+    thrown away. So keep it.
+
+    Two shapes are attributed: a diagnostic naming the .mojo source, and a
+    bazel ERROR naming the target label outright.
+    """
+    by_source = {}
+    for t in targets:
+        pkg, name = t[2:].split(":", 1)
+        by_source[f"{pkg}/{name.replace('.mojo.test', '.mojo')}"] = t
+    out = {}
+    for line in build_log.splitlines():
+        for lbl in re.findall(r"'(//[^']+\.mojo\.test)'", line):
+            out.setdefault(lbl, line.strip())
+        m = re.search(r'(max/\S+?\.mojo):\d+:\d+: error: (.*)', line)
+        if m and m.group(1) in by_source:
+            out.setdefault(by_source[m.group(1)], line.strip())
+    return out
+
+
+def query_incompatible(targets, chunk=120):
+    """The targets bazel refuses to build for this platform.
+
+    "No binary produced" has two very different causes and calling both a build
+    failure misreports the port badly: one is a defect, the other was never
+    going to produce a binary. BUILD-dict parsing cannot tell them apart,
+    because a rule may declare `target_compatible_with` inline rather than
+    through `_EXTRA_CONSTRAINTS` -- which is exactly what the sm100/Blackwell
+    rules, `comm` and `shmem` do. bazel knows, so ask bazel.
+    """
+    out = set()
+    expr = ('str(target.label) + "\t" + '
+            'str("IncompatiblePlatformProvider" in providers(target))')
+    for i in range(0, len(targets), chunk):
+        batch = targets[i:i + chunk]
+        # --keep_going matters: one un-analysable target poisons the whole
+        # batch otherwise. Several tests here depend on `Kernels/lib/*`, which
+        # has no source in this tree (see scope.CLOSED_DEP_PATHS), so analysis
+        # of the batch aborts and every answer in it is lost -- silently, since
+        # cquery still exits without writing to stdout.
+        r = sh(f"./bazelw cquery --keep_going 'set({' '.join(batch)})' "
+               f"--output=starlark --starlark:expr='{expr}'")
+        got = 0
+        for line in r.stdout.splitlines():
+            if "\t" not in line:
+                continue
+            label, flag = line.split("\t", 1)
+            got += 1
+            if flag.strip() == "True":
+                out.add(label.replace("@@", "", 1))
+        if got < len(batch):
+            print(f"  note: cquery answered for {got} of {len(batch)} target(s)"
+                  " in this batch; the rest could not be analysed",
+                  file=sys.stderr)
+    return out
 
 
 # ------------------------------------------------------------ unblock/restore
@@ -295,6 +364,66 @@ def unblock():
 
 # ------------------------------------------------------------------ classify
 
+def _kill_group(proc):
+    """SIGKILL the test's whole process group, then reap it.
+
+    `start_new_session` put the test in its own group; kill the group so
+    anything it spawned dies with it rather than holding the sweep open.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def run_one(cmd, env, cwd, timeout, tmpdir):
+    """Run one test binary under a timeout that actually bounds it.
+
+    Two deliberate departures from `subprocess.run(..., timeout=)`, both paid
+    for by a real incident: a GPU-wedged test ran for 4267 s under a 900 s
+    timeout and was ended only by an external SIGKILL. `subprocess.run`
+    returned NORMALLY with the kill's exit code, so TimeoutExpired had never
+    been raised at all -- the deadline was simply never enforced.
+
+      * output goes to FILES, not pipes. That removes the whole
+        selector-and-drain machinery from the timeout path (and with it any
+        chance of a full pipe buffer deadlocking a chatty test); what remains
+        is `proc.wait(timeout=...)`, which is a plain poll loop.
+      * the child gets its own session, so expiry can SIGKILL the process
+        GROUP. Killing the direct child is not enough when the thing that is
+        stuck is something it spawned.
+
+    Returns (returncode | None, combined output, timed_out).
+    """
+    op = Path(tmpdir) / "stdout.txt"
+    ep = Path(tmpdir) / "stderr.txt"
+    timed_out = False
+    with open(op, "wb") as fo, open(ep, "wb") as fe:
+        proc = subprocess.Popen(cmd, stdout=fo, stderr=fe, env=env, cwd=cwd,
+                                start_new_session=True)
+        try:
+            rc = proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            rc = None
+            _kill_group(proc)
+
+    def _read(path):
+        try:
+            return path.read_text(errors="replace")
+        except OSError:
+            return ""
+
+    return rc, _read(op) + _read(ep), timed_out
+
+
 def classify_run(rc, out, elapsed, timed_out):
     if timed_out:
         return "timeout", ""
@@ -317,15 +446,6 @@ def classify_run(rc, out, elapsed, timed_out):
     return "fail", tail[0][:180]
 
 
-def perf_of(out):
-    hits = PERF_RE.findall(out)
-    for unit in ("TFLOP/s", "GFLOP/s", "GFLOPS", "GB/s"):
-        best = [h for h in hits if h[1].upper() == unit.upper()]
-        if best:
-            return f"{max(best, key=lambda h: float(h[0]))[0]} {unit}"
-    return ""
-
-
 # ---------------------------------------------------------------------- run
 
 def main():
@@ -344,7 +464,10 @@ def main():
     ap.add_argument("--targets-file", default="",
                     help="newline-separated target labels to run instead of "
                          "discovering by class")
-    ap.add_argument("--jobs", type=int, default=1)
+    # No --jobs: the loop below is sequential deliberately. These are GPU
+    # tests against a single device, so running them concurrently would have
+    # them contend for it and report timings that mean nothing. An option that
+    # silently did nothing was worse than not offering one.
     args = ap.parse_args()
 
     if args.restore:
@@ -380,6 +503,10 @@ def main():
                timeout=None)
         print(f"build finished in {time.time() - t0:.0f}s "
               f"(exit {b.returncode})")
+        berrs = build_errors((b.stdout or "") + (b.stderr or ""),
+                             [t["target"] for t in sel])
+        if berrs:
+            print(f"  captured a build error for {len(berrs)} target(s)")
         print("querying test environments ...", flush=True)
         envs = query_env([t["target"] for t in sel])
         targs = query_args([t["target"] for t in sel])
@@ -388,15 +515,27 @@ def main():
         missing = [t["target"] for t in sel if t["target"] not in envs]
         if missing:
             print(f"  note: no RunEnvironmentInfo for {len(missing)} target(s)")
+        incompatible = query_incompatible([t["target"] for t in sel])
+        if incompatible:
+            print(f"  {len(incompatible)} target(s) bazel refuses on this "
+                  "platform (scored `blocked`, not `build-failure`)")
 
         results = []
         for i, t in enumerate(sel, 1):
             bp = binary_path(t["target"])
             if not bp.is_file():
-                results.append({**t, "outcome": "build-failure",
-                                "detail": "no binary produced",
+                # `blocked` is the documented class for this (see the module
+                # docstring): bazel declared the target incompatible, so it was
+                # never built and never run. Scoring that a build failure reads
+                # as a defect of the port and is simply wrong.
+                blocked = t["target"] in incompatible
+                outcome = "blocked" if blocked else "build-failure"
+                detail = ("bazel declares it incompatible with this platform"
+                          if blocked
+                          else berrs.get(t["target"], "no binary produced"))
+                results.append({**t, "outcome": outcome, "detail": detail,
                                 "perf": "", "seconds": 0.0})
-                print(f"[{i}/{len(sel)}] build-failure  "
+                print(f"[{i}/{len(sel)}] {outcome:13} "
                       f"{t['target'].split(':')[-1]}", flush=True)
                 continue
             tenv = envs.get(t["target"], {})
@@ -422,16 +561,10 @@ def main():
             rf = runfiles_dir(t["target"])
             cwd = str(rf) if rf.is_dir() else str(REPO)
             start = time.time()
-            timed_out = False
-            try:
-                cmd = [str(bp)] + targs.get(t["target"], [])
-                p = subprocess.run(cmd, capture_output=True, text=True,
-                                   timeout=args.timeout, env=env, cwd=cwd)
-                rc, out = p.returncode, (p.stdout or "") + (p.stderr or "")
-            except subprocess.TimeoutExpired as e:
-                rc, timed_out = None, True
-                out = (e.stdout or b"").decode(errors="replace") + \
-                      (e.stderr or b"").decode(errors="replace")
+            cmd = [str(bp)] + targs.get(t["target"], [])
+            rc, out, timed_out = run_one(
+                cmd, env, cwd, args.timeout, env["TEST_TMPDIR"]
+            )
             el = time.time() - start
             outcome, detail = classify_run(rc, out, el, timed_out)
             if outcome == "pass" and not has_check_mechanism(t["target"]):
@@ -439,12 +572,14 @@ def main():
                 detail = ("exit 0, but the source has no assertion, no "
                           "CHECK line and no failure path")
             results.append({**t, "outcome": outcome, "detail": detail,
-                            "perf": perf_of(out), "seconds": round(el, 2)})
+                            "perf": best_perf(out), "seconds": round(el, 2)})
             logdir = REPO / "tools/corpus/logs"
             logdir.mkdir(parents=True, exist_ok=True)
-            # a target name can carry a subdirectory (nn:attention/test_x.mojo)
-            # -- flatten it, or the log path names a directory that is not there
-            (logdir / (log_name(t["target"]) + ".log")).write_text(out)
+            # log_leaf carries the package and flattens any subdirectory in the
+            # target name (nn:attention/test_x.mojo), so two same-named tests in
+            # different packages keep both logs and neither names a directory
+            # that is not there.
+            (logdir / (log_leaf(t["target"]) + ".log")).write_text(out)
             print(f"[{i}/{len(sel)}] {outcome:13} {t['target'].split(':')[-1]}"
                   + (f"   {detail[:70]}" if detail else ""), flush=True)
             # a long-running test should be visible while it runs, not only in
@@ -464,14 +599,16 @@ def write_report(results, out):
     # is not coverage, and a vendor-owned test that fails is not a defect of
     # this fork; either way, leaving them in the denominator misreports it.
     for r in results:
-        r["out_of_scope"] = scope.out_of_scope(r["target"], r["outcome"])
+        r["out_of_scope"] = scope.out_of_scope(
+            r["target"], r["outcome"],
+            r["detail"] if r["outcome"] == "build-failure" else "")
     foreign = [r for r in results if r["out_of_scope"]]
     results = [r for r in results if not r["out_of_scope"]]
     with open(f"{out}.json", "w") as fh:
         json.dump(results, fh, indent=2)
     c = Counter(r["outcome"] for r in results)
     order = ["pass", "partial", "unverified", "vacuous", "fail", "pso",
-             "crash", "timeout", "build-failure"]
+             "crash", "timeout", "build-failure", "blocked"]
     lines = ["# Apple GPU test run\n",
              f"{len(results)} in-scope tests executed directly (bazel built "
              "them; this runner ran them). "
@@ -482,13 +619,15 @@ def write_report(results, out):
         if c.get(k):
             lines.append(f"| {k} | {c[k]} |")
     real = c.get("pass", 0) + c.get("partial", 0)
-    denom = len(results) - c.get("vacuous", 0) - c.get("unverified", 0)
+    denom = (len(results) - c.get("vacuous", 0) - c.get("unverified", 0)
+             - c.get("blocked", 0))
     lines.append(f"\n**{real} of {denom} ran real work, checked it, and "
                  f"passed.** Excluded from that: {c.get('vacuous', 0)} vacuous "
-                 f"skip(s) and {c.get('unverified', 0)} test(s) that exit 0 "
-                 "with nothing that could fail them.\n")
+                 f"skip(s), {c.get('unverified', 0)} test(s) that exit 0 "
+                 f"with nothing that could fail them, and {c.get('blocked', 0)} "
+                 "that bazel refuses to build here at all.\n")
     for bucket in ("fail", "pso", "crash", "timeout", "build-failure",
-                   "vacuous", "unverified", "partial"):
+                   "vacuous", "unverified", "partial", "blocked"):
         sub = [r for r in results if r["outcome"] == bucket]
         if not sub:
             continue

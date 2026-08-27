@@ -69,6 +69,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/Scalar/Scalarizer.h"
@@ -77,6 +78,9 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
+
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <optional>
 #include <string>
@@ -97,13 +101,39 @@ namespace {
 ///
 /// So look in a FILE as well. The file is not a bazel input, so writing it
 /// invalidates nothing: the binary already contains both code paths, and the
-/// choice is made when the compiler runs. Toggle, re-measure, toggle back.
+/// choice is made when the compiler runs.
+///
+/// THE MOJO KERNEL CACHE DOES NOT KNOW ABOUT THIS FILE -- but only on one of
+/// the two paths, and it matters which. `~/.cache/modular/.mojo_cache` is keyed
+/// on the kernel body: not on the compiler binary, not on the environment, and
+/// not on this file. Toggle a knob, recompile the same kernel through
+/// `mojo build`, and you are handed the cached object compiled under the
+/// previous setting -- the A/B reads "no change" whatever the pass does. Run
+/// `./clear_cache.sh` between toggles there.
+///
+/// Under bazel it does NOT bite, measured rather than assumed: after
+/// `clear_cache.sh` and two full mojo compile actions the cache directory is
+/// still absent, so bazel's sandboxed actions never reach it (HOME is not
+/// forwarded into them either -- see the search order below). A knob flipped
+/// with the kernel bodies unchanged did take effect on all five kernels of a
+/// test target. What gates a re-run under bazel is bazel's own action cache,
+/// which the knob file is likewise not part of: change an input, or the action
+/// simply does not run.
 ///
 /// Search order, first hit wins:
 ///   1. the environment variable (works outside bazel, and in CI)
 ///   2. $APPLEGPU_XFORMS_FILE, if set
-///   3. /tmp/applegpu-xforms.conf
-///   4. $HOME/.applegpu-xforms
+///   3. $HOME/.applegpu-xforms
+///   4. /tmp/applegpu-xforms.conf, ONLY if owned by the current user
+///
+/// $HOME comes before /tmp, and the /tmp file is ownership-checked, because
+/// /tmp is world-writable: without that, any local account can drop a file
+/// there and silently change how everyone else's kernels are compiled.
+///
+/// Under bazel the ownership check is the ONLY guard, not a backstop. Measured:
+/// bazel does not forward HOME into a compile action, so $HOME/.applegpu-xforms
+/// is invisible there and /tmp is the only file the compiler reads. Outside
+/// bazel -- `mojo build` from a shell -- $HOME is set and wins.
 ///
 /// File format is one `key=value` per line; `#` starts a comment. Missing file
 /// or missing key means "unset", and the caller's default stands.
@@ -120,10 +150,29 @@ static std::optional<std::string> airKnob(llvm::StringRef key) {
     llvm::SmallVector<std::string, 3> paths;
     if (const char *p = ::getenv("APPLEGPU_XFORMS_FILE"))
       paths.push_back(p);
-    paths.push_back("/tmp/applegpu-xforms.conf");
     if (const char *home = ::getenv("HOME"))
       paths.push_back(std::string(home) + "/.applegpu-xforms");
+    paths.push_back("/tmp/applegpu-xforms.conf");
+    // /tmp is world-writable and its sticky bit only stops you deleting
+    // someone else's file, not creating one before they do. A knob file there
+    // that this user does not own is somebody else's instruction about how to
+    // compile our kernels, so read it as a warning rather than as config.
+    auto ownedByUs = [](const std::string &path) {
+      if (path.rfind("/tmp/", 0) != 0)
+        return true;
+      struct stat st;
+      if (::stat(path.c_str(), &st) != 0)
+        return false;
+      if (st.st_uid == ::getuid())
+        return true;
+      llvm::errs() << "[applegpu] ignoring " << path
+                   << ": owned by uid " << st.st_uid << ", not by you ("
+                   << ::getuid() << ")\n";
+      return false;
+    };
     for (const std::string &path : paths) {
+      if (!ownedByUs(path))
+        continue;
       auto buf = llvm::MemoryBuffer::getFile(path);
       if (!buf)
         continue;
@@ -137,6 +186,16 @@ static std::optional<std::string> airKnob(llvm::StringRef key) {
         if (!v.empty() || line.contains('='))
           (*m)[k.trim()] = v.trim().str();
       }
+      // The knob file is invisible to the kernel cache, so a stale hit is the
+      // normal outcome of a toggle. Say it where it can actually be acted on.
+      if (!m->empty())
+        llvm::errs() << "[applegpu] " << m->size() << " AIR knob(s) loaded from "
+                     << path
+                     << " -- if you are running the compiler OUTSIDE bazel, the "
+                        "Mojo kernel cache is keyed on the kernel body and not "
+                        "on this file, so run ./clear_cache.sh after changing a "
+                        "knob or you will measure the previously cached "
+                        "codegen\n";
       break; // first readable file wins
     }
     return m;
@@ -1257,13 +1316,46 @@ bool isConvergentAirOp(llvm::StringRef name) {
 /// a parameter position to a thread-builtin, our parameter layout differs from
 /// upstream's, and `!air.kernel` argument metadata already conveys it. Getting
 /// them wrong would be worse than omitting them.
+/// Whether `fn` can reach a convergent AIR operation, through any depth of
+/// call in this module. An indirect call counts: it cannot be proved not to.
+static bool
+reachesConvergentAirOp(const llvm::Function &fn,
+                       llvm::SmallPtrSetImpl<const llvm::Function *> &seen) {
+  if (!seen.insert(&fn).second)
+    return false;
+  for (const llvm::BasicBlock &bb : fn)
+    for (const llvm::Instruction &inst : bb) {
+      const auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      if (!call)
+        continue;
+      const llvm::Function *callee = call->getCalledFunction();
+      if (!callee)
+        return true;
+      if (isConvergentAirOp(callee->getName()) ||
+          callee->hasFnAttribute(llvm::Attribute::Convergent))
+        return true;
+      if (!callee->isDeclaration() && reachesConvergentAirOp(*callee, seen))
+        return true;
+    }
+  return false;
+}
+
 static void applyAirKernelFnAttributes(llvm::Function &fn) {
   fn.setMustProgress();
   fn.setDoesNotThrow();
   fn.setWillReturn();
   fn.setDoesNotFreeMemory();
   fn.addFnAttr(llvm::Attribute::NoRecurse);
-  fn.addFnAttr(llvm::Attribute::NoSync);
+  // `nosync` asserts the function performs NO cross-thread synchronisation.
+  // A kernel reaching air.wg.barrier or a simdgroup op does exactly that, and
+  // claiming otherwise licenses the downstream AIR reader to move memory
+  // operations across the barrier -- undoing the reason those ops are marked
+  // convergent in the first place. Upstream's dumped kernel carries nosync
+  // because that particular kernel has no barrier, not because every kernel
+  // may claim it.
+  llvm::SmallPtrSet<const llvm::Function *, 16> seen;
+  if (!reachesConvergentAirOp(fn, seen))
+    fn.addFnAttr(llvm::Attribute::NoSync);
   fn.addFnAttr("no-builtins");
   fn.addFnAttr("min-legal-vector-width", "0");
   fn.addFnAttr("metal.kernel", "true");
