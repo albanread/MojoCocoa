@@ -371,11 +371,35 @@ So the shape is:
   resolves after layout — the compiler does not need to know the size when it
   synthesizes `__init__`.
 
-What is not yet built is the three synthesis steps that follow from that: the
-`add_box` call in `__init__`, writing the constructed box into `id + offset`
-and caching the offset, and the trampoline's `id → id + offset` conversion.
-Until they are, class fields stay diagnosed rather than half-working, and the
-IDE's state stays in `named_global`.
+Two of the three synthesis steps are written and compile; the third is
+blocked on one specific thing, and it is worth recording precisely so the next
+attempt starts from knowledge rather than from where this one did.
+
+**Step 2 (caching the offset) and step 3 (the trampoline's conversion) work
+out.** The ops needed all exist: `pop.global_alloc` for the per-class slot,
+and `lit.ref.to_pointer` → `pop.pointer.bitcast` → `pop.offset` →
+`lit.ref.from_pointer` for "this reference, moved along by N bytes". Step 3
+also settles the trampoline's receiver: when a class has fields it must take
+`self` as a **reference** (`ArgConvention::ReadMem`), because the C ABI passes
+a pointer in x0 and that pointer is the `id` — taking it by value would copy a
+struct Objective-C never sent.
+
+**Step 1 (`add_box(sizeof(Self))`) is where it stops.** The size has to reach
+the runtime as `#kgen.param.expr<get_sizeof, …>`, a comptime expression the
+elaborator resolves after layout, and constructing that attribute correctly
+from C++ is the open question. What does *not* work, each established by
+trying it: `TypeAttr` is not a `TypedAttr`, so `cast`ing one into a
+`ParamOperatorAttr` operand asserts; `LITStructAttr` will not wrap an
+unresolved parameter expression, so the size cannot be boxed into a Mojo `Int`
+that way; and declaring the Mojo side to take a raw `__mlir_type.index`
+sidesteps the wrapping but not the attribute construction. The next attempt
+should read the elaborator's own `GetSizeOf` handling and copy how it builds
+its operands, rather than inferring the shape from call sites as this one did.
+
+Until step 1 lands, class fields stay diagnosed rather than half-working, and
+the IDE's state stays in `named_global`. The runtime half is committed and
+tested regardless, so the next attempt starts from a proven mechanism and one
+attribute.
 
 One wart is already visible and worth stating before it surprises anyone:
 `TabBar()` returns the class value, and with the class being the box that is a

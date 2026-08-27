@@ -238,6 +238,34 @@ def open_document(var uri: String, var rope: Rope) -> Int:
     return current_index()
 
 
+def close_at(index: Int) -> Bool:
+    """Close a tab by index. The last one stays: an editor with no document is
+    a window with nothing in it, and every editor keeps one open.
+
+    Closing a tab that is not the current one must not disturb what is on
+    screen, so the current document is stashed first and the index is adjusted
+    rather than reloaded -- reloading would swap the buffer out from under an
+    edit in progress.
+    """
+    if index < 0 or index >= count() or count() <= 1:
+        return False
+    let docs = g_docs()
+    let at = current_index()
+    _stash(at)
+    var i = index
+    while i < count() - 1:
+        docs[].swap_elements(i, i + 1)
+        i += 1
+    _ = docs[].pop()
+    if index == at:
+        g_current()[] = min(index, count() - 1)
+        _load(current_index())
+    elif index < at:
+        # Everything after the hole shifted down, so the current tab did too.
+        g_current()[] = at - 1
+    return True
+
+
 def close_current() -> Bool:
     """Close the current tab. The last one stays: an editor with no document is
     a window with nothing in it, and every editor keeps one open."""

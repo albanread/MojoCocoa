@@ -110,6 +110,12 @@ comptime EDITOR_SHARE = 0.68
 comptime TAB_H = 28.0
 comptime TAB_MIN = 90.0
 comptime TAB_MAX = 200.0
+# The close box, and the gutter the strip reserves at each end for the overflow
+# arrows. Both are in points; the scroll offset is whole points in an Int
+# because an app-lifetime global has to survive zero-initialisation.
+comptime TAB_CLOSE = 16.0
+comptime TAB_GUTTER = 14.0
+comptime g_tab_scroll = named_global["roast.tab.scroll", Int]
 comptime g_pending_completion = named_global["roast.completing", Int]
 comptime g_comp_seen = named_global["roast.comp.seen", Int]
 
@@ -511,18 +517,33 @@ class RoastActions:
         except:
             pass
 
-    def roastCloseTab_(self, sender: ObjCObject):
-        """Close the current tab, refusing to lose unsaved work silently."""
+    def roastOpenExample_(self, sender: ObjCObject):
+        """Open a shipped example. The path came from the menu item itself."""
         try:
-            if document.dirty_at(document.current_index()):
-                set_status(String("Unsaved — save it first (⌘S)"))
-                return
-            if document.close_current():
-                after_switch()
-            else:
-                set_status(String("Last tab stays open"))
+            with autoreleasepool():
+                let path = msg_send[
+                    ObjCObject, "NSMenuItem", "representedObject"
+                ](sender)
+                if path.addr() == 0:
+                    set_status(String("That example has no path"))
+                    return
+                let file = ns_to_string(path)
+                if not load_file(file):
+                    set_status(String("Could not open ") + file)
+                    return
+                # Open the folder too, so the sidebar shows the example rather
+                # than whatever happened to be open. An example is a project;
+                # opening one file out of it is half the point.
+                let cut = file.rfind("/")
+                if cut > 0:
+                    open_folder(String(file[byte=:cut]))
         except:
             pass
+
+    def roastCloseTab_(self, sender: ObjCObject):
+        """Close the current tab. Shares its rule with the tab's × so the two
+        cannot disagree about what happens to unsaved work."""
+        close_tab_at(document.current_index())
 
     def outlineViewSelectionDidChange_(self, note: ObjCObject):
         """Clicking a file opens it. Clicking a folder does nothing but expand."""
@@ -1053,8 +1074,73 @@ def load_file(path: String) -> Bool:
 # this way, and it suits the architecture: one grid view drawing whichever
 # document is current, so switching a tab is an index and a redraw.
 def tab_width(total: Float64) -> Float64:
+    """How wide one tab is.
+
+    Tabs shrink to share the strip until they reach `TAB_MIN`, and then stop.
+    Past that point they overflow and the strip scrolls, which is the whole
+    reason `TAB_MIN` is a floor rather than a suggestion: a tab narrower than
+    its filename is not a tab, it is a smear.
+    """
     let n = max(1, document.count())
     return max(TAB_MIN, min(TAB_MAX, total / Float64(n)))
+
+
+def tabs_span(total: Float64) -> Float64:
+    """The width every tab needs together."""
+    return Float64(document.count()) * tab_width(total)
+
+
+def tab_overflows(total: Float64) -> Bool:
+    return tabs_span(total) > total
+
+
+def max_tab_scroll(total: Float64) -> Float64:
+    return max(0.0, tabs_span(total) - total)
+
+
+def tab_scroll(total: Float64) -> Float64:
+    """The offset, clamped. Clamping on read rather than on write means a
+    window resize cannot leave the strip scrolled past its own end."""
+    let want = Float64(g_tab_scroll()[])
+    return max(0.0, min(max_tab_scroll(total), want))
+
+
+def set_tab_scroll(total: Float64, to: Float64):
+    g_tab_scroll()[] = Int(max(0.0, min(max_tab_scroll(total), to)))
+
+
+def reveal_tab(index: Int):
+    """Scroll the strip so a tab is fully visible, if it is not already.
+
+    Switching tabs by keyboard is the case that matters: without this, ⌘⇧] past
+    the right edge selects a document you cannot see.
+    """
+    if g_tabbar()[] == 0:
+        return
+    try:
+        with autoreleasepool():
+            let bounds = msg_send[CGRect, "NSView", "bounds"](
+                ObjCObject(g_tabbar()[])
+            )
+            let total = bounds.size.width
+            if not tab_overflows(total):
+                g_tab_scroll()[] = 0
+                return
+            let w = tab_width(total)
+            let left = Float64(index) * w
+            let cur = tab_scroll(total)
+            if left < cur + TAB_GUTTER:
+                set_tab_scroll(total, left - TAB_GUTTER)
+            elif left + w > cur + total - TAB_GUTTER:
+                set_tab_scroll(total, left + w - total + TAB_GUTTER)
+    except:
+        pass
+
+
+def close_box(x: Float64, w: Float64) -> CGRect:
+    """Where the × sits inside a tab, and where a click on it lands."""
+    return rect(x + w - TAB_CLOSE - 6.0, (TAB_H - TAB_CLOSE) * 0.5,
+                TAB_CLOSE, TAB_CLOSE)
 
 
 class RoastTabBar(NSView):
@@ -1083,12 +1169,18 @@ class RoastTabBar(NSView):
                 _ = msg_send[ObjCObject, "NSColor", "setFill"](back)
                 _ = external_call["NSRectFill", NoneType](bounds)
 
-                let w = tab_width(bounds.size.width)
+                let total = bounds.size.width
+                let w = tab_width(total)
+                let off = tab_scroll(total)
                 let active = document.current_index()
+                let overflow = tab_overflows(total)
                 var i = 0
                 while i < document.count():
-                    let x = Float64(i) * w
-                    if x > bounds.size.width:
+                    let x = Float64(i) * w - off
+                    if x + w < 0.0:
+                        i += 1
+                        continue
+                    if x > total:
                         break
                     if i == active:
                         let front = msg_send[
@@ -1108,11 +1200,15 @@ class RoastTabBar(NSView):
                         rect(x + w - 1.0, 4.0, 1.0, TAB_H - 8.0)
                     )
 
-                    # An unsaved document is marked where the close box goes in
-                    # every other editor, which is where the eye already looks.
+                    # The label is clipped short of the close box rather than
+                    # drawn under it: a filename running through the × reads as
+                    # a rendering fault, and truncating is what every editor
+                    # does here.
+                    let room = w - TAB_CLOSE - 20.0
                     var label = document.name_at(i)
-                    if document.dirty_at(i):
-                        label = String("• ") + label
+                    if Float64(label.byte_length()) * 7.0 > room:
+                        let keep = max(1, Int(room / 7.0) - 1)
+                        label = String(label[codepoint=:keep]) + String("…")
                     _ = msg_send[
                         ObjCObject, "NSString", "drawAtPoint:withAttributes:"
                     ](
@@ -1122,7 +1218,60 @@ class RoastTabBar(NSView):
                             g_tab_attrs()[] if i == active else g_tab_dim()[]
                         ).ptr(),
                     )
+
+                    # The close box. A dirty document shows a dot instead, in
+                    # the same place -- which is what the eye is already
+                    # looking at, and it becomes an × on hover in editors that
+                    # track the mouse. This one swaps on click instead.
+                    let mark = String("•") if document.dirty_at(i) else String(
+                        "\u00d7"
+                    )
+                    let box = close_box(x, w)
+                    _ = msg_send[
+                        ObjCObject, "NSString", "drawAtPoint:withAttributes:"
+                    ](
+                        nsstring(mark),
+                        CGPoint(box.origin.x + 4.0, 6.0),
+                        ObjCObject(
+                            g_tab_attrs()[] if i == active else g_tab_dim()[]
+                        ).ptr(),
+                    )
                     i += 1
+
+                # Overflow arrows. Faint, and only on the side that has more
+                # to show -- an arrow pointing at nothing is worse than no
+                # arrow, because it invites a click that does not move.
+                if overflow:
+                    let bar = msg_send[
+                        ObjCObject, "NSColor", "windowBackgroundColor",
+                        is_class=True,
+                    ](NSColorT.as_object())
+                    if off > 0.5:
+                        _ = msg_send[ObjCObject, "NSColor", "setFill"](bar)
+                        _ = external_call["NSRectFill", NoneType](
+                            rect(0.0, 0.0, TAB_GUTTER, TAB_H)
+                        )
+                        _ = msg_send[
+                            ObjCObject, "NSString",
+                            "drawAtPoint:withAttributes:",
+                        ](
+                            nsstring(String("\u2039")),
+                            CGPoint(3.0, 5.0),
+                            ObjCObject(g_tab_dim()[]).ptr(),
+                        )
+                    if off < max_tab_scroll(total) - 0.5:
+                        _ = msg_send[ObjCObject, "NSColor", "setFill"](bar)
+                        _ = external_call["NSRectFill", NoneType](
+                            rect(total - TAB_GUTTER, 0.0, TAB_GUTTER, TAB_H)
+                        )
+                        _ = msg_send[
+                            ObjCObject, "NSString",
+                            "drawAtPoint:withAttributes:",
+                        ](
+                            nsstring(String("\u203a")),
+                            CGPoint(total - TAB_GUTTER + 3.0, 5.0),
+                            ObjCObject(g_tab_dim()[]).ptr(),
+                        )
         except:
             pass
 
@@ -1130,7 +1279,7 @@ class RoastTabBar(NSView):
         return True
 
     def mouseDown_(self, event: ObjCObject):
-        """Click a tab to show it."""
+        """Click a tab to show it, or its × to close it."""
         try:
             with autoreleasepool():
                 let view = ObjCObject(self.__objc_id)
@@ -1141,11 +1290,81 @@ class RoastTabBar(NSView):
                     view, win_pt, ObjCObject(0).ptr()
                 )
                 let bounds = msg_send[CGRect, "NSView", "bounds"](view)
-                let index = Int(local.x / tab_width(bounds.size.width))
+                let total = bounds.size.width
+                let w = tab_width(total)
+                let off = tab_scroll(total)
+
+                # The arrows first: they sit on top of whatever tab is under
+                # them, so a hit there is a scroll and not a selection.
+                if tab_overflows(total):
+                    if local.x < TAB_GUTTER and off > 0.5:
+                        set_tab_scroll(total, off - w)
+                        refresh_tabs()
+                        return
+                    if (
+                        local.x > total - TAB_GUTTER
+                        and off < max_tab_scroll(total) - 0.5
+                    ):
+                        set_tab_scroll(total, off + w)
+                        refresh_tabs()
+                        return
+
+                let index = Int((local.x + off) / w)
+                if index < 0 or index >= document.count():
+                    return
+                let x = Float64(index) * w - off
+                let box = close_box(x, w)
+                if (
+                    local.x >= box.origin.x
+                    and local.x <= box.origin.x + box.size.width
+                ):
+                    close_tab_at(index)
+                    return
                 if document.switch_to(index):
                     after_switch()
         except:
             pass
+
+    def scrollWheel_(self, event: ObjCObject):
+        """Two-finger swipe across the strip.
+
+        Both axes are read: a trackpad swiped sideways reports X, a mouse
+        wheel reports Y, and a tab strip that only answered one of them would
+        feel broken on whichever hardware the user has.
+        """
+        try:
+            with autoreleasepool():
+                let view = ObjCObject(self.__objc_id)
+                let bounds = msg_send[CGRect, "NSView", "bounds"](view)
+                let total = bounds.size.width
+                if not tab_overflows(total):
+                    return
+                let dx = msg_send[Float64, "NSEvent", "scrollingDeltaX"](event)
+                let dy = msg_send[Float64, "NSEvent", "scrollingDeltaY"](event)
+                let delta = dx if dx != 0.0 else dy
+                if delta == 0.0:
+                    return
+                set_tab_scroll(total, tab_scroll(total) - delta)
+                refresh_tabs()
+        except:
+            pass
+
+
+def close_tab_at(index: Int):
+    """Close one tab, refusing to lose unsaved work silently.
+
+    The same rule the menu command uses, in one place so the × and ⌘W cannot
+    drift apart.
+    """
+    if document.dirty_at(index):
+        if document.switch_to(index):
+            after_switch()
+        set_status(String("Unsaved — save it first (⌘S)"))
+        return
+    if document.close_at(index):
+        after_switch()
+    else:
+        set_status(String("Last tab stays open"))
 
 
 def refresh_tabs():
@@ -1159,6 +1378,7 @@ def refresh_tabs():
 
 def after_switch():
     """Everything that has to follow the current document changing."""
+    reveal_tab(document.current_index())
     refresh_tabs()
     _show_dirty()
     if g_window()[] != 0:
@@ -1489,6 +1709,105 @@ def add_item(
     return item
 
 
+def examples_root() -> String:
+    """Where the shipped example projects live.
+
+    The distribution puts them at share/examples beside the compiler, and
+    `cocoamojo` exports COCOAMOJO_ROOT so a program it launched can find the
+    toolchain that built it. ROAST_EXAMPLES overrides for a working tree.
+    """
+    let override = getenv("ROAST_EXAMPLES")
+    if override != "":
+        return override^
+    let root = getenv("COCOAMOJO_ROOT")
+    if root == "":
+        return String()
+    return root + String("/share/examples")
+
+
+def example_projects() -> List[String]:
+    """Each subdirectory holding a main.mojo, in the order the filesystem
+    gives them. A folder without a main.mojo is not a project and is skipped
+    rather than offered and then failing to open."""
+    var out = List[String]()
+    let base = examples_root()
+    if base == "":
+        return out^
+    try:
+        with autoreleasepool():
+            let NSFileManager = ObjCClass.lookup["NSFileManager"]()
+            let fm = msg_send[
+                ObjCObject, "NSFileManager", "defaultManager", is_class=True
+            ](NSFileManager.as_object())
+            var dirpath = base
+            let names = msg_send[
+                ObjCObject, "NSFileManager", "contentsOfDirectoryAtPath:error:"
+            ](fm, nsstring(dirpath).ptr(), ObjCObject(0).ptr())
+            if names.addr() == 0:
+                return out^
+            let n = msg_send[Int, "NSArray", "count"](names)
+            var i = 0
+            while i < n:
+                let nm = ns_to_string(
+                    msg_send[ObjCObject, "NSArray", "objectAtIndex:"](names, i)
+                )
+                if not nm.startswith("."):
+                    let main = base + String("/") + nm + String("/main.mojo")
+                    if file_exists(main):
+                        out.append(nm)
+                i += 1
+    except:
+        pass
+    return out^
+
+
+def file_exists(path: String) -> Bool:
+    try:
+        with autoreleasepool():
+            let NSFileManager = ObjCClass.lookup["NSFileManager"]()
+            let fm = msg_send[
+                ObjCObject, "NSFileManager", "defaultManager", is_class=True
+            ](NSFileManager.as_object())
+            var local = path
+            return msg_send[Bool, "NSFileManager", "fileExistsAtPath:"](
+                fm, nsstring(local).ptr()
+            )
+    except:
+        return False
+
+
+def build_examples_menu(bar: ObjCObject, actions: Int):
+    """An Examples menu, built from what actually shipped.
+
+    Listed at startup rather than hardcoded, so adding an example project to
+    the distribution is enough to make it appear. If none are found -- a
+    working tree with no COCOAMOJO_ROOT, say -- the menu says so rather than
+    hanging there empty and looking broken.
+    """
+    let menu = add_submenu(bar, String("Examples"))
+    let projects = example_projects()
+    if projects.__len__() == 0:
+        let none = add_item(
+            menu, String("No examples found"), String(""), String("")
+        )
+        _ = msg_send[ObjCObject, "NSMenuItem", "setEnabled:"](none, False)
+        return
+    let base = examples_root()
+    var i = 0
+    while i < projects.__len__():
+        let name = projects[i]
+        let item = add_item(
+            menu, name, String("roastOpenExample:"), String(""), actions
+        )
+        # The path rides on the item. A tag would only carry an index, and an
+        # index into a list rebuilt at startup is a bug waiting for someone to
+        # reorder the folder.
+        _ = msg_send[ObjCObject, "NSMenuItem", "setRepresentedObject:"](
+            item, nsstring(base + String("/") + name + String("/main.mojo")).ptr()
+        )
+        i += 1
+
+
 def sel_named(name: String) -> ObjCObject:
     """A selector from a runtime string. `sel[...]` needs a literal."""
     var local = name
@@ -1615,6 +1934,10 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         String("0"),
         actions,
     )
+
+    # Examples — built from what shipped, so the menu and the distribution
+    # cannot disagree about which examples exist.
+    build_examples_menu(bar, actions)
 
     # Window — handing AppKit the menu gets tab management for free.
     let window_menu = add_submenu(bar, String("Window"))

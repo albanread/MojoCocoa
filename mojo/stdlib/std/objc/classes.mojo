@@ -364,6 +364,17 @@ struct ObjCClassRegistrar:
         return ObjCClass(self._cls)
 
 
+    def box_offset_of(mut self) -> Int:
+        """Where this class's box sits inside an instance.
+
+        Read after registration, when the runtime has settled it; the compiler
+        caches the answer in a per-class global because a trampoline has only
+        an `id` to work from and cannot afford three runtime calls per message.
+        """
+        if not self._ok:
+            return 0
+        return box_offset(ObjCClass(self._cls))
+
     def register_and_instantiate(mut self) -> Int:
         """Finish the class and return the `id` of a fresh instance.
 

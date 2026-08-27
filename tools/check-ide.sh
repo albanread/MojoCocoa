@@ -165,7 +165,7 @@ else
 fi
 check "split view"  "split panes: 2"        "sidebar + editor area"
 check "editor panes" "editor panes: 2"      "editor above the console"
-check "menu bar"    "menu bar items: 5"     "app, File, Edit, Build, Window"
+check "menu bar"    "menu bar items: 6"     "app, File, Edit, Build, Examples, Window"
 check "lifecycle"   "applicationWillTerminate" "launch → close → terminate clean"
 
 # Implementing the selectors is not conformance, and AppKit asks. The app says
