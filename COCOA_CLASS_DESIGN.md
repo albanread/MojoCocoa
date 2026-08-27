@@ -236,8 +236,21 @@ selectors are the point of delegates.
 
 Fields do not become individual ObjC ivars. The class gets **one** hidden ivar
 (`class_addIvar`, new to this path — the builder never needed it) holding a
-pointer to a synthesized Mojo struct containing every field. Consequences,
-each deliberate:
+pointer to a synthesized Mojo struct containing every field.
+
+Sprint 1 sharpened what that means in the IR, and the answer is better than
+expected. A class is **two** `StructDeclOp`s:
+
+- **the class type** — one field, the `id` pointer; register-passable
+  `convention`; `copyInit` retains and the destructor releases. That is not a
+  workaround for riding `StructDeclOp`, it is what an Objective-C reference
+  *is*, and it is the shape `ObjCRef` (`std/objc/ownership.mojo:42`) already
+  has. The representation chosen for parser convenience turns out to be
+  semantically right.
+- **the box** — a synthesized, memory-only struct holding the declared fields,
+  heap-allocated in `init` and destroyed from `dealloc`.
+
+Consequences, each deliberate:
 
 - **Any Mojo type is a field** — `List`, `Rope`, an LSP client — because the
   box is ordinary Mojo memory, not ObjC ivar layout.
@@ -304,7 +317,15 @@ Each lands alone, each is verifiable, each leaves the tree green
 | 3 | **Give it state.** `class_addIvar`, the box, synthesized init/dealloc, `self.field`. | M | a test class whose field's `deinit` flips a flag proves teardown; tab-bar and `RoastActions` globals become fields; `check-ide.sh` green |
 | 4 | **Check it against the SDK.** Encoding cross-check on inherited selectors via `cocoakb_selector_encoding`; `@objc` honored; BOOL spelling settled from the database; teaching diagnostics. | S–M | negative tests: a wrong `drawRect:` signature is a compile error quoting the database's encoding |
 | 5 | **Dogfood.** Migrate the remaining IDE delegates and subclasses (app delegate, outline data source, GridView + NSTextInputClient — the big one); delete migrated `named_global`s and the then-unused IMP shapes. | M–L | all suites green; the counts fall and are asserted: `encoding=` in `ide/` → 0, `named_global` 84 → the survivors are genuinely process-global; the 61-warning chip mostly closes as a side effect |
-| 6 | **Owning fields.** `ObjCRef` integration: fields that retain on store and release in `dealloc`; nil-aware reference types begin here and grow into their own design. | M | retain-count round-trip tests; the manual `objc_retain` count in `ide/` falls toward zero |
+| 6 | **Nil-aware references.** Smaller than first scoped: once the box is plain Mojo memory (sprint 3) an `ObjCRef` field retains and releases through its own copy/deinit with no special handling, and the class type's own retain/release is sprint 2's `copyInit`. What is left is genuinely new — nil as a first-class state in the pointer's niche, `NSTextView?`, and the zero-init-destructor hazard that currently forces every app-lifetime global to be an `Int`. | S–M | retain-count round-trip tests; the manual `objc_retain` count in `ide/` falls toward zero |
+
+Sprint 1 also settled how the later ones get verified, and it is not cheap.
+There is no IR to `FileCheck` until lowering works, so from sprint 2 the
+evidence is execution: build the compiler with bazel, run `make-dist.sh`, and
+exercise the result through `dist/CocoaMojo` the way `check-ide.sh` already
+does. `tools/check-parser.sh` covers the parser half and nothing past it.
+Sprint 2 has no partial credit — a half-registered class proves nothing — which
+is the real reason it is the large one.
 
 After sprint 5 the next *program* — typed member calls against the database,
 COCOA_LET_DESIGN.md Idea 2 — gets its own design document, written with the
@@ -312,10 +333,21 @@ benefit of a compiler that already derives and checks encodings.
 
 ## Risks, named
 
-- **The deferred-body parser is shared machinery.** Riding `StructDeclOp`
-  risks class-isms leaking into struct paths; a new op risks re-implementing
-  resolution. Sprint 1's investigation decides with code, not taste, and the
-  struct/trait test suites are the tripwire.
+- **Struct-isms leaking into classes** — the inverse of the risk this entry
+  originally named, and the likelier one. The fear was class-isms escaping into
+  struct paths; sprint 1 shipped with `structs.mojo` and `traits.mojo` green, so
+  that direction is guarded. The other direction is not: because a class *is* a
+  `StructDeclOp`, every consumer that pattern-matches one — LLDB's data layout,
+  code completion, signature printing, `PublicASTDecl` — treats a class as a
+  value type until told otherwise, silently and plausibly. Each sprint should
+  ask which of those it has just made reachable. The `objcClass` flag makes the
+  question answerable; nothing makes it automatic.
+- **Declaring is using.** Whole-module translation resolves every top-level
+  decl, so there is no declared-but-unused state and no lazy escape hatch: from
+  sprint 4 on, a class naming a superclass the database does not know is a
+  compile error even if nothing ever instantiates it. That is the right
+  behaviour — but the database check cannot be opt-in, and a class written
+  against an SDK newer than the dump will not compile at all.
 - **Class names are process-global.** Registering a name the runtime already
   has fails at runtime; two Mojo files defining the same class collide.
   Diagnose at registration with a message that names the loser; `@objc` on
