@@ -179,9 +179,19 @@ check "lifecycle"   "applicationWillTerminate" "launch → close → terminate c
 # passing if the menu stopped reaching it. Both halves are asserted: the files
 # opened as tabs, and the rows the sidebar is showing, because the file list on
 # the left is the half someone actually looks at.
-exout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_EXAMPLE_MENU="fern" \
+# ROAST_EXAMPLES points the menu at the working tree rather than the
+# distribution: building and running an example writes its output back into the
+# folder it shipped in, so the row count over there moves the moment anyone
+# presses cmd-R. That the distribution HAS examples is check-dist's business.
+exout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_EXAMPLES="$PWD/examples" \
+        ROAST_EXAMPLE_MENU="fern" \
         ROAST_AUTOCLOSE_TICKS=12 timeout 90 "$TMP/roast" 2>&1)
-if ! echo "$exout" | grep -q 'roast: example menu: True'; then
+if ! echo "$exout" | grep -q 'roast: window visible'; then
+  # Distinguished from an empty menu on purpose: this reported "no fern item"
+  # for a run that never got far enough to build a menu, and sent someone
+  # looking for a wiring bug that was not there.
+  bad "example menu" "the run did not complete — timeout or crash, not the menu"
+elif ! echo "$exout" | grep -q 'roast: example menu: fern True'; then
   bad "example menu" "the Examples menu has no fern item to click"
 elif echo "$exout" | grep -q 'roast: project rows: 3'; then
   ok "example menu" "clicking fern lists its three files in the sidebar"

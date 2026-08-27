@@ -549,14 +549,11 @@ class RoastActions:
                     return
                 let folder = String(file[byte=:cut])
 
-                # Root first: the sidebar and the build entry point are read
-                # off it, so opening files against the previous project would
-                # build the wrong thing.
-                open_folder(folder)
-                let opened = open_folder_files(folder, file)
+                let opened = open_example_project(folder, file)
                 if opened == 0:
                     set_status(String("Could not open ") + file)
                     return
+                after_switch()
                 set_status(
                     String("Example: ")
                     + folder[byte=cut_name(folder):]
@@ -1627,6 +1624,7 @@ def children_of(dir: String) -> ObjCObject:
             let name = ns_to_string(nm)
             let skip = (
                 name.startswith(".")
+                or name == "build"
                 or name == "bazel-bin"
                 or name == "bazel-out"
                 or name.endswith(".o")
@@ -1839,6 +1837,51 @@ def cut_name(path: String) -> Int:
     the example rather than repeat its whole path."""
     let cut = path.rfind("/")
     return cut + 1 if cut >= 0 else 0
+
+
+def open_example_project(folder: String, entry: String) -> Int:
+    """Load an example the way opening a project does: what was open belonged
+    to the previous project, so it is saved if dirty and then closed.
+
+    Left additive, picking two examples in a row puts the first one's files
+    beside the second one's -- and since every example has a main.mojo, the tab
+    bar fills with identically named tabs from different projects and the
+    sidebar looks like it never changed.
+
+    The rule is the project, not the count: a tab is kept if its file lives
+    under the new folder. Picking the same example twice therefore closes
+    nothing, and the untitled scratch buffer, which belongs to no project, goes
+    with the rest.
+    """
+    # Dirty buffers first, while their tabs are still there to switch to.
+    let started_at = document.current_index()
+    var i = 0
+    while i < document.count():
+        if document.dirty_at(i):
+            _ = switch_document(i)
+            _ = save_current()
+        i += 1
+    _ = switch_document(started_at)
+
+    # Root before files: the sidebar and the build entry point are read off it,
+    # so opening files against the previous project would build the wrong
+    # thing.
+    open_folder(folder)
+    let opened = open_folder_files(folder, entry)
+    if opened == 0:
+        return 0
+
+    # Now that the new project has tabs of its own, the old ones can go --
+    # backwards, so an index is never invalidated under the loop, and via
+    # close_at, which keeps the last tab and has nothing left to refuse.
+    var prefix = folder
+    prefix += "/"
+    var j = document.count() - 1
+    while j >= 0:
+        if not document.path_at(j).startswith(prefix):
+            _ = document.close_at(j)
+        j -= 1
+    return opened
 
 
 def open_folder(var path: String):
@@ -2266,8 +2309,18 @@ def main() raises:
         let app = msg_send[
             ObjCObject, "NSApplication", "sharedApplication", is_class=True
         ](NSApplication.as_object())
-        # Regular: a Dock icon and a menu bar, like any Mac app.
-        _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
+        # Regular -- a Dock icon and a menu bar, like any Mac app -- unless
+        # this is an unattended run. A harness launch is still a real GUI
+        # process on a real desktop, so as a Regular app it took the screen
+        # from whoever was working: window in front, focus stolen, tabs
+        # opening and closing under their hands. Indistinguishable from the
+        # editor doing it by itself, and impossible to argue with while it is
+        # happening. Accessory (1) gives the same window and the same
+        # AppKit behaviour with no Dock icon and no claim on the front.
+        let headless = g_autoclose()[] != 0
+        _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](
+            app, Int(1) if headless else Int(0)
+        )
 
         # Delegate.
         # Instantiating a class registers it, so both of these exist in the
@@ -2495,27 +2548,11 @@ def main() raises:
             except:
                 text = String("could not read ") + path
         else:
-            text = String(
-                "# Roast — milestone 1\n"
-                "#\n"
-                "# This is a GridView: a custom NSView drawing a persistent\n"
-                "# rope with Core Text. Layout is arithmetic, because the font\n"
-                "# is fixed-pitch:\n"
-                "#\n"
-                "#     x = column * advance\n"
-                "#     y = line * line_height\n"
-                "#\n"
-                "# so there is no layout pass to run, and only the lines the\n"
-                "# scroll view is showing are drawn.\n"
-                "#\n"
-                "# Measured on 250,000 lines / 14 MB:\n"
-                "#     build         5 ms\n"
-                "#     line lookup   2.3 us\n"
-                "#     keystroke     2.4 us\n"
-                "#     snapshot      400 ns\n"
-                "#\n"
-                "# Set ROAST_OPEN=<path> to load a real file.\n"
-            )
+            # An empty untitled document, which is what every other editor
+            # opens with. It used to be a page of milestone notes and
+            # benchmark figures -- useful to whoever was building the thing,
+            # and to nobody who wants to start typing.
+            text = String()
         # Through the same door as every other open, so there is exactly one
         # way a document comes into being. Setting the rope directly here is
         # what left the tab bar with nothing to draw.
@@ -2666,19 +2703,37 @@ def main() raises:
         # it; now something can.
         let example = getenv("ROAST_EXAMPLE")
         if example != "":
-            open_folder(example)
             # The count of files the EXAMPLE contributed, not the tab total:
             # the scratch buffer the editor starts with is still there, and
             # opening an example should not close what someone already had.
             print(
                 "roast: example files:",
-                open_folder_files(example, example + String("/main.mojo")),
+                open_example_project(
+                    example, example + String("/main.mojo")
+                ),
             )
 
         # The same thing again, through the menu item rather than around it.
+        # Comma-separated, because picking a second example is a different
+        # thing from picking a first one: the tree cache, the project root and
+        # the language server all have to let go of the previous project.
         let clicked = getenv("ROAST_EXAMPLE_MENU")
         if clicked != "":
-            print("roast: example menu:", fire_example_menu(app, clicked))
+            let names = clicked.split(",")
+            var k = 0
+            while k < len(names):
+                let name = String(names[k])
+                let hit = fire_example_menu(app, name)
+                print(
+                    "roast: example menu:",
+                    name,
+                    hit,
+                    "rows",
+                    outline_rows(),
+                    "tabs",
+                    document.count(),
+                )
+                k += 1
 
         _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
             win, grid.ptr()
@@ -2686,9 +2741,10 @@ def main() raises:
         _ = msg_send[ObjCObject, "NSWindow", "makeKeyAndOrderFront:"](
             win, win.ptr()
         )
-        _ = msg_send[ObjCObject, "NSApplication", "activateIgnoringOtherApps:"](
-            app, True
-        )
+        if not headless:
+            _ = msg_send[
+                ObjCObject, "NSApplication", "activateIgnoringOtherApps:"
+            ](app, True)
         var what = String("untitled")
         if path != "":
             what = path
