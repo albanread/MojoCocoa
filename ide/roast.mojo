@@ -20,6 +20,7 @@ from std.objc import (
     IMP1Bool,
     new_instance,
     named_global,
+    extern_object,
     sel,
 )
 from std.memory import OpaquePointer
@@ -53,6 +54,7 @@ from gridview import (
     byte_to_utf16,
 )
 import lsp
+import document
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -97,7 +99,10 @@ comptime g_tree_cache = named_global["roast.tree.cache", Int]
 # The revision the file on disk matches. The buffer is dirty whenever the rope
 # has moved past it, which is one comparison rather than a flag someone has to
 # remember to set.
-comptime g_saved_revision = named_global["roast.saved.revision", Int]
+comptime g_tabbar = named_global["roast.tabbar", Int]
+comptime TAB_H = 28.0
+comptime TAB_MIN = 90.0
+comptime TAB_MAX = 200.0
 comptime g_pending_completion = named_global["roast.completing", Int]
 comptime g_comp_seen = named_global["roast.comp.seen", Int]
 
@@ -192,15 +197,11 @@ fn action_stop(self_: P, cmd: P, sender: P):
 
 
 fn action_new_tab(self_: P, cmd: P, sender: P):
-    """Not yet: a tab needs a second document, and there is one buffer.
-
-    Native tabbing is already switched on and the window carries a tabbing
-    identifier, so this costs almost nothing once milestone 3 gives documents
-    somewhere to live. Saying so is better than adding a window showing the
-    same buffer, which is what the previous version did.
-    """
+    """A new, empty document in a new tab."""
     try:
-        set_status(String("Tabs arrive with documents — milestone 3"))
+        # An empty document, which becomes real the first time it is saved.
+        _ = document.open_document(String(""), Rope(String("")))
+        after_switch()
     except:
         pass
 
@@ -266,16 +267,15 @@ def load_file(path: String) -> Bool:
         var text = String()
         with open(path, "r") as f:
             text = f.read()
-        set_rope(Rope(text^))
-        set_caret(0)
         let uri = String("file://") + path
-        let slot = g_uri()
-        if len(slot[]) == 0:
-            slot[].append(uri)
-        else:
-            slot[][0] = uri
-        g_sent_revision()[] = g_revision()[]
+        # An already-open file selects its tab rather than opening twice, and
+        # the rope arrives with the document rather than being poked into a
+        # global that some other tab also thinks it owns.
+        _ = document.open_document(uri, Rope(text^))
+        set_caret(0)
+        document.set_sent_revision(g_revision()[])
         mark_clean()
+        refresh_tabs()
         if lsp.is_ready():
             lsp.did_open(uri, g_buffer_text())
         if g_grid()[] != 0:
@@ -296,13 +296,192 @@ def load_file(path: String) -> Bool:
         return False
 
 
+# ── Tab bar ─────────────────────────────────────────────────────────────────
+# Tabs inside the window rather than macOS window tabs. Every editor does it
+# this way, and it suits the architecture: one grid view drawing whichever
+# document is current, so switching a tab is an index and a redraw.
+def tab_width(total: Float64) -> Float64:
+    let n = max(1, document.count())
+    return max(TAB_MIN, min(TAB_MAX, total / Float64(n)))
+
+
+fn draw_tabs(self_: P, cmd: P):
+    try:
+        with autoreleasepool():
+            let view = ObjCObject(Int(self_))
+            let bounds = msg_send[CGRect, "NSView", "bounds"](view)
+            let NSColorT = ObjCClass.lookup["NSColor"]()
+
+            # The bar, a shade back from the editor so the active tab can be
+            # the one that matches it.
+            let back = msg_send[
+                ObjCObject, "NSColor", "windowBackgroundColor", is_class=True
+            ](NSColorT.as_object())
+            _ = msg_send[ObjCObject, "NSColor", "setFill"](back)
+            _ = external_call["NSRectFill", NoneType](bounds)
+
+            let w = tab_width(bounds.size.width)
+            let active = document.current_index()
+            var i = 0
+            while i < document.count():
+                let x = Float64(i) * w
+                if x > bounds.size.width:
+                    break
+                if i == active:
+                    let front = msg_send[
+                        ObjCObject, "NSColor", "textBackgroundColor",
+                        is_class=True,
+                    ](NSColorT.as_object())
+                    _ = msg_send[ObjCObject, "NSColor", "setFill"](front)
+                    _ = external_call["NSRectFill", NoneType](
+                        rect(x, 0.0, w, TAB_H)
+                    )
+                # A separator, so tabs read as tabs and not as a run of words.
+                let line = msg_send[
+                    ObjCObject, "NSColor", "separatorColor", is_class=True
+                ](NSColorT.as_object())
+                _ = msg_send[ObjCObject, "NSColor", "setFill"](line)
+                _ = external_call["NSRectFill", NoneType](
+                    rect(x + w - 1.0, 4.0, 1.0, TAB_H - 8.0)
+                )
+
+                # An unsaved document is marked where the close box goes in
+                # every other editor, which is where the eye already looks.
+                var label = document.name_at(i)
+                if document.dirty_at(i):
+                    label = String("• ") + label
+                _ = msg_send[
+                    ObjCObject, "NSString", "drawAtPoint:withAttributes:"
+                ](
+                    nsstring(label),
+                    CGPoint(x + 10.0, 6.0),
+                    ObjCObject(
+                        g_tab_attrs()[] if i == active else g_tab_dim()[]
+                    ).ptr(),
+                )
+                i += 1
+    except:
+        pass
+
+
+fn tabs_is_flipped(self_: P, cmd: P) -> Bool:
+    return True
+
+
+fn tabs_mouse_down(self_: P, cmd: P, event: P):
+    """Click a tab to show it."""
+    try:
+        with autoreleasepool():
+            let view = ObjCObject(Int(self_))
+            let win_pt = msg_send[CGPoint, "NSEvent", "locationInWindow"](
+                ObjCObject(Int(event))
+            )
+            let local = msg_send[CGPoint, "NSView", "convertPoint:fromView:"](
+                view, win_pt, ObjCObject(0).ptr()
+            )
+            let bounds = msg_send[CGRect, "NSView", "bounds"](view)
+            let index = Int(local.x / tab_width(bounds.size.width))
+            if document.switch_to(index):
+                after_switch()
+    except:
+        pass
+
+
+def refresh_tabs():
+    if g_tabbar()[] == 0:
+        return
+    with autoreleasepool():
+        _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](
+            ObjCObject(g_tabbar()[]), True
+        )
+
+
+def after_switch():
+    """Everything that has to follow the current document changing."""
+    refresh_tabs()
+    _show_dirty()
+    if g_window()[] != 0:
+        with autoreleasepool():
+            _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
+                ObjCObject(g_window()[]),
+                nsstring(document.name_at(document.current_index())).ptr(),
+            )
+    if g_grid()[] != 0:
+        with autoreleasepool():
+            let grid = ObjCObject(g_grid()[])
+            let frame = msg_send[CGRect, "NSView", "frame"](grid)
+            _ = msg_send[ObjCObject, "NSView", "setFrameSize:"](
+                grid, document_size(frame.size.width)
+            )
+            _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](grid, True)
+    # The server is told about whichever document is showing, so its
+    # diagnostics are about the text on screen.
+    try:
+        if lsp.is_ready() and document.current_uri() != "":
+            lsp.did_change(
+                document.current_uri(), g_revision()[], g_buffer_text()
+            )
+            document.set_sent_revision(g_revision()[])
+    except:
+        pass
+    set_status(
+        document.name_at(document.current_index())
+        + String("  ·  ")
+        + String(g_buffer_lines())
+        + String(" lines")
+    )
+
+
+fn action_next_tab(self_: P, cmd: P, sender: P):
+    try:
+        if document.count() < 2:
+            return
+        let next = (document.current_index() + 1) % document.count()
+        if document.switch_to(next):
+            after_switch()
+    except:
+        pass
+
+
+fn action_prev_tab(self_: P, cmd: P, sender: P):
+    try:
+        if document.count() < 2:
+            return
+        let prev = (
+            document.current_index() + document.count() - 1
+        ) % document.count()
+        if document.switch_to(prev):
+            after_switch()
+    except:
+        pass
+
+
+fn action_close_tab(self_: P, cmd: P, sender: P):
+    """Close the current tab, refusing to lose unsaved work silently."""
+    try:
+        if document.dirty_at(document.current_index()):
+            set_status(String("Unsaved — save it first (⌘S)"))
+            return
+        if document.close_current():
+            after_switch()
+        else:
+            set_status(String("Last tab stays open"))
+    except:
+        pass
+
+
+comptime g_tab_attrs = named_global["roast.tab.attrs", Int]
+comptime g_tab_dim = named_global["roast.tab.dim", Int]
+
+
 def is_dirty() -> Bool:
-    return g_revision()[] != g_saved_revision()[]
+    return document.dirty_at(document.current_index())
 
 
 def mark_clean():
-    g_saved_revision()[] = g_revision()[]
+    document.mark_saved()
     _show_dirty()
+    refresh_tabs()
 
 
 def _show_dirty():
@@ -582,11 +761,7 @@ fn action_save(self_: P, cmd: P, sender: P):
     """Write the buffer back. Asks where if it has no home yet."""
     try:
         with autoreleasepool():
-            var path = String()
-            if len(g_uri()[]) > 0:
-                let uri = g_uri()[][0]
-                if uri.startswith("file://"):
-                    path = String(uri[byte=7 : uri.byte_length()])
+            var path = document.path_at(document.current_index())
             if path == "":
                 let NSSavePanel = ObjCClass.lookup["NSSavePanel"]()
                 let panel = msg_send[
@@ -598,12 +773,7 @@ fn action_save(self_: P, cmd: P, sender: P):
                 path = ns_to_string(
                     msg_send[ObjCObject, "NSURL", "path"](url)
                 )
-                let slot = g_uri()
-                let uri = String("file://") + path
-                if len(slot[]) == 0:
-                    slot[].append(uri)
-                else:
-                    slot[][0] = uri
+                document.set_current_uri(String("file://") + path)
             # The rope is written from a snapshot, so a save cannot tear even
             # if the keyboard is busy -- which is the whole point of the tree
             # being immutable.
@@ -631,10 +801,25 @@ fn action_save_all(self_: P, cmd: P, sender: P):
     to add than to retrofit around callers who learned to call Save instead.
     """
     try:
-        if not is_dirty():
+        let n = document.dirty_count()
+        if n == 0:
             set_status(String("Nothing to save"))
             return
-        action_save(self_, cmd, sender)
+        let started_at = document.current_index()
+        var saved = 0
+        var i = 0
+        while i < document.count():
+            if document.dirty_at(i):
+                # Switching makes it the working set; saving writes the working
+                # set. One path for one document and for all of them.
+                _ = document.switch_to(i)
+                action_save(self_, cmd, sender)
+                saved += 1
+            i += 1
+        _ = document.switch_to(started_at)
+        refresh_tabs()
+        refresh_grid()
+        set_status(String("Saved ") + String(saved) + String(" files"))
     except:
         pass
 
@@ -642,7 +827,7 @@ fn action_save_all(self_: P, cmd: P, sender: P):
 fn action_complete(self_: P, cmd: P, sender: P):
     """Ask the server what could go here, at the caret."""
     try:
-        if not lsp.is_ready() or len(g_uri()[]) == 0 or len(g_buffer()[]) == 0:
+        if not lsp.is_ready() or document.current_uri() == "" or len(g_buffer()[]) == 0:
             set_status(String("No language server"))
             return
         let buf = g_buffer()[][0]
@@ -652,10 +837,12 @@ fn action_complete(self_: P, cmd: P, sender: P):
         )
         # The server answers the document it was last told about, so an edit
         # still sitting in the debounce would be answered against stale text.
-        if g_revision()[] != g_sent_revision()[]:
-            lsp.did_change(g_uri()[][0], g_revision()[], buf.to_string())
-            g_sent_revision()[] = g_revision()[]
-        _ = lsp.request_completion(g_uri()[][0], line, col)
+        if g_revision()[] != document.sent_revision():
+            lsp.did_change(
+                document.current_uri(), g_revision()[], buf.to_string()
+            )
+            document.set_sent_revision(g_revision()[])
+        _ = lsp.request_completion(document.current_uri(), line, col)
         g_pending_completion()[] = 1
         set_status(String("Completing…"))
     except:
@@ -760,17 +947,18 @@ fn timer_tick(self_: P, cmd: P, timer: P):
             # Tell the server about edits once the typing pauses. Sending on
             # every keystroke would have it re-parsing text nobody has finished
             # writing.
-            if g_revision()[] != g_sent_revision()[]:
+            if g_revision()[] != document.sent_revision():
                 _show_dirty()
+                refresh_tabs()
                 g_idle_ticks()[] += 1
-                if g_idle_ticks()[] >= 3 and len(g_uri()[]) > 0:
+                if g_idle_ticks()[] >= 3 and document.current_uri() != "":
                     if len(g_buffer()[]) > 0:
                         lsp.did_change(
-                            g_uri()[][0],
+                            document.current_uri(),
                             g_revision()[],
                             g_buffer()[][0].to_string(),
                         )
-                    g_sent_revision()[] = g_revision()[]
+                    document.set_sent_revision(g_revision()[])
                     g_idle_ticks()[] = 0
             else:
                 g_idle_ticks()[] = 0
@@ -1029,7 +1217,9 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     _ = msg_send[ObjCObject, "NSMenuItem", "setKeyEquivalentModifierMask:"](
         save_all, Int(0x20000 | 0x100000)
     )
-    _ = add_item(file, String("Close Tab"), String("performClose:"), String("w"))
+    _ = add_item(
+        file, String("Close Tab"), String("roastCloseTab:"), String("w"), actions
+    )
 
     # Edit — the standard responder-chain selectors, free of charge.
     let edit = add_submenu(bar, String("Edit"))
@@ -1075,6 +1265,20 @@ def build_menu_bar(app: ObjCObject, actions: Int):
 
     # Window — handing AppKit the menu gets tab management for free.
     let window_menu = add_submenu(bar, String("Window"))
+    let nxt = add_item(
+        window_menu, String("Next Tab"), String("roastNextTab:"),
+        String("]"), actions,
+    )
+    _ = msg_send[ObjCObject, "NSMenuItem", "setKeyEquivalentModifierMask:"](
+        nxt, Int(0x20000 | 0x100000)
+    )
+    let prv = add_item(
+        window_menu, String("Previous Tab"), String("roastPrevTab:"),
+        String("["), actions,
+    )
+    _ = msg_send[ObjCObject, "NSMenuItem", "setKeyEquivalentModifierMask:"](
+        prv, Int(0x20000 | 0x100000)
+    )
     _ = msg_send[ObjCObject, "NSApplication", "setWindowsMenu:"](
         app, window_menu.ptr()
     )
@@ -1125,6 +1329,9 @@ def main() raises:
         ab.add_method["roastOpen:", encoding="v@:@"](action_open)
         ab.add_method["roastOpenFolder:", encoding="v@:@"](action_open_folder)
         ab.add_method["roastSaveAll:", encoding="v@:@"](action_save_all)
+        ab.add_method["roastNextTab:", encoding="v@:@"](action_next_tab)
+        ab.add_method["roastPrevTab:", encoding="v@:@"](action_prev_tab)
+        ab.add_method["roastCloseTab:", encoding="v@:@"](action_close_tab)
         # The sidebar's data source and delegate. Items are NSStrings holding
         # paths, so the file system is the model and there is no tree to keep
         # in step with it.
@@ -1262,7 +1469,7 @@ def main() raises:
             NSSplitView.as_object()
         )
         split = msg_send[ObjCObject, "NSView", "initWithFrame:"](
-            split, rect(0.0, STATUS_H, w, h - STATUS_H)
+            split, rect(0.0, STATUS_H, w, h - STATUS_H - TAB_H)
         )
         _ = msg_send[ObjCObject, "NSSplitView", "setVertical:"](split, True)
         # Thin divider, the source-list look.
@@ -1277,7 +1484,7 @@ def main() raises:
             ObjCObject, "NSScrollView", "alloc", is_class=True
         ](NSScrollView.as_object())
         side_scroll = msg_send[ObjCObject, "NSView", "initWithFrame:"](
-            side_scroll, rect(0.0, 0.0, 240.0, h - STATUS_H)
+            side_scroll, rect(0.0, 0.0, 240.0, h - STATUS_H - TAB_H)
         )
         _ = msg_send[ObjCObject, "NSScrollView", "setHasVerticalScroller:"](
             side_scroll, True
@@ -1287,7 +1494,7 @@ def main() raises:
             ObjCObject, "NSOutlineView", "alloc", is_class=True
         ](NSOutlineView.as_object())
         outline = msg_send[ObjCObject, "NSView", "initWithFrame:"](
-            outline, rect(0.0, 0.0, 240.0, h - STATUS_H)
+            outline, rect(0.0, 0.0, 240.0, h - STATUS_H - TAB_H)
         )
         # Source-list styling: SidebarStyle = 1 on modern AppKit.
         _ = msg_send[ObjCObject, "NSTableView", "setStyle:"](outline, Int(1))
@@ -1351,7 +1558,7 @@ def main() raises:
             ObjCObject, "NSScrollView", "alloc", is_class=True
         ](NSScrollView.as_object())
         edit_scroll = msg_send[ObjCObject, "NSView", "initWithFrame:"](
-            edit_scroll, rect(240.0, 0.0, w - 240.0, h - STATUS_H)
+            edit_scroll, rect(240.0, 0.0, w - 240.0, h - STATUS_H - TAB_H)
         )
         _ = msg_send[ObjCObject, "NSScrollView", "setHasVerticalScroller:"](
             edit_scroll, True
@@ -1393,9 +1600,17 @@ def main() raises:
                 "#\n"
                 "# Set ROAST_OPEN=<path> to load a real file.\n"
             )
-        set_rope(Rope(text^))
+        # Through the same door as every other open, so there is exactly one
+        # way a document comes into being. Setting the rope directly here is
+        # what left the tab bar with nothing to draw.
+        _ = document.open_document(
+            String("file://") + path if path != "" else String(""),
+            Rope(text^),
+        )
 
-        let grid = make_grid_view(rect(0.0, 0.0, w - 240.0, h - STATUS_H))
+        let grid = make_grid_view(
+            rect(0.0, 0.0, w - 240.0, h - STATUS_H - TAB_H)
+        )
         let doc = document_size(w - 240.0)
         _ = msg_send[ObjCObject, "NSView", "setFrameSize:"](grid, doc)
         _ = msg_send[ObjCObject, "NSScrollView", "setDocumentView:"](
@@ -1410,6 +1625,54 @@ def main() raises:
         _ = msg_send[ObjCObject, "NSSplitView", "addSubview:"](
             split, edit_scroll.ptr()
         )
+        # Added to the window's content view, above the split, so it spans the
+        # editor pane and stays put while the editor scrolls.
+        var tabbuilder = ObjCClassBuilder["NSView"]("RoastTabBar")
+        tabbuilder.add_method[
+            "drawRect:", encoding="v@:{CGRect={CGPoint=dd}{CGSize=dd}}"
+        ](draw_tabs)
+        tabbuilder.add_method["isFlipped"](tabs_is_flipped)
+        tabbuilder.add_method["mouseDown:", encoding="v@:@"](tabs_mouse_down)
+        let tabcls = tabbuilder^.register()
+        var realtabs = msg_send[
+            ObjCObject, "NSObject", "alloc", is_class=True
+        ](tabcls.as_object())
+        realtabs = msg_send[ObjCObject, "NSView", "initWithFrame:"](
+            realtabs, rect(240.0, h - TAB_H, w - 240.0, TAB_H)
+        )
+        _ = msg_send[ObjCObject, "NSView", "setAutoresizingMask:"](
+            realtabs, Int(2 | 8)
+        )
+        _ = msg_send[ObjCObject, "NSView", "addSubview:"](
+            content, realtabs.ptr()
+        )
+        g_tabbar()[] = realtabs.addr()
+
+        # Tab labels: the editor font, active in full ink and the rest dimmed.
+        let NSMutableDictionary2 = ObjCClass.lookup["NSMutableDictionary"]()
+        var ta = msg_send[
+            ObjCObject, "NSMutableDictionary", "dictionary", is_class=True
+        ](NSMutableDictionary2.as_object())
+        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
+            ta, msg_send[
+                ObjCObject, "NSFont", "systemFontOfSize:", is_class=True
+            ](ObjCClass.lookup["NSFont"]().as_object(), Float64(12.0)).ptr(),
+            extern_object["NSFontAttributeName"]().ptr(),
+        )
+        _ = external_call["objc_retain", P](ta.ptr())
+        g_tab_attrs()[] = ta.addr()
+        var td = msg_send[
+            ObjCObject, "NSMutableDictionary", "dictionaryWithDictionary:",
+            is_class=True,
+        ](NSMutableDictionary2.as_object(), ta.ptr())
+        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
+            td, msg_send[
+                ObjCObject, "NSColor", "secondaryLabelColor", is_class=True
+            ](ObjCClass.lookup["NSColor"]().as_object()).ptr(),
+            extern_object["NSForegroundColorAttributeName"]().ptr(),
+        )
+        _ = external_call["objc_retain", P](td.ptr())
+        g_tab_dim()[] = td.addr()
 
         # A tick, only so the autoclose path exists for CI.
         let NSTimer = ObjCClass.lookup["NSTimer"]()
@@ -1438,10 +1701,9 @@ def main() raises:
         if imports == "" and here != "":
             imports = here + String("/lib/mojo/stdlib")
         if server != "" and path != "":
-            let uri = String("file://") + path
-            g_uri()[].append(uri)
+            let uri = document.current_uri()
             if lsp.start(server, String("file://") + path, imports):
-                lsp.did_open(uri, g_buffer_text())
+                lsp.did_open(document.current_uri(), g_buffer_text())
                 print("roast: language server started")
         elif server == "":
             print("roast: no language server (set ROAST_LSP or COCOAMOJO_ROOT)")

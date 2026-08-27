@@ -235,7 +235,7 @@ is simpler and crash-isolated.
 | 0 | **done** — shell: window, native tabbing, menu, toolbar, status bar, sidebar | `tools/check-ide.sh` — 7 checks green |
 | 1 | **done** — rope, GridView, NSTextInputClient, caret, selection, undo, find | 250k lines in 5 ms, keystroke 2.4 µs, snapshot 400 ns; 59 editing checks + 37 rope checks; Pinyin still to try with a real IME |
 | 2 | LSP: **diagnostics and completion done**; definition and semantic tokens to come | `check-ide.sh` completes `setTitle: (ObjCObject) -> None` inside a msg_send string |
-| 3 | **documents**: open, save, multiple buffers, tabs | open two files, edit both, save both; each keeps its own undo |
+| 3 | **done** — documents: open, save, tabs, dirty tracking, project navigator | two tabs from the sidebar; re-opening a file selects its tab rather than duplicating it |
 | 4 | build/run, issues drawer, output pane — **self-hosting** | the IDE builds the IDE |
 | 5 | **projects**: folder tree in the sidebar, project-wide search | open `ide/`, click through the files, search across them |
 | 6 | AppleScript dictionary + `check-ide.sh` | osascript drives edit→build→diagnostics in CI |
