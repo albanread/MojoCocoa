@@ -158,3 +158,42 @@ class TakesAClass(NSView):
     # expected-error @+1 {{takes argument 1 as the Objective-C class 'Handler', but the runtime sends an 'id'}}
     def mouseDown_(self, other: Handler):
         pass
+
+
+# `@objc` overrides the naming rules, not the checking. A selector whose colon
+# count disagrees with the arguments registers and then never receives
+# anything -- the exact failure the derived-selector check exists to prevent,
+# so an overridden selector goes through the very same gate.
+#
+# One class per case: the first error in a class stops its later methods from
+# reaching decorator processing, which would hide the rest.
+class ColonCount(NSView):
+    # expected-error @+2 {{@objc selector 'setThing:' takes 1 argument, but the method declares 0 after 'self'}}
+    @objc("setThing:")
+    def thing(self) -> Bool:
+        return True
+
+
+class NotAString(NSView):
+    # expected-error @+1 {{@objc requires a string literal}}
+    @objc(42)
+    # expected-error @+1 {{the SDK declares 'other' with a result of '@'}}
+    def other(self) -> Bool:
+        return True
+
+
+class TooManyArgs(NSView):
+    # expected-error @+1 {{@objc takes exactly one argument: the selector, as a string}}
+    @objc("a", "b")
+    # No second diagnostic: with the override rejected, `two` falls back to
+    # the derived selector, which is a perfectly good one.
+    def two(self) -> Bool:
+        return True
+
+
+# On a type, @objc names the class the runtime will register, which only means
+# something for a `class`.
+# expected-error @+1 {{@objc names an Objective-C class, so it applies to 'class', not to 'struct'}}
+@objc("NotAClass")
+struct PlainStruct:
+    var x: Int

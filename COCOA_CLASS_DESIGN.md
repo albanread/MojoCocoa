@@ -478,6 +478,35 @@ signature, usually a C++ type in it. There the compiler has nothing to check a
 declaration against, and D4 already says what to do about that -- fail, rather
 than guess at a shape the runtime will send.
 
+### `@objc`, both halves
+
+Decision 2 promised `@objc` as the override for selector derivation, and the
+grammar sketch showed it on a method. It was parsed and then ignored -- the
+attribute was recorded nowhere and read by nothing. Both halves work now, and
+they answer two different problems.
+
+**On a method** it fixes the selector. Underscore mapping is total but not
+surjective, and three real shapes fall outside it: a selector containing an
+underscore of its own (AppKit has many beginning `_`), one whose Mojo spelling
+would collide with another method's, and a name that simply reads better
+differently on the Mojo side -- `flipped` against `isFlipped`. The override
+does NOT skip the checking: the colon count is verified against the argument
+count exactly as a derived selector's is, because a selector the runtime will
+never reach is the failure this design exists to prevent, whoever spelled it.
+
+One deliberate interaction: `@objc` overrides the leading-underscore privacy
+rule. A method named `_can_move` is private to Mojo, but `@objc(...)` on it is
+explicit intent, and without that there would be no way to implement an
+AppKit selector that itself begins with an underscore.
+
+**On a class** it fixes the registered runtime name. The Objective-C runtime
+has ONE namespace for every class in the process -- two frameworks, a plugin,
+and a Mojo class all compete in it -- and `objc_allocateClassPair` returns nil
+on a name already taken, which is a failure nobody can act on by then. So a
+short Mojo name and a namespaced runtime name are different things:
+`class Probe` registering as `RoastDecoratorProbe`. `@objc` on a `struct` is
+refused, since there is no runtime entity to name.
+
 ### The test harness had to be built too### The test harness had to be built too
 
 `./bazelw test //KGEN/test/mojo-parser:all` cannot build in this tree. All 357
