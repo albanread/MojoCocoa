@@ -167,6 +167,9 @@ check "split view"  "split panes: 2"        "sidebar + editor area"
 check "editor panes" "editor panes: 2"      "editor above the console"
 check "menu bar"    "menu bar items: 6"     "app, File, Edit, Build, Examples, Window"
 check "lifecycle"   "applicationWillTerminate" "launch → close → terminate clean"
+# The first named_globals migrated onto class fields: the tab bar builds its
+# label attributes lazily in its own box, and says so exactly once.
+check "box fields"  "tab attributes built in the box" "per-instance state, built on first draw"
 
 # Implementing the selectors is not conformance, and AppKit asks. The app says
 # so on startup when the protocol is missing.

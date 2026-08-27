@@ -1152,10 +1152,55 @@ class RoastTabBar(NSView):
     rect arrives in registers the callee never reads, but it was a claim
     about a shape nothing checked. The SDK supplies the encoding now, and
     the signature has to match it.
+
+    The label attributes are FIELDS -- the first `named_global`s migrated
+    onto the box. They are built lazily on first draw, because that is what
+    the v1 box contract offers: fields start zero (the runtime zero-fills the
+    ivar), zero is the "not built yet" sentinel, and the only code that can
+    write the box is a method -- `RoastTabBar()` returns a copy, so seeding
+    from `main` would write the copy and draw with nothing.
     """
 
-    def drawRect_(self, dirty: CGRect):
+    var _attrs: Int  # label attributes, full ink: a retained NSDictionary
+    var _dim: Int  # the same, secondaryLabelColor, for inactive tabs
+
+    def _ensure_attrs(mut self):
+        """Build the two attribute dictionaries, once per instance."""
+        if self._attrs != 0:
+            return
+        let NSMutableDictionary = ObjCClass.lookup["NSMutableDictionary"]()
+        var ta = msg_send[
+            ObjCObject, "NSMutableDictionary", "dictionary", is_class=True
+        ](NSMutableDictionary.as_object())
+        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
+            ta, msg_send[
+                ObjCObject, "NSFont", "systemFontOfSize:", is_class=True
+            ](ObjCClass.lookup["NSFont"]().as_object(), Float64(12.0)).ptr(),
+            extern_object["NSFontAttributeName"]().ptr(),
+        )
+        _ = external_call["objc_retain", P](ta.ptr())
+        self._attrs = ta.addr()
+
+        var td = msg_send[
+            ObjCObject, "NSMutableDictionary", "dictionaryWithDictionary:",
+            is_class=True,
+        ](NSMutableDictionary.as_object(), ta.ptr())
+        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
+            td, msg_send[
+                ObjCObject, "NSColor", "secondaryLabelColor", is_class=True
+            ](ObjCClass.lookup["NSColor"]().as_object()).ptr(),
+            extern_object["NSForegroundColorAttributeName"]().ptr(),
+        )
+        _ = external_call["objc_retain", P](td.ptr())
+        self._dim = td.addr()
+        # One line, once per instance, so the smoke test can assert the box
+        # actually carried the state -- drawRect_'s try would otherwise
+        # swallow a failure here into tabs quietly drawn with defaults.
+        print("roast: tab attributes built in the box")
+
+    def drawRect_(mut self, dirty: CGRect):
         try:
+            self._ensure_attrs()
             with autoreleasepool():
                 let view = ObjCObject(self.__objc_id)
                 let bounds = msg_send[CGRect, "NSView", "bounds"](view)
@@ -1222,7 +1267,7 @@ class RoastTabBar(NSView):
                         nsstring(label),
                         CGPoint(x + 10.0, 6.0),
                         ObjCObject(
-                            g_tab_attrs()[] if i == active else g_tab_dim()[]
+                            self._attrs if i == active else self._dim
                         ).ptr(),
                     )
 
@@ -1240,7 +1285,7 @@ class RoastTabBar(NSView):
                         nsstring(mark),
                         CGPoint(box.origin.x + 4.0, 6.0),
                         ObjCObject(
-                            g_tab_attrs()[] if i == active else g_tab_dim()[]
+                            self._attrs if i == active else self._dim
                         ).ptr(),
                     )
                     i += 1
@@ -1264,7 +1309,7 @@ class RoastTabBar(NSView):
                         ](
                             nsstring(String("\u2039")),
                             CGPoint(3.0, 5.0),
-                            ObjCObject(g_tab_dim()[]).ptr(),
+                            ObjCObject(self._dim).ptr(),
                         )
                     if off < max_tab_scroll(total) - 0.5:
                         _ = msg_send[ObjCObject, "NSColor", "setFill"](bar)
@@ -1277,7 +1322,7 @@ class RoastTabBar(NSView):
                         ](
                             nsstring(String("\u203a")),
                             CGPoint(total - TAB_GUTTER + 3.0, 5.0),
-                            ObjCObject(g_tab_dim()[]).ptr(),
+                            ObjCObject(self._dim).ptr(),
                         )
         except:
             pass
@@ -1420,8 +1465,6 @@ def after_switch():
     )
 
 
-comptime g_tab_attrs = named_global["roast.tab.attrs", Int]
-comptime g_tab_dim = named_global["roast.tab.dim", Int]
 
 
 def is_dirty() -> Bool:
@@ -2341,31 +2384,8 @@ def main() raises:
         )
         g_tabbar()[] = realtabs.addr()
 
-        # Tab labels: the editor font, active in full ink and the rest dimmed.
-        let NSMutableDictionary2 = ObjCClass.lookup["NSMutableDictionary"]()
-        var ta = msg_send[
-            ObjCObject, "NSMutableDictionary", "dictionary", is_class=True
-        ](NSMutableDictionary2.as_object())
-        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
-            ta, msg_send[
-                ObjCObject, "NSFont", "systemFontOfSize:", is_class=True
-            ](ObjCClass.lookup["NSFont"]().as_object(), Float64(12.0)).ptr(),
-            extern_object["NSFontAttributeName"]().ptr(),
-        )
-        _ = external_call["objc_retain", P](ta.ptr())
-        g_tab_attrs()[] = ta.addr()
-        var td = msg_send[
-            ObjCObject, "NSMutableDictionary", "dictionaryWithDictionary:",
-            is_class=True,
-        ](NSMutableDictionary2.as_object(), ta.ptr())
-        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
-            td, msg_send[
-                ObjCObject, "NSColor", "secondaryLabelColor", is_class=True
-            ](ObjCClass.lookup["NSColor"]().as_object()).ptr(),
-            extern_object["NSForegroundColorAttributeName"]().ptr(),
-        )
-        _ = external_call["objc_retain", P](td.ptr())
-        g_tab_dim()[] = td.addr()
+        # The tab labels' attribute dictionaries live on RoastTabBar itself
+        # now -- fields, built lazily on first draw. Nothing to set up here.
 
         # A tick, only so the autoclose path exists for CI.
         let NSTimer = ObjCClass.lookup["NSTimer"]()
