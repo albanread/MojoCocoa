@@ -335,6 +335,55 @@ Mojo passes in memory are still refused rather than registered wrongly --
 Objective-C passes arguments by value, and forwarding a reference would hand
 the method a pointer where it expects a value.
 
+### SPRINT 3 (2026-08-27): the box, and why it needs no attribute interception
+
+The runtime half is done and proved: `ObjCClassRegistrar.add_box(size)`
+reserves one instance variable, `box_offset(cls)` reads back where the runtime
+put it, and `spikes/s5-cocoakb/box_test.mojo` hangs a Mojo struct off two
+instances and checks they do not share. One ivar, not one per field, so a
+field can be any Mojo type rather than only what Objective-C ivar layout can
+describe.
+
+The design question that looked hardest turned out to answer itself. If
+author fields live in a box, `self.count` has to resolve to *something*, and
+intercepting attribute resolution in `ExprNodes.cpp` is a deep and unpleasant
+change. It is not needed. A Mojo method already receives `self` as a **memory
+borrow** — `!lit.ref<Class> read_mem`, which is a pointer to storage — so if
+the class's `StructDeclOp` simply *holds* the author fields and the trampoline
+hands the method a pointer to the box, field access resolves natively. The
+class type becomes memory-only, which is what a struct with real fields is
+anyway.
+
+So the shape is:
+
+- **The class `StructDeclOp` is the box**: `{__objc_id, …author fields}`,
+  memory-only. Methods take a borrow of it and `self.count` and
+  `self.__objc_id` both work with no new machinery.
+- **The box lives inline in the object.** `class_addIvar` reserves
+  `sizeof(Self)` bytes; the box is at `id + offset`, so there is no second
+  allocation and nothing to free. The trampoline's conversion is an add, not
+  a load.
+- **The offset is cached per class** in a `pop.global_alloc` global written by
+  `__init__` after registration — the runtime settles the offset when the pair
+  is registered, and it does not move.
+- **The size is a comptime parameter expression**,
+  `#kgen.param.expr<get_sizeof, #kgen.type<Self>>`, which the elaborator
+  resolves after layout — the compiler does not need to know the size when it
+  synthesizes `__init__`.
+
+What is not yet built is the three synthesis steps that follow from that: the
+`add_box` call in `__init__`, writing the constructed box into `id + offset`
+and caching the offset, and the trampoline's `id → id + offset` conversion.
+Until they are, class fields stay diagnosed rather than half-working, and the
+IDE's state stays in `named_global`.
+
+One wart is already visible and worth stating before it surprises anyone:
+`TabBar()` returns the class value, and with the class being the box that is a
+*copy* of the freshly constructed state. Reading `.__objc_id` from it is
+correct, which is all the IDE does with it; mutating a field through it would
+write the copy, not the object. A distinct handle type is what fixes that, and
+it belongs with sprint 6's reference work rather than here.
+
 ### The test harness had to be built too
 
 `./bazelw test //KGEN/test/mojo-parser:all` cannot build in this tree. All 357

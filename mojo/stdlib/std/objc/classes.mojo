@@ -330,6 +330,28 @@ struct ObjCClassRegistrar:
             P(unsafe_from_address=self._cls), proto
         )
 
+    def add_box(mut self, size: Int) -> Bool:
+        """Reserve the instance variable that holds a class's fields.
+
+        One ivar, a pointer to a Mojo struct -- not one ivar per field. The
+        box is ordinary Mojo memory, so a field can be any Mojo type rather
+        than only what Objective-C ivar layout can describe, and construction
+        and destruction happen where Mojo expects them. See
+        COCOA_CLASS_DESIGN.md.
+
+        Must be called before `register`: the runtime refuses to add an ivar
+        to a registered class, and says so by returning false.
+        """
+        if not self._ok or self._existing:
+            return False
+        return external_call["class_addIvar", Bool](
+            P(unsafe_from_address=self._cls),
+            _leak_cstr(String(BOX_IVAR)),
+            size,
+            UInt8(3),  # log2 alignment: 8 bytes
+            _leak_cstr(String("^v")),
+        )
+
     def register(mut self) -> ObjCClass:
         """Finish the class. Returns a null ObjCClass if anything above
         failed, which is what a caller should check before instantiating."""
@@ -355,6 +377,25 @@ struct ObjCClassRegistrar:
         if cls.as_object().addr() == 0:
             return 0
         return new_instance(cls).addr()
+
+
+comptime BOX_IVAR = "__mojo_box"
+
+
+def box_offset(cls: ObjCClass) -> Int:
+    """Where the box pointer sits inside an instance, in bytes.
+
+    Read once per class after registration and cached by the caller: the
+    runtime settles it when the class is registered, and it does not move.
+    Returns 0 if the class has no box, which no caller should be asking about.
+    """
+    var ivar = external_call["class_getInstanceVariable", P](
+        P(unsafe_from_address=cls.as_object().addr()),
+        _leak_cstr(String(BOX_IVAR)),
+    )
+    if Int(ivar) == 0:
+        return 0
+    return external_call["ivar_getOffset", Int](ivar)
 
 
 def sel_dynamic(name: StaticString) -> P:

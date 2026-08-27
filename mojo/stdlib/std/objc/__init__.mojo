@@ -22,6 +22,7 @@ from .error import msg_send_raising, msg_send_raising_check
 from .classes import (
     ObjCClassBuilder,
     ObjCClassRegistrar,
+    box_offset,
     IMP0,
     IMP1,
     IMP0Bool,
