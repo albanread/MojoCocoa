@@ -84,13 +84,8 @@ def some_function():
         pass
 
 
-# Fields belong in a box reached through one hidden ivar, not in the class type
-# -- which is one pointer and nothing else. Accepting one would not fail; it
-# would quietly make `Boxed` an Int rather than something pointing at one,
-# which is why this is diagnosed rather than deferred.
-class Boxed(NSObject):
-    # expected-error @+1 {{class fields are not implemented yet: 'count'}}
-    var count: Int
+# Fields work now -- the box, COCOA_CLASS_DESIGN.md sprint 3 -- so the case
+# that used to be diagnosed here lives in class_decl.mojo as a positive check.
 
 
 # The selector is the method name with every `_` turned into `:`, so the colon

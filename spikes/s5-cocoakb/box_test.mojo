@@ -42,7 +42,9 @@ def attach_box(obj: ObjCObject, offset: Int, value: Box):
 
 def main() raises:
     var r = ObjCClassRegistrar("BoxProbe", "NSObject", "Foundation")
-    if not r.add_box(8):
+    # add_box takes a raw index -- the compiler's sizeof hands one over --
+    # so the by-hand caller converts.
+    if not r.add_box(Int(16).__mlir_index__()):
         print("FAIL could not reserve the ivar")
         return
     var cls = r.register()

@@ -371,44 +371,67 @@ So the shape is:
   resolves after layout — the compiler does not need to know the size when it
   synthesizes `__init__`.
 
-Two of the three synthesis steps are written and compile; the third is
-blocked on one specific thing, and it is worth recording precisely so the next
-attempt starts from knowledge rather than from where this one did.
+All three synthesis steps are landed, and `class_field_test.mojo` proves the
+result end to end: two instances, three pokes at one and one at the other,
+per-instance counts read back through a struct return — `a: 3, b: 1`.
 
-**Step 2 (caching the offset) and step 3 (the trampoline's conversion) work
-out.** The ops needed all exist: `pop.global_alloc` for the per-class slot,
-and `lit.ref.to_pointer` → `pop.pointer.bitcast` → `pop.offset` →
-`lit.ref.from_pointer` for "this reference, moved along by N bytes". Step 3
-also settles the trampoline's receiver: when a class has fields it must take
-`self` as a **reference** (`ArgConvention::ReadMem`), because the C ABI passes
-a pointer in x0 and that pointer is the `id` — taking it by value would copy a
-struct Objective-C never sent.
+What the compiler emits per boxed class: `add_box(sizeof(Self))` in
+`__init__`, with the size travelling as the same
+`#kgen.param.expr<get_sizeof, #kgen.type<Self>, current_target>` expression
+Mojo's own `sizeof` produces (two operands — the earlier attempt failed by
+passing one, and by casting a `TypeAttr` where a `TypeParamAttr` belongs);
+after registration, `box_offset_of` read once and cached in a per-class
+global; and in every trampoline, the receiver conversion.
 
-**Step 1 (`add_box(sizeof(Self))`) is where it stops.** The size has to reach
-the runtime as `#kgen.param.expr<get_sizeof, …>`, a comptime expression the
-elaborator resolves after layout, and constructing that attribute correctly
-from C++ is the open question. What does *not* work, each established by
-trying it: `TypeAttr` is not a `TypedAttr`, so `cast`ing one into a
-`ParamOperatorAttr` operand asserts; `LITStructAttr` will not wrap an
-unresolved parameter expression, so the size cannot be boxed into a Mojo `Int`
-that way; and declaring the Mojo side to take a raw `__mlir_type.index`
-sidesteps the wrapping but not the attribute construction. The next attempt
-should read the elaborator's own `GetSizeOf` handling and copy how it builds
-its operands, rather than inferring the shape from call sites as this one did.
+**The receiver invariant** — the sprint's expensive lesson, found by a second
+opinion reading the emitted LLVM. At the IMP boundary the receiver is a
+foreign ABI value: a raw pointer in x0. It must remain one until the ivar
+offset is added, and become `Ref<Self>` only then:
 
-Until step 1 lands, class fields stay diagnosed rather than half-working, and
-the IDE's state stays in `named_global`. The runtime half is committed and
-tested regardless, so the next attempt starts from a proven mechanism and one
-attribute.
+    id → raw pointer + ivar offset → Ref<Self>        (never: id → Self → +)
 
-One wart is already visible and worth stating before it surprises anyone:
-`TabBar()` returns the class value, and with the class being the box that is a
-*copy* of the freshly constructed state. Reading `.__objc_id` from it is
-correct, which is all the IDE does with it; mutating a field through it would
-write the copy, not the object. A distinct handle type is what fixes that, and
-it belongs with sprint 6's reference work rather than here.
+Modelling it as `Ref<Self>` with `ReadMem` materialised a stack copy of Self
+at the argument boundary; every box address was then computed relative to the
+copy, so all the writes survived lowering and all landed in dead stack while
+the methods cheerfully returned their answers. The trampoline now takes
+`!kgen.pointer<i8>` and the regression is pinned in `class_decl.mojo`.
 
-### The test harness had to be built too
+**The global-initializer contract**, the second lesson: the LLVM lowering's
+shared-by-name dedup for fixed-name host globals applies only to
+initializer-less ops. Adding an explicit zero initializer to the offset
+global minted `_0`/`_1` copies per function — `__init__` wrote one, every
+trampoline read its own, forever zero. Initializer-less lowers to BSS, which
+the loader zero-fills, so the sentinel semantics hold anyway.
+
+Two smaller facts with permanent value: the parser places author fields
+BEFORE synthesized ones (the id field is last, so nothing may assume its
+position — the id is seeded per call through its own field projection,
+position-independent by construction), and a `mut self` method needs the
+trampoline to pass a mutable lvalue, not a borrow.
+
+### The box lifecycle contract, v1
+
+What a class field is today, stated so nobody discovers it the hard way:
+
+- **Storage**: inline in the object — one ivar of `sizeof(Self)`, 8-aligned,
+  at the runtime-settled offset. No allocation beyond the object itself.
+- **Ground state**: zero-filled by the runtime's alloc. `__init__`
+  default-constructs every field in the returned local, so both views agree;
+  a field's type must therefore be default-constructible, and zero must be a
+  valid value for it — the `named_global` rule, now per instance.
+- **Field initializers** (`var x: Int = 3`) are not honoured yet: the value
+  in the box is the default, not the initializer.
+- **Destruction does not run.** `dealloc` is not yet hooked, so a field's
+  `deinit` never fires; a field owning heap memory lives as long as the
+  object and leaks when the object dies. Same lifetime story as the
+  `named_global`s these fields replace — acceptable for app-lifetime objects,
+  wrong for transient ones, and the next box task.
+- **The constructor-copy wart**: `Tally()` returns the class value, which is
+  a copy of the box's ground state plus the id. Reading `.__objc_id` from it
+  is correct; mutating a field through it writes the copy, not the object.
+  Sprint 6's handle type is the fix.
+
+### The test harness had to be built too### The test harness had to be built too
 
 `./bazelw test //KGEN/test/mojo-parser:all` cannot build in this tree. All 357
 targets depend on `//bazel/mlir-shared:MLIR`, and that dylib does not link:
@@ -711,7 +734,7 @@ Each lands alone, each is verifiable, each leaves the tree green
 |---|---|---|---|
 | 1 | **done** — real grammar behind `parseClassStmt`: name, base list, nesting and parameter diagnostics, recorded on an attributed `StructDeclOp`; elaboration refuses cleanly with a note naming what it parsed. Body resolution deferred to sprint 2 with the registration it depends on. | S–M | `class_decl.mojo` + `class_decl_errors.mojo`; `tools/check-parser.sh` 331 pass / 1 known-stale fail; `structs.mojo` and `traits.mojo` green |
 | 2 | **done** — classes resolve to types and register with the runtime: an `__init__` driving `ObjCClassRegistrar`, a C-ABI trampoline per method, selector and SDK encoding per method, protocols adopted. | L | `spikes/s5-cocoakb/class_test.mojo` — declare, instantiate, and let the runtime dispatch to both a nullary and a one-argument method |
-| 3 | **Give it state.** `class_addIvar`, the box, synthesized init/dealloc, `self.field`. | M | a test class whose field's `deinit` flips a flag proves teardown; tab-bar and `RoastActions` globals become fields; `check-ide.sh` green |
+| 3 | **done** — the box, inline in the object: `add_box(sizeof(Self))` with the size as a comptime expression, offset cached per class, receiver converted raw-pointer-first per the invariant, id seeded per call through its own field. Lifecycle contract v1 documented; deinit-on-dealloc and field initializers are the open tail. | M | `class_field_test.mojo` — two instances, per-instance counts, state out through a struct return; IR regression pins the receiver invariant |
 | 4 | **done** — `CocoaKBDatabase` extracted to `KGEN/lib/CocoaKB` so the parser can ask it; encodings looked up by selector (chain-walking for overrides); framework attribution from `bs_classes`; unknown-superclass typo catcher; SDK-disagreement diagnostic; derivation only for selectors the SDK has never heard of. | M | `class_decl.mojo` checks the SDK's own `drawRect:` encoding and `objcFrameworks = ["AppKit"]`; `class_decl_errors.mojo` covers both disagreement directions and the typo |
 | 5 | **done** — every IDE class is a declaration: 51 selectors across five classes, zero builders/encodings/`cmd` slots; the geometry types centralised in `std.objc.geometry` as the ABI sees them; struct args and returns proven at register level. `named_global` state remains until sprint 3's box; the stdlib IMP shapes remain for the spikes. | M–L | `check-ide.sh` 21 checks (toolbar items counted from the factory method); `struct_arg_test` + `struct_ret_test`; 20 cocoa checks |
 | 6 | **Nil-aware references.** Smaller than first scoped: once the box is plain Mojo memory (sprint 3) an `ObjCRef` field retains and releases through its own copy/deinit with no special handling, and the class type's own retain/release is sprint 2's `copyInit`. What is left is genuinely new — nil as a first-class state in the pointer's niche, `NSTextView?`, and the zero-init-destructor hazard that currently forces every app-lifetime global to be an `Int`. | S–M | retain-count round-trip tests; the manual `objc_retain` count in `ide/` falls toward zero |

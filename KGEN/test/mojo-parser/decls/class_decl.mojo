@@ -15,17 +15,17 @@
 
 # `class` declares an Objective-C class -- COCOA_CLASS_DESIGN.md.
 #
-# Sprint 2 resolves one to a type. What the IR should show, and what these
-# checks pin, is the design's central claim about representation: a class is a
-# **register-passable** struct -- a pointer, not a value -- carrying the
-# Objective-C names it was declared against. It is deliberately NOT a separate
-# op; see the sprint 1 decision in the design document.
+# A class is a MEMORY-ONLY struct: its first field is the id, the author's
+# fields follow (the box, stored inline in the object's one ivar), and the C
+# ABI's registers-only view of the receiver exists at exactly one place, the
+# synthesized trampoline. It is deliberately NOT a separate op; see the
+# sprint 1 decision in the design document.
 
 
 # A class holds exactly one thing: the pointer to the Objective-C object. The
 # fields an author declares go in a box behind it -- sprint 3.
 # CHECK-DAG: lit.struct.field __objc_id
-# CHECK-DAG: lit.struct.decl @Bare({{.*}}) register_passable attributes {objcClass
+# CHECK-DAG: lit.struct.decl @Bare({{.*}}) attributes {objcClass
 class Bare:
     pass
 
@@ -34,7 +34,7 @@ class Bare:
 # They are strings, because they name things the Objective-C runtime resolves
 # and not Mojo traits -- reading them as traits would report `NSView` as an
 # undefined trait, which is a lie about a correct line.
-# CHECK-DAG: lit.struct.decl @WithSuper({{.*}}) register_passable attributes {objcBases = ["NSObject"], objcClass
+# CHECK-DAG: lit.struct.decl @WithSuper({{.*}}) attributes {objcBases = ["NSObject"], objcClass
 class WithSuper(NSObject):
     pass
 
@@ -43,7 +43,7 @@ class WithSuper(NSObject):
 # before it can ask the runtime anything: objc_getClass("NSView") is nil until
 # AppKit is loaded, and building against a nil superclass silently produces a
 # root class. Only BridgeSupport knows the attribution.
-# CHECK-DAG: lit.struct.decl @GridView({{.*}}) register_passable attributes {objcBases = ["NSView", "NSTextInputClient", "NSDraggingDestination"], objcClass, objcFrameworks = ["AppKit"]
+# CHECK-DAG: lit.struct.decl @GridView({{.*}}) attributes {objcBases = ["NSView", "NSTextInputClient", "NSDraggingDestination"], objcClass, objcFrameworks = ["AppKit"]
 class GridView(NSView, NSTextInputClient, NSDraggingDestination):
     pass
 
@@ -62,20 +62,20 @@ class GridView(NSView, NSTextInputClient, NSDraggingDestination):
 
 
 # A qualified name is kept whole rather than read as attribute access.
-# CHECK-DAG: lit.struct.decl @Qualified({{.*}}) register_passable attributes {objcBases = ["foundation.NSObject"], objcClass
+# CHECK-DAG: lit.struct.decl @Qualified({{.*}}) attributes {objcBases = ["foundation.NSObject"], objcClass
 class Qualified(foundation.NSObject):
     pass
 
 
 # An empty base list means the same as writing none at all: no objcBases.
-# CHECK-DAG: lit.struct.decl @EmptyBases({{.*}}) register_passable attributes {objcClass
+# CHECK-DAG: lit.struct.decl @EmptyBases({{.*}}) attributes {objcClass
 class EmptyBases():
     pass
 
 
 # A base list wrapped over several lines, with the trailing comma such a list
 # is actually written with.
-# CHECK-DAG: lit.struct.decl @Multiline({{.*}}) register_passable attributes {objcBases = ["NSView", "NSTextInputClient"], objcClass
+# CHECK-DAG: lit.struct.decl @Multiline({{.*}}) attributes {objcBases = ["NSView", "NSTextInputClient"], objcClass
 class Multiline(
     NSView,
     NSTextInputClient,
@@ -122,6 +122,31 @@ class TabBar(NSView):
     # CHECK-NOT: objcSelector = "_tab:width"
     def _tab_width(self, total: Int) -> Int:
         return total
+
+
+# A class with fields of its own: the box. The registration reserves the one
+# ivar with the class's own sizeof -- an expression the elaborator resolves
+# after layout -- caches where the runtime put it, and every trampoline moves
+# the incoming id along by that offset before calling in.
+# CHECK-DAG: lit.struct.decl @Boxed({{.*}}) attributes {objcBases = ["NSObject"], objcClass
+# CHECK-DAG: ObjCClassRegistrar::@"add_box
+# CHECK-DAG: get_sizeof
+# CHECK-DAG: vega.objc.boxoffset/Boxed
+# CHECK-DAG: pop.offset
+#
+# The receiver invariant, pinned after it was violated once at real cost:
+# at the IMP boundary the receiver is a FOREIGN ABI VALUE -- a raw pointer --
+# and becomes a Ref<Self> only after the ivar offset is added. Modelling it as
+# `!lit.ref<!Boxed> read_mem` materialised a stack copy of Self at the
+# argument boundary, and every box write landed in dead stack while the
+# method cheerfully returned its answers.
+# CHECK-DAG: lit.fn @"__objc_imp_isProxy(!kgen.pointer<i8>{{.*}}(%self: !kgen.pointer<i8>, %_cmd: !Int
+# CHECK-NOT: __objc_imp_isProxy{{.*}}!lit.ref<!Boxed
+class Boxed(NSObject):
+    var count: Int
+
+    def isProxy(self) -> Bool:
+        return self.count > 0
 
 
 # Structs are untouched: still memory-only, still no Objective-C attributes.

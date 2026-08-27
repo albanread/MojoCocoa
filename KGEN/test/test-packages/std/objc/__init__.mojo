@@ -50,6 +50,12 @@ struct ObjCClassRegistrar:
     def add_protocol(mut self, name: StringSlice) -> Bool:
         return False
 
+    def add_box(mut self, size: __mlir_type.index) -> Bool:
+        return False
+
+    def box_offset_of(mut self) -> Int:
+        return 0
+
     def register(mut self) -> ObjCClass:
         return ObjCClass(0)
 

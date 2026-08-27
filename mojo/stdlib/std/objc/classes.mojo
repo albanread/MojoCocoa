@@ -246,6 +246,7 @@ struct ObjCClassRegistrar:
     var _cls: Int
     var _ok: Bool
     var _existing: Bool
+    var _has_box: Bool
 
     def __init__(
         out self,
@@ -275,8 +276,10 @@ struct ObjCClassRegistrar:
             self._cls = Int(already)
             self._ok = True
             self._existing = True
+            self._has_box = False
             return
         self._existing = False
+        self._has_box = False
 
         var sup = external_call["objc_getClass", P](
             _leak_cstr(String(superclass))
@@ -287,12 +290,14 @@ struct ObjCClassRegistrar:
             self._cls = 0
             self._ok = False
             self._existing = False
+            self._has_box = False
             return
         var cls = external_call["objc_allocateClassPair", P](
             sup, _leak_cstr(String(name)), Int(0)
         )
         self._cls = Int(cls)
         self._ok = Int(cls) != 0
+        self._has_box = False
 
     def add_method[
         F: AnyType
@@ -330,7 +335,7 @@ struct ObjCClassRegistrar:
             P(unsafe_from_address=self._cls), proto
         )
 
-    def add_box(mut self, size: Int) -> Bool:
+    def add_box(mut self, size: __mlir_type.index) -> Bool:
         """Reserve the instance variable that holds a class's fields.
 
         One ivar, a pointer to a Mojo struct -- not one ivar per field. The
@@ -341,13 +346,19 @@ struct ObjCClassRegistrar:
 
         Must be called before `register`: the runtime refuses to add an ivar
         to a registered class, and says so by returning false.
+
+        `size` is a raw `index` because the compiler hands it over as
+        `#kgen.param.expr<get_sizeof, ...>` -- a comptime expression the
+        elaborator resolves after layout -- and an unresolved expression will
+        not wrap in an `Int` the way a literal would.
         """
         if not self._ok or self._existing:
             return False
+        self._has_box = True
         return external_call["class_addIvar", Bool](
             P(unsafe_from_address=self._cls),
             _leak_cstr(String(BOX_IVAR)),
-            size,
+            Int(SIMDLength(mlir_value=size)),
             UInt8(3),  # log2 alignment: 8 bytes
             _leak_cstr(String("^v")),
         )
@@ -387,6 +398,12 @@ struct ObjCClassRegistrar:
         var cls = self.register()
         if cls.as_object().addr() == 0:
             return 0
+        # The box needs no seeding here: the runtime zero-fills ivars at
+        # alloc -- every field in its named_global-like ground state -- and
+        # the id is written into the box's own id field by each trampoline on
+        # the way in, which is position-independent where a write at "offset
+        # zero" turned out not to be (the id field is not first; the parser
+        # places author fields before synthesized ones).
         return new_instance(cls).addr()
 
 
