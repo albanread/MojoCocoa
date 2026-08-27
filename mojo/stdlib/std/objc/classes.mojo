@@ -11,7 +11,7 @@
 # ===----------------------------------------------------------------------=== #
 
 from std.ffi import external_call
-from std.memory import OpaquePointer
+from std.memory import OpaquePointer, MutPointer, unsafe_destroy_n
 from std.collections.string.string_span import _get_kgen_string
 from std.sys._cocoakb import cocoakb_selector_encoding
 from .runtime import ObjCClass, ObjCObject, msg_send, sel, load_framework_dynamic
@@ -363,6 +363,21 @@ struct ObjCClassRegistrar:
             _leak_cstr(String("^v")),
         )
 
+    def add_dealloc[T: Deinitable](mut self, ref witness: T) -> Bool:
+        """Register the `dealloc` that destroys this class's box.
+
+        `witness` is never read. It is there because the box's type is what
+        this needs and the compiler has no way to spell an explicit type
+        parameter in a synthesized call -- but it does have `self`, and a
+        borrow of it carries the type. Every other parameter on this struct
+        arrived the same way `add_method`'s did: inferred from an argument.
+
+        Must come before `register`, like everything else here.
+        """
+        if not self._ok or self._existing or not self._has_box:
+            return False
+        return self.add_method("dealloc", "v@:", _box_dealloc_imp[T])
+
     def register(mut self) -> ObjCClass:
         """Finish the class. Returns a null ObjCClass if anything above
         failed, which is what a caller should check before instantiating."""
@@ -405,6 +420,71 @@ struct ObjCClassRegistrar:
         # zero" turned out not to be (the id field is not first; the parser
         # places author fields before synthesized ones).
         return new_instance(cls).addr()
+
+
+@fieldwise_init
+struct _ObjCSuper(TrivialRegisterPassable):
+    """The two words `objc_msgSendSuper` reads to start its search one class up.
+
+    `struct objc_super { id receiver; Class super_class; }` -- and note what
+    the second field means: not the class to send to, but the class to start
+    LOOKING ABOVE. Passing the object's own class here would find the same
+    method again and recurse until the stack is gone, which is the classic way
+    to write an infinite loop in Objective-C.
+    """
+
+    var receiver: Int
+    var super_class: Int
+
+
+def objc_super_send_void(id: Int, selector: P):
+    """`[super <selector>]`, for a selector returning nothing.
+
+    Needed by any override that has to let its superclass do the real work --
+    `dealloc` is the one the compiler generates, but `drawRect:`, `mouseDown:`
+    and most of AppKit's other overridables want it too. Ordinary dispatch
+    cannot express this: `objc_msgSend` on `self` finds the override again.
+
+    The lookup starts above the class that DEFINES the method, which for a
+    Mojo `class` is the class itself, so `object_getClass` is the right
+    starting point here.
+    """
+    if id == 0:
+        return
+    var cls = external_call["object_getClass", P](P(unsafe_from_address=id))
+    var sup = external_call["class_getSuperclass", P](cls)
+    var frame = _ObjCSuper(id, Int(sup))
+    external_call["objc_msgSendSuper", NoneType](
+        MutPointer(to=frame), selector
+    )
+
+
+fn _box_dealloc_imp[T: Deinitable](self_: P, _cmd: P):
+    """The IMP registered for `dealloc` on any class that has a box.
+
+    Two things, in this order, and the order is the whole point:
+
+    1. Run T's destructor over the box, so a field owning heap memory gives
+       it back. Mojo's ownership machinery already destroys a field when it
+       is REASSIGNED through the box -- that has always worked -- but nothing
+       ran when the object itself died, which is the gap this closes.
+    2. `[super dealloc]`, which is what actually frees the instance. Skipping
+       it leaks every object; doing it first would run the destructor over
+       freed memory.
+
+    `fn`, not `def`: an IMP is C-ABI and may not raise. The runtime calls this
+    with (self, _cmd) and ignores the result.
+    """
+    var cls = external_call["object_getClass", P](self_)
+    var off = box_offset(ObjCClass(Int(cls)))
+    if off != 0:
+        unsafe_destroy_n(
+            MutPointer[T, MutUntrackedOrigin](
+                unsafe_from_address=Int(self_) + off
+            ),
+            1,
+        )
+    objc_super_send_void(Int(self_), sel_dynamic("dealloc"))
 
 
 comptime BOX_IVAR = "__mojo_box"

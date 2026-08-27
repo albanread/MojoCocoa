@@ -53,6 +53,11 @@ struct ObjCClassRegistrar:
     def add_box(mut self, size: __mlir_type.index) -> Bool:
         return False
 
+    # `witness` is never read: it exists so the box's type reaches a
+    # parametric call the compiler cannot spell an explicit parameter for.
+    def add_dealloc[T: Deinitable](mut self, ref witness: T) -> Bool:
+        return False
+
     def box_offset_of(mut self) -> Int:
         return 0
 

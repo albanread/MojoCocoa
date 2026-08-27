@@ -421,15 +421,55 @@ What a class field is today, stated so nobody discovers it the hard way:
   valid value for it — the `named_global` rule, now per instance.
 - **Field initializers** (`var x: Int = 3`) are not honoured yet: the value
   in the box is the default, not the initializer.
-- **Destruction does not run.** `dealloc` is not yet hooked, so a field's
-  `deinit` never fires; a field owning heap memory lives as long as the
-  object and leaks when the object dies. Same lifetime story as the
-  `named_global`s these fields replace — acceptable for app-lifetime objects,
-  wrong for transient ones, and the next box task.
+- **Destruction runs at `dealloc`.** The compiler emits `add_dealloc`, and
+  std.objc's `_box_dealloc_imp` does two things in the one order that works:
+  run T's destructor over the box, THEN `[super dealloc]`. Either half alone
+  is a bug — skip the super call and every instance leaks; do it first and the
+  destructor walks freed memory. Measured: 200k objects each holding a heap
+  `String`, created and released, `maxrss` grows by 0 KB.
+
+  What is reclaimed is **what the fields point at** — Mojo heap, freed by
+  Mojo — and **the instance itself**, freed by NSObject. The box's own
+  storage is not reclaimed separately; it lives inside the instance and goes
+  with it.
+
+  Reassignment through the box has always destroyed the old value; that fell
+  out of the box being ordinary Mojo memory. It was object death that ran
+  nothing.
 - **The constructor-copy wart**: `Tally()` returns the class value, which is
   a copy of the box's ground state plus the id. Reading `.__objc_id` from it
   is correct; mutating a field through it writes the copy, not the object.
-  Sprint 6's handle type is the fix.
+  Sprint 6's handle type is the fix. Now that destruction runs, the wart is
+  visible in a second way: a field's destructor fires TWICE per instance —
+  once for the constructor's local, once for the box. Harmless for `String`
+  and `List`, whose local copy is empty, and surprising for any type with a
+  side effect in `__del__`.
+
+- **Nothing releases.** A Mojo class value going out of scope releases
+  nothing: `Foo()` is +1 and the value is a plain struct holding the id. So
+  an app-lifetime object is fine, and a transient one must be released or
+  autoreleased explicitly — after which the box is properly emptied. This is
+  the last piece of the lifecycle and it is sprint 6's, not the box's.
+
+### Autorelease pools
+
+We do not create, drain, or otherwise interact with a pool. `dealloc` is
+called by the runtime when an instance's retain count reaches zero, and the
+box destructor hangs off that — so whoever drove the count to zero, and by
+whatever route, the box is emptied exactly once. Measured three ways:
+
+| | box destroyed |
+|---|---|
+| explicit `release` | at the release |
+| `autorelease` inside a pool | at the **drain**, not at Mojo scope end |
+| neither | never — the object lives on |
+
+Two consequences worth stating. The timing is the runtime's and not Mojo's:
+a Mojo scope ending destroys nothing, and an autoreleased object outlives the
+block it was made in. And the destructor runs on whichever thread drains the
+pool, over memory the box owns solely — which is what makes that safe.
+
+
 
 ### The aggregate gate that was not needed, and the hole next to it
 
