@@ -64,6 +64,23 @@ else
   bad "editing" "$(grep -m1 'error' "$TMP/edit_build.log" || echo 'build failed')"
 fi
 
+# The language server, for real: spawn it, initialize, open a file with a
+# deliberate error, read the diagnostic back. Needs an import path or every
+# parse fails on `std` and the diagnostics are about configuration.
+if "$CM" --build ide/lsp_test.mojo -o "$TMP/lsp_test" >"$TMP/lsp_build.log" 2>&1; then
+  lsp_out=$(ROAST_LSP="$PWD/dist/CocoaMojo/bin/mojo-lsp-server" \
+            ROAST_IMPORTS="$PWD/dist/CocoaMojo/lib/mojo/stdlib" \
+            timeout 180 "$TMP/lsp_test" 2>&1)
+  if echo "$lsp_out" | grep -q '^lsp OK'; then
+    ok "lsp client" "handshake and diagnostics from the real server"
+    echo "$lsp_out" | grep -E '^ +line [0-9]+ col' | head -3 | sed 's/^ */         /'
+  else
+    bad "lsp client" "$(echo "$lsp_out" | grep -m1 FAIL || echo 'tests failed')"
+  fi
+else
+  bad "lsp client" "$(grep -m1 'error' "$TMP/lsp_build.log" || echo 'build failed')"
+fi
+
 out=$(ROAST_AUTOCLOSE_TICKS=12 timeout 90 "$TMP/roast" 2>&1)
 
 check() {  # <label> <pattern> <description>
