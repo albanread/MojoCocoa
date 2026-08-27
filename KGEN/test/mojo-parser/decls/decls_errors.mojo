@@ -1158,7 +1158,9 @@ struct UseTraitWithIntParamOnMethodReallyLongName(TraitWithIntParamOnMethodReall
 # Class
 ##===----------------------------------------------------------------------===##
 
-class SomeClass:  # expected-error {{classes are not supported yet}}
+# `class` now parses -- COCOA_CLASS_DESIGN.md. Lowering is sprint 2, and the
+# grammar itself is covered by class_decl.mojo and class_decl_errors.mojo.
+class SomeClass:  # expected-error {{class lowering is not implemented yet}}
   pass
 
 

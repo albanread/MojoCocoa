@@ -29,6 +29,93 @@ A pure-Mojo shared reference is `ArcPointer[T]` and needs no keyword.
    argument mapping from COCOA_LET_DESIGN.md Idea 2 remains the plan for the
    *call* direction and is explicitly not this document's problem.
 
+## DECISION RECORDED AT SPRINT 1 (2026-08-27): attributed StructDeclOp
+
+Sprint 1's first task was to choose between attributing `StructDeclOp` and
+introducing a `ClassDeclOp`. The tree decided it:
+
+1. **`StructDeclOp` is load-bearing far outside the parser.** 241 references
+   across more than twenty files — the type system, LLDB's `MojoTypeSystem`
+   and data layout, code completion, `PublicASTDecl`, signature printing,
+   `ClosureEmitter`, `ParamBindings`. A new op would have to be taught to
+   every one of them before a class could do anything at all, and each of
+   those is a place to get it silently wrong.
+2. **The op is already a variant carrier.** Its argument list holds
+   `synthetic`, `definesClosure`, `decorators`, `convention`,
+   `registerPassableConstraint` and a dozen optional attributes; a `class`
+   flag is the shape the op already has, not a new idea imposed on it. And
+   because the assembly format ends in `attr-dict-with-keyword`, the new
+   attributes print and parse with no printer change.
+
+So `class` lowers onto `StructDeclOp` carrying two new attributes:
+`UnitAttr:$objcClass`, and `OptionalAttr<StrArrayAttr>:$objcBases` holding the
+base names in source order — superclass first, protocols after. They are
+strings, deliberately: these names are resolved against the Objective-C
+runtime, not against Mojo's trait system, so nothing here is a
+`TraitSymbolAttr`.
+
+### What sprint 1 actually lands, and why the line is there
+
+The **header** is parsed eagerly in `parseClassStmt`, unlike a struct's, which
+is re-parsed lazily from a recorded source extent. A class header is a small
+fixed grammar — name, optional base list, colon — with no comptime parameters
+and no `where` clauses, so parsing it on sight costs nothing and gives
+immediate diagnostics.
+
+The **body** is not resolved. `resolveSignature(StructDeclOp)` refuses at the
+top when `objcClass` is set, before anything else runs, and the reason is the
+sprint boundary: everything below that point is the *value-type* pipeline —
+comptime parameters, a conformance list read as Mojo traits, and the
+unconditional injection of `AnyType`, `Deinitable` and `Movable`. None of it
+describes a reference type whose layout belongs to the Objective-C runtime.
+Sprint 2 gives classes their own path rather than teaching that function to be
+two things, and a class body cannot be resolved sensibly before then anyway:
+`self`'s type is the registered class, and registration is sprint 2.
+
+The practical consequence, and it is the honest one: **every class declaration
+reports `class lowering is not implemented yet`**, because whole-module
+translation resolves every top-level decl, so declaring is using. Syntax
+errors fire *instead of* that refusal rather than alongside it — a header that
+does not parse never reaches signature resolution — which is the property
+`class_decl_errors.mojo` exists to pin.
+
+One behaviour deliberately better than `struct`'s: a malformed class header
+**recovers** by skipping the body and continuing the file, where a malformed
+struct header abandons the rest of the module. The header's extent is
+unambiguous, so one bad class need not hide every diagnostic after it. This is
+not a nicety — it is what makes the diagnostics testable. Without it the first
+bad class in a file swallows every expectation after it, and a test file can
+assert exactly one syntax error. (The recovery has to consume a token before
+skipping when the current one already sits at the declaration's indentation:
+`skipUntilIndentation` stops on the *current* token, so the statement loop
+would otherwise make no progress. The codebase already knows this hazard —
+`ParserStmts.cpp:680` comments on it.)
+
+The refusal carries a **note naming the parsed superclass and protocols**.
+Partly courtesy, mostly necessity: resolution fails, so no IR is printed, and
+the note is the only window onto what the header was understood to mean. It is
+what `class_decl.mojo` asserts to prove the base list was captured rather than
+merely tolerated.
+
+### The test harness had to be built too
+
+`./bazelw test //KGEN/test/mojo-parser:all` cannot build in this tree. All 357
+targets depend on `//bazel/mlir-shared:MLIR`, and that dylib does not link:
+the toolchain-wide `-fvisibility=hidden` leaves MLIR's C API referencing LLVM
+symbols hidden out of the library — the same root cause catalogued in
+RELEASE.md, and nothing to do with the parser.
+
+Rather than land compiler changes with no coverage, `tools/check-parser.sh`
+reads each test's own RUN line and runs it, substituting what `lit.cfg.py`
+substitutes, against `kgen-translate`, `kgen-opt` and `FileCheck` — all of
+which build fine. A test whose RUN line still holds an unsubstituted lit
+variable is counted as skipped, not passed.
+
+At the end of sprint 1: **331 pass, 1 fail, 25 skipped.** The single failure is
+`decls/fn_def_decls_errors.mojo`, which asserts `'fn' has been removed; use
+'def' instead` — a diagnostic commit `a694adc` deleted when this fork revived
+`fn`. It has been stale since then and is not this sprint's to fix.
+
 ## The evidence
 
 The IDE is the fork's first real program: 7,389 lines across `ide/` and
@@ -212,8 +299,8 @@ Each lands alone, each is verifiable, each leaves the tree green
 
 | # | sprint | size | verified by |
 |---|---|---|---|
-| 1 | **Parse it.** Real grammar behind `parseClassStmt`: name, bases, `@objc`, fields, methods, into a decl the resolver tracks (attributed `StructDeclOp` vs new `ClassDeclOp` — decided by whichever rides the deferred-body machinery with less new surface; that investigation is the sprint's first task). Elaboration still refuses cleanly: "class lowering not implemented yet" — nothing silently miscompiles. Update `decls_errors.mojo:1161`. | S–M | parser tests: valid forms accepted, colon-count and nesting diagnostics fire, struct/trait paths unregressed |
-| 2 | **Register it (fieldless).** Elaborator synthesizes registration + per-method trampolines: selector derivation, encoding derivation, protocol adoption, raise-catch boundary, `ClassName()`. | L | an execution test class round-trips through `msg_send`; **RoastTabBar rewritten** (`drawRect:` exercises struct encodings); `check-ide.sh` green |
+| 1 | **done** — real grammar behind `parseClassStmt`: name, base list, nesting and parameter diagnostics, recorded on an attributed `StructDeclOp`; elaboration refuses cleanly with a note naming what it parsed. Body resolution deferred to sprint 2 with the registration it depends on. | S–M | `class_decl.mojo` + `class_decl_errors.mojo`; `tools/check-parser.sh` 331 pass / 1 known-stale fail; `structs.mojo` and `traits.mojo` green |
+| 2 | **Register it, and resolve the body.** Classes get their own signature/body path — no comptime params, bases resolved against the runtime rather than as traits, no injected value-type conformances — then registration + per-method trampolines: selector derivation, encoding derivation, protocol adoption, raise-catch boundary, `ClassName()`. | L | an execution test class round-trips through `msg_send`; **RoastTabBar rewritten** (`drawRect:` exercises struct encodings); `check-ide.sh` green |
 | 3 | **Give it state.** `class_addIvar`, the box, synthesized init/dealloc, `self.field`. | M | a test class whose field's `deinit` flips a flag proves teardown; tab-bar and `RoastActions` globals become fields; `check-ide.sh` green |
 | 4 | **Check it against the SDK.** Encoding cross-check on inherited selectors via `cocoakb_selector_encoding`; `@objc` honored; BOOL spelling settled from the database; teaching diagnostics. | S–M | negative tests: a wrong `drawRect:` signature is a compile error quoting the database's encoding |
 | 5 | **Dogfood.** Migrate the remaining IDE delegates and subclasses (app delegate, outline data source, GridView + NSTextInputClient — the big one); delete migrated `named_global`s and the then-unused IMP shapes. | M–L | all suites green; the counts fall and are asserted: `encoding=` in `ide/` → 0, `named_global` 84 → the survivors are genuinely process-global; the 61-warning chip mostly closes as a side effect |

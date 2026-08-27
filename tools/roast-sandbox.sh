@@ -15,6 +15,12 @@ DEST="${1:-$HOME/roast-sandbox}"
 rm -rf "$DEST"
 mkdir -p "$DEST"
 cp ide/*.mojo "$DEST/"
+
+# The examples too, so there is something to press cmd-R on the moment it
+# opens. Each is its own project; open one with File > Open Folder.
+rsync -a --exclude 'build/' --exclude '*.png' --exclude '.DS_Store' \
+      examples/ "$DEST/examples/"
+
 mkdir -p "$DEST/notes"
 cat > "$DEST/notes/scratch.mojo" <<'EOF'
 # Scratch. Nothing here is loaded by anything.
@@ -36,3 +42,5 @@ Refresh it with `./tools/roast-sandbox.sh`, which deletes and recreates it.
 EOF
 echo "sandbox at $DEST"
 ls "$DEST" | sed 's/^/  /'
+echo
+echo "  open it:  COCOAMOJO_ROOT=\"$PWD/dist/CocoaMojo\" ROAST_PROJECT=\"$DEST/examples/fern\" <roast>"
