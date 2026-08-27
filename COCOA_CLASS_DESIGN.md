@@ -169,6 +169,53 @@ sprint table below is ordered as originally planned; the dependency is the
 correction. Selector derivation — which is genuine string work with a real
 diagnostic, and needs no database — landed and stands.
 
+### SPRINT 4 (2026-08-27): the SDK answers, and the parser can ask it
+
+The database was already a compile-time oracle, but only for the elaborator:
+`CocoaKBDatabase` lived in an anonymous namespace inside
+`IREvaluatorContext.cpp`, with a query surface — `selector_encoding`,
+`method_encoding`, `superclass`, struct sizes, enum values, POSIX signatures —
+whose own comment says `selector_encoding` exists "to type a Mojo-implemented
+method when defining an ObjC class at runtime". The intent was there; nothing
+could reach it.
+
+It now lives in `KGEN/lib/CocoaKB` beside `CocoaCompletion`, and both the
+elaborator and the parser depend on it. Three readers of one file would have
+been silly; two are deliberate, and the header says why — one answers point
+questions for the compiler, the other prefix questions for the language server,
+and they share the file and the configured path, nothing else.
+
+What a class now gets at declaration time:
+
+- **Encodings, looked up.** `method_encoding` walks the superclass chain, so an
+  override gets what its superclass actually declares — `drawRect:` comes back
+  `v48@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16`, which is the string
+  `ide/roast.mojo` writes out by hand today, offsets included.
+  `selector_encoding` catches protocol methods. Derivation runs only for a
+  selector the SDK has never heard of, meaning we invented it, and then only
+  from types with an unambiguous encoding.
+- **Framework attribution**, from `bs_classes`, added as a `class_framework`
+  query. `class GridView(NSView, …)` records `objcFrameworks = ["AppKit"]`, so
+  registration can load AppKit before `objc_getClass("NSView")` returns nil and
+  `objc_allocateClassPair` silently builds a root class.
+- **A typo catcher.** A superclass the runtime has never heard of is an error at
+  the declaration. `class Typo(NSVeiw)` does not fail at runtime; it produces a
+  root class and a window that never appears.
+- **Disagreement with the SDK.** Where a declared type has an unambiguous
+  encoding, it is compared against the SDK's: declaring `tag(self) -> Bool`
+  when the SDK says `q`, or `mouseDown_(self, event: Bool)` when it says `@`,
+  is a compile error quoting both. Partial on purpose — Mojo's scalars cannot
+  be encoded here — and honest about being partial.
+
+**A class no longer compiles without the database**, which is the "declaring is
+using" consequence arriving on schedule. The first attempt got this wrong in a
+way worth recording: with no database every base came back unknown, so every
+class reported `the Objective-C runtime has no class 'NSView'` — blaming
+correct code for a configuration problem, which is precisely the shape of the
+language server's old "unable to locate module 'std'". `availability()` now
+separates "the SDK has no such class" from "there is no SDK metadata here", and
+the diagnostic names the path it tried.
+
 ### The test harness had to be built too
 
 `./bazelw test //KGEN/test/mojo-parser:all` cannot build in this tree. All 357
@@ -473,7 +520,7 @@ Each lands alone, each is verifiable, each leaves the tree green
 | 1 | **done** — real grammar behind `parseClassStmt`: name, base list, nesting and parameter diagnostics, recorded on an attributed `StructDeclOp`; elaboration refuses cleanly with a note naming what it parsed. Body resolution deferred to sprint 2 with the registration it depends on. | S–M | `class_decl.mojo` + `class_decl_errors.mojo`; `tools/check-parser.sh` 331 pass / 1 known-stale fail; `structs.mojo` and `traits.mojo` green |
 | 2 | **Register it, and resolve the body.** Classes get their own signature/body path — no comptime params, bases resolved against the runtime rather than as traits, no injected value-type conformances — then registration + per-method trampolines: base framework loaded first (see **Two oracles**), selector derivation, encoding derivation, protocol adoption, raise-catch boundary, `ClassName()`. | L | an execution test class round-trips through `msg_send`; **RoastTabBar rewritten** (`drawRect:` exercises struct encodings); `check-ide.sh` green |
 | 3 | **Give it state.** `class_addIvar`, the box, synthesized init/dealloc, `self.field`. | M | a test class whose field's `deinit` flips a flag proves teardown; tab-bar and `RoastActions` globals become fields; `check-ide.sh` green |
-| 4 | **Ask the SDK.** *Prerequisite of sprint 2's registration, not a follow-on — see the note above.* Encodings looked up by selector via `cocoakb_selector_encoding`; framework attribution from `bs_classes` so registration can load AppKit before resolving `NSView`; `@objc` honored; derivation only for selectors the database has never heard of. | M | negative tests: a signature that disagrees with the database's encoding is a compile error quoting both |
+| 4 | **done** — `CocoaKBDatabase` extracted to `KGEN/lib/CocoaKB` so the parser can ask it; encodings looked up by selector (chain-walking for overrides); framework attribution from `bs_classes`; unknown-superclass typo catcher; SDK-disagreement diagnostic; derivation only for selectors the SDK has never heard of. | M | `class_decl.mojo` checks the SDK's own `drawRect:` encoding and `objcFrameworks = ["AppKit"]`; `class_decl_errors.mojo` covers both disagreement directions and the typo |
 | 5 | **Dogfood.** Migrate the remaining IDE delegates and subclasses (app delegate, outline data source, GridView + NSTextInputClient — the big one); delete migrated `named_global`s and the then-unused IMP shapes. | M–L | all suites green; the counts fall and are asserted: `encoding=` in `ide/` → 0, `named_global` 84 → the survivors are genuinely process-global; the 61-warning chip mostly closes as a side effect |
 | 6 | **Nil-aware references.** Smaller than first scoped: once the box is plain Mojo memory (sprint 3) an `ObjCRef` field retains and releases through its own copy/deinit with no special handling, and the class type's own retain/release is sprint 2's `copyInit`. What is left is genuinely new — nil as a first-class state in the pointer's niche, `NSTextView?`, and the zero-init-destructor hazard that currently forces every app-lifetime global to be an `Int`. | S–M | retain-count round-trip tests; the manual `objc_retain` count in `ide/` falls toward zero |
 

@@ -11,6 +11,7 @@
 // limitations under the License.
 //===----------------------------------------------------------------------===//
 
+#include "KGEN/CocoaKB/CocoaKBDatabase.h"
 #include "KGEN/MojoParser/DeclResolver.h"
 
 #include "ClosureEmitter.h"
@@ -1947,6 +1948,247 @@ AnyValue DeclResolver::resolveAnonymousClosure(const LambdaNode *node,
 
 /// funcdef   ::=  [decorators] "def" identifier [param_signature]
 ///                "(" [argument_list] ")" ["->" expression] ":" suite
+/// Attribute a class's bases to the frameworks that declare them, and check
+/// that the runtime has heard of the superclass at all.
+///
+/// This is not bookkeeping. Registration resolves a superclass with
+/// `objc_getClass("NSView")`, which returns nil until AppKit is in the
+/// process, and `objc_allocateClassPair` against a nil superclass cheerfully
+/// builds a *root* class that then silently does nothing --
+/// `load_framework`'s own docstring in `std/objc/runtime.mojo` records what
+/// that cost. So the framework has to be known before the class can be built,
+/// and only BridgeSupport knows it: the runtime dump cannot say where a class
+/// came from, and cannot see a framework that was not loaded when it ran. See
+/// "Two oracles" in COCOA_CLASS_DESIGN.md.
+static void attributeObjCBases(SharedState &shared, StructDeclOp structOp,
+                               ASTDecl &decl) {
+  auto bases = structOp.getObjcBasesAttr();
+  if (!bases || bases.empty())
+    return; // No bases means NSObject, which every process already has.
+
+  auto &database = CocoaKB::CocoaKBDatabase::get();
+
+  // Without the database there is nothing to check against, and every base
+  // would come back unknown -- reporting a correct `NSView` as a class the
+  // runtime has never heard of. Say what is actually wrong instead. The same
+  // lesson as the language server's "unable to locate module 'std'": a
+  // configuration error must not be dressed as a source error.
+  if (llvm::Error unavailable = database.availability()) {
+    shared.emitError(decl.getLoc())
+        << "declaring an Objective-C class needs the Cocoa metadata database: "
+        << llvm::toString(std::move(unavailable));
+    return;
+  }
+
+  SmallVector<Attribute> frameworks;
+  SmallPtrSet<Attribute, 4> seen;
+
+  for (auto baseAttr : bases) {
+    StringRef base = cast<StringAttr>(baseAttr).getValue();
+    // `foundation.NSView` names the same class as `NSView`; the qualifier says
+    // where the author found it, not what the runtime calls it.
+    base = base.rsplit('.').second.empty() ? base : base.rsplit('.').second;
+
+    auto framework = database.lookup("class_framework", {base});
+    if (!framework)
+      continue;
+    auto attr = StringAttr::get(shared.getContext(), *framework);
+    if (seen.insert(attr).second)
+      frameworks.push_back(attr);
+  }
+
+  // The superclass specifically has to exist, because a typo here does not
+  // fail -- it produces a root class and a window that never appears.
+  StringRef super = cast<StringAttr>(bases[0]).getValue();
+  super = super.rsplit('.').second.empty() ? super : super.rsplit('.').second;
+  if (!database.lookup("superclass", {super}) &&
+      !database.lookup("class_framework", {super})) {
+    shared.emitError(decl.getLoc())
+        << "the Objective-C runtime has no class '" << super
+        << "' to inherit from";
+    return;
+  }
+
+  if (!frameworks.empty())
+    structOp.setObjcFrameworksAttr(
+        ArrayAttr::get(shared.getContext(), frameworks));
+}
+
+/// The Objective-C type-encoding character for a Mojo type, for the few types
+/// a novel selector is built from. Deliberately small -- see
+/// `objcMethodEncoding` for why almost nothing comes through here.
+static std::optional<StringRef> encodeObjCType(SharedState &shared,
+                                               ASTType type) {
+  if (type.isNull() || type.isTypeCheckErrorType())
+    return std::nullopt;
+  if (type.isNoneType())
+    return StringRef("v");
+
+  ASTDecl *typeDecl = type.getDecl(shared);
+  if (!typeDecl)
+    return std::nullopt;
+
+  // A reference to another Objective-C class is an `id`.
+  if (auto structOp =
+          dyn_cast_or_null<StructDeclOp>(typeDecl->getIfOperation()))
+    if (structOp.getObjcClass())
+      return StringRef("@");
+
+  std::optional<StringRef> name = typeDecl->getUserNameIfOperation();
+  if (!name)
+    return std::nullopt;
+  return llvm::StringSwitch<std::optional<StringRef>>(*name)
+      .Case("Bool", "B")
+      .Case("ObjCObject", "@")
+      .Case("ObjCClass", "#")
+      .Case("SEL", ":")
+      .Default(std::nullopt);
+}
+
+/// Split an `@encode` signature into its components, discarding the byte
+/// offsets the runtime interleaves: `v48@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16`
+/// becomes `v`, `@`, `:`, `{CGRect={CGPoint=dd}{CGSize=dd}}`. The first is the
+/// result, then `@` for self and `:` for the selector, then the arguments.
+static SmallVector<StringRef> splitObjCEncoding(StringRef encoding) {
+  SmallVector<StringRef> parts;
+  size_t i = 0, n = encoding.size();
+  while (i < n) {
+    // Offsets and sizes, and the qualifiers that may precede a type.
+    if (llvm::isDigit(encoding[i]) ||
+        StringRef("rnNoORV").contains(encoding[i])) {
+      ++i;
+      continue;
+    }
+    size_t start = i;
+    while (i < n && encoding[i] == '^') // pointer to
+      ++i;
+    if (i >= n)
+      break;
+    char c = encoding[i];
+    if (c == '{' || c == '(' || c == '[') {
+      char close = c == '{' ? '}' : (c == '(' ? ')' : ']');
+      int depth = 0;
+      while (i < n) {
+        if (encoding[i] == c)
+          ++depth;
+        else if (encoding[i] == close && --depth == 0) {
+          ++i;
+          break;
+        }
+        ++i;
+      }
+    } else {
+      ++i;
+    }
+    parts.push_back(encoding.slice(start, i));
+  }
+  return parts;
+}
+
+/// Check a method's declared Mojo signature against the encoding the SDK says
+/// the selector has.
+///
+/// Partial on purpose, and honest about it: only types with an unambiguous
+/// encoding are compared, because Mojo's scalars are SIMD parameterisations
+/// with no encoding this layer can derive. What it does catch is the mistake
+/// that otherwise costs an afternoon -- a method that registers cleanly,
+/// receives a message built for a different shape, and reads its arguments out
+/// of the wrong registers.
+static void checkAgainstSDKEncoding(SharedState &shared, StringRef selector,
+                                    StringRef encoding,
+                                    ArrayRef<Type> declaredArgs,
+                                    ASTType resultType, SMLoc loc) {
+  SmallVector<StringRef> parts = splitObjCEncoding(encoding);
+  if (parts.size() < 3)
+    return; // Not a shape this understands; say nothing rather than guess.
+
+  auto disagree = [&](StringRef what, StringRef sdk, StringRef declared) {
+    shared.emitError(loc)
+        << "the SDK declares '" << selector << "' with " << what << " '" << sdk
+        << "', but this method declares '" << declared
+        << "'; the runtime will send the SDK's shape";
+  };
+
+  if (auto declaredRet = encodeObjCType(shared, resultType))
+    if (*declaredRet != parts[0])
+      disagree("a result of", parts[0], *declaredRet);
+
+  ArrayRef<StringRef> sdkArgs = ArrayRef<StringRef>(parts).drop_front(3);
+  for (auto [index, argType] : llvm::enumerate(declaredArgs)) {
+    if (index >= sdkArgs.size())
+      break;
+    if (auto declaredArg = encodeObjCType(shared, ASTType(argType)))
+      if (*declaredArg != sdkArgs[index])
+        disagree(("argument " + Twine(index + 1) + " of").str(),
+                 sdkArgs[index], *declaredArg);
+  }
+}
+
+/// The `@encode` signature `class_addMethod` will be given for a method.
+///
+/// Looked up, not derived, and the order matters. `method_encoding` walks the
+/// superclass chain, so an override gets the encoding the superclass actually
+/// declares -- which is the whole point, since that is what the framework will
+/// send. `selector_encoding` is the fallback for a selector that arrives from
+/// a protocol rather than an ancestor, taking the majority reading across
+/// every class that implements it.
+///
+/// Only when the SDK has never heard of the selector at all -- meaning we
+/// invented it, as with a target/action method -- is anything derived, and
+/// then only from types with an unambiguous encoding. Mojo's scalars are not
+/// among them: `Int` is `Scalar[DType.int]`, a SIMD parameterisation with no
+/// name to match on, so a mapping written here would be guesswork about the
+/// one thing this design says never to guess. See COCOA_CLASS_DESIGN.md.
+static std::optional<std::string>
+objcMethodEncoding(SharedState &shared, StringRef superclass,
+                   StringRef selector, ArrayRef<Type> argTypes,
+                   ASTType resultType, SMLoc loc) {
+  auto &database = CocoaKB::CocoaKBDatabase::get();
+  if (llvm::Error unavailable = database.availability()) {
+    // The class declaration itself has already said so; adding one complaint
+    // per method would bury it.
+    llvm::consumeError(std::move(unavailable));
+    return std::nullopt;
+  }
+
+  auto fromSDK = superclass.empty()
+                     ? std::nullopt
+                     : database.lookup("method_encoding",
+                                       {superclass, selector, "0"});
+  if (!fromSDK)
+    fromSDK = database.lookup("selector_encoding", {selector});
+  if (fromSDK) {
+    checkAgainstSDKEncoding(shared, selector, *fromSDK, argTypes, resultType,
+                            loc);
+    return fromSDK;
+  }
+
+  // Ours, then. Derive it, or say plainly which part could not be.
+  auto ret = encodeObjCType(shared, resultType);
+  if (!ret) {
+    shared.emitError(loc)
+        << "'" << selector
+        << "' is not a selector the SDK declares, and its result type has no "
+           "Objective-C encoding this compiler can derive";
+    return std::nullopt;
+  }
+
+  std::string encoding = ret->str();
+  encoding += "@:"; // self, _cmd
+  for (Type argType : argTypes) {
+    auto arg = encodeObjCType(shared, ASTType(argType));
+    if (!arg) {
+      shared.emitError(loc)
+          << "'" << selector
+          << "' is not a selector the SDK declares, and one of its argument "
+             "types has no Objective-C encoding this compiler can derive";
+      return std::nullopt;
+    }
+    encoding += arg->str();
+  }
+  return encoding;
+}
+
 /// The Objective-C selector a class method answers to, or nothing if the
 /// method is private to Mojo and never reaches the runtime.
 ///
@@ -2304,13 +2546,26 @@ LogicalResult DeclResolver::resolveSignature(FnOp funcOp, Lexer &lexer,
         continue;
       ++argsAfterSelf;
     }
-    // The type encoding the runtime will be told is deliberately NOT derived
-    // from these types -- see the sprint 2 note in COCOA_CLASS_DESIGN.md. It
-    // comes from the SDK database, keyed by this selector.
     if (auto selector = deriveObjCSelector(shared, baseName.getValue(),
-                                           argsAfterSelf, decl.getLoc()))
+                                           argsAfterSelf, decl.getLoc())) {
       funcOp->setAttr("objcSelector",
                       StringAttr::get(getContext(), *selector));
+
+      // `argTypes` is what the author declared, so dropping `self` leaves
+      // exactly the arguments that follow `@:` in an encoding.
+      ArrayRef<Type> declaredArgs = tcSignature.argTypes;
+      if (!declaredArgs.empty() && tcSignature.selfType)
+        declaredArgs = declaredArgs.drop_front();
+
+      StringRef superclass;
+      if (auto bases = structOp.getObjcBasesAttr())
+        superclass = cast<StringAttr>(bases[0]).getValue();
+      if (auto encoding =
+              objcMethodEncoding(shared, superclass, *selector, declaredArgs,
+                                 tcSignature.resultType, decl.getLoc()))
+        funcOp->setAttr("objcEncoding",
+                        StringAttr::get(getContext(), *encoding));
+    }
   }
 
   // Check for API author error: stable function should return stable types.
@@ -3885,6 +4140,9 @@ LogicalResult DeclResolver::resolveSignature(StructDeclOp structOp,
 
   // Always generate SourceName for structs (even on non-debug builds).
   structOp.setSourceNameAttr(shared.getSourceName(structOp));
+
+  if (isClass)
+    attributeObjCBases(shared, structOp, decl);
 
   if (std::optional<ConstraintAttr> deinitableConstraint =
           getConformanceCondition(decl, "Deinitable")) {

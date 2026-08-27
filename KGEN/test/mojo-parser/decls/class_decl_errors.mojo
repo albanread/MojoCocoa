@@ -107,3 +107,23 @@ class Selectors(NSObject):
     # expected-error @+1 {{derives the selector 'drawRect', which takes 0 arguments, but the method declares 1 after 'self'}}
     def drawRect(self, dirty: Int):
         pass
+
+
+# A superclass the runtime has never heard of. A typo here does not fail at
+# runtime, it produces a root class and a window that never appears.
+# expected-error @+1 {{the Objective-C runtime has no class 'NSVeiw' to inherit from}}
+class Typo(NSVeiw):
+    pass
+
+
+# The SDK's idea of a selector's shape is the only one that counts, because
+# the runtime is what sends the message. Disagreeing with it is diagnosed in
+# both directions -- result and argument.
+class Disagrees(NSView):
+    # expected-error @+1 {{the SDK declares 'tag' with a result of 'q', but this method declares 'B'}}
+    def tag(self) -> Bool:
+        return True
+
+    # expected-error @+1 {{the SDK declares 'mouseDown:' with argument 1 of '@', but this method declares 'B'}}
+    def mouseDown_(self, event: Bool):
+        pass

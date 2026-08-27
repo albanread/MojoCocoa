@@ -1254,10 +1254,21 @@ cc_shared_library(
     ],
 )
 
+# COCOA: everything that reads cocoa.sqlite. Two readers, on purpose --
+# CocoaKBDatabase answers point questions (this selector's encoding, this
+# class's framework) for the compiler, CocoaCompletion answers prefix questions
+# for the language server. They share the file and the configured path, not
+# their indexes.
 modular_cc_library(
     name = "CocoaCompletion",
-    srcs = ["lib/CocoaKB/CocoaCompletion.cpp"],
-    hdrs = ["include/KGEN/CocoaKB/CocoaCompletion.h"],
+    srcs = [
+        "lib/CocoaKB/CocoaCompletion.cpp",
+        "lib/CocoaKB/CocoaKBDatabase.cpp",
+    ],
+    hdrs = [
+        "include/KGEN/CocoaKB/CocoaCompletion.h",
+        "include/KGEN/CocoaKB/CocoaKBDatabase.h",
+    ],
     # The macOS SDK ships sqlite3.h and libsqlite3.tbd, so no vendored copy.
     linkopts = ["-lsqlite3"],
     deps = [
@@ -1276,6 +1287,7 @@ modular_cc_library(
     # ships sqlite3.h + libsqlite3.tbd, so no vendored copy.
     linkopts = ["-lsqlite3"],
     deps = [
+        ":CocoaCompletion",
         ":KGENDialect",
         ":LITDialect",
         ":ToolCommon.headers",
@@ -1461,6 +1473,7 @@ modular_cc_library(
     ]),
     tags = ["no-clang-tidy-headers"],
     deps = [
+        ":CocoaCompletion",
         ":Compiler",
         ":DialectChecksum",
         ":ToolCommon",

@@ -36,7 +36,11 @@ class WithSuper(NSObject):
     pass
 
 
-# CHECK-DAG: lit.struct.decl @GridView({{.*}}) register_passable attributes {objcBases = ["NSView", "NSTextInputClient", "NSDraggingDestination"], objcClass
+# And the framework that declares the superclass, which registration needs
+# before it can ask the runtime anything: objc_getClass("NSView") is nil until
+# AppKit is loaded, and building against a nil superclass silently produces a
+# root class. Only BridgeSupport knows the attribution.
+# CHECK-DAG: lit.struct.decl @GridView({{.*}}) register_passable attributes {objcBases = ["NSView", "NSTextInputClient", "NSDraggingDestination"], objcClass, objcFrameworks = ["AppKit"]
 class GridView(NSView, NSTextInputClient, NSDraggingDestination):
     pass
 
@@ -68,9 +72,14 @@ class Multiline(
 # selector. Registering them is the rest of sprint 2; deriving the identity
 # correctly has to be true first.
 # CHECK-DAG: lit.fn @"isFlipped(class_decl::TabBar)"{{.*}}%self: !lit.ref<!TabBar
-# CHECK-DAG: objcSelector = "isFlipped"
-# CHECK-DAG: objcSelector = "drawRect:"
-# CHECK-DAG: objcSelector = "outlineView:child:ofItem:"
+#
+# The encoding beside each is looked up in the SDK database, not derived: the
+# runtime is what will send these messages, so its idea of their shape is the
+# only one that counts. Note drawRect:'s struct expansion, which is the string
+# ide/roast.mojo writes out by hand today.
+# CHECK-DAG: objcEncoding = "B16@0:8", objcSelector = "isFlipped"
+# CHECK-DAG: objcEncoding = "v48@0:8{CGRect={CGPoint=dd}{CGSize=dd}}16", objcSelector = "drawRect:"
+# CHECK-DAG: objcEncoding = "@40@0:8@16q24@32", objcSelector = "outlineView:child:ofItem:"
 class TabBar(NSView):
     """A docstring."""
 

@@ -31,6 +31,18 @@ FC="$(./bazelw cquery --output=files @llvm-project//llvm:FileCheck 2>/dev/null |
 STUBS="$ROOT/KGEN/test/test-packages"
 export MODULAR_HOME="$ROOT/KGEN/test/mojo-parser"
 
+# The class tests need the Cocoa metadata database: since COCOA_CLASS_DESIGN.md
+# sprint 4, a method's type encoding is looked up in the SDK rather than
+# derived, so `class` does not compile without it. Missing is reported, not
+# quietly skipped -- a suite that passes by not running the new tests is worse
+# than one that fails.
+: "${MODULAR_MOJO_MAX_COCOAKB_PATH:=$ROOT/../CocoaBaseMCP/cocoa.sqlite}"
+export MODULAR_MOJO_MAX_COCOAKB_PATH
+if [ ! -f "$MODULAR_MOJO_MAX_COCOAKB_PATH" ]; then
+  echo "  NOTE  no cocoa.sqlite at $MODULAR_MOJO_MAX_COCOAKB_PATH"
+  echo "        the class tests will fail; set MODULAR_MOJO_MAX_COCOAKB_PATH"
+fi
+
 for tool in "$KT" "$KO" "$FC"; do
   [ -x "$tool" ] || { echo "missing $tool -- see the build line in this script's header"; exit 1; }
 done

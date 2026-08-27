@@ -489,7 +489,11 @@ def LIT_StructDeclOp : LITOp<"struct.decl", [
     // the first is the superclass and the rest are protocols. Names only --
     // they are resolved against the Objective-C runtime, not against Mojo's
     // trait system, so nothing here is a TraitSymbolAttr.
-    OptionalAttr<StrArrayAttr>:$objcBases
+    OptionalAttr<StrArrayAttr>:$objcBases,
+    // The frameworks that must be loaded before the runtime can be asked about
+    // those bases -- objc_getClass("NSView") is nil until AppKit is in the
+    // process. From BridgeSupport, which is the only source that knows.
+    OptionalAttr<StrArrayAttr>:$objcFrameworks
   );
   let regions = (region SizedRegion<1>:$fields);
   let assemblyFormat = [{
