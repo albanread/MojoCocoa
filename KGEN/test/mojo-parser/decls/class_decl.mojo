@@ -22,6 +22,9 @@
 # op; see the sprint 1 decision in the design document.
 
 
+# A class holds exactly one thing: the pointer to the Objective-C object. The
+# fields an author declares go in a box behind it -- sprint 3.
+# CHECK-DAG: lit.struct.field __objc_id
 # CHECK-DAG: lit.struct.decl @Bare({{.*}}) register_passable attributes {objcClass
 class Bare:
     pass
@@ -82,7 +85,13 @@ class Multiline(
 # runtime will dispatch to it by: every `_` in the name is a `:` in the
 # selector. Registering them is the rest of sprint 2; deriving the identity
 # correctly has to be true first.
-# CHECK-DAG: lit.fn @"isFlipped(class_decl::TabBar)"{{.*}}%self: !lit.ref<!TabBar
+# `self` arrives by value in a register, not behind a reference. That is the
+# Objective-C ABI -- a method's receiver is an id in x0 -- and Mojo would
+# otherwise pass a non-trivially-register-passable type by reference, leaving
+# a trampoline to read a pointer to the pointer. The class stays non-trivial,
+# so a reference can still retain on copy; how a value travels and what
+# copying it costs are separate questions.
+# CHECK-DAG: lit.fn @"isFlipped(class_decl::TabBar)"({{.*}}%self: !TabBar
 #
 # The encoding beside each is looked up in the SDK database, not derived: the
 # runtime is what will send these messages, so its idea of their shape is the

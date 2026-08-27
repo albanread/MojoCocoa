@@ -216,6 +216,45 @@ language server's old "unable to locate module 'std'". `availability()` now
 separates "the SDK has no such class" from "there is no SDK metadata here", and
 the diagnostic names the path it tried.
 
+### DECISION AT SPRINT 2B (2026-08-27): a class travels in a register, and still retains
+
+The trampoline work stalled on something the design had not noticed, and the
+way out was to change the compiler rather than the design.
+
+Objective-C hands a method its receiver by value in x0. Mojo puts a
+register-passable type in a register only when it is *trivially* so; a
+non-trivial one is passed by reference. A class reference retains on copy, so
+it is not trivial, so `self` arrived as `!lit.ref<!TabBar> read_mem` -- and a
+trampoline receiving that would read a pointer to the pointer.
+
+The obvious escape was to declare classes trivially register-passable and give
+up retain-on-copy. That is what `ObjCObject` already does ("a borrowed id;
+ownership arrives in P3"), so it would not have been unprecedented. It would
+also have thrown away sprint 6 to buy an afternoon.
+
+Reading the rule showed it was not an ABI rule at all:
+
+    // We can pass trivial register borrowed arguments in a register. We cannot
+    // pass non-trivial ones because we cannot diagnose ownership and have
+    // other lifetime issues.
+
+The restriction is about **lifetime tracking**, with a FIXME above it saying
+borrows of non-trivial register-passable values have no origins. It conflates
+two questions that are separate: how a value travels, and what copying it
+costs. For a borrowed Objective-C receiver the lifetime concern does not
+arise -- the runtime guarantees the receiver outlives the message send, by
+construction.
+
+So `Signatures.cpp` now grants exactly that exception: a borrowed argument is
+passed in a register when it is trivially register-passable **or when it is an
+Objective-C class**. `self` arrives as `!TabBar` in a register, the class stays
+non-trivial, and retain-on-copy is still there to be built on.
+
+A class also gained the one thing it is: a single `__objc_id` field. Until
+sprint 2b it was an empty struct -- a type with methods and nowhere for `self`
+to live, which is fine while nothing runs and impossible the moment something
+does. Author-declared fields still go in the box behind it (sprint 3).
+
 ### The test harness had to be built too
 
 `./bazelw test //KGEN/test/mojo-parser:all` cannot build in this tree. All 357

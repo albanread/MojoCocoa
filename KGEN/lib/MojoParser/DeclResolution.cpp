@@ -1948,6 +1948,30 @@ AnyValue DeclResolver::resolveAnonymousClosure(const LambdaNode *node,
 
 /// funcdef   ::=  [decorators] "def" identifier [param_signature]
 ///                "(" [argument_list] ")" ["->" expression] ":" suite
+/// Give a class the one thing it is: a pointer to an Objective-C object.
+///
+/// Until this, a class was an empty struct -- a type with methods and nowhere
+/// for `self` to live, which is fine while nothing runs and impossible the
+/// moment something does. The field is named with a leading underscore so it
+/// cannot collide with anything written in the class body, and it is the only
+/// field a class has: the ones the author declares go in a box behind it
+/// (COCOA_CLASS_DESIGN.md), which is sprint 3.
+static void synthesizeObjCIdField(ASTDecl &structDecl, StructDeclOp structOp,
+                                  DeclResolver &resolver) {
+  SharedState &shared = structDecl.getShared();
+  ASTType intType =
+      shared.lookupBuiltinType("Int", structDecl, structDecl.getLoc());
+  if (intType.isNull() || intType.isTypeCheckErrorType())
+    return;
+
+  OpBuilder builder = OpBuilder::atBlockEnd(&structOp.getFields().front());
+  auto name = StringAttr::get(shared.getContext(), "__objc_id");
+  auto field =
+      StructFieldOp::create(builder, structOp.getLoc(), name, intType.mlirType);
+  resolver.addFullyResolvedDecl(&*field, field.getNameAttr(),
+                                structDecl.getLoc(), &structDecl);
+}
+
 /// Synthesize the function that builds this class in the Objective-C runtime.
 ///
 /// PROBE (COCOA_CLASS_DESIGN.md sprint 2b): declaration only so far -- the body
@@ -4238,9 +4262,12 @@ LogicalResult DeclResolver::resolveSignature(StructDeclOp structOp,
   decl.setTypeDeclSelf(ASTDecl::computeSelfTypeForStruct(structOp));
 
   // Structs are memory-only unless they opt-in to being passed in registers.
-  // (3) A class is a pointer: it is passed in a register, always. Not trivial,
-  // though -- copying one retains and destroying one releases, which is why
-  // this is RegisterPassable and not RegisterPassableTrivial.
+  // (3) A class is a pointer, so it is passed in a register. Not *trivially*
+  // register-passable, though: a class reference retains when copied and
+  // releases when destroyed, which is what sprint 6 builds on. Those are two
+  // different questions -- how a value travels, and what copying it costs --
+  // and the borrow rule in Signatures.cpp is taught to keep them apart for
+  // Objective-C classes specifically.
   structOp.setConvention(isClass ? TypeConvention::RegisterPassable
                                  : TypeConvention::MemoryOnly);
 
@@ -4644,8 +4671,10 @@ ParseResult DeclResolver::resolveBody(StructDeclOp structOp, Lexer &lexer,
   // An Objective-C class is built at run time, not linked: something has to
   // call objc_allocateClassPair, add every method, adopt every protocol and
   // register the pair. That is this function, synthesized per class.
-  if (structOp.getObjcClass())
+  if (structOp.getObjcClass()) {
+    synthesizeObjCIdField(structDecl, structOp, *this);
     synthesizeObjCRegistration(structDecl, structOp, *this);
+  }
 
   // Determine if there is an explicit conformance to Deinitable.
   if (std::optional<ConstraintAttr> deinitableConstraint =
