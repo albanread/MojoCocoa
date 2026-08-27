@@ -12,6 +12,11 @@ from gridview import (
     g_coalesce_at,
     display_column,
     offset_at_point,
+    set_query,
+    find_next,
+    find_previous,
+    match_count,
+    query,
     set_caret,
     apply_command,
     replace_selection,
@@ -188,6 +193,28 @@ def main() raises:
     # A click never lands inside a character.
     let hit = offset_at_point(0.0, 0.0)
     failures += check_int("click before line 0", hit, 0)
+
+    print("edit: find")
+    set_rope(Rope(String("alpha beta gamma beta delta")))
+    set_caret(0)
+    set_query(String("beta"))
+    failures += check_int("match count", match_count(), 2)
+    failures += check_int("find next", Int(find_next()), 1)
+    failures += check_int("selects the match", g_anchor()[], 6)
+    failures += check_int("caret after match", g_caret()[], 10)
+    failures += check_int("find next again", Int(find_next()), 1)
+    failures += check_int("second match", g_anchor()[], 17)
+    # Past the last match it wraps, which is what every editor does.
+    failures += check_int("wraps", Int(find_next()), 1)
+    failures += check_int("wrapped to first", g_anchor()[], 6)
+    failures += check_int("find previous", Int(find_previous()), 1)
+    failures += check_int("previous is the last", g_anchor()[], 17)
+
+    set_query(String("nothing here"))
+    failures += check_int("no matches", match_count(), 0)
+    failures += check_int("find fails cleanly", Int(find_next()), 0)
+    set_query(String(""))
+    failures += check_int("empty query finds nothing", Int(find_next()), 0)
 
     print()
     if failures == 0:

@@ -153,6 +153,31 @@ fn draw_rect(self_: P, cmd: P):
             let attrs = ObjCObject(g_attrs()[])
             let gutter_attrs = ObjCObject(g_gutter_attrs()[])
 
+            # Every match on screen, faintly. Only the visible byte range is
+            # searched, because only the visible range can be seen -- the whole
+            # buffer would be scanned on every frame for nothing.
+            let q = query()
+            if q.byte_length() > 0:
+                let vis_a = buf[][0].line_start(first)
+                let vis_b = buf[][0].line_start(min(last, total - 1)) + buf[][
+                    0
+                ].line(min(last, total - 1)).byte_length()
+                let NSColorM = ObjCClass.lookup["NSColor"]()
+                let found_bg = msg_send[
+                    ObjCObject, "NSColor", "systemYellowColor", is_class=True
+                ](NSColorM.as_object())
+                let faded = msg_send[
+                    ObjCObject, "NSColor", "colorWithAlphaComponent:"
+                ](found_bg, Float64(0.35))
+                _ = msg_send[ObjCObject, "NSColor", "setFill"](faded)
+                for m in buf[][0].find_all_in(q, vis_a, vis_b):
+                    let a = caret_position(m)
+                    let b = caret_position(m + q.byte_length())
+                    if b.y == a.y:
+                        _ = external_call["NSRectFill", NoneType](
+                            rect(a.x, a.y, max(b.x - a.x, 2.0), lh)
+                        )
+
             # Selection, painted under the text.
             let sel_a = sel_start()
             let sel_b = sel_end()
@@ -462,6 +487,12 @@ comptime g_redo_caret = named_global["roast.redo.caret", List[Int]]
 comptime g_coalesce_at = named_global["roast.coalesce.at", Int]
 
 # The caret blinks, and is drawn only while the view has focus.
+# What is being searched for, and where the last match was. The query is a
+# one-element list for the same reason the buffer is: a zero-initialised global
+# List is valid, and a zero-initialised String is not.
+comptime g_query = named_global["roast.query", List[String]]
+comptime g_match_at = named_global["roast.match.at", Int]
+
 comptime g_blink_on = named_global["roast.blink", Int]
 comptime g_focused = named_global["roast.focused", Int]
 
@@ -549,6 +580,60 @@ def redo() -> Bool:
     set_caret(g_redo_caret()[].pop())
     g_coalesce_at()[] = -1
     return True
+
+
+def query() -> String:
+    if len(g_query()[]) == 0:
+        return String()
+    return g_query()[][0]
+
+
+def set_query(var q: String):
+    let slot = g_query()
+    if len(slot[]) == 0:
+        slot[].append(q^)
+    else:
+        slot[][0] = q^
+
+
+def find_next(wrap: Bool = True) -> Bool:
+    """Move the selection to the next match after the caret."""
+    let q = query()
+    if q.byte_length() == 0 or not has_rope():
+        return False
+    let buf = g_buffer()[][0]
+    var hit = buf.find(q, g_caret()[])
+    if hit < 0 and wrap:
+        hit = buf.find(q, 0)          # wrap, the way every editor does
+    if hit < 0:
+        return False
+    g_anchor()[] = hit
+    g_caret()[] = hit + q.byte_length()
+    g_match_at()[] = hit
+    return True
+
+
+def find_previous() -> Bool:
+    let q = query()
+    if q.byte_length() == 0 or not has_rope():
+        return False
+    let buf = g_buffer()[][0]
+    var hit = buf.find_last(q, sel_start())
+    if hit < 0:
+        hit = buf.find_last(q, buf.byte_length())
+    if hit < 0:
+        return False
+    g_anchor()[] = hit
+    g_caret()[] = hit + q.byte_length()
+    g_match_at()[] = hit
+    return True
+
+
+def match_count() -> Int:
+    if query().byte_length() == 0 or not has_rope():
+        return 0
+    let buf = g_buffer()[][0]
+    return len(buf.find_all_in(query(), 0, buf.byte_length()))
 
 
 def display_column(offset: Int) -> Int:

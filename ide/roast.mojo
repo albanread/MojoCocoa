@@ -25,7 +25,21 @@ from std.objc import (
 from std.memory import OpaquePointer
 from std.os import getenv
 from std.ffi import external_call
-from gridview import make_grid_view, set_rope, document_size, GUTTER_W
+from std.objc import ns_to_string
+from gridview import (
+    g_caret,
+    make_grid_view,
+    set_rope,
+    document_size,
+    GUTTER_W,
+    set_query,
+    find_next,
+    find_previous,
+    match_count,
+    query,
+    caret_position,
+    line_height,
+)
 from rope import Rope
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
@@ -51,6 +65,7 @@ comptime g_ticks = named_global["roast.ticks", Int]
 comptime g_autoclose = named_global["roast.autoclose", Int]
 comptime g_actions = named_global["roast.actions", Int]
 comptime g_grid = named_global["roast.grid", Int]
+comptime g_findfield = named_global["roast.findfield", Int]
 
 
 def g_buffer_lines() -> Int:
@@ -80,6 +95,7 @@ def set_status(text: String):
 comptime TB_BUILD = "roast.build"
 comptime TB_RUN = "roast.run"
 comptime TB_STOP = "roast.stop"
+comptime TB_FIND = "roast.find"
 
 
 def toolbar_ids() -> ObjCObject:
@@ -92,7 +108,10 @@ def toolbar_ids() -> ObjCObject:
         String(TB_BUILD),
         String(TB_RUN),
         String(TB_STOP),
+        # Flexible space then search: the find field sits at the trailing edge,
+        # where every Mac app puts it.
         String("NSToolbarFlexibleSpaceItem"),
+        String(TB_FIND),
     ]:
         _ = msg_send[ObjCObject, "NSMutableArray", "addObject:"](
             ids, nsstring(name).ptr()
@@ -143,6 +162,106 @@ fn action_new_tab(self_: P, cmd: P, sender: P):
         )
 
 
+def refresh_grid():
+    """Redraw the editor and scroll the selection into view."""
+    if g_grid()[] == 0:
+        return
+    with autoreleasepool():
+        let grid = ObjCObject(g_grid()[])
+        let pos = caret_position(0)
+        _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](grid, True)
+
+
+def scroll_to_caret():
+    """Keep the match on screen. A find that jumps somewhere invisible has not
+    really found anything."""
+    if g_grid()[] == 0:
+        return
+    with autoreleasepool():
+        let grid = ObjCObject(g_grid()[])
+        let pos = caret_position(g_caret()[])
+        let lh = line_height()
+        _ = msg_send[ObjCObject, "NSView", "scrollRectToVisible:"](
+            grid, rect(pos.x - 40.0, pos.y - lh * 2.0, 200.0, lh * 5.0)
+        )
+        _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](grid, True)
+
+
+def report_matches():
+    let n = match_count()
+    if query().byte_length() == 0:
+        set_status(String("Ready"))
+    elif n == 0:
+        set_status(String("no matches for ") + repr(query()))
+    else:
+        set_status(String(n) + String(" matches for ") + repr(query()))
+
+
+fn action_find(self_: P, cmd: P, sender: P):
+    """Put the cursor in the toolbar's search field."""
+    try:
+        with autoreleasepool():
+            if g_findfield()[] == 0:
+                return
+            _ = msg_send[Bool, "NSWindow", "makeFirstResponder:"](
+                ObjCObject(g_window()[]), ObjCObject(g_findfield()[]).ptr()
+            )
+    except:
+        pass
+
+
+fn action_find_changed(self_: P, cmd: P, sender: P):
+    """The field's text changed, or Enter was pressed in it."""
+    try:
+        with autoreleasepool():
+            let field = ObjCObject(g_findfield()[])
+            let text = msg_send[ObjCObject, "NSTextField", "stringValue"](field)
+            set_query(ns_to_string(text))
+            print("roast: find", repr(query()), "matches", match_count())
+            _ = find_next()
+            report_matches()
+            scroll_to_caret()
+    except:
+        pass
+
+
+fn action_find_next(self_: P, cmd: P, sender: P):
+    try:
+        _ = find_next()
+        report_matches()
+        scroll_to_caret()
+    except:
+        pass
+
+
+fn action_find_previous(self_: P, cmd: P, sender: P):
+    try:
+        _ = find_previous()
+        report_matches()
+        scroll_to_caret()
+    except:
+        pass
+
+
+fn action_hide_find(self_: P, cmd: P, sender: P):
+    """Escape: clear the search and give the editor its focus back."""
+    try:
+        with autoreleasepool():
+            if g_findfield()[] != 0:
+                _ = msg_send[ObjCObject, "NSControl", "setStringValue:"](
+                    ObjCObject(g_findfield()[]), nsstring(String("")).ptr()
+                )
+            set_query(String())
+            if g_grid()[] != 0:
+                _ = msg_send[Bool, "NSWindow", "makeFirstResponder:"](
+                    ObjCObject(g_window()[]), ObjCObject(g_grid()[]).ptr()
+                )
+            set_status(String("Ready"))
+            refresh_grid()
+    except:
+        pass
+
+
 fn timer_tick(self_: P, cmd: P, timer: P):
     g_ticks()[] += 1
     let limit = g_autoclose()[]
@@ -187,6 +306,44 @@ fn toolbar_item_for_id(
             item = msg_send[
                 ObjCObject, "NSToolbarItem", "initWithItemIdentifier:"
             ](item, ident)
+
+            # Search is a view item, not a button: it carries an NSSearchField.
+            if msg_send[Bool, "NSString", "isEqualToString:"](
+                key, nsstring(String(TB_FIND)).ptr()
+            ):
+                let NSSearchField = ObjCClass.lookup["NSSearchField"]()
+                var field = msg_send[
+                    ObjCObject, "NSSearchField", "alloc", is_class=True
+                ](NSSearchField.as_object())
+                field = msg_send[ObjCObject, "NSView", "initWithFrame:"](
+                    field, rect(0.0, 0.0, 240.0, 24.0)
+                )
+                _ = msg_send[
+                    ObjCObject, "NSSearchField", "setPlaceholderString:"
+                ](field, nsstring(String("Find")).ptr())
+                let owner = ObjCObject(g_actions()[])
+                _ = msg_send[ObjCObject, "NSControl", "setTarget:"](
+                    field, owner.ptr()
+                )
+                _ = msg_send[ObjCObject, "NSControl", "setAction:"](
+                    field, sel["roastFindChanged:"]().ptr()
+                )
+                # Search as you type: NSSearchField sends its action on every
+                # edit when told to, which a plain NSTextField does not.
+                _ = msg_send[ObjCObject, "NSSearchField", "setSendsWholeSearchString:"](
+                    field, False
+                )
+                _ = msg_send[ObjCObject, "NSSearchField", "setSendsSearchStringImmediately:"](
+                    field, True
+                )
+                _ = msg_send[ObjCObject, "NSToolbarItem", "setView:"](
+                    item, field.ptr()
+                )
+                _ = msg_send[ObjCObject, "NSToolbarItem", "setLabel:"](
+                    item, nsstring(String("Find")).ptr()
+                )
+                g_findfield()[] = field.addr()
+                return item.addr()
 
             # Which item was asked for? Compare against each identifier.
             var title = String("?")
@@ -250,9 +407,22 @@ fn toolbar_item_for_id(
 
 # ── Menu construction ────────────────────────────────────────────────────────
 def add_item(
-    menu: ObjCObject, title: String, selector: String, key: String
+    menu: ObjCObject,
+    title: String,
+    selector: String,
+    key: String,
+    target: Int = 0,
 ) -> ObjCObject:
-    """Append one item to a menu and return it."""
+    """Append one item to a menu and return it.
+
+    `target` matters more than it looks. A menu item with no target sends its
+    action up the responder chain -- first responder, then the window, then the
+    app delegate -- which is exactly right for `cut:`, `undo:` and `terminate:`,
+    because whatever is focused should handle them. It is exactly wrong for
+    Roast's own commands: RoastActions is not in the responder chain, so those
+    items were disabled and did nothing at all. Anything named roast* names its
+    target.
+    """
     let NSMenuItem = ObjCClass.lookup["NSMenuItem"]()
     var item = msg_send[ObjCObject, "NSMenuItem", "alloc", is_class=True](
         NSMenuItem.as_object()
@@ -265,6 +435,10 @@ def add_item(
         sel_named(selector).ptr(),
         nsstring(key).ptr(),
     )
+    if target != 0:
+        _ = msg_send[ObjCObject, "NSMenuItem", "setTarget:"](
+            item, ObjCObject(target).ptr()
+        )
     _ = msg_send[ObjCObject, "NSMenu", "addItem:"](menu, item.ptr())
     return item
 
@@ -301,7 +475,7 @@ def add_submenu(
     return sub
 
 
-def build_menu_bar(app: ObjCObject):
+def build_menu_bar(app: ObjCObject, actions: Int):
     """The menu bar. AppKit fills in Window and Services if we point it there."""
     let NSMenu = ObjCClass.lookup["NSMenu"]()
     var bar = msg_send[ObjCObject, "NSMenu", "alloc", is_class=True](
@@ -327,9 +501,9 @@ def build_menu_bar(app: ObjCObject):
 
     # File.
     let file = add_submenu(bar, String("File"))
-    _ = add_item(file, String("New Tab"), String("roastNewTab:"), String("t"))
-    _ = add_item(file, String("Open…"), String("roastOpen:"), String("o"))
-    _ = add_item(file, String("Save"), String("roastSave:"), String("s"))
+    _ = add_item(file, String("New Tab"), String("roastNewTab:"), String("t"), actions)
+    _ = add_item(file, String("Open…"), String("roastOpen:"), String("o"), actions)
+    _ = add_item(file, String("Save"), String("roastSave:"), String("s"), actions)
     _ = add_item(file, String("Close Tab"), String("performClose:"), String("w"))
 
     # Edit — the standard responder-chain selectors, free of charge.
@@ -340,12 +514,32 @@ def build_menu_bar(app: ObjCObject):
     _ = add_item(edit, String("Copy"), String("copy:"), String("c"))
     _ = add_item(edit, String("Paste"), String("paste:"), String("v"))
     _ = add_item(edit, String("Select All"), String("selectAll:"), String("a"))
+    _ = msg_send[ObjCObject, "NSMenu", "addItem:"](
+        edit,
+        msg_send[ObjCObject, "NSMenuItem", "separatorItem", is_class=True](
+            ObjCClass.lookup["NSMenuItem"]().as_object()
+        ).ptr(),
+    )
+    _ = add_item(edit, String("Find…"), String("roastFind:"), String("f"), actions)
+    _ = add_item(edit, String("Find Next"), String("roastFindNext:"), String("g"), actions)
+    let prev_item = add_item(
+        edit,
+        String("Find Previous"),
+        String("roastFindPrevious:"),
+        String("G"),
+        actions,
+    )
+    # Shift is implied by the capital, but AppKit wants it said.
+    _ = msg_send[ObjCObject, "NSMenuItem", "setKeyEquivalentModifierMask:"](
+        prev_item, Int(0x20000 | 0x100000)
+    )
+    _ = add_item(edit, String("Hide Find"), String("roastHideFind:"), String("\u001b"), actions)
 
     # Build.
     let build = add_submenu(bar, String("Build"))
-    _ = add_item(build, String("Build"), String("roastBuild:"), String("b"))
-    _ = add_item(build, String("Run"), String("roastRun:"), String("r"))
-    _ = add_item(build, String("Stop"), String("roastStop:"), String("."))
+    _ = add_item(build, String("Build"), String("roastBuild:"), String("b"), actions)
+    _ = add_item(build, String("Run"), String("roastRun:"), String("r"), actions)
+    _ = add_item(build, String("Stop"), String("roastStop:"), String("."), actions)
 
     # Window — handing AppKit the menu gets tab management for free.
     let window_menu = add_submenu(bar, String("Window"))
@@ -396,6 +590,16 @@ def main() raises:
         ab.add_method["roastRun:", encoding="v@:@"](action_run)
         ab.add_method["roastStop:", encoding="v@:@"](action_stop)
         ab.add_method["roastNewTab:", encoding="v@:@"](action_new_tab)
+        ab.add_method["roastFind:", encoding="v@:@"](action_find)
+        ab.add_method["roastFindChanged:", encoding="v@:@"](action_find_changed)
+        ab.add_method["roastFindNext:", encoding="v@:@"](action_find_next)
+        ab.add_method[
+            "roastFindPrevious:", encoding="v@:@"
+        ](action_find_previous)
+        ab.add_method["roastHideFind:", encoding="v@:@"](action_hide_find)
+        ab.add_method[
+            "controlTextDidChange:", encoding="v@:@"
+        ](action_find_changed)
         ab.add_method["timerTick:", encoding="v@:@"](timer_tick)
         ab.add_method[
             "toolbarAllowedItemIdentifiers:", encoding="@@:@"
@@ -410,7 +614,7 @@ def main() raises:
         let actions = new_instance(ab^.register())
         g_actions()[] = actions.addr()
 
-        build_menu_bar(app)
+        build_menu_bar(app, actions.addr())
 
         # Window. Titled|Closable|Miniaturizable|Resizable = 15.
         let NSWindow = ObjCClass.lookup["NSWindow"]()
@@ -485,6 +689,7 @@ def main() raises:
         # Status bar: a label pinned to the bottom, and a hairline above it.
         comptime STATUS_H = 22.0
         let NSTextField = ObjCClass.lookup["NSTextField"]()
+        let NSButton = ObjCClass.lookup["NSButton"]()
         let status = msg_send[
             ObjCObject, "NSTextField", "labelWithString:", is_class=True
         ](NSTextField.as_object(), nsstring(String("Ready")).ptr())

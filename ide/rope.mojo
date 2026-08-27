@@ -226,15 +226,57 @@ struct Rope(Movable, Copyable):
     def find(self, needle: String, from_offset: Int = 0) -> Int:
         """First occurrence at or after `from_offset`, or -1.
 
-        Flattens for now. Correct, and fast enough that a 100 MB scan is
-        memchr-paced; a leaf-walking version that never materialises the whole
-        buffer is milestone 1's stretch goal.
+        Walks leaves rather than flattening. Flattening would copy the whole
+        buffer on every find-next -- 14 MB per keypress while someone holds
+        cmd-G -- and the point of a rope is that the text is already in
+        memory in pieces worth scanning in place.
+
+        A match straddling a leaf boundary is found because each leaf is
+        searched together with the last `len(needle) - 1` bytes of the one
+        before it, which is the only place a split match can hide.
         """
         if needle.byte_length() == 0:
             return -1
-        let hay = self.to_string()
-        let hit = hay.find(needle, start=from_offset)
-        return hit
+        var st = _Scan(needle, from_offset)
+        _scan(self.root, 0, st)
+        return st.found
+
+    def find_last(self, needle: String, before: Int) -> Int:
+        """Last occurrence starting strictly before `before`, or -1.
+
+        Backwards search by repeated forward search: the buffer is scanned once
+        and the last qualifying hit kept. Bounded and simple; a reverse walk
+        would be faster on a huge file and is not worth the second code path
+        until someone is searching backwards through 100 MB.
+        """
+        if needle.byte_length() == 0:
+            return -1
+        var best = -1
+        var at = 0
+        while True:
+            let hit = self.find(needle, at)
+            if hit < 0 or hit >= before:
+                break
+            best = hit
+            at = hit + 1
+        return best
+
+    def find_all_in(
+        self, needle: String, start: Int, end: Int
+    ) -> List[Int]:
+        """Every match beginning within [start, end). For highlighting what is
+        on screen, which is all that ever needs highlighting."""
+        var out = List[Int]()
+        if needle.byte_length() == 0:
+            return out^
+        var at = start
+        while True:
+            let hit = self.find(needle, at)
+            if hit < 0 or hit >= end:
+                break
+            out.append(hit)
+            at = hit + 1
+        return out^
 
 
 def _edit_leaf(
@@ -285,6 +327,61 @@ def _edit_leaf(
             kids.append(k)  # shared, not copied
         j += 1
     return _branch(kids^)
+
+
+struct _Scan(Movable):
+    """State carried across leaves while searching.
+
+    `carry` is the tail of the previous leaf: without it a needle lying across
+    a leaf boundary is invisible, which is the one bug every rope search has
+    until it is written down.
+    """
+
+    var needle: String
+    var from_offset: Int
+    var carry: String
+    var carry_at: Int
+    var found: Int
+
+    def __init__(out self, var needle: String, from_offset: Int):
+        self.needle = needle^
+        self.from_offset = from_offset
+        self.carry = String()
+        self.carry_at = 0
+        self.found = -1
+
+
+def _scan(node: ArcPointer[Node], base: Int, mut st: _Scan):
+    if st.found >= 0:
+        return
+    if node[].is_leaf:
+        # Everything before the search start is not worth looking at, but the
+        # carry still has to be maintained across it.
+        let m = st.needle.byte_length()
+        var window = st.carry
+        window += node[].text
+        let window_at = st.carry_at if st.carry.byte_length() > 0 else base
+        let rel = max(0, st.from_offset - window_at)
+        let hit = window.find(st.needle, start=rel)
+        if hit >= 0:
+            st.found = window_at + hit
+            return
+        # Keep the last m-1 bytes for the next leaf, on a codepoint boundary so
+        # the carry is always valid UTF-8.
+        let keep = min(m - 1, window.byte_length())
+        var cut = window.byte_length() - keep
+        let bytes = window.as_bytes()
+        while cut < window.byte_length() and (Int(bytes[cut]) & 0xC0) == 0x80:
+            cut += 1
+        st.carry = String(window[byte=cut : window.byte_length()])
+        st.carry_at = window_at + cut
+        return
+    var at = base
+    for k in node[].kids:
+        _scan(k, at, st)
+        if st.found >= 0:
+            return
+        at += k[].nbytes
 
 
 # ── Tree walks ──────────────────────────────────────────────────────────────

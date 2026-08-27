@@ -124,7 +124,7 @@ The budget, and what enforces it:
 | keystroke → glyph | ≤ 1 frame (8.3 ms @ 120 Hz) | O(log n) edit + one CTLine redrawn | **2.4 µs** rope edit |
 | open 250k lines → first paint | < 100 ms | single-pass rope build; paint visible only | **5 ms** rope build |
 | full-speed scroll | 0 dropped frames | translate + draw exposed lines from cache |
-| literal find, 100 MB | < 200 ms | snapshot scan on a queue, memchr-paced |
+| literal find, 100 MB | < 200 ms | leaf walk, never flattening the buffer |
 | completion popup | < 50 ms after reply | popup is one layer; server did the work |
 
 A browser editor pays DOM mutation → style → layout → paint → composite, plus
@@ -232,7 +232,7 @@ is simpler and crash-isolated.
 | # | lands | verified by |
 |---|---|---|
 | 0 | **done** — shell: window, native tabbing, menu, toolbar, status bar, sidebar | `tools/check-ide.sh` — 7 checks green |
-| 1 | rope · GridView · NSTextInputClient · caret, selection, undo — **all done**; find remains | 250k lines in 5 ms, keystroke 2.4 µs, snapshot 400 ns; 46 editing checks; Pinyin still to try with a real IME |
+| 1 | **done** — rope, GridView, NSTextInputClient, caret, selection, undo, find | 250k lines in 5 ms, keystroke 2.4 µs, snapshot 400 ns; 59 editing checks + 37 rope checks; Pinyin still to try with a real IME |
 | 2 | LSP: diagnostics, completion, definition, semantic tokens | scripted session completes `setTitle:` inside a msg_send string |
 | 3 | build/run, issues drawer, output pane — **self-hosting** | the IDE builds the IDE |
 | 4 | AppleScript dictionary + `check-ide.sh` | osascript drives edit→build→diagnostics in CI |

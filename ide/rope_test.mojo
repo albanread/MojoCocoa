@@ -63,6 +63,32 @@ def main() raises:
     failures += check("utf8 round trip", u.to_string(), String("héllo\nwörld\n日本語"))
 
     # A file big enough to cross many leaves and several tree levels.
+    print("rope: searching")
+    let hay = Rope(String("alpha beta gamma beta delta"))
+    failures += check_int("find first", hay.find(String("beta")), 6)
+    failures += check_int("find next", hay.find(String("beta"), 7), 17)
+    failures += check_int("find missing", hay.find(String("zzz")), -1)
+    failures += check_int("find empty needle", hay.find(String("")), -1)
+    failures += check_int("find_last", hay.find_last(String("beta"), 27), 17)
+    failures += check_int("find_last before first", hay.find_last(String("beta"), 10), 6)
+    failures += check_int("matches in range", len(hay.find_all_in(String("beta"), 0, 27)), 2)
+
+    print("rope: a match across a leaf boundary")
+    # Leaves are cut near 4096 bytes, so a needle placed there is only found if
+    # the search carries the tail of the previous leaf.
+    var filler = String()
+    for _ in range(1200):
+        filler += "abcd"          # 4800 bytes, so at least one cut
+    var straddle = filler
+    straddle += "NEEDLE"
+    straddle += filler
+    let big_hay = Rope(straddle^)
+    let want_at = 4800
+    failures += check_int("across leaves", big_hay.find(String("NEEDLE")), want_at)
+    failures += check_int(
+        "and not found twice", big_hay.find(String("NEEDLE"), want_at + 1), -1
+    )
+
     print("rope: 250,000 lines")
     var big = String()
     for i in range(250_000):
