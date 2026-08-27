@@ -1708,6 +1708,18 @@ def outline_child_at(index: Int, item: ObjCObject) -> ObjCObject:
         return ObjCObject(0)
 
 
+def outline_rows() -> Int:
+    """How many rows the sidebar is showing, for the startup report. Rows, not
+    children: a collapsed folder contributes one and an expanded one
+    contributes its subtree, which is what someone looking at the window
+    counts."""
+    if g_outline()[] == 0:
+        return 0
+    return msg_send[Int, "NSTableView", "numberOfRows"](
+        ObjCObject(g_outline()[])
+    )
+
+
 def outline_display_value(item: ObjCObject) -> ObjCObject:
     """What the row shows: the name, not the path.
 
@@ -2005,6 +2017,50 @@ def file_exists(path: String) -> Bool:
             )
     except:
         return False
+
+
+def fire_example_menu(app: ObjCObject, name: String) -> Bool:
+    """Click an item in the Examples menu, with nobody at the mouse.
+
+    ROAST_EXAMPLE reproduces what the menu action does; this drives the menu
+    item itself. They are not the same path -- the item carries a file path
+    and the action derives the folder from it -- and the path someone actually
+    clicks is the one that shipped opening a single file.
+    """
+    with autoreleasepool():
+        let bar = msg_send[ObjCObject, "NSApplication", "mainMenu"](app)
+        if bar.addr() == 0:
+            return False
+        let n = msg_send[Int, "NSMenu", "numberOfItems"](bar)
+        var i = 0
+        while i < n:
+            let holder = msg_send[ObjCObject, "NSMenu", "itemAtIndex:"](bar, i)
+            let sub = msg_send[ObjCObject, "NSMenuItem", "submenu"](holder)
+            if sub.addr() != 0:
+                let title = ns_to_string(
+                    msg_send[ObjCObject, "NSMenu", "title"](sub)
+                )
+                if title == String("Examples"):
+                    let m = msg_send[Int, "NSMenu", "numberOfItems"](sub)
+                    var j = 0
+                    while j < m:
+                        let it = msg_send[
+                            ObjCObject, "NSMenu", "itemAtIndex:"
+                        ](sub, j)
+                        let t = ns_to_string(
+                            msg_send[ObjCObject, "NSMenuItem", "title"](it)
+                        )
+                        if t == name:
+                            _ = msg_send[
+                                ObjCObject,
+                                "NSMenu",
+                                "performActionForItemAtIndex:",
+                            ](sub, j)
+                            return True
+                        j += 1
+                    return False
+            i += 1
+    return False
 
 
 def build_examples_menu(bar: ObjCObject, actions: Int):
@@ -2619,6 +2675,11 @@ def main() raises:
                 open_folder_files(example, example + String("/main.mojo")),
             )
 
+        # The same thing again, through the menu item rather than around it.
+        let clicked = getenv("ROAST_EXAMPLE_MENU")
+        if clicked != "":
+            print("roast: example menu:", fire_example_menu(app, clicked))
+
         _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
             win, grid.ptr()
         )
@@ -2659,6 +2720,11 @@ def main() raises:
         )
         print("roast: toolbar:", tb.addr() != 0)
         print("roast: tabs:", document.count())
+        # What the sidebar is actually showing. The outline had no reporting
+        # at all, which is how "the example opened one file" survived a green
+        # suite: the tab bar was checked and the file list was not.
+        print("roast: project:", project_root())
+        print("roast: project rows:", outline_rows())
         # The strip has to sit flush under the toolbar. Installing a toolbar
         # changes the content view's height, so laying out against the height
         # read before it existed leaves a band of window background above the

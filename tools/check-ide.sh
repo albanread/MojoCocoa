@@ -174,8 +174,22 @@ check "tab strip"   "tab gap: 0.0"          "flush under the toolbar"
 check "lifecycle"   "applicationWillTerminate" "launch → close → terminate clean"
 
 # An example is a PROJECT: fern is three files, and opening one of them is the
-# bug this check exists to catch. Run separately because it needs its own
-# launch with ROAST_EXAMPLE set.
+# bug this check exists to catch. Driven through the menu ITEM, not around it
+# -- ROAST_EXAMPLE reproduces the action's logic, which means it would go on
+# passing if the menu stopped reaching it. Both halves are asserted: the files
+# opened as tabs, and the rows the sidebar is showing, because the file list on
+# the left is the half someone actually looks at.
+exout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_EXAMPLE_MENU="fern" \
+        ROAST_AUTOCLOSE_TICKS=12 timeout 90 "$TMP/roast" 2>&1)
+if ! echo "$exout" | grep -q 'roast: example menu: True'; then
+  bad "example menu" "the Examples menu has no fern item to click"
+elif echo "$exout" | grep -q 'roast: project rows: 3'; then
+  ok "example menu" "clicking fern lists its three files in the sidebar"
+else
+  bad "example menu" "$(echo "$exout" | grep -m1 'project rows:' || echo 'no rows reported')"
+fi
+# The tab bar half, and the working tree rather than the distribution, so a
+# stale share/examples cannot make this pass.
 exout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_EXAMPLE="$PWD/examples/fern" \
         ROAST_AUTOCLOSE_TICKS=12 timeout 90 "$TMP/roast" 2>&1)
 if echo "$exout" | grep -q 'roast: example files: 3'; then
