@@ -49,6 +49,12 @@ LINK=(
   -Xlinker -framework -Xlinker AppKit
   -Xlinker -framework -Xlinker Metal
   -Xlinker -framework -Xlinker QuartzCore
+  # libz ships with macOS at /usr/lib/libz.dylib. It is here rather than left
+  # to each program because a graphical one usually wants to write a PNG
+  # eventually, and a project has no way to ask for a link flag -- the same
+  # gap as sharing an include path, and the same answer when a project file
+  # arrives.
+  -Xlinker -lz
 )
 
 usage() { sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }

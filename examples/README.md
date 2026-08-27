@@ -8,6 +8,9 @@ which opens itself when a build starts and toggles with ⌘0.
     fern/         Barnsley's fern, saved as a png — three files, so a
                   project with more than one file in it
     window/       a Cocoa window with a button, in Mojo
+    life/         Conway's Life: a real app -- mouse, keyboard, a Metal
+                  layer, and three `class` declarations Cocoa calls into
+    fluid/        Stable Fluids on the GPU, every kernel written in Mojo
     mandelbrot/   the GPU, via Metal, checked against the CPU
 
 ## What a project is
@@ -60,3 +63,10 @@ compression is a self-contained exercise if anyone wants it.
 
 `mandelbrot/` needs a GPU, and checks the Metal result against the same
 arithmetic on the CPU rather than trusting it.
+
+`life/` and `fluid/` are the two that look like applications. Both declare
+Objective-C classes with `class` — the view whose mouse and key handlers Cocoa
+calls, the app delegate, the timer target, the Apple Event handler — so there
+is no `ObjCClassBuilder`, no hand-written type encoding, and no `cmd` slot
+anywhere in them. `fluid/` is Jos Stam's Stable Fluids with every kernel
+compiled through this fork's AIR backend; there is no shader in the pipeline.
