@@ -25,6 +25,8 @@ from std.objc import (
 from std.memory import OpaquePointer
 from std.os import getenv
 from std.ffi import external_call
+from gridview import make_grid_view, set_rope, document_size, GUTTER_W
+from rope import Rope
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -35,30 +37,9 @@ comptime P = OpaquePointer[MutUntrackedOrigin]
 comptime NIL = 0
 
 
-# ── Geometry ─────────────────────────────────────────────────────────────────
-# CGRect is not in the stdlib yet; every demo declares it. IDE-DESIGN.md lists
-# layout-verified CG structs as a stdlib gap. Declared here to the same layout
-# the SDK uses, which cocoakb can confirm with cocoakb_struct_size.
-@fieldwise_init
-struct CGPoint(Copyable, Movable):
-    var x: Float64
-    var y: Float64
-
-
-@fieldwise_init
-struct CGSize(Copyable, Movable):
-    var width: Float64
-    var height: Float64
-
-
-@fieldwise_init
-struct CGRect(Copyable, Movable):
-    var origin: CGPoint
-    var size: CGSize
-
-
-def rect(x: Float64, y: Float64, w: Float64, h: Float64) -> CGRect:
-    return CGRect(CGPoint(x, y), CGSize(w, h))
+# Geometry comes from gridview, which needs the same structs to do its
+# arithmetic. One declaration, not two that can drift.
+from gridview import CGPoint, CGSize, CGRect, rect
 
 
 # ── State the callbacks can reach ────────────────────────────────────────────
@@ -69,6 +50,16 @@ comptime g_status = named_global["roast.status", Int]
 comptime g_ticks = named_global["roast.ticks", Int]
 comptime g_autoclose = named_global["roast.autoclose", Int]
 comptime g_actions = named_global["roast.actions", Int]
+comptime g_grid = named_global["roast.grid", Int]
+
+
+def g_buffer_lines() -> Int:
+    """Lines in the open buffer, for the startup report."""
+    from gridview import g_buffer
+
+    if len(g_buffer()[]) == 0:
+        return 0
+    return g_buffer()[][0].line_count()
 
 
 def set_status(text: String):
@@ -560,6 +551,54 @@ def main() raises:
         _ = msg_send[ObjCObject, "NSScrollView", "setHasHorizontalScroller:"](
             edit_scroll, True
         )
+
+        # The editor surface. Load something real: with no file to open yet,
+        # Roast shows its own source, which is the shortest path to seeing the
+        # rope, the gutter and the scrolling all work on a genuine file.
+        var text = String()
+        let path = getenv("ROAST_OPEN")
+        if path != "":
+            try:
+                with open(path, "r") as f:
+                    text = f.read()
+            except:
+                text = String("could not read ") + path
+        else:
+            text = String(
+                "# Roast — milestone 1\n"
+                "#\n"
+                "# This is a GridView: a custom NSView drawing a persistent\n"
+                "# rope with Core Text. Layout is arithmetic, because the font\n"
+                "# is fixed-pitch:\n"
+                "#\n"
+                "#     x = column * advance\n"
+                "#     y = line * line_height\n"
+                "#\n"
+                "# so there is no layout pass to run, and only the lines the\n"
+                "# scroll view is showing are drawn.\n"
+                "#\n"
+                "# Measured on 250,000 lines / 14 MB:\n"
+                "#     build         5 ms\n"
+                "#     line lookup   2.3 us\n"
+                "#     keystroke     2.4 us\n"
+                "#     snapshot      400 ns\n"
+                "#\n"
+                "# Set ROAST_OPEN=<path> to load a real file.\n"
+            )
+        set_rope(Rope(text^))
+
+        let grid = make_grid_view(rect(0.0, 0.0, w - 240.0, h - STATUS_H))
+        let doc = document_size(w - 240.0)
+        _ = msg_send[ObjCObject, "NSView", "setFrameSize:"](grid, doc)
+        _ = msg_send[ObjCObject, "NSScrollView", "setDocumentView:"](
+            edit_scroll, grid.ptr()
+        )
+        # A text editor scrolls its own way: no elastic bounce past the ends.
+        _ = msg_send[ObjCObject, "NSScrollView", "setVerticalScrollElasticity:"](
+            edit_scroll, Int(1)
+        )
+        g_grid()[] = grid.addr()
+
         _ = msg_send[ObjCObject, "NSSplitView", "addSubview:"](
             split, edit_scroll.ptr()
         )
@@ -586,7 +625,15 @@ def main() raises:
         _ = msg_send[ObjCObject, "NSApplication", "activateIgnoringOtherApps:"](
             app, True
         )
-        set_status(String("Roast — milestone 0 · shell"))
+        var what = String("untitled")
+        if path != "":
+            what = path
+        set_status(
+            what
+            + String("  ·  ")
+            + String(g_buffer_lines())
+            + String(" lines")
+        )
 
         # Report what AppKit actually thinks it has, so a headless run says
         # whether the shell came up rather than leaving it to a screenshot.
@@ -610,6 +657,16 @@ def main() raises:
         print("roast: toolbar:", tb.addr() != 0)
         print("roast: split panes:", n_split)
         print("roast: menu bar items:", n_menus)
+        let gframe = msg_send[CGRect, "NSView", "frame"](grid)
+        print(
+            "roast: document:",
+            gframe.size.width,
+            "x",
+            gframe.size.height,
+            "for",
+            g_buffer_lines(),
+            "lines",
+        )
 
     print("roast: entering [NSApp run]")
     with autoreleasepool():

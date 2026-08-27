@@ -53,6 +53,15 @@ check "split view"  "split panes: 2"        "sidebar + editor area"
 check "menu bar"    "menu bar items: 5"     "app, File, Edit, Build, Window"
 check "lifecycle"   "applicationWillTerminate" "launch → close → terminate clean"
 
+# The editor surface: a document sized from the rope, which only happens if the
+# buffer loaded, the font was measured and the view was installed.
+doc=$(echo "$out" | grep -m1 'document:' | sed 's/roast: document: //')
+if [ -n "$doc" ] && echo "$doc" | grep -qv 'x 0.0'; then
+  ok "grid view" "$doc"
+else
+  bad "grid view" "${doc:-no document reported}"
+fi
+
 # The frame is derived from the screen now, not written into the source, so
 # assert that it is usable rather than that it is one particular number: wide
 # and tall enough for the layout to mean anything, and not off the top.
