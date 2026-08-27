@@ -100,6 +100,11 @@ class TabBar(NSView):
         return total
 
 
+# Every class carries the function that will build it in the runtime. Empty so
+# far -- COCOA_CLASS_DESIGN.md sprint 2b fills it in -- but synthesized, which
+# is what everything after it depends on.
+# CHECK-DAG: lit.fn @"__objc_register__()"() -> !kgen.none
+
 # Structs are untouched: still memory-only, still no Objective-C attributes.
 # CHECK-DAG: lit.struct.decl @PlainStruct({{.*}}) attributes {sourceName
 struct PlainStruct:

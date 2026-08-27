@@ -1948,6 +1948,43 @@ AnyValue DeclResolver::resolveAnonymousClosure(const LambdaNode *node,
 
 /// funcdef   ::=  [decorators] "def" identifier [param_signature]
 ///                "(" [argument_list] ")" ["->" expression] ":" suite
+/// Synthesize the function that builds this class in the Objective-C runtime.
+///
+/// PROBE (COCOA_CLASS_DESIGN.md sprint 2b): declaration only so far -- the body
+/// is empty. What it proves is that a class can carry a synthesized function at
+/// all, which every later step depends on.
+static void synthesizeObjCRegistration(ASTDecl &structDecl,
+                                       StructDeclOp structOp) {
+  StructEmitter structEmitter(structDecl);
+  SharedState &shared = structDecl.getShared();
+  auto [funcOp, funcDecl] = structEmitter.synthesizeMethodInStruct(
+      "__objc_register__",
+      /*argTypes=*/{},
+      /*argConvs=*/{},
+      /*argListAttrs=*/PogListAttr::get(shared.getContext(), /*numPogs=*/0),
+      shared.getNoneType());
+  if (!funcOp)
+    return;
+  funcOp.setInlineLevel(InlineLevel::AlwaysNoDebug);
+
+  ImplicitLocOpBuilder builder =
+      ImplicitLocOpBuilder::atBlockEnd(funcOp.getLoc(), funcOp.getBody());
+  builder.setInsertionPointToStart(funcOp.getBody());
+  builder.setLoc(funcOp->getLoc());
+  ASTDecl *resolved = shared.declResolver->getDeclForFuncSymbol(
+      getFullyResolvedSymbolRef(funcOp));
+  if (!resolved)
+    return;
+  IREmitter emitter(*resolved, builder);
+
+  DebugInfo::DIBuilder::ScopeGuard diScopeGuard;
+  if (shared.diBuilder)
+    diScopeGuard = shared.diBuilder->pushScopeGuard(funcOp.getLocScope());
+
+  // The body is empty for now; the runtime calls land next.
+  IREmitter::emitNormalReturn(builder, Value(), /*emitEndFunc=*/true);
+}
+
 /// Attribute a class's bases to the frameworks that declare them, and check
 /// that the runtime has heard of the superclass at all.
 ///
@@ -4496,6 +4533,12 @@ ParseResult DeclResolver::resolveBody(StructDeclOp structOp, Lexer &lexer,
       structFields.push_back({fieldOp, decl});
     }
   }
+
+  // An Objective-C class is built at run time, not linked: something has to
+  // call objc_allocateClassPair, add every method, adopt every protocol and
+  // register the pair. That is this function, synthesized per class.
+  if (structOp.getObjcClass())
+    synthesizeObjCRegistration(structDecl, structOp);
 
   // Determine if there is an explicit conformance to Deinitable.
   if (std::optional<ConstraintAttr> deinitableConstraint =
