@@ -234,7 +234,7 @@ is simpler and crash-isolated.
 |---|---|---|
 | 0 | **done** — shell: window, native tabbing, menu, toolbar, status bar, sidebar | `tools/check-ide.sh` — 7 checks green |
 | 1 | **done** — rope, GridView, NSTextInputClient, caret, selection, undo, find | 250k lines in 5 ms, keystroke 2.4 µs, snapshot 400 ns; 59 editing checks + 37 rope checks; Pinyin still to try with a real IME |
-| 2 | LSP: diagnostics, completion, definition, semantic tokens | scripted session completes `setTitle:` inside a msg_send string |
+| 2 | LSP: **diagnostics done** — client, JSON, gutter marks and underlines; completion, definition, semantic tokens to come | scripted session completes `setTitle:` inside a msg_send string |
 | 3 | build/run, issues drawer, output pane — **self-hosting** | the IDE builds the IDE |
 | 4 | AppleScript dictionary + `check-ide.sh` | osascript drives edit→build→diagnostics in CI |
 | 5 | (optional) Metal glyph renderer | 120 Hz scroll measurement says it's needed, or it isn't built |

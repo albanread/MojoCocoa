@@ -41,6 +41,8 @@ from gridview import (
     line_height,
 )
 from rope import Rope
+from gridview import g_revision, g_buffer
+import lsp
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -67,11 +69,22 @@ comptime g_actions = named_global["roast.actions", Int]
 comptime g_grid = named_global["roast.grid", Int]
 comptime g_findfield = named_global["roast.findfield", Int]
 
+# The open document's URI, and the revision the server was last told about.
+# Edits bump gridview's revision; the timer notices and sends one didChange
+# for a burst of typing rather than one per keystroke.
+comptime g_uri = named_global["roast.uri", List[String]]
+comptime g_sent_revision = named_global["roast.sent.revision", Int]
+comptime g_idle_ticks = named_global["roast.idle", Int]
+
+
+def g_buffer_text() -> String:
+    if len(g_buffer()[]) == 0:
+        return String()
+    return g_buffer()[][0].to_string()
+
 
 def g_buffer_lines() -> Int:
     """Lines in the open buffer, for the startup report."""
-    from gridview import g_buffer
-
     if len(g_buffer()[]) == 0:
         return 0
     return g_buffer()[][0].line_count()
@@ -131,6 +144,10 @@ fn should_terminate_after_last_window(self_: P, cmd: P, app: P) -> Bool:
 
 
 fn will_terminate(self_: P, cmd: P, note: P):
+    try:
+        lsp.stop()
+    except:
+        pass
     print("roast: applicationWillTerminate")
 
 
@@ -185,6 +202,26 @@ def scroll_to_caret():
             grid, rect(pos.x - 40.0, pos.y - lh * 2.0, 200.0, lh * 5.0)
         )
         _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](grid, True)
+
+
+def _report_diagnostics():
+    """Say what the server found, unless a search is showing its own count."""
+    if query().byte_length() > 0:
+        return
+    let n = lsp.diagnostic_count()
+    if n == 0:
+        set_status(String("No issues"))
+        return
+    # The first diagnostic in full: a count alone tells you there is a problem
+    # without telling you what it is.
+    set_status(
+        String(n)
+        + String(" issue" if n == 1 else " issues")
+        + String("  ·  line ")
+        + String(lsp.g_diag_line()[][0] + 1)
+        + String(": ")
+        + lsp.g_diag_msg()[][0]
+    )
 
 
 def report_matches():
@@ -264,6 +301,34 @@ fn action_hide_find(self_: P, cmd: P, sender: P):
 
 fn timer_tick(self_: P, cmd: P, timer: P):
     g_ticks()[] += 1
+
+    # Read whatever the server has said. This is the whole reason the client
+    # reads without blocking: a language server thinking hard must not be an
+    # editor that has stopped responding.
+    try:
+        if lsp.is_running():
+            if lsp.poll() > 0:
+                _report_diagnostics()
+                refresh_grid()
+
+            # Tell the server about edits once the typing pauses. Sending on
+            # every keystroke would have it re-parsing text nobody has finished
+            # writing.
+            if g_revision()[] != g_sent_revision()[]:
+                g_idle_ticks()[] += 1
+                if g_idle_ticks()[] >= 3 and len(g_uri()[]) > 0:
+                    if len(g_buffer()[]) > 0:
+                        lsp.did_change(
+                            g_uri()[][0],
+                            g_revision()[],
+                            g_buffer()[][0].to_string(),
+                        )
+                    g_sent_revision()[] = g_revision()[]
+                    g_idle_ticks()[] = 0
+            else:
+                g_idle_ticks()[] = 0
+    except:
+        pass
     let limit = g_autoclose()[]
     if limit != 0 and g_ticks()[] >= limit:
         print("roast: autoclose after", g_ticks()[], "ticks")
@@ -823,6 +888,25 @@ def main() raises:
             actions.ptr(),
             Bool(True),
         )
+
+        # The language server, from the distribution beside us. An editor
+        # built by this toolchain should ask this toolchain's server rather
+        # than whichever one is on PATH.
+        let here = getenv("COCOAMOJO_ROOT")
+        var server = getenv("ROAST_LSP")
+        var imports = getenv("ROAST_IMPORTS")
+        if server == "" and here != "":
+            server = here + String("/bin/mojo-lsp-server")
+        if imports == "" and here != "":
+            imports = here + String("/lib/mojo/stdlib")
+        if server != "" and path != "":
+            let uri = String("file://") + path
+            g_uri()[].append(uri)
+            if lsp.start(server, String("file://") + path, imports):
+                lsp.did_open(uri, g_buffer_text())
+                print("roast: language server started")
+        elif server == "":
+            print("roast: no language server (set ROAST_LSP or COCOAMOJO_ROOT)")
 
         _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
             win, grid.ptr()

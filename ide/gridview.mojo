@@ -14,6 +14,14 @@
 # composite on every keystroke, plus a JS heap and its collector. This pays a
 # rope edit (measured: 2.4 us) and one line redrawn.
 from rope import Rope
+from lsp import (
+    diagnostic_count,
+    g_diag_line,
+    g_diag_col,
+    g_diag_end,
+    g_diag_sev,
+    g_diag_msg,
+)
 from std.objc import (
     ObjCClass,
     ObjCObject,
@@ -94,6 +102,7 @@ def set_rope(var r: Rope):
         buf[].append(r^)
     else:
         buf[][0] = r^
+    g_revision()[] += 1
 
 
 def has_rope() -> Bool:
@@ -231,6 +240,54 @@ fn draw_rect(self_: P, cmd: P):
                         attrs.ptr(),
                     )
                 i += 1
+
+            # Diagnostics from the language server. Drawn after the text so
+            # the underline sits under the glyphs it is about, and before the
+            # caret so the caret stays on top of everything.
+            let dn = diagnostic_count()
+            if dn > 0:
+                let NSColorD = ObjCClass.lookup["NSColor"]()
+                var di = 0
+                while di < dn:
+                    let dline = g_diag_line()[][di]
+                    if dline < first or dline >= last:
+                        di += 1
+                        continue
+                    # 1 error, 2 warning, anything else advisory.
+                    let sev = g_diag_sev()[][di]
+                    var ink = msg_send[
+                        ObjCObject, "NSColor", "systemRedColor", is_class=True
+                    ](NSColorD.as_object())
+                    if sev == 2:
+                        ink = msg_send[
+                            ObjCObject, "NSColor", "systemOrangeColor",
+                            is_class=True,
+                        ](NSColorD.as_object())
+                    elif sev > 2:
+                        ink = msg_send[
+                            ObjCObject, "NSColor", "systemBlueColor",
+                            is_class=True,
+                        ](NSColorD.as_object())
+                    _ = msg_send[ObjCObject, "NSColor", "setFill"](ink)
+
+                    let y = Float64(dline) * lh
+                    # The gutter mark: a bar at the left edge, which reads at a
+                    # glance and does not need the line to be on screen wide.
+                    _ = external_call["NSRectFill", NoneType](
+                        rect(2.0, y + 3.0, 4.0, lh - 6.0)
+                    )
+
+                    # The underline, under the range the server gave.
+                    let lstart = buf[][0].line_start(dline)
+                    let a = caret_position(lstart + g_diag_col()[][di])
+                    var end_col = g_diag_end()[][di]
+                    if end_col <= g_diag_col()[][di]:
+                        end_col = g_diag_col()[][di] + 1
+                    let b = caret_position(lstart + end_col)
+                    _ = external_call["NSRectFill", NoneType](
+                        rect(a.x, y + lh - 2.0, max(b.x - a.x, advance()), 2.0)
+                    )
+                    di += 1
 
             # The caret: drawn only with focus, and only on the blink's on
             # phase, because a caret that never blinks reads as a rendering
@@ -492,6 +549,10 @@ comptime g_coalesce_at = named_global["roast.coalesce.at", Int]
 # List is valid, and a zero-initialised String is not.
 comptime g_query = named_global["roast.query", List[String]]
 comptime g_match_at = named_global["roast.match.at", Int]
+
+# Bumped on every edit. The app watches it to decide when to tell the server,
+# rather than sending a document on every keystroke.
+comptime g_revision = named_global["roast.revision", Int]
 
 comptime g_blink_on = named_global["roast.blink", Int]
 comptime g_focused = named_global["roast.focused", Int]
