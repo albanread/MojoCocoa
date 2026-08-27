@@ -153,14 +153,31 @@ def main() raises:
     print("agreement:", Float64(agree) / Float64(PIXELS) * 100.0, "%")
 ```
 
-On the reference M4 Max this runs in 0.849 ms against 95.214 ms on the CPU.
+On the reference M4 Max the most recent run of this reports:
+
+```text
+GPU: 0.413 ms   speedup: 197.96 x
+exact agreement: 100.0 % ( 0 boundary-band pixels differ)
+```
+
 Before you take that as a benchmark, read
 [Running and checking](03-running-and-checking.md) — both the timing and the
 comparison need more care than they look like they do.
 
-## One constraint, up front
+## Running it
 
-**GPU code does not work under `mojo run`.** Build GPU programs rather than
-JIT-running them; the failure otherwise arrives as a link error a long way from
-anything you wrote. Chapter 3 covers the build line. Cocoa under `mojo run` is
-unaffected.
+From the CocoaMojo distribution, one command either way:
+
+```bash
+cocoamojo --run   mandelbrot.mojo      # JIT: compile and run
+cocoamojo --build mandelbrot.mojo      # -> ./mandelbrot
+```
+
+**Both work for GPU code.** `--run` JITs the program, GPU kernels included, and
+`--build` produces an ordinary double-clickable binary.
+
+No `-I` flags, no `MODULAR_*` variables, no Bazel — the distribution carries
+the compiler, the runtimes, the packages and the SDK database beside each
+other, and `cocoamojo` wires them up. [Chapter 3](03-running-and-checking.md)
+covers the details, including what to do when you are building against the
+source tree rather than a distribution.

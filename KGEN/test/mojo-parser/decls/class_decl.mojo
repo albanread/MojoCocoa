@@ -48,17 +48,17 @@ class GridView(NSView, NSTextInputClient, NSDraggingDestination):
     pass
 
 
-# Every class carries the function that builds it in the runtime, and that
-# function constructs std.objc's ObjCClassRegistrar with the three things only
-# the compiler knows: the class name, the superclass, and the frameworks that
-# have to be loaded before the superclass can be resolved at all.
-# CHECK-DAG: lit.fn @"__objc_register__()"() -> !kgen.none
+# Every class carries a synthesized initializer that builds it in the runtime
+# on the way to making an instance, driving std.objc's ObjCClassRegistrar with
+# the three things only the compiler knows: the class name, the superclass, and
+# the frameworks that must be loaded before the superclass resolves at all.
+# Registering is idempotent, so the second instance costs one objc_getClass.
 # CHECK-DAG: lit.var.decl "registrar" var : !lit.ref<!ObjCClassRegistrar
 # CHECK-DAG: kgen.param.constant: !lit.struct<#StringLiteral <:string "GridView">>
 # CHECK-DAG: kgen.param.constant: !lit.struct<#StringLiteral <:string "AppKit">>
 # CHECK-DAG: ObjCClassRegistrar::@"__init__
 # CHECK-DAG: ObjCClassRegistrar::@"add_protocol
-# CHECK-DAG: ObjCClassRegistrar::@"register
+# CHECK-DAG: ObjCClassRegistrar::@"register_and_instantiate
 
 
 # A qualified name is kept whole rather than read as attribute access.

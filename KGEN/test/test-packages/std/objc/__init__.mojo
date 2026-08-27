@@ -30,6 +30,7 @@ struct ObjCClass:
 struct ObjCClassRegistrar:
     var _cls: Int
     var _ok: Bool
+    var _existing: Bool
 
     def __init__(
         out self,
@@ -39,6 +40,7 @@ struct ObjCClassRegistrar:
     ):
         self._cls = 0
         self._ok = False
+        self._existing = False
 
     def add_method[
         F: AnyType
@@ -50,3 +52,6 @@ struct ObjCClassRegistrar:
 
     def register(mut self) -> ObjCClass:
         return ObjCClass(0)
+
+    def register_and_instantiate(mut self) -> Int:
+        return 0
