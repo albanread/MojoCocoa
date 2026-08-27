@@ -2479,6 +2479,19 @@ static void checkAgainstSDKEncoding(SharedState &shared, StringRef selector,
   if (parts.size() < 3)
     return; // Not a shape this understands; say nothing rather than guess.
 
+  // Signedness is a reinterpretation, not an ABI: q/Q, i/I, s/S and c/C/B all
+  // land in the same register the same way, and the SDK is inconsistent about
+  // which it writes (characterIndexForPoint: says Q where Mojo's Int says q).
+  // Compare ABI classes, not spellings.
+  auto canon = [](StringRef enc) -> StringRef {
+    return llvm::StringSwitch<StringRef>(enc)
+        .Case("Q", "q")
+        .Case("I", "i")
+        .Case("S", "s")
+        .Case("C", "c")
+        .Case("B", "c")
+        .Default(enc);
+  };
   auto disagree = [&](StringRef what, StringRef sdk, StringRef declared) {
     shared.emitError(loc)
         << "the SDK declares '" << selector << "' with " << what << " '" << sdk
@@ -2487,7 +2500,7 @@ static void checkAgainstSDKEncoding(SharedState &shared, StringRef selector,
   };
 
   if (auto declaredRet = encodeObjCType(shared, resultType))
-    if (*declaredRet != parts[0])
+    if (canon(*declaredRet) != canon(parts[0]))
       disagree("a result of", parts[0], *declaredRet);
 
   ArrayRef<StringRef> sdkArgs = ArrayRef<StringRef>(parts).drop_front(3);
@@ -2495,7 +2508,7 @@ static void checkAgainstSDKEncoding(SharedState &shared, StringRef selector,
     if (index >= sdkArgs.size())
       break;
     if (auto declaredArg = encodeObjCType(shared, ASTType(argType)))
-      if (*declaredArg != sdkArgs[index])
+      if (canon(*declaredArg) != canon(sdkArgs[index]))
         disagree(("argument " + Twine(index + 1) + " of").str(),
                  sdkArgs[index], *declaredArg);
   }

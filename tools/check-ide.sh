@@ -155,6 +155,14 @@ check() {  # <label> <pattern> <description>
 
 check "window"      "window visible: True"  "on screen"
 check "toolbar"     "toolbar: True"         "attached"
+# Items are made by a factory method the toolbar calls back into; zero means
+# the identifiers registered and the factory never ran.
+ti=$(echo "$out" | grep -m1 'toolbar items:' | sed 's/.*items: //')
+if [ -n "$ti" ] && [ "$ti" -ge 4 ]; then
+  ok "toolbar items" "$ti built by the factory"
+else
+  bad "toolbar items" "${ti:-none} — the item factory did not produce"
+fi
 check "split view"  "split panes: 2"        "sidebar + editor area"
 check "editor panes" "editor panes: 2"      "editor above the console"
 check "menu bar"    "menu bar items: 5"     "app, File, Edit, Build, Window"

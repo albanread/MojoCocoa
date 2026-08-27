@@ -33,12 +33,14 @@ from std.objc import (
     msg_send,
     nsstring,
     autoreleasepool,
-    ObjCClassBuilder,
     extern_object,
     ns_to_string,
-    new_instance,
     named_global,
     sel,
+    CGPoint,
+    CGSize,
+    CGRect,
+    NSRange,
 )
 from std.memory import OpaquePointer
 from std.ffi import external_call, c_char
@@ -46,24 +48,9 @@ from std.ffi import external_call, c_char
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
 
-@fieldwise_init
-struct CGPoint(ImplicitlyCopyable, Movable):
-    var x: Float64
-    var y: Float64
-
-
-@fieldwise_init
-struct CGSize(ImplicitlyCopyable, Movable):
-    var width: Float64
-    var height: Float64
-
-
-@fieldwise_init
-struct CGRect(ImplicitlyCopyable, Movable):
-    var origin: CGPoint
-    var size: CGSize
-
-
+# The geometry comes from std.objc now, declared TrivialRegisterPassable there
+# because that is what the C ABI says these are -- and what lets a `class`
+# method return one (COCOA_CLASS_DESIGN.md, struct returns).
 def rect(x: Float64, y: Float64, w: Float64, h: Float64) -> CGRect:
     return CGRect(CGPoint(x, y), CGSize(w, h))
 
@@ -115,379 +102,7 @@ def has_rope() -> Bool:
 
 
 # ── Drawing ─────────────────────────────────────────────────────────────────
-fn is_flipped(self_: P, cmd: P) -> Bool:
-    # Origin at the top-left. Text goes down the page; the arithmetic should
-    # not have to apologise for Cocoa's y-axis.
-    return True
-
-
-fn accepts_first_responder(self_: P, cmd: P) -> Bool:
-    return True
-
-
-fn draw_rect(self_: P, cmd: P):
-    """Paint the visible lines.
-
-    The dirty rect that AppKit passes is ignored in favour of `visibleRect`,
-    which is what the design actually wants: draw the viewport, not the
-    document. Declaring the IMP without the CGRect argument is ABI-safe on
-    arm64 -- the caller passes it in registers the callee simply never reads.
-    """
-    try:
-        with autoreleasepool():
-            let view = ObjCObject(Int(self_))
-            let vis = msg_send[CGRect, "NSView", "visibleRect"](view)
-
-            # Background.
-            let NSColor = ObjCClass.lookup["NSColor"]()
-            let bg = msg_send[
-                ObjCObject, "NSColor", "textBackgroundColor", is_class=True
-            ](NSColor.as_object())
-            _ = msg_send[ObjCObject, "NSColor", "setFill"](bg)
-            _ = external_call["NSRectFill", NoneType](vis)
-
-            let lh = line_height()
-            if lh <= 0.0:
-                return
-
-            if not has_rope():
-                return
-            let buf = g_buffer()
-            let total = buf[][0].line_count()
-
-            # Exactly the lines the viewport covers, with one either side so a
-            # partially scrolled line is not clipped away.
-            var first = Int(vis.origin.y / lh) - 1
-            if first < 0:
-                first = 0
-            var last = Int((vis.origin.y + vis.size.height) / lh) + 1
-            if last > total:
-                last = total
-
-            let attrs = ObjCObject(g_attrs()[])
-            let gutter_attrs = ObjCObject(g_gutter_attrs()[])
-
-            # Every match on screen, faintly. Only the visible byte range is
-            # searched, because only the visible range can be seen -- the whole
-            # buffer would be scanned on every frame for nothing.
-            let q = query()
-            if q.byte_length() > 0:
-                let vis_a = buf[][0].line_start(first)
-                let vis_b = buf[][0].line_start(min(last, total - 1)) + buf[][
-                    0
-                ].line(min(last, total - 1)).byte_length()
-                let NSColorM = ObjCClass.lookup["NSColor"]()
-                let found_bg = msg_send[
-                    ObjCObject, "NSColor", "systemYellowColor", is_class=True
-                ](NSColorM.as_object())
-                let faded = msg_send[
-                    ObjCObject, "NSColor", "colorWithAlphaComponent:"
-                ](found_bg, Float64(0.35))
-                _ = msg_send[ObjCObject, "NSColor", "setFill"](faded)
-                for m in buf[][0].find_all_in(q, vis_a, vis_b):
-                    let a = caret_position(m)
-                    let b = caret_position(m + q.byte_length())
-                    if b.y == a.y:
-                        _ = external_call["NSRectFill", NoneType](
-                            rect(a.x, a.y, max(b.x - a.x, 2.0), lh)
-                        )
-
-            # Selection, painted under the text.
-            let sel_a = sel_start()
-            let sel_b = sel_end()
-            if sel_a != sel_b:
-                let NSColor2 = ObjCClass.lookup["NSColor"]()
-                let hl = msg_send[
-                    ObjCObject, "NSColor", "selectedTextBackgroundColor",
-                    is_class=True,
-                ](NSColor2.as_object())
-                _ = msg_send[ObjCObject, "NSColor", "setFill"](hl)
-                let l0 = buf[][0].line_of_offset(sel_a)
-                let l1 = buf[][0].line_of_offset(sel_b)
-                var ln = max(l0, first)
-                while ln <= min(l1, last - 1):
-                    let ls = buf[][0].line_start(ln)
-                    let le = ls + buf[][0].line(ln).byte_length()
-                    let from_ = max(sel_a, ls)
-                    let to_ = min(sel_b, le)
-                    let x0 = caret_position(from_).x
-                    var x1 = caret_position(to_).x
-                    # A selected newline shows as a sliver, the way a text view
-                    # signals that the line break itself is included.
-                    if sel_b > le and ln < l1:
-                        x1 += advance() * 0.5
-                    _ = external_call["NSRectFill", NoneType](
-                        rect(x0, Float64(ln) * lh, max(x1 - x0, 1.0), lh)
-                    )
-                    ln += 1
-
-            var i = first
-            while i < last:
-                let y = Float64(i) * lh
-                # Line number, right-aligned in the gutter.
-                let num = String(i + 1)
-                let num_w = Float64(num.byte_length()) * advance()
-                _ = msg_send[
-                    ObjCObject, "NSString", "drawAtPoint:withAttributes:"
-                ](
-                    nsstring(num),
-                    CGPoint(GUTTER_W - num_w - TEXT_PAD, y),
-                    gutter_attrs.ptr(),
-                )
-                # The line, in runs of one colour each. Monospaced means a
-                # run's x is just its column times the advance, so drawing in
-                # pieces costs a few more calls and no layout at all.
-                let text = buf[][0].line(i)
-                if text.byte_length() > 0:
-                    let kinds = highlight(text)
-                    var col = 0
-                    var run = String()
-                    var run_kind = KIND_PLAIN
-                    var run_col = 0
-                    for c in text.codepoints():
-                        let k = kinds[col] if col < len(kinds) else KIND_PLAIN
-                        if k != run_kind and run.byte_length() > 0:
-                            _ = msg_send[
-                                ObjCObject,
-                                "NSString",
-                                "drawAtPoint:withAttributes:",
-                            ](
-                                nsstring(run),
-                                CGPoint(
-                                    GUTTER_W
-                                    + TEXT_PAD
-                                    + Float64(run_col) * advance(),
-                                    y,
-                                ),
-                                _attrs_for(run_kind).ptr(),
-                            )
-                            run = String()
-                            run_col = col
-                        if run.byte_length() == 0:
-                            run_col = col
-                        run_kind = k
-                        run += String(c)
-                        col += 1
-                    if run.byte_length() > 0:
-                        _ = msg_send[
-                            ObjCObject, "NSString", "drawAtPoint:withAttributes:"
-                        ](
-                            nsstring(run),
-                            CGPoint(
-                                GUTTER_W + TEXT_PAD + Float64(run_col) * advance(),
-                                y,
-                            ),
-                            _attrs_for(run_kind).ptr(),
-                        )
-                i += 1
-
-            # Diagnostics from the language server. Drawn after the text so
-            # the underline sits under the glyphs it is about, and before the
-            # caret so the caret stays on top of everything.
-            let dn = diagnostic_count()
-            if dn > 0:
-                let NSColorD = ObjCClass.lookup["NSColor"]()
-                var di = 0
-                while di < dn:
-                    let dline = g_diag_line()[][di]
-                    if dline < first or dline >= last:
-                        di += 1
-                        continue
-                    # 1 error, 2 warning, anything else advisory.
-                    let sev = g_diag_sev()[][di]
-                    var ink = msg_send[
-                        ObjCObject, "NSColor", "systemRedColor", is_class=True
-                    ](NSColorD.as_object())
-                    if sev == 2:
-                        ink = msg_send[
-                            ObjCObject, "NSColor", "systemOrangeColor",
-                            is_class=True,
-                        ](NSColorD.as_object())
-                    elif sev > 2:
-                        ink = msg_send[
-                            ObjCObject, "NSColor", "systemBlueColor",
-                            is_class=True,
-                        ](NSColorD.as_object())
-                    _ = msg_send[ObjCObject, "NSColor", "setFill"](ink)
-
-                    let y = Float64(dline) * lh
-                    # The gutter mark: a bar at the left edge, which reads at a
-                    # glance and does not need the line to be on screen wide.
-                    _ = external_call["NSRectFill", NoneType](
-                        rect(2.0, y + 3.0, 4.0, lh - 6.0)
-                    )
-
-                    # The underline, under the range the server gave.
-                    let lstart = buf[][0].line_start(dline)
-                    let a = caret_position(lstart + g_diag_col()[][di])
-                    var end_col = g_diag_end()[][di]
-                    if end_col <= g_diag_col()[][di]:
-                        end_col = g_diag_col()[][di] + 1
-                    let b = caret_position(lstart + end_col)
-                    _ = external_call["NSRectFill", NoneType](
-                        rect(a.x, y + lh - 2.0, max(b.x - a.x, advance()), 2.0)
-                    )
-                    di += 1
-
-            # The caret: drawn only with focus, and only on the blink's on
-            # phase, because a caret that never blinks reads as a rendering
-            # artefact rather than a cursor.
-            if g_focused()[] != 0 and g_blink_on()[] != 0 and sel_a == sel_b:
-                let NSColor3 = ObjCClass.lookup["NSColor"]()
-                let ink = msg_send[
-                    ObjCObject, "NSColor", "textColor", is_class=True
-                ](NSColor3.as_object())
-                _ = msg_send[ObjCObject, "NSColor", "setFill"](ink)
-                let pos = caret_position(g_caret()[])
-                _ = external_call["NSRectFill", NoneType](
-                    rect(pos.x, pos.y, 2.0, lh)
-                )
-
-            # Composing text is underlined, which is how a person knows it is
-            # not committed yet.
-            if g_marked_len()[] > 0:
-                let a = caret_position(g_marked_at()[])
-                let b = caret_position(g_marked_at()[] + g_marked_len()[])
-                let NSColor4 = ObjCClass.lookup["NSColor"]()
-                let mark = msg_send[
-                    ObjCObject, "NSColor", "textColor", is_class=True
-                ](NSColor4.as_object())
-                _ = msg_send[ObjCObject, "NSColor", "setFill"](mark)
-                _ = external_call["NSRectFill", NoneType](
-                    rect(a.x, a.y + lh - 2.0, max(b.x - a.x, advance()), 1.0)
-                )
-    except:
-        pass
-
-
-fn mouse_down(self_: P, cmd: P, event: P):
-    """Click to place the caret; drag to select."""
-    try:
-        with autoreleasepool():
-            let view = ObjCObject(Int(self_))
-            let win_pt = msg_send[CGPoint, "NSEvent", "locationInWindow"](
-                ObjCObject(Int(event))
-            )
-            let local = msg_send[CGPoint, "NSView", "convertPoint:fromView:"](
-                view, win_pt, ObjCObject(0).ptr()
-            )
-            let at = offset_at_point(local.x, local.y)
-            set_caret(at)
-            g_coalesce_at()[] = -1
-            _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
-                msg_send[ObjCObject, "NSView", "window"](view), view.ptr()
-            )
-            _refresh(self_)
-    except:
-        pass
-
-
-fn mouse_dragged(self_: P, cmd: P, event: P):
-    try:
-        with autoreleasepool():
-            let view = ObjCObject(Int(self_))
-            let win_pt = msg_send[CGPoint, "NSEvent", "locationInWindow"](
-                ObjCObject(Int(event))
-            )
-            let local = msg_send[CGPoint, "NSView", "convertPoint:fromView:"](
-                view, win_pt, ObjCObject(0).ptr()
-            )
-            # Move the caret, leave the anchor: that is a selection.
-            g_caret()[] = offset_at_point(local.x, local.y)
-            _refresh(self_)
-    except:
-        pass
-
-
-fn become_first_responder(self_: P, cmd: P) -> Bool:
-    g_focused()[] = 1
-    g_blink_on()[] = 1
-    return True
-
-
-fn resign_first_responder(self_: P, cmd: P) -> Bool:
-    g_focused()[] = 0
-    return True
-
-
-fn blink(self_: P, cmd: P, timer: P):
-    """Toggle the caret and redraw just the line it is on."""
-    try:
-        g_blink_on()[] = 0 if g_blink_on()[] != 0 else 1
-        if g_focused()[] == 0:
-            return
-        with autoreleasepool():
-            let view = ObjCObject(Int(self_))
-            let pos = caret_position(g_caret()[])
-            _ = msg_send[ObjCObject, "NSView", "setNeedsDisplayInRect:"](
-                view, rect(pos.x - 1.0, pos.y, 4.0, line_height())
-            )
-    except:
-        pass
-
-
 # ── Completion popup ────────────────────────────────────────────────────────
-fn draw_popup(self_: P, cmd: P):
-    """The candidate list: label on the left, detail greyed on the right."""
-    try:
-        with autoreleasepool():
-            let view = ObjCObject(Int(self_))
-            let bounds = msg_send[CGRect, "NSView", "bounds"](view)
-            let NSColorP = ObjCClass.lookup["NSColor"]()
-
-            # Background and a hairline border, so it reads as a panel rather
-            # than text that has escaped.
-            let bg = msg_send[
-                ObjCObject, "NSColor", "controlBackgroundColor", is_class=True
-            ](NSColorP.as_object())
-            _ = msg_send[ObjCObject, "NSColor", "setFill"](bg)
-            _ = external_call["NSRectFill", NoneType](bounds)
-
-            let n = min(completion_count(), POPUP_MAX_ROWS)
-            let attrs = ObjCObject(g_attrs()[])
-            let dim = ObjCObject(g_gutter_attrs()[])
-            var row = 0
-            while row < n:
-                let y = Float64(row) * POPUP_ROW_H
-                if row == g_popup_sel()[]:
-                    let hl = msg_send[
-                        ObjCObject, "NSColor", "selectedContentBackgroundColor",
-                        is_class=True,
-                    ](NSColorP.as_object())
-                    _ = msg_send[ObjCObject, "NSColor", "setFill"](hl)
-                    _ = external_call["NSRectFill", NoneType](
-                        rect(0.0, y, bounds.size.width, POPUP_ROW_H)
-                    )
-                _ = msg_send[
-                    ObjCObject, "NSString", "drawAtPoint:withAttributes:"
-                ](
-                    nsstring(g_comp_label()[][row]),
-                    CGPoint(8.0, y + 2.0),
-                    attrs.ptr(),
-                )
-                let detail = g_comp_detail()[][row]
-                if detail.byte_length() > 0:
-                    # Right-aligned, so the eye can run down the signatures.
-                    var chars = 0
-                    for _ in detail.codepoints():
-                        chars += 1
-                    let dx = bounds.size.width - 8.0 - Float64(chars) * advance()
-                    _ = msg_send[
-                        ObjCObject, "NSString", "drawAtPoint:withAttributes:"
-                    ](
-                        nsstring(detail),
-                        CGPoint(max(dx, 180.0), y + 2.0),
-                        dim.ptr(),
-                    )
-                row += 1
-    except:
-        pass
-
-
-fn popup_is_flipped(self_: P, cmd: P) -> Bool:
-    return True
-
-
 def ensure_popup():
     """Build the popup window once."""
     if g_popup()[] != 0:
@@ -505,16 +120,8 @@ def ensure_popup():
     _ = msg_send[ObjCObject, "NSWindow", "setOpaque:"](win, False)
     _ = msg_send[ObjCObject, "NSWindow", "setHasShadow:"](win, True)
 
-    var pb = ObjCClassBuilder["NSView"]("RoastCompletionView")
-    pb.add_method["drawRect:", encoding="v@:{CGRect={CGPoint=dd}{CGSize=dd}}"](
-        draw_popup
-    )
-    pb.add_method["isFlipped"](popup_is_flipped)
-    let cls = pb^.register()
-    var view = msg_send[ObjCObject, "NSObject", "alloc", is_class=True](
-        cls.as_object()
-    )
-    view = msg_send[ObjCObject, "NSView", "initWithFrame:"](
+    var view = ObjCObject(RoastCompletionView().__objc_id)
+    _ = msg_send[ObjCObject, "NSView", "setFrame:"](
         view, rect(0.0, 0.0, POPUP_W, POPUP_ROW_H)
     )
     _ = msg_send[ObjCObject, "NSWindow", "setContentView:"](win, view.ptr())
@@ -639,6 +246,585 @@ def popup_accept() -> Bool:
 
 
 # ── Construction ────────────────────────────────────────────────────────────
+class RoastGridView(NSView, NSTextInputClient):
+    """The editor surface, and the whole NSTextInputClient.
+
+    Twenty-one selectors that were an ObjCClassBuilder, eight encoding
+    strings, and seven `add_method_unchecked` escapes -- the escapes existed
+    because the checked overloads could not describe NSRange and CGRect
+    crossing by value. The compiler takes every encoding from the SDK now,
+    and the struct shapes cross the trampoline in registers both ways
+    (struct_arg_test, struct_ret_test).
+
+    Conformance is declared in the base list: implementing the selectors is
+    not conforming, and AppKit asks `conformsToProtocol:` before it will
+    speak NSTextInputClient to a view.
+    """
+
+    def isFlipped(self) -> Bool:
+        # Origin at the top-left. Text goes down the page; the arithmetic should
+        # not have to apologise for Cocoa's y-axis.
+        return True
+
+    def acceptsFirstResponder(self) -> Bool:
+        return True
+
+    def drawRect_(self, dirty: CGRect):
+        """Paint the visible lines.
+
+        The dirty rect that AppKit passes is ignored in favour of `visibleRect`,
+        which is what the design actually wants: draw the viewport, not the
+        document. Declaring the IMP without the CGRect argument is ABI-safe on
+        arm64 -- the caller passes it in registers the callee simply never reads.
+        """
+        try:
+            with autoreleasepool():
+                let view = ObjCObject(self.__objc_id)
+                let vis = msg_send[CGRect, "NSView", "visibleRect"](view)
+
+                # Background.
+                let NSColor = ObjCClass.lookup["NSColor"]()
+                let bg = msg_send[
+                    ObjCObject, "NSColor", "textBackgroundColor", is_class=True
+                ](NSColor.as_object())
+                _ = msg_send[ObjCObject, "NSColor", "setFill"](bg)
+                _ = external_call["NSRectFill", NoneType](vis)
+
+                let lh = line_height()
+                if lh <= 0.0:
+                    return
+
+                if not has_rope():
+                    return
+                let buf = g_buffer()
+                let total = buf[][0].line_count()
+
+                # Exactly the lines the viewport covers, with one either side so a
+                # partially scrolled line is not clipped away.
+                var first = Int(vis.origin.y / lh) - 1
+                if first < 0:
+                    first = 0
+                var last = Int((vis.origin.y + vis.size.height) / lh) + 1
+                if last > total:
+                    last = total
+
+                let attrs = ObjCObject(g_attrs()[])
+                let gutter_attrs = ObjCObject(g_gutter_attrs()[])
+
+                # Every match on screen, faintly. Only the visible byte range is
+                # searched, because only the visible range can be seen -- the whole
+                # buffer would be scanned on every frame for nothing.
+                let q = query()
+                if q.byte_length() > 0:
+                    let vis_a = buf[][0].line_start(first)
+                    let vis_b = buf[][0].line_start(min(last, total - 1)) + buf[][
+                        0
+                    ].line(min(last, total - 1)).byte_length()
+                    let NSColorM = ObjCClass.lookup["NSColor"]()
+                    let found_bg = msg_send[
+                        ObjCObject, "NSColor", "systemYellowColor", is_class=True
+                    ](NSColorM.as_object())
+                    let faded = msg_send[
+                        ObjCObject, "NSColor", "colorWithAlphaComponent:"
+                    ](found_bg, Float64(0.35))
+                    _ = msg_send[ObjCObject, "NSColor", "setFill"](faded)
+                    for m in buf[][0].find_all_in(q, vis_a, vis_b):
+                        let a = caret_position(m)
+                        let b = caret_position(m + q.byte_length())
+                        if b.y == a.y:
+                            _ = external_call["NSRectFill", NoneType](
+                                rect(a.x, a.y, max(b.x - a.x, 2.0), lh)
+                            )
+
+                # Selection, painted under the text.
+                let sel_a = sel_start()
+                let sel_b = sel_end()
+                if sel_a != sel_b:
+                    let NSColor2 = ObjCClass.lookup["NSColor"]()
+                    let hl = msg_send[
+                        ObjCObject, "NSColor", "selectedTextBackgroundColor",
+                        is_class=True,
+                    ](NSColor2.as_object())
+                    _ = msg_send[ObjCObject, "NSColor", "setFill"](hl)
+                    let l0 = buf[][0].line_of_offset(sel_a)
+                    let l1 = buf[][0].line_of_offset(sel_b)
+                    var ln = max(l0, first)
+                    while ln <= min(l1, last - 1):
+                        let ls = buf[][0].line_start(ln)
+                        let le = ls + buf[][0].line(ln).byte_length()
+                        let from_ = max(sel_a, ls)
+                        let to_ = min(sel_b, le)
+                        let x0 = caret_position(from_).x
+                        var x1 = caret_position(to_).x
+                        # A selected newline shows as a sliver, the way a text view
+                        # signals that the line break itself is included.
+                        if sel_b > le and ln < l1:
+                            x1 += advance() * 0.5
+                        _ = external_call["NSRectFill", NoneType](
+                            rect(x0, Float64(ln) * lh, max(x1 - x0, 1.0), lh)
+                        )
+                        ln += 1
+
+                var i = first
+                while i < last:
+                    let y = Float64(i) * lh
+                    # Line number, right-aligned in the gutter.
+                    let num = String(i + 1)
+                    let num_w = Float64(num.byte_length()) * advance()
+                    _ = msg_send[
+                        ObjCObject, "NSString", "drawAtPoint:withAttributes:"
+                    ](
+                        nsstring(num),
+                        CGPoint(GUTTER_W - num_w - TEXT_PAD, y),
+                        gutter_attrs.ptr(),
+                    )
+                    # The line, in runs of one colour each. Monospaced means a
+                    # run's x is just its column times the advance, so drawing in
+                    # pieces costs a few more calls and no layout at all.
+                    let text = buf[][0].line(i)
+                    if text.byte_length() > 0:
+                        let kinds = highlight(text)
+                        var col = 0
+                        var run = String()
+                        var run_kind = KIND_PLAIN
+                        var run_col = 0
+                        for c in text.codepoints():
+                            let k = kinds[col] if col < len(kinds) else KIND_PLAIN
+                            if k != run_kind and run.byte_length() > 0:
+                                _ = msg_send[
+                                    ObjCObject,
+                                    "NSString",
+                                    "drawAtPoint:withAttributes:",
+                                ](
+                                    nsstring(run),
+                                    CGPoint(
+                                        GUTTER_W
+                                        + TEXT_PAD
+                                        + Float64(run_col) * advance(),
+                                        y,
+                                    ),
+                                    _attrs_for(run_kind).ptr(),
+                                )
+                                run = String()
+                                run_col = col
+                            if run.byte_length() == 0:
+                                run_col = col
+                            run_kind = k
+                            run += String(c)
+                            col += 1
+                        if run.byte_length() > 0:
+                            _ = msg_send[
+                                ObjCObject, "NSString", "drawAtPoint:withAttributes:"
+                            ](
+                                nsstring(run),
+                                CGPoint(
+                                    GUTTER_W + TEXT_PAD + Float64(run_col) * advance(),
+                                    y,
+                                ),
+                                _attrs_for(run_kind).ptr(),
+                            )
+                    i += 1
+
+                # Diagnostics from the language server. Drawn after the text so
+                # the underline sits under the glyphs it is about, and before the
+                # caret so the caret stays on top of everything.
+                let dn = diagnostic_count()
+                if dn > 0:
+                    let NSColorD = ObjCClass.lookup["NSColor"]()
+                    var di = 0
+                    while di < dn:
+                        let dline = g_diag_line()[][di]
+                        if dline < first or dline >= last:
+                            di += 1
+                            continue
+                        # 1 error, 2 warning, anything else advisory.
+                        let sev = g_diag_sev()[][di]
+                        var ink = msg_send[
+                            ObjCObject, "NSColor", "systemRedColor", is_class=True
+                        ](NSColorD.as_object())
+                        if sev == 2:
+                            ink = msg_send[
+                                ObjCObject, "NSColor", "systemOrangeColor",
+                                is_class=True,
+                            ](NSColorD.as_object())
+                        elif sev > 2:
+                            ink = msg_send[
+                                ObjCObject, "NSColor", "systemBlueColor",
+                                is_class=True,
+                            ](NSColorD.as_object())
+                        _ = msg_send[ObjCObject, "NSColor", "setFill"](ink)
+
+                        let y = Float64(dline) * lh
+                        # The gutter mark: a bar at the left edge, which reads at a
+                        # glance and does not need the line to be on screen wide.
+                        _ = external_call["NSRectFill", NoneType](
+                            rect(2.0, y + 3.0, 4.0, lh - 6.0)
+                        )
+
+                        # The underline, under the range the server gave.
+                        let lstart = buf[][0].line_start(dline)
+                        let a = caret_position(lstart + g_diag_col()[][di])
+                        var end_col = g_diag_end()[][di]
+                        if end_col <= g_diag_col()[][di]:
+                            end_col = g_diag_col()[][di] + 1
+                        let b = caret_position(lstart + end_col)
+                        _ = external_call["NSRectFill", NoneType](
+                            rect(a.x, y + lh - 2.0, max(b.x - a.x, advance()), 2.0)
+                        )
+                        di += 1
+
+                # The caret: drawn only with focus, and only on the blink's on
+                # phase, because a caret that never blinks reads as a rendering
+                # artefact rather than a cursor.
+                if g_focused()[] != 0 and g_blink_on()[] != 0 and sel_a == sel_b:
+                    let NSColor3 = ObjCClass.lookup["NSColor"]()
+                    let ink = msg_send[
+                        ObjCObject, "NSColor", "textColor", is_class=True
+                    ](NSColor3.as_object())
+                    _ = msg_send[ObjCObject, "NSColor", "setFill"](ink)
+                    let pos = caret_position(g_caret()[])
+                    _ = external_call["NSRectFill", NoneType](
+                        rect(pos.x, pos.y, 2.0, lh)
+                    )
+
+                # Composing text is underlined, which is how a person knows it is
+                # not committed yet.
+                if g_marked_len()[] > 0:
+                    let a = caret_position(g_marked_at()[])
+                    let b = caret_position(g_marked_at()[] + g_marked_len()[])
+                    let NSColor4 = ObjCClass.lookup["NSColor"]()
+                    let mark = msg_send[
+                        ObjCObject, "NSColor", "textColor", is_class=True
+                    ](NSColor4.as_object())
+                    _ = msg_send[ObjCObject, "NSColor", "setFill"](mark)
+                    _ = external_call["NSRectFill", NoneType](
+                        rect(a.x, a.y + lh - 2.0, max(b.x - a.x, advance()), 1.0)
+                    )
+        except:
+            pass
+
+    def mouseDown_(self, event: ObjCObject):
+        """Click to place the caret; drag to select."""
+        try:
+            with autoreleasepool():
+                let view = ObjCObject(self.__objc_id)
+                let win_pt = msg_send[CGPoint, "NSEvent", "locationInWindow"](
+                    event
+                )
+                let local = msg_send[CGPoint, "NSView", "convertPoint:fromView:"](
+                    view, win_pt, ObjCObject(0).ptr()
+                )
+                let at = offset_at_point(local.x, local.y)
+                set_caret(at)
+                g_coalesce_at()[] = -1
+                _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
+                    msg_send[ObjCObject, "NSView", "window"](view), view.ptr()
+                )
+                _refresh(P(unsafe_from_address=self.__objc_id))
+        except:
+            pass
+
+    def mouseDragged_(self, event: ObjCObject):
+        try:
+            with autoreleasepool():
+                let view = ObjCObject(self.__objc_id)
+                let win_pt = msg_send[CGPoint, "NSEvent", "locationInWindow"](
+                    event
+                )
+                let local = msg_send[CGPoint, "NSView", "convertPoint:fromView:"](
+                    view, win_pt, ObjCObject(0).ptr()
+                )
+                # Move the caret, leave the anchor: that is a selection.
+                g_caret()[] = offset_at_point(local.x, local.y)
+                _refresh(P(unsafe_from_address=self.__objc_id))
+        except:
+            pass
+
+    def becomeFirstResponder(self) -> Bool:
+        g_focused()[] = 1
+        g_blink_on()[] = 1
+        return True
+
+    def resignFirstResponder(self) -> Bool:
+        g_focused()[] = 0
+        return True
+
+    def roastBlink_(self, timer: ObjCObject):
+        """Toggle the caret and redraw just the line it is on."""
+        try:
+            g_blink_on()[] = 0 if g_blink_on()[] != 0 else 1
+            if g_focused()[] == 0:
+                return
+            with autoreleasepool():
+                let view = ObjCObject(self.__objc_id)
+                let pos = caret_position(g_caret()[])
+                _ = msg_send[ObjCObject, "NSView", "setNeedsDisplayInRect:"](
+                    view, rect(pos.x - 1.0, pos.y, 4.0, line_height())
+                )
+        except:
+            pass
+
+    def acceptsFirstMouse_(self, event: ObjCObject) -> Bool:
+        return True
+
+    def keyDown_(self, event: ObjCObject):
+        """Every key goes to the input context, never straight to the buffer.
+
+        Interpreting the event ourselves would work for ASCII and break every
+        input method: it is `interpretKeyEvents:` that turns a keystroke into
+        `insertText:`, a command selector, or marked text mid-composition.
+        """
+        try:
+            with autoreleasepool():
+                let view = ObjCObject(self.__objc_id)
+                let NSArray = ObjCClass.lookup["NSArray"]()
+                let one = msg_send[
+                    ObjCObject, "NSArray", "arrayWithObject:", is_class=True
+                ](NSArray.as_object(), event)
+                _ = msg_send[ObjCObject, "NSView", "interpretKeyEvents:"](
+                    view, one.ptr()
+                )
+        except:
+            pass
+
+    def insertText_replacementRange_(self, text: ObjCObject, replacement: NSRange):
+        """Committed text: a character, a pasted run, or a finished composition."""
+        try:
+            with autoreleasepool():
+                let obj = text
+                # Either an NSString or an NSAttributedString; ask for the string.
+                var s = obj
+                if msg_send[Bool, "NSObject", "isKindOfClass:"](
+                    obj, ObjCClass.lookup["NSAttributedString"]().as_object().ptr()
+                ):
+                    s = msg_send[ObjCObject, "NSAttributedString", "string"](obj)
+                # A composition being committed replaces what it was composing.
+                if g_marked_len()[] > 0:
+                    g_anchor()[] = g_marked_at()[]
+                    g_caret()[] = g_marked_at()[] + g_marked_len()[]
+                replace_selection(ns_to_string(s))
+                # A word character continues a completion; anything else ends one.
+                if popup_open():
+                    let typed = ns_to_string(s)
+                    if typed.byte_length() != 1:
+                        hide_popup()
+                _refresh(P(unsafe_from_address=self.__objc_id))
+        except:
+            pass
+
+    def setMarkedText_selectedRange_replacementRange_(self, text: ObjCObject, selected: NSRange, replacement: NSRange):
+        """Text mid-composition: shown, not committed. Replacing the previous
+        marked run is what keeps a CJK candidate window from duplicating input."""
+        try:
+            with autoreleasepool():
+                let obj = text
+                var s = obj
+                if msg_send[Bool, "NSObject", "isKindOfClass:"](
+                    obj, ObjCClass.lookup["NSAttributedString"]().as_object().ptr()
+                ):
+                    s = msg_send[ObjCObject, "NSAttributedString", "string"](obj)
+                let str = ns_to_string(s)
+
+                # Replace whatever was marked before, or the selection if nothing.
+                let at = g_marked_at()[] if g_marked_len()[] > 0 else sel_start()
+                let upto = (
+                    g_marked_at()[] + g_marked_len()[]
+                    if g_marked_len()[] > 0
+                    else sel_end()
+                )
+                if has_rope():
+                    set_rope(g_buffer()[][0].replace(at, upto, str))
+                g_marked_at()[] = at
+                g_marked_len()[] = str.byte_length()
+                set_caret(at + str.byte_length())
+                _refresh(P(unsafe_from_address=self.__objc_id))
+        except:
+            pass
+
+    def unmarkText(self):
+        g_marked_at()[] = 0
+        g_marked_len()[] = 0
+
+    def hasMarkedText(self) -> Bool:
+        return g_marked_len()[] > 0
+
+    def markedRange(self) -> NSRange:
+        try:
+            if g_marked_len()[] == 0:
+                return NSRange(NOT_FOUND, 0)
+            let a = byte_to_utf16(g_marked_at()[])
+            let b = byte_to_utf16(g_marked_at()[] + g_marked_len()[])
+            return NSRange(a, b - a)
+        except:
+            return NSRange(NOT_FOUND, 0)
+
+    def selectedRange(self) -> NSRange:
+        try:
+            let a = byte_to_utf16(sel_start())
+            let b = byte_to_utf16(sel_end())
+            return NSRange(a, b - a)
+        except:
+            return NSRange(0, 0)
+
+    def validAttributesForMarkedText(self) -> ObjCObject:
+        """No marked-text styling is honoured, so the list is empty -- which is a
+        legitimate answer, and an empty array rather than nil."""
+        try:
+            with autoreleasepool():
+                let NSArray = ObjCClass.lookup["NSArray"]()
+                return msg_send[ObjCObject, "NSArray", "array", is_class=True](
+                    NSArray.as_object()
+                )
+        except:
+            return ObjCObject(0)
+
+    def attributedSubstringForProposedRange_actualRange_(self, range: NSRange, actual: P) -> ObjCObject:
+        """The text an input method wants to reconsider -- used by dictionary
+        lookup and by some candidate windows."""
+        try:
+            with autoreleasepool():
+                if not has_rope():
+                    return ObjCObject(0)
+                let a = utf16_to_byte(range.location)
+                let b = utf16_to_byte(range.location + range.length)
+                let s = g_buffer()[][0].slice(a, b)
+                let NSAttributedString = ObjCClass.lookup["NSAttributedString"]()
+                var att = msg_send[
+                    ObjCObject, "NSAttributedString", "alloc", is_class=True
+                ](NSAttributedString.as_object())
+                # Named for the concrete class, not the facade. NSAttributedString
+                # is a class cluster: `[NSAttributedString alloc]` hands back an
+                # NSConcreteAttributedString, and the database is a runtime dump,
+                # so initWithString: is recorded on the concrete member and not on
+                # the public name. The class parameter only chooses which metadata
+                # to read -- dispatch happens on the receiver either way -- so this
+                # names where the selector actually lives.
+                att = msg_send[
+                    ObjCObject, "NSConcreteAttributedString", "initWithString:"
+                ](att, nsstring(s).ptr())
+                return att
+        except:
+            return ObjCObject(0)
+
+    def firstRectForCharacterRange_actualRange_(self, range: NSRange, actual: P) -> CGRect:
+        """Where to put the candidate window: screen coordinates of the composing
+        text. Getting this wrong parks the CJK candidate list in a corner."""
+        try:
+            with autoreleasepool():
+                let view = ObjCObject(self.__objc_id)
+                let at = utf16_to_byte(range.location)
+                let line = g_buffer()[][0].line_of_offset(at) if has_rope() else 0
+                let col = at - (
+                    g_buffer()[][0].line_start(line) if has_rope() else 0
+                )
+                let local = rect(
+                    GUTTER_W + TEXT_PAD + Float64(col) * advance(),
+                    Float64(line) * line_height(),
+                    advance(),
+                    line_height(),
+                )
+                # View -> window -> screen. `convertRect:toView:` with a nil view
+                # means "to the window", which is the conversion wanted here.
+                let in_window = msg_send[
+                    CGRect, "NSView", "convertRect:toView:"
+                ](view, local, ObjCObject(0).ptr())
+                let w = msg_send[ObjCObject, "NSView", "window"](view)
+                if w.addr() == 0:
+                    return in_window
+                return msg_send[CGRect, "NSWindow", "convertRectToScreen:"](
+                    w, in_window
+                )
+        except:
+            return rect(0.0, 0.0, 0.0, 0.0)
+
+    def characterIndexForPoint_(self, point: CGPoint) -> Int:
+        """Hit testing, for click-to-place-caret from the input system."""
+        try:
+            if not has_rope():
+                return 0
+            let line = max(0, Int(point.y / line_height()))
+            let col = max(0, Int((point.x - GUTTER_W - TEXT_PAD) / advance()))
+            let start = g_buffer()[][0].line_start(line)
+            return byte_to_utf16(start + col)
+        except:
+            return 0
+
+    def doCommandBySelector_(self, selector: P):
+        """Movement and deletion arrive as selectors, not characters."""
+        try:
+            let raw = external_call["sel_getName", P](selector)
+            if Int(raw) == 0:
+                return
+            let name = String(unsafe_from_utf8_ptr=raw.unsafe_bitcast[c_char]())
+            apply_command(name)
+            _refresh(P(unsafe_from_address=self.__objc_id))
+        except:
+            pass
+
+
+class RoastCompletionView(NSView):
+    """The completion popup's content view."""
+
+    def drawRect_(self, dirty: CGRect):
+        """The candidate list: label on the left, detail greyed on the right."""
+        try:
+            with autoreleasepool():
+                let view = ObjCObject(self.__objc_id)
+                let bounds = msg_send[CGRect, "NSView", "bounds"](view)
+                let NSColorP = ObjCClass.lookup["NSColor"]()
+
+                # Background and a hairline border, so it reads as a panel rather
+                # than text that has escaped.
+                let bg = msg_send[
+                    ObjCObject, "NSColor", "controlBackgroundColor", is_class=True
+                ](NSColorP.as_object())
+                _ = msg_send[ObjCObject, "NSColor", "setFill"](bg)
+                _ = external_call["NSRectFill", NoneType](bounds)
+
+                let n = min(completion_count(), POPUP_MAX_ROWS)
+                let attrs = ObjCObject(g_attrs()[])
+                let dim = ObjCObject(g_gutter_attrs()[])
+                var row = 0
+                while row < n:
+                    let y = Float64(row) * POPUP_ROW_H
+                    if row == g_popup_sel()[]:
+                        let hl = msg_send[
+                            ObjCObject, "NSColor", "selectedContentBackgroundColor",
+                            is_class=True,
+                        ](NSColorP.as_object())
+                        _ = msg_send[ObjCObject, "NSColor", "setFill"](hl)
+                        _ = external_call["NSRectFill", NoneType](
+                            rect(0.0, y, bounds.size.width, POPUP_ROW_H)
+                        )
+                    _ = msg_send[
+                        ObjCObject, "NSString", "drawAtPoint:withAttributes:"
+                    ](
+                        nsstring(g_comp_label()[][row]),
+                        CGPoint(8.0, y + 2.0),
+                        attrs.ptr(),
+                    )
+                    let detail = g_comp_detail()[][row]
+                    if detail.byte_length() > 0:
+                        # Right-aligned, so the eye can run down the signatures.
+                        var chars = 0
+                        for _ in detail.codepoints():
+                            chars += 1
+                        let dx = bounds.size.width - 8.0 - Float64(chars) * advance()
+                        _ = msg_send[
+                            ObjCObject, "NSString", "drawAtPoint:withAttributes:"
+                        ](
+                            nsstring(detail),
+                            CGPoint(max(dx, 180.0), y + 2.0),
+                            dim.ptr(),
+                        )
+                    row += 1
+        except:
+            pass
+
+    def isFlipped(self) -> Bool:
+        return True
+
+
 def make_grid_view(frame: CGRect) -> ObjCObject:
     """Register the view class, measure the font, and return an instance."""
     # A monospaced face, and its advance measured once. Everything downstream
@@ -718,27 +904,16 @@ def make_grid_view(frame: CGRect) -> ObjCObject:
     let leading = msg_send[Float64, "NSFont", "leading"](font)
     g_line_h_x1000()[] = Int((ascender - descender + leading + 2.0) * 1000.0)
 
-    var b = ObjCClassBuilder["NSView"]("RoastGridView")
-    add_text_input(b)
-    # Responding to the selectors is not conformance, and AppKit asks.
-    if not b.add_protocol["NSTextInputClient"]():
+    # Instantiating the class registers it -- methods, protocol and all. The
+    # conformance report the smoke test asserts stays: it now checks what the
+    # declaration claims rather than what a builder was told.
+    var view = ObjCObject(RoastGridView().__objc_id)
+    var proto = external_call["objc_getProtocol", P](
+        "NSTextInputClient".unsafe_ptr()
+    )
+    if not msg_send[Bool, "NSObject", "conformsToProtocol:"](view, proto):
         print("roast: NSTextInputClient protocol not registered")
-    b.add_method["drawRect:", encoding="v@:{CGRect={CGPoint=dd}{CGSize=dd}}"](
-        draw_rect
-    )
-    b.add_method["isFlipped"](is_flipped)
-    b.add_method["acceptsFirstResponder"](accepts_first_responder)
-    b.add_method["becomeFirstResponder"](become_first_responder)
-    b.add_method["resignFirstResponder"](resign_first_responder)
-    b.add_method["mouseDown:", encoding="v@:@"](mouse_down)
-    b.add_method["mouseDragged:", encoding="v@:@"](mouse_dragged)
-    b.add_method["roastBlink:", encoding="v@:@"](blink)
-    let cls = b^.register()
-
-    var view = msg_send[ObjCObject, "NSObject", "alloc", is_class=True](
-        cls.as_object()
-    )
-    view = msg_send[ObjCObject, "NSView", "initWithFrame:"](view, frame)
+    _ = msg_send[ObjCObject, "NSView", "setFrame:"](view, frame)
 
     # The blink. 0.53 s is what Cocoa uses, and matching it means the caret
     # keeps time with every other text field on screen.
@@ -783,15 +958,9 @@ def document_size(width: Float64) -> CGSize:
 # and bytes inside the rope. The two conversions live in one place each.
 
 
-@fieldwise_init
-struct NSRange(ImplicitlyCopyable, Movable):
-    """Cocoa's range: location and length, both counted in UTF-16 units."""
-
-    var location: Int
-    var length: Int
-
-
-comptime NOT_FOUND = 0x7FFFFFFFFFFFFFFF
+# NSRange comes from std.objc (TrivialRegisterPassable, x0/x1); location and
+# length are counted in UTF-16 units here, as everywhere in Cocoa text.
+comptime NOT_FOUND = NSRange.NOT_FOUND
 
 # Caret and selection, in byte offsets. anchor == caret means no selection.
 comptime g_caret = named_global["roast.caret", Int]
@@ -1206,220 +1375,6 @@ def replace_selection(text: String):
     g_marked_len()[] = 0
 
 
-fn accepts_first_mouse(self_: P, cmd: P, event: P) -> Bool:
-    return True
-
-
-fn key_down(self_: P, cmd: P, event: P):
-    """Every key goes to the input context, never straight to the buffer.
-
-    Interpreting the event ourselves would work for ASCII and break every
-    input method: it is `interpretKeyEvents:` that turns a keystroke into
-    `insertText:`, a command selector, or marked text mid-composition.
-    """
-    try:
-        with autoreleasepool():
-            let view = ObjCObject(Int(self_))
-            let NSArray = ObjCClass.lookup["NSArray"]()
-            let one = msg_send[
-                ObjCObject, "NSArray", "arrayWithObject:", is_class=True
-            ](NSArray.as_object(), event)
-            _ = msg_send[ObjCObject, "NSView", "interpretKeyEvents:"](
-                view, one.ptr()
-            )
-    except:
-        pass
-
-
-fn insert_text(self_: P, cmd: P, text: P, replacement: NSRange):
-    """Committed text: a character, a pasted run, or a finished composition."""
-    try:
-        with autoreleasepool():
-            let obj = ObjCObject(Int(text))
-            # Either an NSString or an NSAttributedString; ask for the string.
-            var s = obj
-            if msg_send[Bool, "NSObject", "isKindOfClass:"](
-                obj, ObjCClass.lookup["NSAttributedString"]().as_object().ptr()
-            ):
-                s = msg_send[ObjCObject, "NSAttributedString", "string"](obj)
-            # A composition being committed replaces what it was composing.
-            if g_marked_len()[] > 0:
-                g_anchor()[] = g_marked_at()[]
-                g_caret()[] = g_marked_at()[] + g_marked_len()[]
-            replace_selection(ns_to_string(s))
-            # A word character continues a completion; anything else ends one.
-            if popup_open():
-                let typed = ns_to_string(s)
-                if typed.byte_length() != 1:
-                    hide_popup()
-            _refresh(self_)
-    except:
-        pass
-
-
-fn set_marked_text(
-    self_: P, cmd: P, text: P, selected: NSRange, replacement: NSRange
-):
-    """Text mid-composition: shown, not committed. Replacing the previous
-    marked run is what keeps a CJK candidate window from duplicating input."""
-    try:
-        with autoreleasepool():
-            let obj = ObjCObject(Int(text))
-            var s = obj
-            if msg_send[Bool, "NSObject", "isKindOfClass:"](
-                obj, ObjCClass.lookup["NSAttributedString"]().as_object().ptr()
-            ):
-                s = msg_send[ObjCObject, "NSAttributedString", "string"](obj)
-            let str = ns_to_string(s)
-
-            # Replace whatever was marked before, or the selection if nothing.
-            let at = g_marked_at()[] if g_marked_len()[] > 0 else sel_start()
-            let upto = (
-                g_marked_at()[] + g_marked_len()[]
-                if g_marked_len()[] > 0
-                else sel_end()
-            )
-            if has_rope():
-                set_rope(g_buffer()[][0].replace(at, upto, str))
-            g_marked_at()[] = at
-            g_marked_len()[] = str.byte_length()
-            set_caret(at + str.byte_length())
-            _refresh(self_)
-    except:
-        pass
-
-
-fn unmark_text(self_: P, cmd: P):
-    g_marked_at()[] = 0
-    g_marked_len()[] = 0
-
-
-fn has_marked_text(self_: P, cmd: P) -> Bool:
-    return g_marked_len()[] > 0
-
-
-fn marked_range(self_: P, cmd: P) -> NSRange:
-    try:
-        if g_marked_len()[] == 0:
-            return NSRange(NOT_FOUND, 0)
-        let a = byte_to_utf16(g_marked_at()[])
-        let b = byte_to_utf16(g_marked_at()[] + g_marked_len()[])
-        return NSRange(a, b - a)
-    except:
-        return NSRange(NOT_FOUND, 0)
-
-
-fn selected_range(self_: P, cmd: P) -> NSRange:
-    try:
-        let a = byte_to_utf16(sel_start())
-        let b = byte_to_utf16(sel_end())
-        return NSRange(a, b - a)
-    except:
-        return NSRange(0, 0)
-
-
-fn valid_attributes(self_: P, cmd: P) -> Int:
-    """No marked-text styling is honoured, so the list is empty -- which is a
-    legitimate answer, and an empty array rather than nil."""
-    try:
-        with autoreleasepool():
-            let NSArray = ObjCClass.lookup["NSArray"]()
-            return msg_send[ObjCObject, "NSArray", "array", is_class=True](
-                NSArray.as_object()
-            ).addr()
-    except:
-        return 0
-
-
-fn attributed_substring(
-    self_: P, cmd: P, range: NSRange, actual: P
-) -> Int:
-    """The text an input method wants to reconsider -- used by dictionary
-    lookup and by some candidate windows."""
-    try:
-        with autoreleasepool():
-            if not has_rope():
-                return 0
-            let a = utf16_to_byte(range.location)
-            let b = utf16_to_byte(range.location + range.length)
-            let s = g_buffer()[][0].slice(a, b)
-            let NSAttributedString = ObjCClass.lookup["NSAttributedString"]()
-            var att = msg_send[
-                ObjCObject, "NSAttributedString", "alloc", is_class=True
-            ](NSAttributedString.as_object())
-            # Named for the concrete class, not the facade. NSAttributedString
-            # is a class cluster: `[NSAttributedString alloc]` hands back an
-            # NSConcreteAttributedString, and the database is a runtime dump,
-            # so initWithString: is recorded on the concrete member and not on
-            # the public name. The class parameter only chooses which metadata
-            # to read -- dispatch happens on the receiver either way -- so this
-            # names where the selector actually lives.
-            att = msg_send[
-                ObjCObject, "NSConcreteAttributedString", "initWithString:"
-            ](att, nsstring(s).ptr())
-            return att.addr()
-    except:
-        return 0
-
-
-fn first_rect(self_: P, cmd: P, range: NSRange, actual: P) -> CGRect:
-    """Where to put the candidate window: screen coordinates of the composing
-    text. Getting this wrong parks the CJK candidate list in a corner."""
-    try:
-        with autoreleasepool():
-            let view = ObjCObject(Int(self_))
-            let at = utf16_to_byte(range.location)
-            let line = g_buffer()[][0].line_of_offset(at) if has_rope() else 0
-            let col = at - (
-                g_buffer()[][0].line_start(line) if has_rope() else 0
-            )
-            let local = rect(
-                GUTTER_W + TEXT_PAD + Float64(col) * advance(),
-                Float64(line) * line_height(),
-                advance(),
-                line_height(),
-            )
-            # View -> window -> screen. `convertRect:toView:` with a nil view
-            # means "to the window", which is the conversion wanted here.
-            let in_window = msg_send[
-                CGRect, "NSView", "convertRect:toView:"
-            ](view, local, ObjCObject(0).ptr())
-            let w = msg_send[ObjCObject, "NSView", "window"](view)
-            if w.addr() == 0:
-                return in_window
-            return msg_send[CGRect, "NSWindow", "convertRectToScreen:"](
-                w, in_window
-            )
-    except:
-        return rect(0.0, 0.0, 0.0, 0.0)
-
-
-fn character_index_for_point(self_: P, cmd: P, point: CGPoint) -> Int:
-    """Hit testing, for click-to-place-caret from the input system."""
-    try:
-        if not has_rope():
-            return 0
-        let line = max(0, Int(point.y / line_height()))
-        let col = max(0, Int((point.x - GUTTER_W - TEXT_PAD) / advance()))
-        let start = g_buffer()[][0].line_start(line)
-        return byte_to_utf16(start + col)
-    except:
-        return 0
-
-
-fn do_command(self_: P, cmd: P, selector: P):
-    """Movement and deletion arrive as selectors, not characters."""
-    try:
-        let raw = external_call["sel_getName", P](selector)
-        if Int(raw) == 0:
-            return
-        let name = String(unsafe_from_utf8_ptr=raw.unsafe_bitcast[c_char]())
-        apply_command(name)
-        _refresh(self_)
-    except:
-        pass
-
-
 def apply_command(name: String):
     """Movement and deletion, separated from the plumbing that delivers it.
 
@@ -1526,37 +1481,3 @@ def _refresh(view_ptr: P):
         pass
 
 
-def add_text_input(mut b: ObjCClassBuilder["NSView"]):
-    """Attach the input client to a view class under construction."""
-    b.add_method["keyDown:", encoding="v@:@"](key_down)
-    b.add_method["acceptsFirstMouse:", encoding="B@:@"](accepts_first_mouse)
-    b.add_method["doCommandBySelector:", encoding="v@::"](do_command)
-    b.add_method["unmarkText", encoding="v@:"](unmark_text)
-    b.add_method["hasMarkedText", encoding="B@:"](has_marked_text)
-    b.add_method_unchecked[
-        "insertText:replacementRange:", encoding="v@:@{_NSRange=QQ}"
-    ](insert_text)
-    b.add_method_unchecked[
-        "setMarkedText:selectedRange:replacementRange:",
-        encoding="v@:@{_NSRange=QQ}{_NSRange=QQ}",
-    ](set_marked_text)
-    b.add_method_unchecked["markedRange", encoding="{_NSRange=QQ}@:"](
-        marked_range
-    )
-    b.add_method_unchecked["selectedRange", encoding="{_NSRange=QQ}@:"](
-        selected_range
-    )
-    b.add_method_unchecked["validAttributesForMarkedText", encoding="@@:"](
-        valid_attributes
-    )
-    b.add_method_unchecked[
-        "attributedSubstringForProposedRange:actualRange:",
-        encoding="@@:{_NSRange=QQ}^{_NSRange=QQ}",
-    ](attributed_substring)
-    b.add_method_unchecked[
-        "firstRectForCharacterRange:actualRange:",
-        encoding="{CGRect={CGPoint=dd}{CGSize=dd}}@:{_NSRange=QQ}^{_NSRange=QQ}",
-    ](first_rect)
-    b.add_method_unchecked[
-        "characterIndexForPoint:", encoding="Q@:{CGPoint=dd}"
-    ](character_index_for_point)

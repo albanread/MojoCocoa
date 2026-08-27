@@ -15,10 +15,8 @@ from std.objc import (
     msg_send,
     nsstring,
     autoreleasepool,
-    ObjCClassBuilder,
     IMP1,
     IMP1Bool,
-    new_instance,
     named_global,
     extern_object,
     sel,
@@ -841,6 +839,121 @@ class RoastActions:
     def toolbarDefaultItemIdentifiers_(self, tb: ObjCObject) -> ObjCObject:
         return toolbar_ids_object()
 
+    def toolbar_itemForItemIdentifier_willBeInsertedIntoToolbar_(
+        self, toolbar: ObjCObject, ident: ObjCObject, inserted: Bool
+    ) -> ObjCObject:
+        """Build one toolbar item on demand, by identifier."""
+        try:
+            with autoreleasepool():
+                let key = ident
+                let name = String(msg_send[Int, "NSString", "length"](key))
+                _ = name  # length forces a real NSString; the compare is below
+
+                let NSToolbarItem = ObjCClass.lookup["NSToolbarItem"]()
+                var item = msg_send[
+                    ObjCObject, "NSToolbarItem", "alloc", is_class=True
+                ](NSToolbarItem.as_object())
+                item = msg_send[
+                    ObjCObject, "NSToolbarItem", "initWithItemIdentifier:"
+                ](item, ident)
+
+                # Search is a view item, not a button: it carries an NSSearchField.
+                if msg_send[Bool, "NSString", "isEqualToString:"](
+                    key, nsstring(String(TB_FIND)).ptr()
+                ):
+                    let NSSearchField = ObjCClass.lookup["NSSearchField"]()
+                    var field = msg_send[
+                        ObjCObject, "NSSearchField", "alloc", is_class=True
+                    ](NSSearchField.as_object())
+                    field = msg_send[ObjCObject, "NSView", "initWithFrame:"](
+                        field, rect(0.0, 0.0, 240.0, 24.0)
+                    )
+                    _ = msg_send[
+                        ObjCObject, "NSSearchField", "setPlaceholderString:"
+                    ](field, nsstring(String("Find")).ptr())
+                    let owner = ObjCObject(g_actions()[])
+                    _ = msg_send[ObjCObject, "NSControl", "setTarget:"](
+                        field, owner.ptr()
+                    )
+                    _ = msg_send[ObjCObject, "NSControl", "setAction:"](
+                        field, sel["roastFindChanged:"]().ptr()
+                    )
+                    # Search as you type: NSSearchField sends its action on every
+                    # edit when told to, which a plain NSTextField does not.
+                    _ = msg_send[ObjCObject, "NSSearchField", "setSendsWholeSearchString:"](
+                        field, False
+                    )
+                    _ = msg_send[ObjCObject, "NSSearchField", "setSendsSearchStringImmediately:"](
+                        field, True
+                    )
+                    _ = msg_send[ObjCObject, "NSToolbarItem", "setView:"](
+                        item, field.ptr()
+                    )
+                    _ = msg_send[ObjCObject, "NSToolbarItem", "setLabel:"](
+                        item, nsstring(String("Find")).ptr()
+                    )
+                    g_findfield()[] = field.addr()
+                    return item
+
+                # Which item was asked for? Compare against each identifier.
+                var title = String("?")
+                var symbol = String("questionmark")
+                var action = sel["roastStop:"]()
+                if msg_send[Bool, "NSString", "isEqualToString:"](
+                    key, nsstring(String(TB_BUILD)).ptr()
+                ):
+                    title = String("Build")
+                    symbol = String("hammer")
+                    action = sel["roastBuild:"]()
+                elif msg_send[Bool, "NSString", "isEqualToString:"](
+                    key, nsstring(String(TB_RUN)).ptr()
+                ):
+                    title = String("Run")
+                    symbol = String("play.fill")
+                    action = sel["roastRun:"]()
+                elif msg_send[Bool, "NSString", "isEqualToString:"](
+                    key, nsstring(String(TB_STOP)).ptr()
+                ):
+                    title = String("Stop")
+                    symbol = String("stop.fill")
+                    action = sel["roastStop:"]()
+                else:
+                    return ObjCObject(0)
+
+                _ = msg_send[ObjCObject, "NSToolbarItem", "setLabel:"](
+                    item, nsstring(title).ptr()
+                )
+                # An SF Symbol, or the item renders as an empty bordered circle.
+                # The accessibility description doubles as the tooltip source, so
+                # the title serves for both rather than passing nil.
+                let NSImage = ObjCClass.lookup["NSImage"]()
+                let image = msg_send[
+                    ObjCObject,
+                    "NSImage",
+                    "imageWithSystemSymbolName:accessibilityDescription:",
+                    is_class=True,
+                ](
+                    NSImage.as_object(),
+                    nsstring(symbol).ptr(),
+                    nsstring(title).ptr(),
+                )
+                if image.addr() != 0:
+                    _ = msg_send[ObjCObject, "NSToolbarItem", "setImage:"](
+                        item, image.ptr()
+                    )
+                _ = msg_send[ObjCObject, "NSToolbarItem", "setToolTip:"](
+                    item, nsstring(title).ptr()
+                )
+                _ = msg_send[ObjCObject, "NSToolbarItem", "setTarget:"](
+                    item, ObjCObject(g_actions()[]).ptr()
+                )
+                _ = msg_send[ObjCObject, "NSToolbarItem", "setAction:"](
+                    item, action.ptr()
+                )
+                return item
+        except:
+            return ObjCObject(0)
+
     def controlTextDidChange_(self, note: ObjCObject):
         self.roastFindChanged_(note)
 
@@ -1336,122 +1449,6 @@ def toolbar_ids_object() -> ObjCObject:
         return toolbar_ids()
     except:
         return ObjCObject(0)
-
-
-fn toolbar_item_for_id(
-    self_: P, cmd: P, toolbar: P, ident: P, inserted: Bool
-) -> Int:
-    """Build one toolbar item on demand, by identifier."""
-    try:
-        with autoreleasepool():
-            let key = ObjCObject(Int(ident))
-            let name = String(msg_send[Int, "NSString", "length"](key))
-            _ = name  # length forces a real NSString; the compare is below
-
-            let NSToolbarItem = ObjCClass.lookup["NSToolbarItem"]()
-            var item = msg_send[
-                ObjCObject, "NSToolbarItem", "alloc", is_class=True
-            ](NSToolbarItem.as_object())
-            item = msg_send[
-                ObjCObject, "NSToolbarItem", "initWithItemIdentifier:"
-            ](item, ident)
-
-            # Search is a view item, not a button: it carries an NSSearchField.
-            if msg_send[Bool, "NSString", "isEqualToString:"](
-                key, nsstring(String(TB_FIND)).ptr()
-            ):
-                let NSSearchField = ObjCClass.lookup["NSSearchField"]()
-                var field = msg_send[
-                    ObjCObject, "NSSearchField", "alloc", is_class=True
-                ](NSSearchField.as_object())
-                field = msg_send[ObjCObject, "NSView", "initWithFrame:"](
-                    field, rect(0.0, 0.0, 240.0, 24.0)
-                )
-                _ = msg_send[
-                    ObjCObject, "NSSearchField", "setPlaceholderString:"
-                ](field, nsstring(String("Find")).ptr())
-                let owner = ObjCObject(g_actions()[])
-                _ = msg_send[ObjCObject, "NSControl", "setTarget:"](
-                    field, owner.ptr()
-                )
-                _ = msg_send[ObjCObject, "NSControl", "setAction:"](
-                    field, sel["roastFindChanged:"]().ptr()
-                )
-                # Search as you type: NSSearchField sends its action on every
-                # edit when told to, which a plain NSTextField does not.
-                _ = msg_send[ObjCObject, "NSSearchField", "setSendsWholeSearchString:"](
-                    field, False
-                )
-                _ = msg_send[ObjCObject, "NSSearchField", "setSendsSearchStringImmediately:"](
-                    field, True
-                )
-                _ = msg_send[ObjCObject, "NSToolbarItem", "setView:"](
-                    item, field.ptr()
-                )
-                _ = msg_send[ObjCObject, "NSToolbarItem", "setLabel:"](
-                    item, nsstring(String("Find")).ptr()
-                )
-                g_findfield()[] = field.addr()
-                return item.addr()
-
-            # Which item was asked for? Compare against each identifier.
-            var title = String("?")
-            var symbol = String("questionmark")
-            var action = sel["roastStop:"]()
-            if msg_send[Bool, "NSString", "isEqualToString:"](
-                key, nsstring(String(TB_BUILD)).ptr()
-            ):
-                title = String("Build")
-                symbol = String("hammer")
-                action = sel["roastBuild:"]()
-            elif msg_send[Bool, "NSString", "isEqualToString:"](
-                key, nsstring(String(TB_RUN)).ptr()
-            ):
-                title = String("Run")
-                symbol = String("play.fill")
-                action = sel["roastRun:"]()
-            elif msg_send[Bool, "NSString", "isEqualToString:"](
-                key, nsstring(String(TB_STOP)).ptr()
-            ):
-                title = String("Stop")
-                symbol = String("stop.fill")
-                action = sel["roastStop:"]()
-            else:
-                return NIL
-
-            _ = msg_send[ObjCObject, "NSToolbarItem", "setLabel:"](
-                item, nsstring(title).ptr()
-            )
-            # An SF Symbol, or the item renders as an empty bordered circle.
-            # The accessibility description doubles as the tooltip source, so
-            # the title serves for both rather than passing nil.
-            let NSImage = ObjCClass.lookup["NSImage"]()
-            let image = msg_send[
-                ObjCObject,
-                "NSImage",
-                "imageWithSystemSymbolName:accessibilityDescription:",
-                is_class=True,
-            ](
-                NSImage.as_object(),
-                nsstring(symbol).ptr(),
-                nsstring(title).ptr(),
-            )
-            if image.addr() != 0:
-                _ = msg_send[ObjCObject, "NSToolbarItem", "setImage:"](
-                    item, image.ptr()
-                )
-            _ = msg_send[ObjCObject, "NSToolbarItem", "setToolTip:"](
-                item, nsstring(title).ptr()
-            )
-            _ = msg_send[ObjCObject, "NSToolbarItem", "setTarget:"](
-                item, ObjCObject(g_actions()[]).ptr()
-            )
-            _ = msg_send[ObjCObject, "NSToolbarItem", "setAction:"](
-                item, action.ptr()
-            )
-            return item.addr()
-    except:
-        return NIL
 
 
 # ── Menu construction ────────────────────────────────────────────────────────
@@ -2120,6 +2117,14 @@ def main() raises:
             frame.origin.y,
         )
         print("roast: toolbar:", tb.addr() != 0)
+        # The items come from the factory method on RoastActions -- a count of
+        # zero means identifiers registered but the factory never produced.
+        print(
+            "roast: toolbar items:",
+            msg_send[Int, "NSArray", "count"](
+                msg_send[ObjCObject, "NSToolbar", "items"](tb)
+            ),
+        )
         print("roast: split panes:", n_split)
         let n_vsplit = msg_send[
             Int, "NSArray", "count"

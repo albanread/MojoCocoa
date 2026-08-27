@@ -259,13 +259,32 @@ travels by memory like any non-trivial type, so field projection just works.
 `spikes/s5-cocoakb/struct_arg_test.mojo` proves the round trip: a `drawRect:`
 sent with `{7, 9, 321, 87}` is seen by the method as exactly those numbers.
 
-Struct **returns** are refused for now, deliberately: AAPCS returns a small
-aggregate in x0/x1 or v0–v3 and a large one through x8, while a Mojo
-memory-only result becomes a by-ref slot — neither matches, and MacModula2's
-notes record that getting x8 wrong bus-errors. `selectedRange` (NSRange in
-x0/x1) is the first real customer; until results are classified per the C ABI,
-such methods go unregistered rather than registered to return garbage. This is
-what blocks converting the grid view's NSTextInputClient methods.
+Struct **returns** turned out to need no compiler work at all — the fix was a
+type declaration. AAPCS returns NSRange in x0/x1 and CGRect (a four-double
+HFA) in v0–v3; a Mojo `TrivialRegisterPassable` struct of the same fields
+lowers to exactly that, and the trampoline's existing register-result path is
+then correct as it stands. What made these look impossible was that every
+file declared its own geometry as `Copyable, Movable` — memory-only, a by-ref
+result slot, the wrong ABI. Thirteen files did so. `std.objc.geometry` is now
+the one copy, declared the way the ABI sees the types, and
+`struct_ret_test.mojo` proves both shapes at register level: `selectedRange`
+answers `{41, 1759}` and a rect method answers `{11, 22, 1280, 720}`, exactly.
+The memory-only-result gate stays, for shapes that genuinely need x8.
+
+One leniency landed with it: the SDK-disagreement check compares ABI classes,
+not spellings — `characterIndexForPoint:` returns `Q` where Mojo's `Int` says
+`q`, and signedness is a reinterpretation the register file cannot see.
+
+**Sprint 5 is done.** The IDE has no `ObjCClassBuilder`, no `add_method`, no
+hand-written encoding, and no `self_: P, cmd: P` anywhere: five classes —
+the app delegate, the actions-and-data-source object, the tab bar, the grid
+view with the whole NSTextInputClient, and the completion popup — are
+declarations, fifty-one selectors, every encoding from the SDK or derived.
+The toolbar's item factory is the nice proof of the callback round trip: a
+method on a class builds the five toolbar items AppKit asks for, and the
+smoke test counts them. What sprint 5 could not yet do is delete the
+`named_global` state — fields are sprint 3, the box — or the stdlib's IMP
+shapes, which the spikes still use.
 
 A class also gained the one thing it is: a single `__objc_id` field. Until
 sprint 2b it was an empty struct -- a type with methods and nowhere for `self`
@@ -621,7 +640,7 @@ Each lands alone, each is verifiable, each leaves the tree green
 | 2 | **done** — classes resolve to types and register with the runtime: an `__init__` driving `ObjCClassRegistrar`, a C-ABI trampoline per method, selector and SDK encoding per method, protocols adopted. | L | `spikes/s5-cocoakb/class_test.mojo` — declare, instantiate, and let the runtime dispatch to both a nullary and a one-argument method |
 | 3 | **Give it state.** `class_addIvar`, the box, synthesized init/dealloc, `self.field`. | M | a test class whose field's `deinit` flips a flag proves teardown; tab-bar and `RoastActions` globals become fields; `check-ide.sh` green |
 | 4 | **done** — `CocoaKBDatabase` extracted to `KGEN/lib/CocoaKB` so the parser can ask it; encodings looked up by selector (chain-walking for overrides); framework attribution from `bs_classes`; unknown-superclass typo catcher; SDK-disagreement diagnostic; derivation only for selectors the SDK has never heard of. | M | `class_decl.mojo` checks the SDK's own `drawRect:` encoding and `objcFrameworks = ["AppKit"]`; `class_decl_errors.mojo` covers both disagreement directions and the typo |
-| 5 | **Dogfood.** Migrate the remaining IDE delegates and subclasses (app delegate, outline data source, GridView + NSTextInputClient — the big one); delete migrated `named_global`s and the then-unused IMP shapes. | M–L | all suites green; the counts fall and are asserted: `encoding=` in `ide/` → 0, `named_global` 84 → the survivors are genuinely process-global; the 61-warning chip mostly closes as a side effect |
+| 5 | **done** — every IDE class is a declaration: 51 selectors across five classes, zero builders/encodings/`cmd` slots; the geometry types centralised in `std.objc.geometry` as the ABI sees them; struct args and returns proven at register level. `named_global` state remains until sprint 3's box; the stdlib IMP shapes remain for the spikes. | M–L | `check-ide.sh` 21 checks (toolbar items counted from the factory method); `struct_arg_test` + `struct_ret_test`; 20 cocoa checks |
 | 6 | **Nil-aware references.** Smaller than first scoped: once the box is plain Mojo memory (sprint 3) an `ObjCRef` field retains and releases through its own copy/deinit with no special handling, and the class type's own retain/release is sprint 2's `copyInit`. What is left is genuinely new — nil as a first-class state in the pointer's niche, `NSTextView?`, and the zero-init-destructor hazard that currently forces every app-lifetime global to be an `Int`. | S–M | retain-count round-trip tests; the manual `objc_retain` count in `ide/` falls toward zero |
 
 Sprint 1 also settled how the later ones get verified, and it is not cheap.
