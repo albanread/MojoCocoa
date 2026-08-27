@@ -39,6 +39,18 @@ else
   bad "rope" "$(grep -m1 'error' "$TMP/rope_build.log" || echo 'build failed')"
 fi
 
+# JSON, which the language server conversation rests on.
+if "$CM" --build ide/json_test.mojo -o "$TMP/json_test" >"$TMP/json_build.log" 2>&1; then
+  json_out=$(timeout 120 "$TMP/json_test" 2>&1)
+  if echo "$json_out" | grep -q '^json OK'; then
+    ok "json" "$(echo "$json_out" | grep -c '  OK ') checks — escapes, surrogate pairs, round trip"
+  else
+    bad "json" "$(echo "$json_out" | grep -m1 FAIL || echo 'tests failed')"
+  fi
+else
+  bad "json" "$(grep -m1 'error' "$TMP/json_build.log" || echo 'build failed')"
+fi
+
 # Editing behaviour, also without a window: the text input client's risk is
 # the arithmetic, not the Objective-C plumbing.
 if "$CM" --build ide/edit_test.mojo -o "$TMP/edit_test" >"$TMP/edit_build.log" 2>&1; then

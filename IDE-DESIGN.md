@@ -201,7 +201,8 @@ in CI, exactly as `P0_AUTOCLOSE_TICKS` made window_smoke testable. A
 
 Honest gaps, each small, each reusable beyond the IDE:
 
-1. **`std.json`** — encode/decode for LSP. Strict, no reflection, hand-rolled.
+1. ~~**`std.json`**~~ — **done** as `ide/json.mojo`, 30 tests. Belongs in the
+   stdlib once it has been used in anger.
 2. **`std.rope`** — the persistent rope belongs in the stdlib, not the app.
 3. **East Asian width table** — cell-width classification for the grid.
 4. ~~**`class_addProtocol`**~~ — **done**, as `ObjCClassBuilder.add_protocol`,
