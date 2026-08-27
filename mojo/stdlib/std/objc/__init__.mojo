@@ -14,12 +14,13 @@
 # _fpret); on x86-64 it is a genuine per-method choice. Same query, same API.
 # ===----------------------------------------------------------------------=== #
 
-from .runtime import ObjCClass, ObjCObject, SEL, sel, msg_send, send, autoreleasepool, load_framework
+from .runtime import ObjCClass, ObjCObject, SEL, sel, msg_send, send, autoreleasepool, load_framework, load_framework_dynamic
 from .ownership import ObjCRef, ObjCWeakRef
 from .foundation import NSString, nsstring, extern_object, ns_to_string
 from .error import msg_send_raising, msg_send_raising_check
 from .classes import (
     ObjCClassBuilder,
+    ObjCClassRegistrar,
     IMP0,
     IMP1,
     IMP0Bool,

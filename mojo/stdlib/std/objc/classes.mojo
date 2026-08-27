@@ -226,6 +226,82 @@ def _imp_ptr[F: AnyType](imp: F) -> P:
     return Pointer(to=imp).unsafe_bitcast[P]()[]
 
 
+struct ObjCClassRegistrar:
+    """Builds an Objective-C class from values known only at run time.
+
+    This is the compiler's entry point for `class` (COCOA_CLASS_DESIGN.md).
+    `ObjCClassBuilder` above is the one to use by hand: its selector and
+    superclass are compile-time parameters, so it can check them against the
+    SDK and pick an IMP overload. The compiler has already done all of that --
+    it derived the selector, looked the encoding up in the database, and found
+    the framework -- so what it needs is the opposite shape: every value an
+    ordinary argument, because emitting a call with plain arguments is far
+    simpler than emitting a parametric one.
+
+    Order matters and is the compiler's responsibility: frameworks first, or
+    `objc_getClass` returns nil for the superclass and the pair is allocated
+    against nothing, which yields a root class that silently does nothing.
+    """
+
+    var _cls: Int
+    var _ok: Bool
+
+    def __init__(out self, name: StringSlice, superclass: StringSlice):
+        var sup = external_call["objc_getClass", P](
+            _leak_cstr(String(superclass))
+        )
+        if Int(sup) == 0:
+            # Registering against a nil superclass would build a root class
+            # that answers nothing. Refuse, and let `register` report it.
+            self._cls = 0
+            self._ok = False
+            return
+        var cls = external_call["objc_allocateClassPair", P](
+            sup, _leak_cstr(String(name)), Int(0)
+        )
+        self._cls = Int(cls)
+        self._ok = Int(cls) != 0
+
+    def add_method(
+        mut self, selector: StringSlice, encoding: StringSlice, imp: P
+    ) -> Bool:
+        if not self._ok:
+            return False
+        return external_call["class_addMethod", Bool](
+            P(unsafe_from_address=self._cls),
+            external_call["sel_registerName", P](
+                _leak_cstr(String(selector))
+            ),
+            imp,
+            _leak_cstr(String(encoding)),
+        )
+
+    def add_protocol(mut self, name: StringSlice) -> Bool:
+        """Conformance is not the same as implementing the methods: AppKit
+        asks `conformsToProtocol:` -- NSTextInputClient among them -- and
+        refuses a class that only responds to the selectors."""
+        if not self._ok:
+            return False
+        var proto = external_call["objc_getProtocol", P](
+            _leak_cstr(String(name))
+        )
+        if Int(proto) == 0:
+            return False
+        return external_call["class_addProtocol", Bool](
+            P(unsafe_from_address=self._cls), proto
+        )
+
+    def register(mut self) -> ObjCClass:
+        """Finish the class. Returns a null ObjCClass if anything above
+        failed, which is what a caller should check before instantiating."""
+        if not self._ok:
+            return ObjCClass(0)
+        external_call["objc_registerClassPair", NoneType](
+            P(unsafe_from_address=self._cls)
+        )
+        return ObjCClass(self._cls)
+
+
 def sel_dynamic(name: StaticString) -> P:
     """Register a selector by name at runtime (custom selectors included)."""
     return external_call["sel_registerName", P](name.unsafe_ptr())
