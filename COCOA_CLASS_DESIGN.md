@@ -431,6 +431,53 @@ What a class field is today, stated so nobody discovers it the hard way:
   is correct; mutating a field through it writes the copy, not the object.
   Sprint 6's handle type is the fix.
 
+### The aggregate gate that was not needed, and the hole next to it
+
+The first item on the "finish the compiler" list was a gate: refuse a method
+whose Objective-C signature passes a struct larger than 16 bytes by value, or
+returns one. AAPCS64 sends such an argument as a caller-owned copy behind a
+pointer and returns such a result through the hidden x8 register, and the
+trampoline appeared to declare both by value. The database even has the
+classification ready to consult -- `method_abi.arg_classes` marks them `b`
+and `ret_class` marks them `s`, 2803 and 1383 of them in the SDK.
+
+It was written, it fired on exactly the cases intended, and it was wrong.
+
+The trampoline is a C-ABI function, and `KGENToLLVM/CABIAAPCS.cpp` does the
+real AAPCS64 classification for it: indirect arguments above 16 bytes, sret
+returns above 16 bytes, HFA in v0-v3 (with the four-member limit correctly
+enforced), and smaller structs coerced to one or two GPRs. The gate was
+refusing what already worked.
+
+What settled it was not more reading. `abi_oracle_test.mojo` links a dylib
+compiled by clang -- the compiler that compiled AppKit, and therefore the only
+authority that counts -- and lets IT send the messages: a 48-byte non-HFA
+argument, a 16-byte HFA argument, and a 48-byte result. All three arrive
+intact. Every other test in `spikes/s5-cocoakb` has Mojo at both ends and so
+proves only that cocoa-mojo agrees with itself; this one is ground truth, and
+it is worth keeping for exactly that reason.
+
+The lesson generalises: when the question is "what does the ABI actually do",
+the answer comes from the other compiler, not from ours.
+
+**The real hole was next door.** `synthesizeObjCTrampoline` refuses two things
+it genuinely cannot build -- a method taking another `class` as an argument
+(the id-to-box conversion the receiver got does not exist on the argument
+path) and one returning a memory-only type (which reaches the C ABI as a
+by-ref slot rather than a value, so the classification never happens). Both
+refused by returning nothing, and the caller skipped them with `continue`.
+Silently. The method compiled, the class registered without it, and the
+framework's message found nothing -- a window that does not respond, with no
+diagnostic anywhere to say why. Both now diagnose, at the method's own line,
+and both name the fix: `ObjCObject` for the argument,
+`@register_passable("trivial")` for the result.
+
+What survived of the gate is the one case the SDK itself cannot answer: an
+ABI class of `?`, meaning the classification pass could not model the
+signature, usually a C++ type in it. There the compiler has nothing to check a
+declaration against, and D4 already says what to do about that -- fail, rather
+than guess at a shape the runtime will send.
+
 ### The test harness had to be built too### The test harness had to be built too
 
 `./bazelw test //KGEN/test/mojo-parser:all` cannot build in this tree. All 357

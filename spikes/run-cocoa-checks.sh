@@ -62,6 +62,29 @@ for f in check.mojo objc_smoke.mojo foundation_demo.mojo typecheck_test.mojo \
          registrar_test.mojo class_test.mojo struct_arg_test.mojo \
          struct_ret_test.mojo box_test.mojo class_field_test.mojo; do run_ok "$f"; done
 
+# The one test with clang on the other end. Everything above has Mojo at both
+# ends and so proves only self-consistency; this links a dylib built by the
+# compiler that built AppKit, and lets it send the messages.
+echo
+echo "must agree with clang about the C ABI:"
+oracle_dir="$(mktemp -d)"
+trap 'rm -rf "$oracle_dir"' EXIT
+printf '  %-24s ' "abi_oracle_test.mojo"
+if [ ! -x dist/CocoaMojo/bin/cocoamojo ]; then
+  echo "SKIP (needs ./tools/release.sh -- the driver owns the link line)"
+elif clang -dynamiclib -O1 -lobjc -o "$oracle_dir/liboracle.dylib" \
+       "$PWD/spikes/s5-cocoakb/abi_oracle.c" 2>"$oracle_dir/cc.log" &&
+   out=$(dist/CocoaMojo/bin/cocoamojo --build \
+          "$PWD/spikes/s5-cocoakb/abi_oracle_test.mojo" \
+          -o "$oracle_dir/abi_oracle" \
+          -Xlinker -L"$oracle_dir" -Xlinker -loracle \
+          -Xlinker -rpath -Xlinker "$oracle_dir" 2>&1 &&
+        "$oracle_dir/abi_oracle" 2>&1); then
+  echo "PASS"; pass=$((pass+1))
+else
+  echo "FAIL"; fail=$((fail+1)); sed 's/^/      /' <<<"$out" | head -12
+fi
+
 echo
 echo "must be rejected at compile time:"
 for f in must_fail.mojo must_fail_argcount.mojo must_fail_fn_raises.mojo must_fail_let_assign.mojo; do run_mustfail "$f"; done

@@ -122,3 +122,39 @@ class Disagrees(NSView):
     # expected-error @+1 {{the SDK declares 'mouseDown:' with argument 1 of '@', but this method declares 'B'}}
     def mouseDown_(self, event: Bool):
         pass
+
+
+
+# A method the compiler cannot give a trampoline is a compile ERROR, not a
+# silent omission. This is the whole point: both of these used to return
+# quietly, and the class would register without the method -- a window that
+# does not respond to a message the framework definitely sent, with nothing
+# anywhere saying why. Refusing out loud costs one diagnostic and saves an
+# afternoon.
+@fieldwise_init
+struct InMemory(Copyable, Movable):
+    var a: Int
+    var b: Int
+    var c: Int
+
+
+class Refused(NSView):
+    # Mojo passes a memory-only value by reference, so the result never
+    # reaches the C ABI as a value at all -- the fix is register-passability,
+    # which is exactly what std/objc/geometry.mojo does for CGRect.
+    # expected-error @+1 {{'selectedRange' returns a type Mojo passes in memory}}
+    def selectedRange(self) -> InMemory:
+        return InMemory(0, 0, 0)
+
+
+# A class-typed argument is an id on the wire, and turning one back into a
+# class value needs the receiver's box conversion, which the argument path
+# does not have yet. Say that, rather than vanishing.
+class Handler(NSView):
+    pass
+
+
+class TakesAClass(NSView):
+    # expected-error @+1 {{takes argument 1 as the Objective-C class 'Handler', but the runtime sends an 'id'}}
+    def mouseDown_(self, other: Handler):
+        pass

@@ -121,6 +121,9 @@ constexpr StringRef kSelectorVariantSQL =
 constexpr StringRef kSelectorArgClassesSQL =
     "SELECT arg_classes FROM method_abi WHERE selector = ?1 "
     "GROUP BY arg_classes ORDER BY COUNT(*) DESC LIMIT 1";
+constexpr StringRef kSelectorRetClassSQL =
+    "SELECT ret_class FROM method_abi WHERE selector = ?1 "
+    "GROUP BY ret_class ORDER BY COUNT(*) DESC LIMIT 1";
 // The verbatim @encode signature for a selector, majority reading. Used to
 // type a Mojo-implemented method when defining an ObjC class at runtime
 // (class_addMethod), so even a callback's signature comes from the SDK.
@@ -149,6 +152,7 @@ const CocoaKBQueryDef kCocoaQueries[] = {
     {"method_arg_classes", 3, kMethodArgClassesSQL},
     {"selector_variant", 1, kSelectorVariantSQL},
     {"selector_arg_classes", 1, kSelectorArgClassesSQL},
+    {"selector_ret_class", 1, kSelectorRetClassSQL},
     {"selector_encoding", 1, kSelectorEncodingSQL},
     {"posix_sig", 1, kPosixSigSQL},
     {"posix_ret_class", 1, kPosixRetClassSQL},
