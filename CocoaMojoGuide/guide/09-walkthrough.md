@@ -128,11 +128,18 @@ comptime g_running = named_global["life.running", Int]
 comptime g_speed = named_global["life.speed", Int]
 ```
 
-Fourteen of these. They are not there because globals are nice; they are there
-because **a `class` cannot hold fields yet**. When that lands, most of this
-becomes ordinary members with real construction and destruction. Until then,
-this is the pattern, and the `life.` prefix on every key is the discipline that
-keeps two subsystems from colliding.
+Fourteen of these, and they predate class fields. Most are now convertible:
+`g_running`, `g_speed`, `g_tick` and the rest are counters and flags on the
+view, which is exactly what a field is for.
+
+The ones to leave alone are the buffer pointers. A field's `deinit` does not
+run at `dealloc` yet, so a field owning memory leaks with the object — and
+these already own memory deliberately, outside Mojo, for the reason the next
+section gives. Moving them into fields would buy nothing and cost the clarity
+of saying so.
+
+The `life.` prefix on every key is the discipline that keeps two subsystems
+from colliding, and it stays worth having for whatever remains a global.
 
 ## `main`, in order
 

@@ -18,6 +18,16 @@ contract violation.
 
 Same contract, same remedy.
 
+### `unknown tokens at the end of a declaration`, on a class field
+
+A field initializer. `var x: Int = 3` is not accepted in this version; declare
+`var x: Int` and let it take its default. See
+[chapter 6](../guide/06-callbacks.md#the-rules-v1).
+
+### `expression must be mutable for in-place operator destination`, in a class method
+
+The method needs `mut self` to write a field, exactly as a struct method would.
+
 ### `'let' declares an immutable binding inside a function body; use 'var' for a field or module value`
 
 `let` has no field or file-scope form. Use `var` there.
@@ -160,5 +170,7 @@ plausible-looking receiver.
 | `respondsToSelector:` returns `False` | Same as above; check the selector string character by character |
 | Allocator corruption far from any Cocoa call | A `List` pointer stashed after its last use; allocate outside Mojo instead |
 | `autorelease pool page corrupted` | A pool token popped twice |
+| A class field written from Mojo is not visible to Cocoa | `ClassName()` returns a copy of the box plus the `id`; mutating through it writes the copy. Write fields from methods the runtime dispatches to |
+| A class field owning memory never frees | `dealloc` is not hooked yet, so a field's `deinit` does not run |
 | Windowed app starts and exits with no window and no message | `load_framework["AppKit"]()` was not called; every message to the nil class silently no-ops |
 | A crash when assigning into a `var` declared but not initialised | Pre-existing: assigning into an uninitialised `var` of a type with `__deinit__` destroys garbage first. Bind in a helper scope and return instead |

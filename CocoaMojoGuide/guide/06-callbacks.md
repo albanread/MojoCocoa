@@ -107,24 +107,102 @@ You can still write `fn` methods where you want the strict contract and no
 catch machinery. But the reason the examples read cleanly is that the common
 case no longer needs one.
 
-## What a class does not have yet
+## Fields
 
-**Fields.** `var` members on a class are designed — one hidden ivar holding a
-boxed Mojo struct, with synthesized `init` and `dealloc` — but not implemented.
-Until they are, callback state lives where it always has:
+A class holds per-instance state:
+
+```mojo
+class Tally(NSObject):
+    var hits: Int
+    var high_water: Int
+
+    # Mutating methods declare `mut self`, exactly as on a struct.
+    def isProxy(mut self) -> Bool:
+        self.hits += 1
+        if self.hits > self.high_water:
+            self.high_water = self.hits
+        return True
+
+    def selectedRange(self) -> NSRange:
+        return NSRange(self.hits, self.high_water)
+```
+
+Three instances of `Tally` count separately, and the counting happens when the
+Objective-C runtime dispatches to the method — not when Mojo calls it. That
+distinction matters more than it sounds, and the next section is about it.
+
+Where the state lives: the object gets **one ivar of `sizeof(Self)`**, 8-aligned,
+at an offset the runtime settles at registration. There is no allocation beyond
+the object itself. Every trampoline moves the incoming `id` along by that
+offset, so `self` inside a method *is* the box.
+
+`mut self` is required to write a field, exactly as on a struct.
+
+### The rules, v1
+
+Fields have just landed, and the contract is narrower than it will be. Stated
+so nobody finds out the hard way:
+
+**Fields must be default-constructible, and zero must be a valid value.** The
+runtime zero-fills the object; `__init__` default-constructs every field so
+both views agree. This is the `named_global` rule you already know, now applied
+per instance.
+
+**Field initializers are not honoured.** `var x: Int = 3` does not parse, and
+even where it did the box would hold the default rather than the 3.
+
+**Destruction does not run.** `dealloc` is not hooked yet, so a field's
+`deinit` never fires. A field owning heap memory lives as long as the object
+and leaks when the object dies — the same lifetime story as the
+`named_global`s fields replace. Fine for app-lifetime objects, wrong for
+transient ones.
+
+### The constructor-copy trap
+
+This is the one to internalise. `Tally()` hands back a class *value*, which is
+a copy of the box's ground state plus the `id`. Reading `__objc_id` from it is
+correct. **Mutating a field through it writes the copy, not the object.**
+
+Watch it happen:
+
+```mojo
+var p = Probe()
+var o = ObjCObject(p.__objc_id)
+
+p.isProxy()                 # mutate through the Mojo value
+# the Mojo value says:   True
+# the object says:       False
+
+_ = msg_send[Bool, "NSObject", "isProxy"](o)    # mutate through the runtime
+# the object says:       True
+```
+
+So the state a Cocoa callback sees is the state the *runtime* wrote. Since
+callbacks are the whole point of a class, this is usually invisible: AppKit
+sends messages, the trampoline resolves the box from the real `id`, and
+everything agrees. It bites the moment you try to seed a field from Mojo after
+construction and wonder why the view never sees it.
+
+Until the handle type arrives, treat the value `Tally()` returns as a way to
+get an `id` and nothing more.
+
+### What fields replace
+
+State that used to live in process globals:
 
 ```mojo
 comptime clicks = named_global["example.clicks", Int]
-comptime label_addr = named_global["example.label", Int]
 ```
 
-`examples/life/main.mojo` still carries fourteen of these for exactly this
-reason. When fields land, most of them become ordinary members with real
-construction and destruction — which is the thing `named_global` can never
-give you.
+`examples/life/main.mojo` still carries fourteen of these, and most are now
+convertible. Weigh it against the two limits above: a counter or a flag is a
+clean win, while anything owning memory keeps the leak it already had and
+gains nothing until `dealloc` runs.
 
-Also not in this version: nested classes, class-level `comptime` parameters,
-and Mojo-trait conformances. A class is not a struct.
+### Still not in this version
+
+Nested classes, class-level `comptime` parameters, and Mojo-trait
+conformances. A class is not a struct.
 
 ## Instances
 

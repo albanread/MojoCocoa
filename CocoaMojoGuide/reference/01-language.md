@@ -171,7 +171,9 @@ Declares an **Objective-C class**, not a Mojo one.
 
 ```text
 class Name(Superclass, Protocol, ...):
+    var field: Type                         # no initializer yet
     def method_(self, arg: T) -> R: ...     # may raise; the boundary catches
+    def mutator_(mut self, arg: T): ...     # mut self to write a field
     fn strict_(self, arg: T): ...           # fn's contract, unchanged
     @objc("real:selector:")
     def renamed(self, a: T, b: U): ...
@@ -191,8 +193,20 @@ from the Mojo signature otherwise.
 registration is idempotent. `__objc_id` is the raw `id`. A class reference is
 register-passable, retains on copy and releases on destruction.
 
-Not in this version: fields (`var` members), nested classes, class-level
-`comptime` parameters, Mojo-trait conformances.
+**Fields** are stored inline: one ivar of `sizeof(Self)`, 8-aligned, at the
+offset the runtime settles at registration. Each trampoline advances the
+incoming `id` by that offset, so `self` in a method is the box. Writing a field
+requires `mut self`.
+
+Field rules in this version: the type must be default-constructible and zero
+must be a valid value for it; field initializers are not honoured; `dealloc` is
+not hooked, so a field's `deinit` never runs and an owning field leaks with the
+object. And `ClassName()` returns a *copy* of the ground state plus the `id` —
+reading `__objc_id` from it is correct, mutating a field through it writes the
+copy rather than the object.
+
+Not in this version: nested classes, class-level `comptime` parameters,
+Mojo-trait conformances.
 
 ### Compiler internals
 
