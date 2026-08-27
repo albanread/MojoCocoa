@@ -55,6 +55,7 @@ from gridview import (
 )
 import lsp
 import document
+import build
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -100,6 +101,14 @@ comptime g_tree_cache = named_global["roast.tree.cache", Int]
 # has moved past it, which is one comparison rather than a flag someone has to
 # remember to set.
 comptime g_tabbar = named_global["roast.tabbar", Int]
+
+# The console, and the horizontal split it lives in the bottom of.
+comptime g_console = named_global["roast.console", Int]
+comptime g_vsplit = named_global["roast.vsplit", Int]
+comptime g_console_open = named_global["roast.console.open", Int]
+comptime g_build_seen = named_global["roast.build.seen", Int]
+# The editor's share of the height when the console is showing.
+comptime EDITOR_SHARE = 0.68
 comptime TAB_H = 28.0
 comptime TAB_MIN = 90.0
 comptime TAB_MAX = 200.0
@@ -181,19 +190,283 @@ fn will_terminate(self_: P, cmd: P, note: P):
     print("roast: applicationWillTerminate")
 
 
+# ── Console ─────────────────────────────────────────────────────────────────
+# One pane for the compiler's output and the program's, because a build that
+# succeeds and then runs is one continuous thing to read.
+def _dir_of(path: String) -> String:
+    let b = path.as_bytes()
+    var cut = -1
+    for i in range(len(b)):
+        if b[i] == 47:
+            cut = i
+    if cut <= 0:
+        return String(".")
+    return String(path[byte=0:cut])
+
+
+def console_sync():
+    """Show the log and keep its tail in view."""
+    if g_console()[] == 0:
+        return
+    with autoreleasepool():
+        let tv = ObjCObject(g_console()[])
+        var text = build.output()
+        _ = msg_send[ObjCObject, "NSTextView", "setString:"](
+            tv, nsstring(text).ptr()
+        )
+        _ = msg_send[ObjCObject, "NSTextView", "scrollToEndOfDocument:"](
+            tv, ObjCObject(0).ptr()
+        )
+
+
+def console_text() -> String:
+    """What the pane is actually showing, read back from AppKit rather than
+    from the buffer it was built from -- so a check of this is a check of the
+    whole path, not of a string we already had."""
+    if g_console()[] == 0:
+        return String()
+    with autoreleasepool():
+        return ns_to_string(
+            msg_send[ObjCObject, "NSTextView", "string"](
+                ObjCObject(g_console()[])
+            )
+        )
+
+
+def show_console(want: Bool):
+    """Slide the divider. The console is a pane, not a window, so hiding it is
+    giving its height back to the editor rather than removing anything."""
+    if g_vsplit()[] == 0:
+        return
+    with autoreleasepool():
+        let vs = ObjCObject(g_vsplit()[])
+        let b = msg_send[CGRect, "NSView", "bounds"](vs)
+        var pos = b.size.height
+        if want:
+            pos = b.size.height * EDITOR_SHARE
+        _ = msg_send[
+            ObjCObject, "NSSplitView", "setPosition:ofDividerAtIndex:"
+        ](vs, pos, Int(0))
+        let subs = msg_send[ObjCObject, "NSView", "subviews"](vs)
+        print(
+            "roast: console",
+            "open" if want else "closed",
+            msg_send[CGRect, "NSView", "frame"](
+                msg_send[ObjCObject, "NSArray", "objectAtIndex:"](subs, 1)
+            ).size.height,
+        )
+    g_console_open()[] = 1 if want else 0
+
+
+fn action_toggle_console(self_: P, cmd: P, sender: P):
+    try:
+        show_console(g_console_open()[] == 0)
+    except:
+        pass
+
+
+# ── Build and run ───────────────────────────────────────────────────────────
+def _driver() -> String:
+    """The cocoamojo beside us. An editor built by this toolchain should
+    compile with this toolchain, not with whatever is on PATH."""
+    var here = getenv("ROAST_COCOAMOJO")
+    if here != "":
+        return here^
+    let root = getenv("COCOAMOJO_ROOT")
+    if root == "":
+        return String()
+    return root + String("/bin/cocoamojo")
+
+
+def _save_dirty() -> Int:
+    """The compiler reads the disk, so what is on the disk had better be what
+    is on the screen. Building without this compiles the last save, which
+    looks exactly like the compiler ignoring your fix."""
+    let n = document.dirty_count()
+    if n == 0:
+        return 0
+    let started_at = document.current_index()
+    var saved = 0
+    var i = 0
+    while i < document.count():
+        if document.dirty_at(i) and document.path_at(i) != "":
+            _ = document.switch_to(i)
+            _ = save_current()
+            saved += 1
+        i += 1
+    _ = document.switch_to(started_at)
+    refresh_tabs()
+    refresh_grid()
+    return saved
+
+
+def _start_build(then_run: Bool):
+    if build.is_running():
+        set_status(String("Already running — press Stop first"))
+        return
+    let driver = _driver()
+    if driver == "":
+        set_status(String("No compiler: set COCOAMOJO_ROOT"))
+        return
+
+    let saved = _save_dirty()
+    let entry = build.entry_point(
+        project_root(), document.path_at(document.current_index())
+    )
+    if entry == "":
+        set_status(String("Nothing to build — open a file or a folder"))
+        return
+
+    let binary = build.binary_for(entry)
+    _ = build.ensure_dir(_dir_of(binary))
+    build.clear_output()
+    var head = String("cocoamojo --build ") + entry
+    head += String(" -o ") + binary + String("\n")
+    if saved > 0:
+        head = String("saved ") + String(saved) + String(" file(s)\n") + head
+    build.append_output(head^)
+
+    var args = List[String]()
+    args.append(String("--build"))
+    args.append(entry)
+    args.append(String("-o"))
+    args.append(binary)
+
+    # Run is Build followed by the binary. Queue the second half now; the
+    # timer starts it if and only if the first half exits zero.
+    if then_run:
+        build.set_then(binary, _dir_of(entry))
+    else:
+        build.clear_then()
+
+    show_console(True)
+    console_sync()
+    if build.start(driver, args, _dir_of(entry), String("Building")):
+        set_status(String("Building ") + _basename(entry) + String("…"))
+    else:
+        console_sync()
+        set_status(String("Could not start the compiler"))
+
+
+def _jump_to(path: String, line: Int, col: Int):
+    """Put the caret on a diagnostic, opening the file if it is not open."""
+    if path == "":
+        return
+    let uri = String("file://") + path
+    if document.index_of(uri) >= 0:
+        if document.switch_to(document.index_of(uri)):
+            after_switch()
+    elif not load_file(path):
+        return
+    print("roast: jump to", _basename(path), "line", line, "col", col)
+    # The compiler counts from one; the buffer counts from zero.
+    var target = line - 1
+    if target < 0:
+        target = 0
+    if len(g_buffer()[]) == 0:
+        return
+    let rope = g_buffer()[][0]
+    if target >= rope.line_count():
+        target = rope.line_count() - 1
+    var at = rope.line_start(target)
+    if col > 1:
+        at += col - 1
+    if at > rope.byte_length():
+        at = rope.byte_length()
+    set_caret(at)
+    scroll_to_caret()
+    refresh_grid()
+
+
+def _build_finished():
+    let status = build.exit_status()
+    let what = build.label()
+    console_sync()
+    let shown = console_text()
+    print(
+        "roast:",
+        what.lower(),
+        "finished, status",
+        status,
+        "-- console holds",
+        shown.byte_length(),
+        "bytes",
+    )
+    if getenv("ROAST_AUTOBUILD") != "":
+        # CI reads the pane rather than the pipe, so what is asserted is what
+        # someone would actually be looking at.
+        print("--- console ---")
+        print(shown)
+        print("--- end ---")
+
+    if status == 0:
+        let next_exe = build.then_exe()
+        if next_exe != "":
+            var cwd = build.then_cwd()
+            build.clear_then()
+            build.append_output(
+                String("\n─── ") + _basename(next_exe) + String(" ───\n")
+            )
+            console_sync()
+            var none = List[String]()
+            if build.start(next_exe, none, cwd, String("Running")):
+                set_status(String("Running ") + _basename(next_exe) + String("…"))
+                return
+            console_sync()
+            set_status(String("Built, but could not run it"))
+            return
+        if what == "Running":
+            set_status(String("Finished"))
+        else:
+            set_status(String("Build succeeded"))
+        return
+
+    # Failed. Whatever queued behind this does not happen.
+    build.clear_then()
+    let log = build.output()
+    let issue = build.first_error(log)
+    if issue.line > 0:
+        _jump_to(issue.path, issue.line, issue.col)
+        set_status(
+            _basename(issue.path)
+            + String(":")
+            + String(issue.line)
+            + String("  ")
+            + issue.message
+        )
+    elif what == "Running":
+        set_status(String("Exited with status ") + String(status))
+    else:
+        set_status(String("Build failed (") + String(status) + String(")"))
+
+
 fn action_build(self_: P, cmd: P, sender: P):
-    set_status(String("Build: not wired until milestone 3"))
-    print("roast: build")
+    try:
+        _start_build(False)
+    except:
+        set_status(String("Build failed to start"))
 
 
 fn action_run(self_: P, cmd: P, sender: P):
-    set_status(String("Run: not wired until milestone 3"))
-    print("roast: run")
+    try:
+        _start_build(True)
+    except:
+        set_status(String("Run failed to start"))
 
 
 fn action_stop(self_: P, cmd: P, sender: P):
-    set_status(String("Ready"))
-    print("roast: stop")
+    try:
+        if not build.is_running():
+            set_status(String("Nothing running"))
+            return
+        let what = build.label()
+        build.stop()
+        g_build_seen()[] = build.serial()
+        build.append_output(String("\n─── stopped ───\n"))
+        console_sync()
+        set_status(what + String(" stopped"))
+    except:
+        pass
 
 
 fn action_new_tab(self_: P, cmd: P, sender: P):
@@ -757,8 +1030,13 @@ fn action_open(self_: P, cmd: P, sender: P):
         pass
 
 
-fn action_save(self_: P, cmd: P, sender: P):
-    """Write the buffer back. Asks where if it has no home yet."""
+def save_current() -> Bool:
+    """Write the current buffer back, asking where if it has no home yet.
+
+    A `def` rather than the action itself, because Build has to save before it
+    compiles and it has no selector arguments to hand on. Returns False if the
+    save panel was cancelled or the write failed.
+    """
     try:
         with autoreleasepool():
             var path = document.path_at(document.current_index())
@@ -768,7 +1046,7 @@ fn action_save(self_: P, cmd: P, sender: P):
                     ObjCObject, "NSSavePanel", "savePanel", is_class=True
                 ](NSSavePanel.as_object())
                 if msg_send[Int, "NSSavePanel", "runModal"](panel) != 1:
-                    return
+                    return False
                 let url = msg_send[ObjCObject, "NSSavePanel", "URL"](panel)
                 path = ns_to_string(
                     msg_send[ObjCObject, "NSURL", "path"](url)
@@ -788,8 +1066,17 @@ fn action_save(self_: P, cmd: P, sender: P):
                 + String(text.byte_length())
                 + String(" bytes")
             )
+            return True
     except:
         set_status(String("could not save"))
+        return False
+
+
+fn action_save(self_: P, cmd: P, sender: P):
+    try:
+        _ = save_current()
+    except:
+        pass
 
 
 fn action_save_all(self_: P, cmd: P, sender: P):
@@ -813,7 +1100,7 @@ fn action_save_all(self_: P, cmd: P, sender: P):
                 # Switching makes it the working set; saving writes the working
                 # set. One path for one document and for all of them.
                 _ = document.switch_to(i)
-                action_save(self_, cmd, sender)
+                _ = save_current()
                 saved += 1
             i += 1
         _ = document.switch_to(started_at)
@@ -964,6 +1251,30 @@ fn timer_tick(self_: P, cmd: P, timer: P):
                 g_idle_ticks()[] = 0
     except:
         pass
+
+    # The compiler, on the same terms as the server: drained without blocking,
+    # because a build that takes a minute must not be an editor that takes a
+    # minute. pump() also reaps the process, which is what moves the serial.
+    # CI, and a quick way to see the path work: fire Build or Run a few ticks
+    # in, once the window is really up, with nobody at the keyboard.
+    if g_ticks()[] == 3:
+        let auto = getenv("ROAST_AUTOBUILD")
+        if auto != "":
+            try:
+                _start_build(auto == "run")
+            except:
+                pass
+
+    try:
+        if build.is_running():
+            if build.pump() > 0:
+                console_sync()
+        if build.serial() != g_build_seen()[]:
+            g_build_seen()[] = build.serial()
+            _build_finished()
+    except:
+        pass
+
     let limit = g_autoclose()[]
     if limit != 0 and g_ticks()[] >= limit:
         print("roast: autoclose after", g_ticks()[], "ticks")
@@ -1258,10 +1569,17 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     _ = add_item(edit, String("Hide Find"), String("roastHideFind:"), String("\u001b"), actions)
 
     # Build.
-    let build = add_submenu(bar, String("Build"))
-    _ = add_item(build, String("Build"), String("roastBuild:"), String("b"), actions)
-    _ = add_item(build, String("Run"), String("roastRun:"), String("r"), actions)
-    _ = add_item(build, String("Stop"), String("roastStop:"), String("."), actions)
+    let build_menu = add_submenu(bar, String("Build"))
+    _ = add_item(build_menu, String("Build"), String("roastBuild:"), String("b"), actions)
+    _ = add_item(build_menu, String("Run"), String("roastRun:"), String("r"), actions)
+    _ = add_item(build_menu, String("Stop"), String("roastStop:"), String("."), actions)
+    _ = add_item(
+        build_menu,
+        String("Console"),
+        String("roastConsole:"),
+        String("0"),
+        actions,
+    )
 
     # Window — handing AppKit the menu gets tab management for free.
     let window_menu = add_submenu(bar, String("Window"))
@@ -1323,6 +1641,7 @@ def main() raises:
         # database already knows.
         var ab = ObjCClassBuilder("RoastActions")
         ab.add_method["roastBuild:", encoding="v@:@"](action_build)
+        ab.add_method["roastConsole:", encoding="v@:@"](action_toggle_console)
         ab.add_method["roastRun:", encoding="v@:@"](action_run)
         ab.add_method["roastStop:", encoding="v@:@"](action_stop)
         ab.add_method["roastNewTab:", encoding="v@:@"](action_new_tab)
@@ -1570,6 +1889,12 @@ def main() raises:
         # The editor surface. Load something real: with no file to open yet,
         # Roast shows its own source, which is the shortest path to seeing the
         # rope, the gutter and the scrolling all work on a genuine file.
+        # A folder to open on the way up, so `ROAST_PROJECT=examples/fern`
+        # starts in a project rather than needing the panel every time.
+        let proj = getenv("ROAST_PROJECT")
+        if proj != "":
+            open_folder(proj)
+
         var text = String()
         let path = getenv("ROAST_OPEN")
         if path != "":
@@ -1622,9 +1947,79 @@ def main() raises:
         )
         g_grid()[] = grid.addr()
 
-        _ = msg_send[ObjCObject, "NSSplitView", "addSubview:"](
-            split, edit_scroll.ptr()
+        # The editor and the console share the right-hand side, stacked. A
+        # nested split rather than a view that gets resized by hand: the
+        # divider is then draggable, which is what anyone will try first.
+        var vsplit = msg_send[
+            ObjCObject, "NSSplitView", "alloc", is_class=True
+        ](NSSplitView.as_object())
+        vsplit = msg_send[ObjCObject, "NSView", "initWithFrame:"](
+            vsplit, rect(240.0, 0.0, w - 240.0, h - STATUS_H - TAB_H)
         )
+        _ = msg_send[ObjCObject, "NSSplitView", "setVertical:"](vsplit, False)
+        _ = msg_send[ObjCObject, "NSSplitView", "setDividerStyle:"](
+            vsplit, Int(2)
+        )
+        _ = msg_send[ObjCObject, "NSSplitView", "addSubview:"](
+            vsplit, edit_scroll.ptr()
+        )
+
+        # The console: a plain text view, the editor's face, not editable.
+        var out_scroll = msg_send[
+            ObjCObject, "NSScrollView", "alloc", is_class=True
+        ](NSScrollView.as_object())
+        out_scroll = msg_send[ObjCObject, "NSView", "initWithFrame:"](
+            out_scroll, rect(0.0, 0.0, w - 240.0, 160.0)
+        )
+        _ = msg_send[ObjCObject, "NSScrollView", "setHasVerticalScroller:"](
+            out_scroll, True
+        )
+        let NSTextView = ObjCClass.lookup["NSTextView"]()
+        var console = msg_send[
+            ObjCObject, "NSTextView", "alloc", is_class=True
+        ](NSTextView.as_object())
+        console = msg_send[ObjCObject, "NSView", "initWithFrame:"](
+            console, rect(0.0, 0.0, w - 240.0, 160.0)
+        )
+        _ = msg_send[ObjCObject, "NSTextView", "setEditable:"](console, False)
+        _ = msg_send[ObjCObject, "NSTextView", "setRichText:"](console, False)
+        _ = msg_send[ObjCObject, "NSTextView", "setFont:"](
+            console,
+            msg_send[
+                ObjCObject,
+                "NSFont",
+                "monospacedSystemFontOfSize:weight:",
+                is_class=True,
+            ](
+                ObjCClass.lookup["NSFont"]().as_object(),
+                Float64(11.0),
+                Float64(0.0),
+            ).ptr(),
+        )
+        _ = msg_send[ObjCObject, "NSTextView", "setString:"](
+            console,
+            nsstring(
+                String("Build ⌘B · Run ⌘R · Stop ⌘. · this pane ⌘0\n")
+            ).ptr(),
+        )
+        _ = msg_send[ObjCObject, "NSScrollView", "setDocumentView:"](
+            out_scroll, console.ptr()
+        )
+        _ = external_call["objc_retain", P](console.ptr())
+        g_console()[] = console.addr()
+
+        _ = msg_send[ObjCObject, "NSSplitView", "addSubview:"](
+            vsplit, out_scroll.ptr()
+        )
+        _ = external_call["objc_retain", P](vsplit.ptr())
+        g_vsplit()[] = vsplit.addr()
+
+        _ = msg_send[ObjCObject, "NSSplitView", "addSubview:"](
+            split, vsplit.ptr()
+        )
+        # Closed until something is built. The editor is what the window is
+        # for; an empty console taking a third of it is a worse first sight.
+        show_console(False)
         # Added to the window's content view, above the split, so it spans the
         # editor pane and stays put while the editor scrolls.
         var tabbuilder = ObjCClassBuilder["NSView"]("RoastTabBar")
@@ -1755,6 +2150,26 @@ def main() raises:
         )
         print("roast: toolbar:", tb.addr() != 0)
         print("roast: split panes:", n_split)
+        let n_vsplit = msg_send[
+            Int, "NSArray", "count"
+        ](msg_send[ObjCObject, "NSView", "subviews"](ObjCObject(g_vsplit()[])))
+        let vsubs = msg_send[ObjCObject, "NSView", "subviews"](
+            ObjCObject(g_vsplit()[])
+        )
+        print(
+            "roast: editor panes:",
+            n_vsplit,
+            "heights",
+            msg_send[CGRect, "NSView", "frame"](
+                msg_send[ObjCObject, "NSArray", "objectAtIndex:"](vsubs, 0)
+            ).size.height,
+            msg_send[CGRect, "NSView", "frame"](
+                msg_send[ObjCObject, "NSArray", "objectAtIndex:"](vsubs, 1)
+            ).size.height,
+        )
+        print("roast: entry point:", build.entry_point(
+            project_root(), document.path_at(document.current_index())
+        ))
         print("roast: menu bar items:", n_menus)
         let gframe = msg_send[CGRect, "NSView", "frame"](grid)
         print(

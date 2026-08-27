@@ -176,6 +176,27 @@ for src in spikes/mandelbrot/mandelbrot.mojo spikes/mandelbrot/window_smoke.mojo
   esac
 done
 
+# The shipped examples, built out of the distribution the way someone opening
+# them in Roast would. Sources only -- a distribution carrying a build/ from
+# the machine that made it is not a distribution.
+EX="dist/CocoaMojo/share/examples"
+if [ -d "$EX" ]; then
+  stray=$(find "$EX" \( -name 'build' -o -name '*.png' -o -name '.DS_Store' \) | wc -l | tr -d ' ')
+  [ "$stray" -eq 0 ] && ok "examples" "$(find "$EX" -name '*.mojo' | wc -l | tr -d ' ') files, sources only" \
+                     || bad "examples" "$stray stray files shipped"
+  for proj in "$EX"/*/; do
+    name=$(basename "$proj")
+    [ -f "$proj/main.mojo" ] || { bad "example $name" "no main.mojo"; continue; }
+    if "$CM" --build "$proj/main.mojo" -o "$TMP/ex_$name" >"$TMP/ex_$name.log" 2>&1; then
+      ok "example $name" "builds"
+    else
+      bad "example $name" "$(grep -m1 'error:' "$TMP/ex_$name.log" || echo 'build failed')"
+    fi
+  done
+else
+  bad "examples" "not in the distribution -- rerun make-dist.sh"
+fi
+
 echo
 [ "$fail" -eq 0 ] && echo "distribution OK" || echo "distribution has failures"
 exit $fail

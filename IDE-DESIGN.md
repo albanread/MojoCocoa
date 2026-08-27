@@ -6,7 +6,7 @@ This is the design for a native Mac IDE written in the language it edits. It is
 also the answer to a fair observation: this repository healed a language,
 rebuilt its toolchain, and wired a database into its compiler — and contains
 almost no Mojo. The IDE is where that inverts. It is the first real cocoa-mojo
-program, it is built by `cocoamojo`, and once milestone 3 lands it builds
+program, it is built by `cocoamojo`, and as of milestone 4 it builds
 itself.
 
 The thesis in one sentence: **a monospaced editor is a grid, a grid is
@@ -236,7 +236,7 @@ is simpler and crash-isolated.
 | 1 | **done** — rope, GridView, NSTextInputClient, caret, selection, undo, find | 250k lines in 5 ms, keystroke 2.4 µs, snapshot 400 ns; 59 editing checks + 37 rope checks; Pinyin still to try with a real IME |
 | 2 | LSP: **diagnostics and completion done**; definition and semantic tokens to come | `check-ide.sh` completes `setTitle: (ObjCObject) -> None` inside a msg_send string |
 | 3 | **done** — documents: open, save, tabs, dirty tracking, project navigator | two tabs from the sidebar; re-opening a file selects its tab rather than duplicating it |
-| 4 | build/run, issues drawer, output pane — **self-hosting** | the IDE builds the IDE |
+| 4 | **done** — build, run, console pane, jump-to-error, examples project | Roast builds Roast: 408 KB binary, and the binary it produced opens a window |
 | 5 | **projects**: folder tree in the sidebar, project-wide search | open `ide/`, click through the files, search across them |
 | 6 | AppleScript dictionary + `check-ide.sh` | osascript drives edit→build→diagnostics in CI |
 | 7 | (optional) Metal glyph renderer | 120 Hz scroll measurement says it's needed, or it isn't built |
@@ -258,6 +258,51 @@ thing to show.
 It comes before build and run rather than after, for a reason that only shows
 up when you try: building compiles a file on disk, so Run on an unsaved buffer
 is a question that has to be answered before the Run button can mean anything.
+
+### Build, and what a project turns out to be
+
+Mojo has no link step. The compiler is handed one file and follows its imports
+from there, so a project does not need a list of sources — it needs an entry
+point, and everything else in it is reached by being imported. That single fact
+decides the whole build model, and it is why there is still no project file.
+
+Which file is the entry point, cheapest test first:
+
+1. `main.mojo` in the project root — the convention, and what `examples/` uses.
+2. the file on screen, if it is in the project root and declares a top-level
+   `main` — with several to choose from, the one being looked at is the one
+   meant.
+3. the one non-test file in the root that declares a top-level `main`.
+4. the file on screen.
+
+Step 4 is what makes a single loose file with no project around it buildable:
+there is no separate single-file mode, it is the same question with a smaller
+answer. Step 3 skips `*_test.mojo` because every test suite here declares a
+`main` and none of them is what the project is — without that rule `ide/` has
+six candidates and picks a test.
+
+Two details cost a debugging session each and are worth writing down. "Declares
+a `main`" means at the start of a line, not anywhere in the text: `build.mojo`
+documents this rule using the exact string it searches for, so a substring
+scan nominates it as the entry point of the entire editor. And Build saves
+every dirty buffer first, because the compiler reads the disk — building
+without that compiles the last save, which looks precisely like the compiler
+ignoring your fix.
+
+Output goes to `<project>/build/<stem>`, beside the source and inside the
+folder the sidebar already hides. Run is Build followed by the binary, with the
+working directory set to the project, so a program that writes a file writes it
+where its source lives — `examples/fern` leaves its `fern.png` in
+`examples/fern`. Run happens only if the build exits zero.
+
+The process is an `NSTask` with stdout and stderr on one pipe, drained without
+blocking from the same timer that drains the language server, for the same
+reason: a compiler thinking hard must not be an editor that has stopped
+responding. One pane for both streams, because a build that succeeds and then
+runs is one continuous thing to read. On failure the first error is parsed out
+of the log and the caret goes to it — opening the file if it is not open, which
+matters because the error is often in something the entry point imported and
+you have never had on screen.
 
 ### A project is a folder
 

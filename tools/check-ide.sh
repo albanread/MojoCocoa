@@ -64,6 +64,19 @@ else
   bad "editing" "$(grep -m1 'error' "$TMP/edit_build.log" || echo 'build failed')"
 fi
 
+# The build driver: which file gets compiled, where the binary goes, and
+# taking the compiler's diagnostics apart. All string arithmetic, no window.
+if "$CM" --build ide/build_test.mojo -o "$TMP/build_test" >"$TMP/bt_build.log" 2>&1; then
+  bt_out=$(ROAST_REPO="$PWD" timeout 120 "$TMP/build_test" 2>&1)
+  if echo "$bt_out" | grep -q '^build OK'; then
+    ok "build driver" "$(echo "$bt_out" | grep -c '  OK ') checks — entry point, output path, diagnostics"
+  else
+    bad "build driver" "$(echo "$bt_out" | grep -m1 FAIL || echo 'tests failed')"
+  fi
+else
+  bad "build driver" "$(grep -m1 'error' "$TMP/bt_build.log" || echo 'build failed')"
+fi
+
 # The language server, for real: spawn it, initialize, open a file with a
 # deliberate error, read the diagnostic back. Needs an import path or every
 # parse fails on `std` and the diagnostics are about configuration.
@@ -82,6 +95,56 @@ else
   bad "lsp client" "$(grep -m1 'error' "$TMP/lsp_build.log" || echo 'build failed')"
 fi
 
+# Build and run for real, driven by the app's own timer. The examples are
+# copied somewhere writable first: a test editor never works on live data, and
+# building writes a build/ folder next to whatever it compiles.
+cp -R examples "$TMP/examples"
+brun=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" \
+       ROAST_PROJECT="$TMP/examples/hello" \
+       ROAST_AUTOBUILD=run ROAST_AUTOCLOSE_TICKS=400 \
+       timeout 240 "$TMP/roast" 2>&1)
+if echo "$brun" | grep -q 'building finished, status 0'; then
+  if echo "$brun" | grep -q 'running finished, status 0'; then
+    ok "build + run" "⌘R compiled the project and ran the binary"
+  else
+    bad "build + run" "built, but the binary did not run clean"
+  fi
+else
+  bad "build + run" "$(echo "$brun" | grep -m1 'error:' || echo 'build did not succeed')"
+fi
+
+# The console is read back out of AppKit, so this asserts what someone would
+# be looking at rather than what went into the pipe.
+if echo "$brun" | grep -q 'Hello from cocoa-mojo'; then
+  ok "console" "the program's output reached the pane"
+else
+  bad "console" "nothing from the program in the console"
+fi
+if echo "$brun" | grep -q 'console open'; then
+  ok "console pane" "$(echo "$brun" | grep -m1 'console open' | sed 's/roast: //')"
+else
+  bad "console pane" "the build did not open it"
+fi
+
+# A failure has to land on the error -- including when the error is in a file
+# that is not the entry point and is not even open yet.
+sed -i '' 's/var maps = List\[Affine\]()/var maps = List[Affine](sherbet)/' \
+  "$TMP/examples/fern/ifs.mojo"
+bfail=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" \
+        ROAST_PROJECT="$TMP/examples/fern" \
+        ROAST_AUTOBUILD=run ROAST_AUTOCLOSE_TICKS=400 \
+        timeout 240 "$TMP/roast" 2>&1)
+if echo "$bfail" | grep -q 'jump to ifs.mojo line 18'; then
+  ok "jump to error" "opened the imported file and put the caret on it"
+else
+  bad "jump to error" "$(echo "$bfail" | grep -m1 'jump to' || echo 'did not jump')"
+fi
+if echo "$bfail" | grep -q 'running finished'; then
+  bad "failed build stops" "it ran the binary anyway"
+else
+  ok "failed build stops" "run did not happen after a failed compile"
+fi
+
 out=$(ROAST_AUTOCLOSE_TICKS=12 timeout 90 "$TMP/roast" 2>&1)
 
 check() {  # <label> <pattern> <description>
@@ -93,6 +156,7 @@ check() {  # <label> <pattern> <description>
 check "window"      "window visible: True"  "on screen"
 check "toolbar"     "toolbar: True"         "attached"
 check "split view"  "split panes: 2"        "sidebar + editor area"
+check "editor panes" "editor panes: 2"      "editor above the console"
 check "menu bar"    "menu bar items: 5"     "app, File, Edit, Build, Window"
 check "lifecycle"   "applicationWillTerminate" "launch → close → terminate clean"
 

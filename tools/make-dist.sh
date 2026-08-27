@@ -161,6 +161,19 @@ rsync -a --delete "$ROOT/mojo/stdlib/"      "$D/lib/mojo/stdlib/"
 rsync -a --delete "$ROOT/max/mojo/"         "$D/lib/mojo/max/"
 rsync -a --delete "$ROOT/max/kernels/src/"  "$D/lib/mojo/kernels/"
 
+echo "== examples =="
+# Shipped with the toolchain because they are the answer to "what does a
+# project look like" -- each folder is one, with its main.mojo, and Roast
+# opens them as they are. Copied without build/ or anything a previous run
+# left behind, so a fresh distribution is sources only.
+# --delete-excluded as well as --delete: without it rsync protects excluded
+# files that are already in the destination, so a build/ from an earlier run
+# would survive every rebuild of the distribution.
+rsync -a --delete --delete-excluded \
+      --exclude 'build/' --exclude '*.png' --exclude '.DS_Store' \
+      "$ROOT/examples/" "$D/share/examples/"
+echo "   $(find "$D/share/examples" -name '*.mojo' | wc -l | tr -d ' ') files in $(ls "$D/share/examples" | grep -vc README) projects"
+
 echo "== cocoa database =="
 if [ -f "$KB" ]; then cp -f "$KB" "$D/share/cocoa.sqlite"
 else echo "   WARNING: no cocoa.sqlite at $KB -- set COCOAKB=..."; fi
