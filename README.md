@@ -390,10 +390,11 @@ This README is the summary, and [`STATUS.md`](STATUS.md) is the honest current
 picture — read that before relying on anything here.
 
 **To learn the language and the API, start with the
-[CocoaMojo Programmer's Guide and Reference Manual](CocoaMojoGuide/)** — eight
-guide chapters from first program to a walked-through windowed demo, plus a
+[CocoaMojo Programmer's Guide and Reference Manual](CocoaMojoGuide/)** — nine
+guide chapters from first program to a walked-through windowed demo, a
 reference covering the cocoa-mojo dialect, every `std.objc` entry point, every
-`cocoakb` query and every diagnostic. A built PDF sits beside the source.
+`cocoakb` query and every diagnostic, and a section on writing Mojo functions
+that run on the Apple GPU. A built PDF sits beside the source.
 
 | Document | What it covers |
 | --- | --- |

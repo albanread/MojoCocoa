@@ -26,6 +26,7 @@ var s = msg_send[
 |:---|:---|
 | [Programmer's Guide](guide/) | Read this first. Nine chapters: the frozen dialect, Mojo's own object model, then Cocoa from first message to a walked-through windowed application. |
 | [Reference Manual](reference/) | Look things up here. The frozen language dialect, every `std.objc` entry point, every `cocoakb` query, and every diagnostic. |
+| [GPU programming](gpu/) | Writing Mojo functions that run on the Apple GPU: the execution model, threads and memory, and how to build, run and verify them. |
 
 ## A warning about versions
 
@@ -53,9 +54,10 @@ not build.
 The Cocoa layer described here works and is verified: nine of nine
 verification spikes pass, and the example applications build and run.
 
-The GPU layer of the same fork does not yet run end to end, and nothing in
-these documents depends on it. Where a GPU topic is unavoidable — the
-Mandelbrot example draws through a `CAMetalLayer` — it is marked.
+The GPU layer is a working vertical slice: kernels compile, run and agree with
+a CPU reference, and 96 of 119 in-scope GPU tests pass, with the failures
+triaged and named. It has its own [section](gpu/), and nothing in the Cocoa
+chapters depends on it.
 
 ## Conventions
 
