@@ -41,7 +41,15 @@ from gridview import (
     line_height,
 )
 from rope import Rope
-from gridview import g_revision, g_buffer
+from gridview import (
+    g_revision,
+    g_buffer,
+    g_caret,
+    show_popup,
+    hide_popup,
+    popup_open,
+    byte_to_utf16,
+)
 import lsp
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
@@ -75,6 +83,8 @@ comptime g_findfield = named_global["roast.findfield", Int]
 comptime g_uri = named_global["roast.uri", List[String]]
 comptime g_sent_revision = named_global["roast.sent.revision", Int]
 comptime g_idle_ticks = named_global["roast.idle", Int]
+comptime g_pending_completion = named_global["roast.completing", Int]
+comptime g_comp_seen = named_global["roast.comp.seen", Int]
 
 
 def g_buffer_text() -> String:
@@ -234,6 +244,29 @@ def report_matches():
         set_status(String(n) + String(" matches for ") + repr(query()))
 
 
+fn action_complete(self_: P, cmd: P, sender: P):
+    """Ask the server what could go here, at the caret."""
+    try:
+        if not lsp.is_ready() or len(g_uri()[]) == 0 or len(g_buffer()[]) == 0:
+            set_status(String("No language server"))
+            return
+        let buf = g_buffer()[][0]
+        let line = buf.line_of_offset(g_caret()[])
+        let col = byte_to_utf16(g_caret()[]) - byte_to_utf16(
+            buf.line_start(line)
+        )
+        # The server answers the document it was last told about, so an edit
+        # still sitting in the debounce would be answered against stale text.
+        if g_revision()[] != g_sent_revision()[]:
+            lsp.did_change(g_uri()[][0], g_revision()[], buf.to_string())
+            g_sent_revision()[] = g_revision()[]
+        _ = lsp.request_completion(g_uri()[][0], line, col)
+        g_pending_completion()[] = 1
+        set_status(String("Completing…"))
+    except:
+        pass
+
+
 fn action_find(self_: P, cmd: P, sender: P):
     """Put the cursor in the toolbar's search field."""
     try:
@@ -308,7 +341,25 @@ fn timer_tick(self_: P, cmd: P, timer: P):
     try:
         if lsp.is_running():
             if lsp.poll() > 0:
-                _report_diagnostics()
+                # A completion reply arrives as a bump in the serial; showing
+                # the popup is the app's job, not the client's.
+                if (
+                    g_pending_completion()[] != 0
+                    and lsp.g_comp_serial()[] != g_comp_seen()[]
+                ):
+                    g_comp_seen()[] = lsp.g_comp_serial()[]
+                    g_pending_completion()[] = 0
+                    if g_grid()[] != 0:
+                        show_popup(ObjCObject(g_grid()[]))
+                    if lsp.completion_count() == 0:
+                        set_status(String("No completions"))
+                    else:
+                        set_status(
+                            String(lsp.completion_count())
+                            + String(" completions")
+                        )
+                else:
+                    _report_diagnostics()
                 refresh_grid()
 
             # Tell the server about edits once the typing pauses. Sending on
@@ -585,6 +636,13 @@ def build_menu_bar(app: ObjCObject, actions: Int):
             ObjCClass.lookup["NSMenuItem"]().as_object()
         ).ptr(),
     )
+    # Control-space is what every editor uses for "what goes here".
+    let comp = add_item(
+        edit, String("Complete"), String("roastComplete:"), String(" "), actions
+    )
+    _ = msg_send[ObjCObject, "NSMenuItem", "setKeyEquivalentModifierMask:"](
+        comp, Int(0x40000)
+    )
     _ = add_item(edit, String("Find…"), String("roastFind:"), String("f"), actions)
     _ = add_item(edit, String("Find Next"), String("roastFindNext:"), String("g"), actions)
     let prev_item = add_item(
@@ -655,6 +713,7 @@ def main() raises:
         ab.add_method["roastRun:", encoding="v@:@"](action_run)
         ab.add_method["roastStop:", encoding="v@:@"](action_stop)
         ab.add_method["roastNewTab:", encoding="v@:@"](action_new_tab)
+        ab.add_method["roastComplete:", encoding="v@:@"](action_complete)
         ab.add_method["roastFind:", encoding="v@:@"](action_find)
         ab.add_method["roastFindChanged:", encoding="v@:@"](action_find_changed)
         ab.add_method["roastFindNext:", encoding="v@:@"](action_find_next)

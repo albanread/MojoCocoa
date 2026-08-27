@@ -15,6 +15,11 @@
 # rope edit (measured: 2.4 us) and one line redrawn.
 from rope import Rope
 from lsp import (
+    completion_count,
+    clear_completions,
+    g_comp_label,
+    g_comp_detail,
+    g_comp_insert,
     diagnostic_count,
     g_diag_line,
     g_diag_col,
@@ -386,6 +391,218 @@ fn blink(self_: P, cmd: P, timer: P):
         pass
 
 
+# ── Completion popup ────────────────────────────────────────────────────────
+fn draw_popup(self_: P, cmd: P):
+    """The candidate list: label on the left, detail greyed on the right."""
+    try:
+        with autoreleasepool():
+            let view = ObjCObject(Int(self_))
+            let bounds = msg_send[CGRect, "NSView", "bounds"](view)
+            let NSColorP = ObjCClass.lookup["NSColor"]()
+
+            # Background and a hairline border, so it reads as a panel rather
+            # than text that has escaped.
+            let bg = msg_send[
+                ObjCObject, "NSColor", "controlBackgroundColor", is_class=True
+            ](NSColorP.as_object())
+            _ = msg_send[ObjCObject, "NSColor", "setFill"](bg)
+            _ = external_call["NSRectFill", NoneType](bounds)
+
+            let n = min(completion_count(), POPUP_MAX_ROWS)
+            let attrs = ObjCObject(g_attrs()[])
+            let dim = ObjCObject(g_gutter_attrs()[])
+            var row = 0
+            while row < n:
+                let y = Float64(row) * POPUP_ROW_H
+                if row == g_popup_sel()[]:
+                    let hl = msg_send[
+                        ObjCObject, "NSColor", "selectedContentBackgroundColor",
+                        is_class=True,
+                    ](NSColorP.as_object())
+                    _ = msg_send[ObjCObject, "NSColor", "setFill"](hl)
+                    _ = external_call["NSRectFill", NoneType](
+                        rect(0.0, y, bounds.size.width, POPUP_ROW_H)
+                    )
+                _ = msg_send[
+                    ObjCObject, "NSString", "drawAtPoint:withAttributes:"
+                ](
+                    nsstring(g_comp_label()[][row]),
+                    CGPoint(8.0, y + 2.0),
+                    attrs.ptr(),
+                )
+                let detail = g_comp_detail()[][row]
+                if detail.byte_length() > 0:
+                    # Right-aligned, so the eye can run down the signatures.
+                    var chars = 0
+                    for _ in detail.codepoints():
+                        chars += 1
+                    let dx = bounds.size.width - 8.0 - Float64(chars) * advance()
+                    _ = msg_send[
+                        ObjCObject, "NSString", "drawAtPoint:withAttributes:"
+                    ](
+                        nsstring(detail),
+                        CGPoint(max(dx, 180.0), y + 2.0),
+                        dim.ptr(),
+                    )
+                row += 1
+    except:
+        pass
+
+
+fn popup_is_flipped(self_: P, cmd: P) -> Bool:
+    return True
+
+
+def ensure_popup():
+    """Build the popup window once."""
+    if g_popup()[] != 0:
+        return
+    let NSWindow = ObjCClass.lookup["NSWindow"]()
+    var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
+        NSWindow.as_object()
+    )
+    # Borderless, non-activating: showing candidates must not take focus away
+    # from the text being typed.
+    win = msg_send[
+        ObjCObject, "NSWindow", "initWithContentRect:styleMask:backing:defer:"
+    ](win, rect(0.0, 0.0, POPUP_W, POPUP_ROW_H), Int(0), Int(2), Bool(False))
+    _ = msg_send[ObjCObject, "NSWindow", "setLevel:"](win, Int(101))
+    _ = msg_send[ObjCObject, "NSWindow", "setOpaque:"](win, False)
+    _ = msg_send[ObjCObject, "NSWindow", "setHasShadow:"](win, True)
+
+    var pb = ObjCClassBuilder["NSView"]("RoastCompletionView")
+    pb.add_method["drawRect:", encoding="v@:{CGRect={CGPoint=dd}{CGSize=dd}}"](
+        draw_popup
+    )
+    pb.add_method["isFlipped"](popup_is_flipped)
+    let cls = pb^.register()
+    var view = msg_send[ObjCObject, "NSObject", "alloc", is_class=True](
+        cls.as_object()
+    )
+    view = msg_send[ObjCObject, "NSView", "initWithFrame:"](
+        view, rect(0.0, 0.0, POPUP_W, POPUP_ROW_H)
+    )
+    _ = msg_send[ObjCObject, "NSWindow", "setContentView:"](win, view.ptr())
+    _ = external_call["objc_retain", P](win.ptr())
+    g_popup()[] = win.addr()
+    g_popup_view()[] = view.addr()
+
+
+def word_start(at: Int) -> Int:
+    """Where the identifier under the caret begins.
+
+    A completion replaces the word being typed, not the empty space after it;
+    getting this wrong appends to a prefix and produces `setTitsetTitle:`.
+    """
+    if not has_rope():
+        return at
+    let text = g_buffer()[][0].slice(max(0, at - 128), at)
+    let bytes = text.as_bytes()
+    var back = 0
+    while back < len(bytes):
+        let c = Int(bytes[len(bytes) - 1 - back])
+        let alnum = (
+            (c >= 0x30 and c <= 0x39)
+            or (c >= 0x41 and c <= 0x5A)
+            or (c >= 0x61 and c <= 0x7A)
+            or c == 0x5F
+        )
+        if not alnum:
+            break
+        back += 1
+    return at - back
+
+
+def show_popup(anchor_view: ObjCObject):
+    """Put the list under the word being completed."""
+    if completion_count() == 0:
+        hide_popup()
+        return
+    ensure_popup()
+    with autoreleasepool():
+        let rows = min(completion_count(), POPUP_MAX_ROWS)
+        let h = Float64(rows) * POPUP_ROW_H
+        g_popup_from()[] = word_start(g_caret()[])
+        let pos = caret_position(g_popup_from()[])
+
+        # The caret is in view coordinates; the window wants screen ones.
+        let local = rect(pos.x, pos.y + line_height(), POPUP_W, h)
+        let in_window = msg_send[CGRect, "NSView", "convertRect:toView:"](
+            anchor_view, local, ObjCObject(0).ptr()
+        )
+        let host = msg_send[ObjCObject, "NSView", "window"](anchor_view)
+        if host.addr() == 0:
+            return
+        var screen = msg_send[CGRect, "NSWindow", "convertRectToScreen:"](
+            host, in_window
+        )
+        # The window's y is its bottom edge, and the list hangs below the
+        # caret, so the origin moves down by the height.
+        screen.origin.y -= h
+
+        let win = ObjCObject(g_popup()[])
+        _ = msg_send[ObjCObject, "NSWindow", "setFrame:display:"](
+            win, screen, True
+        )
+        _ = msg_send[ObjCObject, "NSView", "setFrameSize:"](
+            ObjCObject(g_popup_view()[]), CGSize(POPUP_W, h)
+        )
+        _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](
+            ObjCObject(g_popup_view()[]), True
+        )
+        # orderFront, never makeKey: the text keeps the keyboard.
+        _ = msg_send[ObjCObject, "NSWindow", "orderFront:"](win, win.ptr())
+        g_popup_open()[] = 1
+        g_popup_sel()[] = 0
+
+
+def hide_popup():
+    if g_popup()[] == 0 or g_popup_open()[] == 0:
+        return
+    with autoreleasepool():
+        _ = msg_send[ObjCObject, "NSWindow", "orderOut:"](
+            ObjCObject(g_popup()[]), ObjCObject(g_popup()[]).ptr()
+        )
+    g_popup_open()[] = 0
+    clear_completions()
+
+
+def popup_open() -> Bool:
+    return g_popup_open()[] != 0
+
+
+def popup_move(delta: Int):
+    let n = min(completion_count(), POPUP_MAX_ROWS)
+    if n == 0:
+        return
+    var sel = g_popup_sel()[] + delta
+    if sel < 0:
+        sel = n - 1
+    elif sel >= n:
+        sel = 0
+    g_popup_sel()[] = sel
+    with autoreleasepool():
+        _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](
+            ObjCObject(g_popup_view()[]), True
+        )
+
+
+def popup_accept() -> Bool:
+    """Insert the selected candidate over the word being completed."""
+    if not popup_open() or completion_count() == 0:
+        return False
+    let sel = min(g_popup_sel()[], completion_count() - 1)
+    let text = g_comp_insert()[][sel]
+    let from_ = g_popup_from()[]
+    hide_popup()
+    if not has_rope():
+        return False
+    push_undo()
+    set_rope(g_buffer()[][0].replace(from_, g_caret()[], text))
+    set_caret(from_ + text.byte_length())
+    return True
+
+
 # ── Construction ────────────────────────────────────────────────────────────
 def make_grid_view(frame: CGRect) -> ObjCObject:
     """Register the view class, measure the font, and return an instance."""
@@ -553,6 +770,22 @@ comptime g_match_at = named_global["roast.match.at", Int]
 # Bumped on every edit. The app watches it to decide when to tell the server,
 # rather than sending a document on every keystroke.
 comptime g_revision = named_global["roast.revision", Int]
+
+# The completion popup: a borderless window floating above everything, drawing
+# its own list. A floating window rather than something inside the editor so it
+# is not clipped by the scroll view, and a self-drawn list rather than an
+# NSTableView so there is no data source to keep in step with the model.
+comptime g_popup = named_global["roast.popup", Int]
+comptime g_popup_view = named_global["roast.popup.view", Int]
+comptime g_popup_open = named_global["roast.popup.open", Int]
+comptime g_popup_sel = named_global["roast.popup.sel", Int]
+# Where the word being completed starts, so accepting replaces the prefix
+# rather than appending to it.
+comptime g_popup_from = named_global["roast.popup.from", Int]
+
+comptime POPUP_ROW_H = 20.0
+comptime POPUP_MAX_ROWS = 12
+comptime POPUP_W = 460.0
 
 comptime g_blink_on = named_global["roast.blink", Int]
 comptime g_focused = named_global["roast.focused", Int]
@@ -806,6 +1039,11 @@ fn insert_text(self_: P, cmd: P, text: P, replacement: NSRange):
                 g_anchor()[] = g_marked_at()[]
                 g_caret()[] = g_marked_at()[] + g_marked_len()[]
             replace_selection(ns_to_string(s))
+            # A word character continues a completion; anything else ends one.
+            if popup_open():
+                let typed = ns_to_string(s)
+                if typed.byte_length() != 1:
+                    hide_popup()
             _refresh(self_)
     except:
         pass
@@ -988,6 +1226,25 @@ def apply_command(name: String):
         let buf = g_buffer()[][0]
         let n = buf.byte_length()
 
+        # While candidates are showing, the arrows and Enter belong to the
+        # list, not the buffer. Escape puts it away; anything else that is not
+        # a movement dismisses it, because a list that survives an edit is
+        # answering a question nobody is asking any more.
+        if popup_open():
+            if name == "moveDown:":
+                popup_move(1)
+                return
+            if name == "moveUp:":
+                popup_move(-1)
+                return
+            if name == "insertNewline:" or name == "insertTab:":
+                _ = popup_accept()
+                return
+            if name == "cancelOperation:":
+                hide_popup()
+                return
+            hide_popup()
+
         if name == "undo:":
             _ = undo()
             return
@@ -1036,6 +1293,10 @@ def apply_command(name: String):
                 set_caret(ls + min(col, ll))
         elif name == "moveToBeginningOfLine:":
             set_caret(buf.line_start(buf.line_of_offset(g_caret()[])))
+        elif name == "moveToBeginningOfDocument:":
+            set_caret(0)
+        elif name == "moveToEndOfDocument:":
+            set_caret(buf.byte_length())
         elif name == "moveToEndOfLine:":
             let line = buf.line_of_offset(g_caret()[])
             set_caret(buf.line_start(line) + buf.line(line).byte_length())

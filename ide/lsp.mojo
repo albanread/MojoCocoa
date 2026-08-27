@@ -101,6 +101,15 @@ comptime g_diag_end = named_global["lsp.diag.end", List[Int]]
 comptime g_diag_sev = named_global["lsp.diag.sev", List[Int]]
 comptime g_diag_msg = named_global["lsp.diag.msg", List[String]]
 
+# Completion results, and the id of the request they answer. A reply that is
+# not the newest request is dropped: typing fast outruns the server, and a late
+# answer for a prefix the user has moved past is worse than no answer.
+comptime g_comp_label = named_global["lsp.comp.label", List[String]]
+comptime g_comp_detail = named_global["lsp.comp.detail", List[String]]
+comptime g_comp_insert = named_global["lsp.comp.insert", List[String]]
+comptime g_comp_request = named_global["lsp.comp.request", Int]
+comptime g_comp_serial = named_global["lsp.comp.serial", Int]
+
 
 def inbox() -> String:
     if len(g_inbox()[]) == 0:
@@ -126,6 +135,38 @@ def is_ready() -> Bool:
 
 def diagnostic_count() -> Int:
     return len(g_diag_line()[])
+
+
+def completion_count() -> Int:
+    return len(g_comp_label()[])
+
+
+def clear_completions():
+    let a = g_comp_label()
+    let b = g_comp_detail()
+    let c = g_comp_insert()
+    while len(a[]) > 0:
+        _ = a[].pop()
+    while len(b[]) > 0:
+        _ = b[].pop()
+    while len(c[]) > 0:
+        _ = c[].pop()
+
+
+def request_completion(uri: String, line: Int, character: Int) -> Int:
+    """Ask what could go here. Line and character are LSP's: zero-based, and
+    character counts UTF-16 units, which is why the editor converts."""
+    var pos = JSON.object()
+    pos.set(String("line"), JSON(line))
+    pos.set(String("character"), JSON(character))
+    var doc = JSON.object()
+    doc.set(String("uri"), JSON(uri))
+    var params = JSON.object()
+    params.set(String("textDocument"), doc^)
+    params.set(String("position"), pos^)
+    let id = request(String("textDocument/completion"), params^)
+    g_comp_request()[] = id
+    return id
 
 
 def clear_diagnostics():
@@ -402,12 +443,50 @@ def _handle(var msg: JSON):
     if method == "textDocument/publishDiagnostics":
         _take_diagnostics(msg.get("params")[])
         return
+    # A reply to the outstanding completion request.
+    if msg.has("id") and msg.has("result"):
+        let id = msg.get("id")[].as_int()
+        if id == g_comp_request()[] and id != 0:
+            _take_completions(msg.get("result")[])
+            return
+
     # A reply to initialize: tell the server we are ready, then we are.
     if msg.has("result") and not msg.has("method"):
         if g_ready()[] == 0:
             var empty = JSON.object()
             notify(String("initialized"), empty^)
             g_ready()[] = 1
+
+
+def _take_completions(result: JSON):
+    """A completion reply is either a bare array of items or a list object with
+    them under `items`. Servers send both shapes; this reads either.
+
+    Two branches rather than a conditional expression, because a conditional
+    would have to produce a JSON value and JSON owns two Lists and a String --
+    copying one is a decision, not something to slip into an expression.
+    """
+    clear_completions()
+    if result.has("items"):
+        _collect_completions(result.get("items")[])
+    else:
+        _collect_completions(result)
+    g_comp_serial()[] += 1
+
+
+def _collect_completions(items: JSON):
+    var i = 0
+    while i < items.count():
+        let it = items.at(i)[]
+        let label = it.get("label")[].as_string()
+        if label != "":
+            g_comp_label()[].append(label)
+            g_comp_detail()[].append(it.get("detail")[].as_string())
+            # insertText when the server gives one, otherwise the label. They
+            # differ wherever the visible name is not what gets typed.
+            let insert = it.get("insertText")[].as_string()
+            g_comp_insert()[].append(insert if insert != "" else label)
+        i += 1
 
 
 def _take_diagnostics(params: JSON):
