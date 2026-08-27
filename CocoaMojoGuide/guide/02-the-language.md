@@ -119,7 +119,7 @@ field or module value
 ### When to reach for it
 
 The fork's own conversion is a good guide: sixteen never-reassigned Cocoa
-bindings in `p0_window.mojo` became `let`. If you never rebind it, say so.
+bindings became `let` in one file alone. If you never rebind it, say so.
 
 ## `alias` is deprecated, not removed
 

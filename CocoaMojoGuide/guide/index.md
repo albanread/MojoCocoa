@@ -18,7 +18,7 @@ Read it in order the first time. Each chapter assumes the one before it.
 | [6. Letting Cocoa call you](06-callbacks.md) | Declare Objective-C classes with `class`, so Cocoa can send your code messages |
 | [7. A complete application](07-an-application.md) | Put a window on screen, handle events, and drive a run loop |
 | [8. Concurrency and blocks](08-concurrency.md) | Dispatch work across GCD queues, and call block-only Cocoa APIs |
-| [9. A demo, walked through](09-walkthrough.md) | Read a complete 225-line windowed program line by line |
+| [9. A demo, walked through](09-walkthrough.md) | Read Conway's Life — a complete 644-line Cocoa application — and see how little of it is Cocoa |
 
 When you want to look something up rather than learn it, use the
 [Reference Manual](../reference/).

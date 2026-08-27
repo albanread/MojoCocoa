@@ -24,7 +24,7 @@ var s = msg_send[
 
 | Document | What it is |
 |:---|:---|
-| [Programmer's Guide](guide/) | Read this first. Nine chapters: the frozen dialect, Mojo's own object model, then Cocoa from first message to a walked-through windowed application. |
+| [Programmer's Guide](guide/) | Read this first. Nine chapters: the frozen dialect, Mojo's own object model, then Cocoa from the first message to a walked-through Life implementation. |
 | [Reference Manual](reference/) | Look things up here. The frozen language dialect, every `std.objc` entry point, every `cocoakb` query, and every diagnostic. |
 | [GPU programming](gpu/) | Writing Mojo functions that run on the Apple GPU: the execution model, threads and memory, and how to build, run and verify them. |
 
