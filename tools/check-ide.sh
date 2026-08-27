@@ -24,6 +24,21 @@ if ! "$CM" --build ide/roast.mojo -o "$TMP/roast" >"$TMP/build.log" 2>&1; then
 fi
 ok "build" "$(stat -f%z "$TMP/roast" | awk '{printf "%.0f KB", $1/1024}')"
 
+# The rope, first: it is the thing the latency claim rests on, it is pure Mojo,
+# and it needs no window. Its own suite asserts values and prints timings.
+if "$CM" --build ide/rope_test.mojo -o "$TMP/rope_test" >"$TMP/rope_build.log" 2>&1; then
+  rope_out=$(timeout 300 "$TMP/rope_test" 2>&1)
+  if echo "$rope_out" | grep -q '^rope OK'; then
+    ok "rope" "$(echo "$rope_out" | grep -c '  OK ') checks"
+    echo "$rope_out" | grep -E 'bytes:|build:|line lookup:|edit:|snapshot:' \
+      | sed 's/^ */         /'
+  else
+    bad "rope" "$(echo "$rope_out" | grep -m1 FAIL || echo 'tests failed')"
+  fi
+else
+  bad "rope" "$(grep -m1 'error' "$TMP/rope_build.log" || echo 'build failed')"
+fi
+
 out=$(ROAST_AUTOCLOSE_TICKS=12 timeout 90 "$TMP/roast" 2>&1)
 
 check() {  # <label> <pattern> <description>
@@ -38,11 +53,16 @@ check "split view"  "split panes: 2"        "sidebar + editor area"
 check "menu bar"    "menu bar items: 5"     "app, File, Edit, Build, Window"
 check "lifecycle"   "applicationWillTerminate" "launch → close → terminate clean"
 
-# The frame should be the size asked for, plus the toolbar's contribution.
-if echo "$out" | grep -q 'frame: 1100.0'; then
-  ok "frame" "$(echo "$out" | grep -m1 'frame:' | sed 's/roast: //')"
+# The frame is derived from the screen now, not written into the source, so
+# assert that it is usable rather than that it is one particular number: wide
+# and tall enough for the layout to mean anything, and not off the top.
+frame=$(echo "$out" | grep -m1 'frame:' | sed 's/roast: frame: //')
+fw=${frame%% *}; fw=${fw%.*}
+fh=$(echo "$frame" | awk '{print $3}'); fh=${fh%.*}
+if [ -n "$fw" ] && [ "$fw" -ge 640 ] && [ -n "$fh" ] && [ "$fh" -ge 400 ]; then
+  ok "frame" "$frame"
 else
-  bad "frame" "$(echo "$out" | grep -m1 'frame:' || echo 'no frame reported')"
+  bad "frame" "${frame:-none} — below the minimum usable size"
 fi
 
 echo

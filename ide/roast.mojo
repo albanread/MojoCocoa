@@ -199,26 +199,51 @@ fn toolbar_item_for_id(
 
             # Which item was asked for? Compare against each identifier.
             var title = String("?")
+            var symbol = String("questionmark")
             var action = sel["roastStop:"]()
             if msg_send[Bool, "NSString", "isEqualToString:"](
                 key, nsstring(String(TB_BUILD)).ptr()
             ):
                 title = String("Build")
+                symbol = String("hammer")
                 action = sel["roastBuild:"]()
             elif msg_send[Bool, "NSString", "isEqualToString:"](
                 key, nsstring(String(TB_RUN)).ptr()
             ):
                 title = String("Run")
+                symbol = String("play.fill")
                 action = sel["roastRun:"]()
             elif msg_send[Bool, "NSString", "isEqualToString:"](
                 key, nsstring(String(TB_STOP)).ptr()
             ):
                 title = String("Stop")
+                symbol = String("stop.fill")
                 action = sel["roastStop:"]()
             else:
                 return NIL
 
             _ = msg_send[ObjCObject, "NSToolbarItem", "setLabel:"](
+                item, nsstring(title).ptr()
+            )
+            # An SF Symbol, or the item renders as an empty bordered circle.
+            # The accessibility description doubles as the tooltip source, so
+            # the title serves for both rather than passing nil.
+            let NSImage = ObjCClass.lookup["NSImage"]()
+            let image = msg_send[
+                ObjCObject,
+                "NSImage",
+                "imageWithSystemSymbolName:accessibilityDescription:",
+                is_class=True,
+            ](
+                NSImage.as_object(),
+                nsstring(symbol).ptr(),
+                nsstring(title).ptr(),
+            )
+            if image.addr() != 0:
+                _ = msg_send[ObjCObject, "NSToolbarItem", "setImage:"](
+                    item, image.ptr()
+                )
+            _ = msg_send[ObjCObject, "NSToolbarItem", "setToolTip:"](
                 item, nsstring(title).ptr()
             )
             _ = msg_send[ObjCObject, "NSToolbarItem", "setTarget:"](
@@ -401,11 +426,32 @@ def main() raises:
         var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
             NSWindow.as_object()
         )
+        # Start at a readable fraction of the main screen instead of a frame
+        # typed into the source, which is wrong on every display but one.
+        let NSScreen = ObjCClass.lookup["NSScreen"]()
+        let screen = msg_send[
+            ObjCObject, "NSScreen", "mainScreen", is_class=True
+        ](NSScreen.as_object())
+        var vis = rect(0.0, 0.0, 1440.0, 900.0)
+        if screen.addr() != 0:
+            vis = msg_send[CGRect, "NSScreen", "visibleFrame"](screen)
+        let init_w = min(1400.0, vis.size.width * 0.78)
+        let init_h = min(900.0, vis.size.height * 0.84)
         win = msg_send[
             ObjCObject,
             "NSWindow",
             "initWithContentRect:styleMask:backing:defer:",
-        ](win, rect(160.0, 160.0, 1100.0, 720.0), Int(15), Int(2), Bool(False))
+        ](
+            win,
+            rect(0.0, 0.0, init_w, init_h),
+            Int(15),
+            Int(2),
+            Bool(False),
+        )
+        # Below which the layout stops meaning anything.
+        _ = msg_send[ObjCObject, "NSWindow", "setMinSize:"](
+            win, CGSize(640.0, 400.0)
+        )
         _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
             win, nsstring(String("Roast")).ptr()
         )
@@ -415,6 +461,16 @@ def main() raises:
             win, nsstring(String("roast.editor")).ptr()
         )
         _ = msg_send[ObjCObject, "NSWindow", "setTabbingMode:"](win, Int(0))
+        # Remember where the user put it. AppKit restores the saved frame
+        # here if there is one, so centring only applies to a first run.
+        let restored = msg_send[Bool, "NSWindow", "setFrameUsingName:"](
+            win, nsstring(String("roast.main")).ptr()
+        )
+        if not restored:
+            _ = msg_send[ObjCObject, "NSWindow", "center"](win)
+        _ = msg_send[ObjCObject, "NSWindow", "setFrameAutosaveName:"](
+            win, nsstring(String("roast.main")).ptr()
+        )
         g_window()[] = win.addr()
 
         let content = msg_send[ObjCObject, "NSWindow", "contentView"](win)
