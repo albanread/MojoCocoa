@@ -144,6 +144,77 @@ are zero-initialised in a way that runs destructors on garbage (the parked
 chip). **State needs somewhere to live. Instances are that place.** Cocoa has
 been saying so since 1988.
 
+## Two oracles: the dump and the live runtime
+
+Cocoa is not only a database here. It is also a live runtime on the machine
+doing the compiling, and — because this fork is Apple-silicon-only and does not
+cross-compile — **the compile host is the target**. Whatever the program will
+ask `objc_msgSend` at run time can, in principle, be asked right now. Most
+compilers see their target platform only through headers; this one has three
+views of it, and the design should say which view answers which question.
+
+`cocoa.sqlite` already is this idea, half-executed. Its schema is two sources
+side by side: `bs_*` tables from Apple's BridgeSupport XML (the headers as
+data) and `rt_*` tables from a dump of a live runtime. They are not redundant,
+and the overlap is not the interesting part:
+
+| | knows | count here |
+|---|---|---|
+| runtime only | class clusters, private and internal classes — why `NSConcreteAttributedString` is findable | **27,764** classes absent from BridgeSupport |
+| BridgeSupport only | classes in frameworks that were not loaded when the dump ran | **951** classes absent from the runtime dump |
+| BridgeSupport only | enum and constant values — `NSWindowStyleMaskClosable = 2` | **48,775** rows the runtime cannot produce at all |
+
+That middle row is the whole limitation of runtime introspection, made
+countable. **The runtime only knows what is loaded.** And the third row is the
+limitation that no amount of loading fixes: enum values, C function
+signatures, argument names, availability and struct field names are
+compile-time facts from headers. `objc_getClass` will never tell anyone that
+`Int(15)` means titled|closable|miniaturizable|resizable.
+
+So the rule is an asymmetry, not a hierarchy: **the runtime knows what *is*;
+BridgeSupport knows what things *mean*.** Neither is a superset, and they
+compose in one particular direction — `bs_classes` carries framework
+attribution (`AppKit|NSView`), which is exactly what you need before the
+runtime can be asked anything at all. The dump tells you where to look; the
+runtime tells you what is there.
+
+### What that changes
+
+**Sprint 2 must load the base's framework before registering.** `class
+GridView(NSView)` registers by looking up `objc_getClass("NSView")`, which
+returns nil unless AppKit is in the process — and `objc_allocateClassPair`
+with a nil superclass cheerfully builds a *root* class that then silently does
+nothing. `load_framework`'s own docstring in `std/objc/runtime.mojo` documents
+this failure shape and notes it "cost real time". Registration therefore
+resolves each base's framework from `bs_classes` and loads it first. This is a
+bug we would otherwise have found by watching a window not appear.
+
+**Sprint 4 gets a second, independent arbiter.** The compile-time check stays
+the database: hermetic, deterministic, and it fails the build early. But a
+debug-build assertion at registration can ask the live runtime the same
+question — `class_getInstanceMethod` on the superclass, then
+`method_getTypeEncoding` — and catch the one thing the database cannot: that
+the dump is stale relative to *this* machine. Two cheap checks that fail
+differently.
+
+**The compiler itself should not query the live runtime.** Loading AppKit into
+the compiler process runs Apple's `+load` and `+initialize` code inside the
+compiler, reaches for the window server, and installs main-thread assertions;
+and a build that consults the live runtime stops being reproducible across OS
+point releases. The live runtime is an **oracle for validating the dump**, not
+a build input — the same posture this fork already takes toward the vendor GPU
+kernels it keeps as reference. A `check-cocoakb` that walks the database
+against the running system after an OS update is the right shape.
+
+**Roast is a running Cocoa app, and that is worth more than it sounds.** Its
+own process has the runtime, and it has already loaded AppKit. Completion can
+merge the dump with what is live — catching categories, and classes newer than
+the dump. More usefully for the sprints ahead: once sprint 2 registers classes,
+Roast can introspect what `objc_allocateClassPair` actually produced — method
+list, encodings, protocol conformance — and show it. That is the missing
+verification surface for sprints 2 through 5, which otherwise have no visible
+artefact at all, because resolution failure means there is no IR to print.
+
 ## What it looks like
 
 Today, the tab bar (`ide/roast.mojo`, condensed but real):
@@ -313,7 +384,7 @@ Each lands alone, each is verifiable, each leaves the tree green
 | # | sprint | size | verified by |
 |---|---|---|---|
 | 1 | **done** — real grammar behind `parseClassStmt`: name, base list, nesting and parameter diagnostics, recorded on an attributed `StructDeclOp`; elaboration refuses cleanly with a note naming what it parsed. Body resolution deferred to sprint 2 with the registration it depends on. | S–M | `class_decl.mojo` + `class_decl_errors.mojo`; `tools/check-parser.sh` 331 pass / 1 known-stale fail; `structs.mojo` and `traits.mojo` green |
-| 2 | **Register it, and resolve the body.** Classes get their own signature/body path — no comptime params, bases resolved against the runtime rather than as traits, no injected value-type conformances — then registration + per-method trampolines: selector derivation, encoding derivation, protocol adoption, raise-catch boundary, `ClassName()`. | L | an execution test class round-trips through `msg_send`; **RoastTabBar rewritten** (`drawRect:` exercises struct encodings); `check-ide.sh` green |
+| 2 | **Register it, and resolve the body.** Classes get their own signature/body path — no comptime params, bases resolved against the runtime rather than as traits, no injected value-type conformances — then registration + per-method trampolines: base framework loaded first (see **Two oracles**), selector derivation, encoding derivation, protocol adoption, raise-catch boundary, `ClassName()`. | L | an execution test class round-trips through `msg_send`; **RoastTabBar rewritten** (`drawRect:` exercises struct encodings); `check-ide.sh` green |
 | 3 | **Give it state.** `class_addIvar`, the box, synthesized init/dealloc, `self.field`. | M | a test class whose field's `deinit` flips a flag proves teardown; tab-bar and `RoastActions` globals become fields; `check-ide.sh` green |
 | 4 | **Check it against the SDK.** Encoding cross-check on inherited selectors via `cocoakb_selector_encoding`; `@objc` honored; BOOL spelling settled from the database; teaching diagnostics. | S–M | negative tests: a wrong `drawRect:` signature is a compile error quoting the database's encoding |
 | 5 | **Dogfood.** Migrate the remaining IDE delegates and subclasses (app delegate, outline data source, GridView + NSTextInputClient — the big one); delete migrated `named_global`s and the then-unused IMP shapes. | M–L | all suites green; the counts fall and are asserted: `encoding=` in `ide/` → 0, `named_global` 84 → the survivors are genuinely process-global; the 61-warning chip mostly closes as a side effect |
@@ -358,7 +429,8 @@ benefit of a compiler that already derives and checks encodings.
   — the sprint-3 teardown test exists to walk through it deliberately.
 - **BOOL and the long tail of encoding trivia.** Never guess: the database is
   a dump of the actual SDK on the actual architecture, and sprint 4 makes it
-  the arbiter.
+  the arbiter — with the live runtime available as the second opinion that
+  catches a stale dump. See **Two oracles**.
 - **`+initialize`/`+load` are not synthesized** and class methods are absent
   from v1. Both are real; neither is needed by any line of the IDE today.
   They arrive when a user exists, as an extension of sprint 2's machinery.
