@@ -14,7 +14,7 @@ from std.ffi import external_call
 from std.memory import OpaquePointer
 from std.collections.string.string_span import _get_kgen_string
 from std.sys._cocoakb import cocoakb_selector_encoding
-from .runtime import ObjCClass, ObjCObject, msg_send, sel
+from .runtime import ObjCClass, ObjCObject, msg_send, sel, load_framework_dynamic
 
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
@@ -246,7 +246,24 @@ struct ObjCClassRegistrar:
     var _cls: Int
     var _ok: Bool
 
-    def __init__(out self, name: StringSlice, superclass: StringSlice):
+    def __init__(
+        out self,
+        name: StringSlice,
+        superclass: StringSlice,
+        frameworks: StringSlice = "",
+    ):
+        """`frameworks` is a comma-separated list, loaded before anything else.
+
+        One argument rather than a separate call per framework, and the order
+        is not a detail: `objc_getClass` returns nil for a superclass whose
+        framework is not in the process, and allocating a pair against nil
+        yields a root class that answers nothing. Loading has to happen before
+        the lookup below, so it happens here.
+        """
+        for framework in frameworks.split(","):
+            if framework.byte_length() > 0:
+                _ = load_framework_dynamic(framework)
+
         var sup = external_call["objc_getClass", P](
             _leak_cstr(String(superclass))
         )

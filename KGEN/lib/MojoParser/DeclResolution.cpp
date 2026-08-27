@@ -1981,7 +1981,63 @@ static void synthesizeObjCRegistration(ASTDecl &structDecl,
   if (shared.diBuilder)
     diScopeGuard = shared.diBuilder->pushScopeGuard(funcOp.getLocScope());
 
-  // The body is empty for now; the runtime calls land next.
+  SyntheticNode loc(structDecl.getLoc());
+
+  // A string constant, as `StringLiteral[value]` constructed -- the same route
+  // ClosureEmitter takes for a synthesized name.
+  ASTType strLitType =
+      shared.lookupBuiltinType("StringLiteral", structDecl, structDecl.getLoc());
+  auto *strLitTypeDecl = strLitType.getDecl(shared);
+  if (!strLitTypeDecl)
+    return;
+  auto strLitDecl = cast<StructDeclOp>(strLitTypeDecl->getIfOperation());
+  auto literal = [&](StringRef text) -> CValue {
+    Type bound = strLitDecl.bindReference(
+        {cast<TypedAttr>(StringAttr::get(
+            text, StringType::get(shared.getContext())))});
+    return emitter.emitConstructorCall(
+        ASTType(bound), CallOperands(CallSyntax::kTypeCall, &loc,
+                                     EC_CallArgValue));
+  };
+
+  // The registrar is std.objc's, and it is imported on demand: a class needs
+  // the Objective-C runtime whether or not the file that declares it thought
+  // to say so.
+  ASTType registrarType = shared.lookupStdlibType(
+      {"std", "objc"}, "ObjCClassRegistrar", structDecl.getLoc());
+  if (registrarType.isNull() || registrarType.isTypeCheckErrorType())
+    return;
+
+  // Frameworks are handed over as one comma-separated argument and loaded by
+  // the registrar before it resolves the superclass. The ordering is the whole
+  // reason the attribute exists: objc_getClass returns nil for a class whose
+  // framework is not in the process, and a pair allocated against nil is a
+  // root class that answers nothing.
+  std::string frameworks;
+  if (auto attr = structOp.getObjcFrameworksAttr())
+    for (auto fw : attr) {
+      if (!frameworks.empty())
+        frameworks += ',';
+      frameworks += cast<StringAttr>(fw).getValue();
+    }
+
+  StringRef superclass = "NSObject";
+  if (auto bases = structOp.getObjcBasesAttr())
+    superclass = cast<StringAttr>(bases[0]).getValue();
+
+  VarDeclOp registrarVar =
+      emitter.emitVarDecl("registrar", registrarType.mlirType,
+                          funcOp.getLoc(), VarDeclKind::Var);
+  if (!registrarVar)
+    return;
+
+  CallOperands ctorOperands(CallSyntax::kTypeCall, &loc,
+                            ExprDest(MLValue(registrarVar), EC_CallArgValue));
+  ctorOperands.add(ASTExprAnd<CValue>{literal(structOp.getSymName()), &loc});
+  ctorOperands.add(ASTExprAnd<CValue>{literal(superclass), &loc});
+  ctorOperands.add(ASTExprAnd<CValue>{literal(frameworks), &loc});
+  emitter.emitConstructorCall(registrarType, std::move(ctorOperands));
+
   IREmitter::emitNormalReturn(builder, Value(), /*emitEndFunc=*/true);
 }
 

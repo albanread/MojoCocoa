@@ -45,6 +45,17 @@ class GridView(NSView, NSTextInputClient, NSDraggingDestination):
     pass
 
 
+# Every class carries the function that builds it in the runtime, and that
+# function constructs std.objc's ObjCClassRegistrar with the three things only
+# the compiler knows: the class name, the superclass, and the frameworks that
+# have to be loaded before the superclass can be resolved at all.
+# CHECK-DAG: lit.fn @"__objc_register__()"() -> !kgen.none
+# CHECK-DAG: lit.var.decl "registrar" var : !lit.ref<!ObjCClassRegistrar
+# CHECK-DAG: kgen.param.constant: !lit.struct<#StringLiteral <:string "GridView">>
+# CHECK-DAG: kgen.param.constant: !lit.struct<#StringLiteral <:string "AppKit">>
+# CHECK-DAG: ObjCClassRegistrar::@"__init__
+
+
 # A qualified name is kept whole rather than read as attribute access.
 # CHECK-DAG: lit.struct.decl @Qualified({{.*}}) register_passable attributes {objcBases = ["foundation.NSObject"], objcClass
 class Qualified(foundation.NSObject):
@@ -99,11 +110,6 @@ class TabBar(NSView):
     def _tab_width(self, total: Int) -> Int:
         return total
 
-
-# Every class carries the function that will build it in the runtime. Empty so
-# far -- COCOA_CLASS_DESIGN.md sprint 2b fills it in -- but synthesized, which
-# is what everything after it depends on.
-# CHECK-DAG: lit.fn @"__objc_register__()"() -> !kgen.none
 
 # Structs are untouched: still memory-only, still no Objective-C attributes.
 # CHECK-DAG: lit.struct.decl @PlainStruct({{.*}}) attributes {sourceName

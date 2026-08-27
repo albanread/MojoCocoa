@@ -2,7 +2,7 @@
 # emits any of it: build a class from strings known only at run time, message
 # it, and check the answer came from our method.
 from std.objc import (
-    ObjCClassRegistrar, load_framework_dynamic, ObjCClass, ObjCObject,
+    ObjCClassRegistrar, ObjCClass, ObjCObject,
     msg_send, new_instance, sel, named_global,
 )
 from std.memory import OpaquePointer
@@ -17,11 +17,9 @@ fn is_flipped(self_: P, cmd: P) -> Bool:
 
 
 def main() raises:
-    if not load_framework_dynamic("AppKit"):
-        print("FAIL could not load AppKit")
-        return
-
-    var r = ObjCClassRegistrar("RegistrarProbeView", "NSView")
+    # The registrar loads the framework itself, which is the point: the
+    # superclass cannot be resolved before AppKit is in the process.
+    var r = ObjCClassRegistrar("RegistrarProbeView", "NSView", "AppKit")
     var added = r.add_method("isFlipped", "B16@0:8", Pointer(to=is_flipped).unsafe_bitcast[P]()[])
     var conformed = r.add_protocol("NSTextInputClient")
     var cls = r.register()

@@ -63,8 +63,15 @@ constexpr StringRef kSuperclassSQL =
 // process, and objc_allocateClassPair against a nil superclass builds a root
 // class that silently does nothing. BridgeSupport carries the attribution the
 // runtime dump cannot -- see "Two oracles" in COCOA_CLASS_DESIGN.md.
+// Ordered, not just LIMIT 1: BridgeSupport lists NSObject in every framework
+// that mentions it -- around seventy of them -- so an unordered pick answers
+// "AVFAudio" for NSObject and the compiler emits a dlopen of AVFAudio into
+// every class that inherits from it. Foundation first, then AppKit, then
+// alphabetically so the answer is at least the same on two runs.
 constexpr StringRef kClassFrameworkSQL =
-    "SELECT framework FROM bs_classes WHERE name = ?1 LIMIT 1";
+    "SELECT framework FROM bs_classes WHERE name = ?1 "
+    "ORDER BY CASE framework WHEN 'Foundation' THEN 0 WHEN 'AppKit' THEN 1 "
+    "ELSE 2 END, framework LIMIT 1";
 
 // Method lookups walk the superclass chain: the runtime ingest records a
 // method on the class that DEFINES it, and inheritance is a query, not
