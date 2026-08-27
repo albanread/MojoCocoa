@@ -1947,6 +1947,55 @@ AnyValue DeclResolver::resolveAnonymousClosure(const LambdaNode *node,
 
 /// funcdef   ::=  [decorators] "def" identifier [param_signature]
 ///                "(" [argument_list] ")" ["->" expression] ":" suite
+/// The Objective-C selector a class method answers to, or nothing if the
+/// method is private to Mojo and never reaches the runtime.
+///
+/// Every `_` becomes `:` -- `drawRect_` is `drawRect:`,
+/// `outlineView_child_ofItem_` is `outlineView:child:ofItem:`. That is the
+/// PyObjC convention, mechanical and twenty years proven
+/// (COCOA_CLASS_DESIGN.md decision 2).
+///
+/// A leading underscore means the method is Mojo's own and is not exposed.
+/// That rule is doing real work. Without it, every snake_case helper in a
+/// class -- and Mojo is a snake_case language -- would derive a nonsense
+/// selector like `my:helper` and be rejected for having a colon it never
+/// wanted. With it, `_tab_width` is simply a private method, which is what
+/// both Mojo and Python already take a leading underscore to mean, and the
+/// dunders come along for free.
+///
+/// Returns nullopt for a private or dunder name. On a colon/argument mismatch
+/// it diagnoses and returns nullopt, because a wrong selector is worse than
+/// none: it registers, and then the message the framework sends goes nowhere.
+static std::optional<std::string>
+deriveObjCSelector(SharedState &shared, StringRef name, size_t argsAfterSelf,
+                   SMLoc loc) {
+  if (name.starts_with("_"))
+    return std::nullopt;
+
+  std::string selector;
+  selector.reserve(name.size());
+  size_t colons = 0;
+  for (char c : name) {
+    if (c == '_') {
+      selector += ':';
+      ++colons;
+    } else {
+      selector += c;
+    }
+  }
+
+  if (colons != argsAfterSelf) {
+    shared.emitError(loc)
+        << "method '" << name << "' derives the selector '" << selector
+        << "', which takes " << colons << " argument"
+        << (colons == 1 ? "" : "s") << ", but the method declares "
+        << argsAfterSelf << " after 'self'; an underscore in the name is a "
+           "colon in the selector";
+    return std::nullopt;
+  }
+  return selector;
+}
+
 LogicalResult DeclResolver::resolveSignature(FnOp funcOp, Lexer &lexer,
                                              ASTDecl &decl) {
   ParserBase p(shared, lexer);
@@ -2239,6 +2288,27 @@ LogicalResult DeclResolver::resolveSignature(FnOp funcOp, Lexer &lexer,
                            baseName, closureExternalRefConstraints);
   if (!signature)
     return failure();
+
+  // A method of an Objective-C class carries the selector the runtime will
+  // dispatch to it by. Derived here, where the signature is finally known,
+  // because the derivation is a claim about the argument count and this is the
+  // first point that can check it. Registration (later in sprint 2) reads the
+  // attribute rather than re-deriving it, so there is one rule in one place.
+  if (structOp && structOp.getObjcClass() && !funcOp.getSynthetic()) {
+    size_t argsAfterSelf = 0;
+    for (const ParsedArgument &arg : fnSignature.parsedArgs) {
+      // The result slot is not an argument anybody wrote.
+      if (arg.convention == ParsedArgument::kConventionByRefResult)
+        continue;
+      if (arg.name && arg.name.getValue() == "self")
+        continue;
+      ++argsAfterSelf;
+    }
+    if (auto selector = deriveObjCSelector(shared, baseName.getValue(),
+                                           argsAfterSelf, decl.getLoc()))
+      funcOp->setAttr("objcSelector",
+                      StringAttr::get(getContext(), *selector));
+  }
 
   // Check for API author error: stable function should return stable types.
   checkStableFunctionReturnType(decl, ASTType(signature.getUserResultType()),

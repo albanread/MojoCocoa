@@ -91,3 +91,19 @@ def some_function():
 class Boxed(NSObject):
     # expected-error @+1 {{class fields are not implemented yet: 'count'}}
     var count: Int
+
+
+# The selector is the method name with every `_` turned into `:`, so the colon
+# count has to match the arguments. Both directions are diagnosed.
+class Selectors(NSObject):
+    # A public snake_case name derives a selector nobody wanted. The fix is to
+    # rename it, or to prefix it with `_` and make it private.
+    # expected-error @+1 {{derives the selector 'my:helper', which takes 1 argument, but the method declares 0 after 'self'}}
+    def my_helper(self) -> Int:
+        return 1
+
+    # The dangerous direction: forgetting the trailing underscore means this
+    # would never override `drawRect:` at all, and nothing would say so.
+    # expected-error @+1 {{derives the selector 'drawRect', which takes 0 arguments, but the method declares 1 after 'self'}}
+    def drawRect(self, dirty: Int):
+        pass

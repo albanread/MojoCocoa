@@ -316,9 +316,24 @@ class Name(Superclass, Protocol, ...):        # bases optional; default NSObject
 ### Selector and encoding derivation
 
 The selector is the method name with `_` → `:`. The number of colons must
-equal the number of arguments after `self`; mismatch is a parse-adjacent
-diagnostic naming both counts. A method with no underscore and no arguments is
-a nullary selector (`isFlipped`).
+equal the number of arguments after `self`; mismatch is a diagnostic naming
+both counts. A method with no underscore and no arguments is a nullary
+selector (`isFlipped`).
+
+**A leading underscore means the method is Mojo's own and never reaches the
+runtime.** This rule was added during sprint 2 and it is doing real work.
+Without it, every snake_case helper in a class — and Mojo is a snake_case
+language — derives a nonsense selector like `my:helper` and is then rejected
+for having a colon it never wanted, which would make a Cocoa class a hostile
+place to put a private method. With it, `_tab_width` is simply private, which
+is what Mojo and Python already take a leading underscore to mean, and the
+dunders come along for free.
+
+What the mismatch diagnostic is really for is the other direction. Writing
+`drawRect` where `drawRect_` was meant derives a nullary selector, registers
+cleanly, and then never receives a single draw — the framework goes on sending
+`drawRect:` to a class that answers `drawRect`. Nothing crashes and nothing
+appears. That is a compile error now.
 
 The type encoding is derived from the Mojo signature — the mapping the IMP zoo
 encodes by hand today (`ObjCObject`/class refs → `@`, `SEL` slot → `:`,

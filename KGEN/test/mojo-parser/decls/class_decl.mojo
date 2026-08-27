@@ -63,14 +63,32 @@ class Multiline(
     pass
 
 
-# Methods resolve, and `self` is the class. Registering them with the runtime
-# is the rest of sprint 2; this is the half that has to be true first.
+# Methods resolve, `self` is the class, and each one carries the selector the
+# runtime will dispatch to it by: every `_` in the name is a `:` in the
+# selector. Registering them is the rest of sprint 2; deriving the identity
+# correctly has to be true first.
 # CHECK-DAG: lit.fn @"isFlipped(class_decl::TabBar)"{{.*}}%self: !lit.ref<!TabBar
+# CHECK-DAG: objcSelector = "isFlipped"
+# CHECK-DAG: objcSelector = "drawRect:"
+# CHECK-DAG: objcSelector = "outlineView:child:ofItem:"
 class TabBar(NSView):
     """A docstring."""
 
     def isFlipped(self) -> Bool:
         return True
+
+    def drawRect_(self, dirty: Int):
+        pass
+
+    def outlineView_child_ofItem_(self, view: Int, index: Int, item: Int) -> Int:
+        return 0
+
+    # A leading underscore means the method is Mojo's own and never reaches the
+    # runtime -- which is what keeps snake_case helpers legal in a language
+    # where snake_case is the norm.
+    # CHECK-NOT: objcSelector = "_tab:width"
+    def _tab_width(self, total: Int) -> Int:
+        return total
 
 
 # Structs are untouched: still memory-only, still no Objective-C attributes.
