@@ -232,7 +232,7 @@ is simpler and crash-isolated.
 | # | lands | verified by |
 |---|---|---|
 | 0 | **done** — shell: window, native tabbing, menu, toolbar, status bar, sidebar | `tools/check-ide.sh` — 7 checks green |
-| 1 | rope **done** · GridView **done** · NSTextInputClient **done** · undo, find, caret drawing to come | 250k lines in 5 ms, keystroke 2.4 µs, snapshot 400 ns; 26 editing checks; Pinyin still to try with a real IME |
+| 1 | rope · GridView · NSTextInputClient · caret, selection, undo — **all done**; find remains | 250k lines in 5 ms, keystroke 2.4 µs, snapshot 400 ns; 46 editing checks; Pinyin still to try with a real IME |
 | 2 | LSP: diagnostics, completion, definition, semantic tokens | scripted session completes `setTitle:` inside a msg_send string |
 | 3 | build/run, issues drawer, output pane — **self-hosting** | the IDE builds the IDE |
 | 4 | AppleScript dictionary + `check-ide.sh` | osascript drives edit→build→diagnostics in CI |

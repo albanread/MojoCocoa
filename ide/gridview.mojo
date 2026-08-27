@@ -25,6 +25,7 @@ from std.objc import (
     ns_to_string,
     new_instance,
     named_global,
+    sel,
 )
 from std.memory import OpaquePointer
 from std.ffi import external_call, c_char
@@ -152,6 +153,35 @@ fn draw_rect(self_: P, cmd: P):
             let attrs = ObjCObject(g_attrs()[])
             let gutter_attrs = ObjCObject(g_gutter_attrs()[])
 
+            # Selection, painted under the text.
+            let sel_a = sel_start()
+            let sel_b = sel_end()
+            if sel_a != sel_b:
+                let NSColor2 = ObjCClass.lookup["NSColor"]()
+                let hl = msg_send[
+                    ObjCObject, "NSColor", "selectedTextBackgroundColor",
+                    is_class=True,
+                ](NSColor2.as_object())
+                _ = msg_send[ObjCObject, "NSColor", "setFill"](hl)
+                let l0 = buf[][0].line_of_offset(sel_a)
+                let l1 = buf[][0].line_of_offset(sel_b)
+                var ln = max(l0, first)
+                while ln <= min(l1, last - 1):
+                    let ls = buf[][0].line_start(ln)
+                    let le = ls + buf[][0].line(ln).byte_length()
+                    let from_ = max(sel_a, ls)
+                    let to_ = min(sel_b, le)
+                    let x0 = caret_position(from_).x
+                    var x1 = caret_position(to_).x
+                    # A selected newline shows as a sliver, the way a text view
+                    # signals that the line break itself is included.
+                    if sel_b > le and ln < l1:
+                        x1 += advance() * 0.5
+                    _ = external_call["NSRectFill", NoneType](
+                        rect(x0, Float64(ln) * lh, max(x1 - x0, 1.0), lh)
+                    )
+                    ln += 1
+
             var i = first
             while i < last:
                 let y = Float64(i) * lh
@@ -176,6 +206,100 @@ fn draw_rect(self_: P, cmd: P):
                         attrs.ptr(),
                     )
                 i += 1
+
+            # The caret: drawn only with focus, and only on the blink's on
+            # phase, because a caret that never blinks reads as a rendering
+            # artefact rather than a cursor.
+            if g_focused()[] != 0 and g_blink_on()[] != 0 and sel_a == sel_b:
+                let NSColor3 = ObjCClass.lookup["NSColor"]()
+                let ink = msg_send[
+                    ObjCObject, "NSColor", "textColor", is_class=True
+                ](NSColor3.as_object())
+                _ = msg_send[ObjCObject, "NSColor", "setFill"](ink)
+                let pos = caret_position(g_caret()[])
+                _ = external_call["NSRectFill", NoneType](
+                    rect(pos.x, pos.y, 2.0, lh)
+                )
+
+            # Composing text is underlined, which is how a person knows it is
+            # not committed yet.
+            if g_marked_len()[] > 0:
+                let a = caret_position(g_marked_at()[])
+                let b = caret_position(g_marked_at()[] + g_marked_len()[])
+                let NSColor4 = ObjCClass.lookup["NSColor"]()
+                let mark = msg_send[
+                    ObjCObject, "NSColor", "textColor", is_class=True
+                ](NSColor4.as_object())
+                _ = msg_send[ObjCObject, "NSColor", "setFill"](mark)
+                _ = external_call["NSRectFill", NoneType](
+                    rect(a.x, a.y + lh - 2.0, max(b.x - a.x, advance()), 1.0)
+                )
+    except:
+        pass
+
+
+fn mouse_down(self_: P, cmd: P, event: P):
+    """Click to place the caret; drag to select."""
+    try:
+        with autoreleasepool():
+            let view = ObjCObject(Int(self_))
+            let win_pt = msg_send[CGPoint, "NSEvent", "locationInWindow"](
+                ObjCObject(Int(event))
+            )
+            let local = msg_send[CGPoint, "NSView", "convertPoint:fromView:"](
+                view, win_pt, ObjCObject(0).ptr()
+            )
+            let at = offset_at_point(local.x, local.y)
+            set_caret(at)
+            g_coalesce_at()[] = -1
+            _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
+                msg_send[ObjCObject, "NSView", "window"](view), view.ptr()
+            )
+            _refresh(self_)
+    except:
+        pass
+
+
+fn mouse_dragged(self_: P, cmd: P, event: P):
+    try:
+        with autoreleasepool():
+            let view = ObjCObject(Int(self_))
+            let win_pt = msg_send[CGPoint, "NSEvent", "locationInWindow"](
+                ObjCObject(Int(event))
+            )
+            let local = msg_send[CGPoint, "NSView", "convertPoint:fromView:"](
+                view, win_pt, ObjCObject(0).ptr()
+            )
+            # Move the caret, leave the anchor: that is a selection.
+            g_caret()[] = offset_at_point(local.x, local.y)
+            _refresh(self_)
+    except:
+        pass
+
+
+fn become_first_responder(self_: P, cmd: P) -> Bool:
+    g_focused()[] = 1
+    g_blink_on()[] = 1
+    return True
+
+
+fn resign_first_responder(self_: P, cmd: P) -> Bool:
+    g_focused()[] = 0
+    return True
+
+
+fn blink(self_: P, cmd: P, timer: P):
+    """Toggle the caret and redraw just the line it is on."""
+    try:
+        g_blink_on()[] = 0 if g_blink_on()[] != 0 else 1
+        if g_focused()[] == 0:
+            return
+        with autoreleasepool():
+            let view = ObjCObject(Int(self_))
+            let pos = caret_position(g_caret()[])
+            _ = msg_send[ObjCObject, "NSView", "setNeedsDisplayInRect:"](
+                view, rect(pos.x - 1.0, pos.y, 4.0, line_height())
+            )
     except:
         pass
 
@@ -251,12 +375,35 @@ def make_grid_view(frame: CGRect) -> ObjCObject:
     )
     b.add_method["isFlipped"](is_flipped)
     b.add_method["acceptsFirstResponder"](accepts_first_responder)
+    b.add_method["becomeFirstResponder"](become_first_responder)
+    b.add_method["resignFirstResponder"](resign_first_responder)
+    b.add_method["mouseDown:", encoding="v@:@"](mouse_down)
+    b.add_method["mouseDragged:", encoding="v@:@"](mouse_dragged)
+    b.add_method["roastBlink:", encoding="v@:@"](blink)
     let cls = b^.register()
 
     var view = msg_send[ObjCObject, "NSObject", "alloc", is_class=True](
         cls.as_object()
     )
     view = msg_send[ObjCObject, "NSView", "initWithFrame:"](view, frame)
+
+    # The blink. 0.53 s is what Cocoa uses, and matching it means the caret
+    # keeps time with every other text field on screen.
+    g_blink_on()[] = 1
+    let NSTimer = ObjCClass.lookup["NSTimer"]()
+    _ = msg_send[
+        ObjCObject,
+        "NSTimer",
+        "scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:",
+        is_class=True,
+    ](
+        NSTimer.as_object(),
+        Float64(0.53),
+        view.ptr(),
+        sel["roastBlink:"]().ptr(),
+        view.ptr(),
+        Bool(True),
+    )
     return view
 
 
@@ -299,6 +446,24 @@ comptime g_anchor = named_global["roast.anchor", Int]
 # The composing region, in bytes; length 0 means nothing is being composed.
 comptime g_marked_at = named_global["roast.marked.at", Int]
 comptime g_marked_len = named_global["roast.marked.len", Int]
+
+# Undo is a stack of whole buffers, which is only sane because they share
+# structure: a thousand entries of a 14 MB file cost kilobytes, not gigabytes.
+# There are no command objects and no inverse operations, so there is nothing
+# to get wrong when a new kind of edit is added later.
+comptime g_undo = named_global["roast.undo", List[Rope]]
+comptime g_redo = named_global["roast.redo", List[Rope]]
+comptime g_undo_caret = named_global["roast.undo.caret", List[Int]]
+comptime g_redo_caret = named_global["roast.redo.caret", List[Int]]
+
+# Typing should undo in words, not letters. An insert that continues the
+# previous one -- single character, immediately after it -- joins the entry
+# already on the stack instead of pushing a new one.
+comptime g_coalesce_at = named_global["roast.coalesce.at", Int]
+
+# The caret blinks, and is drawn only while the view has focus.
+comptime g_blink_on = named_global["roast.blink", Int]
+comptime g_focused = named_global["roast.focused", Int]
 
 
 def sel_start() -> Int:
@@ -345,6 +510,97 @@ def utf16_to_byte(u16: Int) -> Int:
     return at
 
 
+def push_undo(coalescing: Bool = False):
+    """Record the current buffer so an edit can be taken back.
+
+    `coalescing` is the typing case: a run of single characters becomes one
+    undo entry rather than one per keystroke.
+    """
+    if not has_rope():
+        return
+    if coalescing and g_coalesce_at()[] == g_caret()[] and len(g_undo()[]) > 0:
+        return  # continues the run already recorded
+    g_undo()[].append(g_buffer()[][0].copy())
+    g_undo_caret()[].append(g_caret()[])
+    # Any new edit invalidates the redo branch, as it must.
+    while len(g_redo()[]) > 0:
+        _ = g_redo()[].pop()
+    while len(g_redo_caret()[]) > 0:
+        _ = g_redo_caret()[].pop()
+
+
+def undo() -> Bool:
+    if len(g_undo()[]) == 0 or not has_rope():
+        return False
+    g_redo()[].append(g_buffer()[][0].copy())
+    g_redo_caret()[].append(g_caret()[])
+    set_rope(g_undo()[].pop())
+    set_caret(g_undo_caret()[].pop())
+    g_coalesce_at()[] = -1
+    return True
+
+
+def redo() -> Bool:
+    if len(g_redo()[]) == 0 or not has_rope():
+        return False
+    g_undo()[].append(g_buffer()[][0].copy())
+    g_undo_caret()[].append(g_caret()[])
+    set_rope(g_redo()[].pop())
+    set_caret(g_redo_caret()[].pop())
+    g_coalesce_at()[] = -1
+    return True
+
+
+def display_column(offset: Int) -> Int:
+    """The column an offset sits at, counted in characters rather than bytes.
+
+    Fixed-pitch means one character is one cell, so this is what multiplies by
+    the advance. East Asian double-width characters occupy two cells and are
+    not handled here -- the design lists a width table as a stdlib gap, and
+    until it exists a CJK line's caret drifts. Latin and code are exact.
+    """
+    if not has_rope():
+        return 0
+    let buf = g_buffer()[][0]
+    let line = buf.line_of_offset(offset)
+    let start = buf.line_start(line)
+    var n = 0
+    for _ in buf.slice(start, offset).codepoints():
+        n += 1
+    return n
+
+
+def caret_position(offset: Int) -> CGPoint:
+    """Where a byte offset lands on screen, in view coordinates."""
+    if not has_rope():
+        return CGPoint(GUTTER_W + TEXT_PAD, 0.0)
+    let line = g_buffer()[][0].line_of_offset(offset)
+    return CGPoint(
+        GUTTER_W + TEXT_PAD + Float64(display_column(offset)) * advance(),
+        Float64(line) * line_height(),
+    )
+
+
+def offset_at_point(x: Float64, y: Float64) -> Int:
+    """The reverse: a click becomes a caret position."""
+    if not has_rope():
+        return 0
+    let buf = g_buffer()[][0]
+    let line = max(0, min(buf.line_count() - 1, Int(y / line_height())))
+    let col = max(0, Int((x - GUTTER_W - TEXT_PAD) / advance() + 0.5))
+    let text = buf.line(line)
+    # Walk codepoints so a click past a multi-byte character lands after it,
+    # never inside it.
+    var seen = 0
+    var at = buf.line_start(line)
+    for c in text.codepoints():
+        if seen >= col:
+            break
+        at += len(String(c).as_bytes())
+        seen += 1
+    return at
+
+
 def replace_selection(text: String):
     """The one place the buffer changes. Everything else routes through here so
     the caret, the marked range and the view are updated together."""
@@ -352,8 +608,13 @@ def replace_selection(text: String):
         return
     let a = sel_start()
     let b = sel_end()
+    # A one-character insert with nothing selected is typing; anything else is
+    # an edit worth its own undo entry.
+    let typing = a == b and text.byte_length() == 1 and text != "\n"
+    push_undo(coalescing=typing)
     set_rope(g_buffer()[][0].replace(a, b, text))
     set_caret(a + text.byte_length())
+    g_coalesce_at()[] = g_caret()[] if typing else -1
     g_marked_at()[] = 0
     g_marked_len()[] = 0
 
@@ -581,6 +842,17 @@ def apply_command(name: String):
         let buf = g_buffer()[][0]
         let n = buf.byte_length()
 
+        if name == "undo:":
+            _ = undo()
+            return
+        elif name == "redo:":
+            _ = redo()
+            return
+        elif name == "selectAll:":
+            g_anchor()[] = 0
+            g_caret()[] = buf.byte_length()
+            return
+
         if name == "insertNewline:":
             replace_selection(String("\n"))
         elif name == "insertTab:":
@@ -591,6 +863,7 @@ def apply_command(name: String):
             elif g_caret()[] > 0:
                 # One codepoint, not one byte: deleting half a character is
                 # how a buffer stops being valid UTF-8.
+                push_undo()
                 var back = g_caret()[] - 1
                 let bytes = buf.to_string().as_bytes()
                 while back > 0 and (Int(bytes[back]) & 0xC0) == 0x80:
@@ -601,6 +874,7 @@ def apply_command(name: String):
             if sel_start() != sel_end():
                 replace_selection(String())
             elif g_caret()[] < n:
+                push_undo()
                 set_rope(buf.replace(g_caret()[], g_caret()[] + 1, String()))
         elif name == "moveLeft:":
             set_caret(max(0, g_caret()[] - 1))

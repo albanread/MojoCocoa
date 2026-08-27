@@ -619,6 +619,9 @@ def main() raises:
             Bool(True),
         )
 
+        _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
+            win, grid.ptr()
+        )
         _ = msg_send[ObjCObject, "NSWindow", "makeKeyAndOrderFront:"](
             win, win.ptr()
         )

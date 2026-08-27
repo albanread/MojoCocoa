@@ -5,6 +5,13 @@
 # These drive apply_command and replace_selection directly.
 from gridview import (
     set_rope,
+    undo,
+    redo,
+    g_undo,
+    g_redo,
+    g_coalesce_at,
+    display_column,
+    offset_at_point,
     set_caret,
     apply_command,
     replace_selection,
@@ -115,6 +122,72 @@ def main() raises:
     failures += check_int("byte 6 (after 日)", byte_to_utf16(6), 3)
     failures += check_int("utf16 2 -> byte", utf16_to_byte(2), 3)
     failures += check_int("utf16 3 -> byte", utf16_to_byte(3), 6)
+
+    print("edit: undo is a stack of buffers")
+    # Start each undo case from a clean stack.
+    while len(g_undo()[]) > 0:
+        _ = g_undo()[].pop()
+    while len(g_redo()[]) > 0:
+        _ = g_redo()[].pop()
+
+    set_rope(Rope(String("start")))
+    set_caret(5)
+    g_coalesce_at()[] = -1
+    replace_selection(String("!"))
+    failures += check("edited", buffer_text(), String("start!"))
+    failures += check_int("undo available", Int(undo()), 1)
+    failures += check("undone", buffer_text(), String("start"))
+    failures += check_int("caret restored", g_caret()[], 5)
+    failures += check_int("redo available", Int(redo()), 1)
+    failures += check("redone", buffer_text(), String("start!"))
+    failures += check_int("redo exhausted", Int(redo()), 0)
+
+    print("edit: typing coalesces into one entry")
+    set_rope(Rope(String("")))
+    set_caret(0)
+    g_coalesce_at()[] = -1
+    while len(g_undo()[]) > 0:
+        _ = g_undo()[].pop()
+    for ch in [String("a"), String("b"), String("c")]:
+        replace_selection(ch)
+    failures += check("typed", buffer_text(), String("abc"))
+    failures += check_int("one undo entry for a run", len(g_undo()[]), 1)
+    _ = undo()
+    failures += check("one undo takes the run", buffer_text(), String(""))
+
+    print("edit: a new edit discards the redo branch")
+    set_rope(Rope(String("x")))
+    set_caret(1)
+    g_coalesce_at()[] = -1
+    while len(g_undo()[]) > 0:
+        _ = g_undo()[].pop()
+    while len(g_redo()[]) > 0:
+        _ = g_redo()[].pop()
+    replace_selection(String("y"))
+    _ = undo()
+    failures += check_int("redo pending", len(g_redo()[]), 1)
+    g_coalesce_at()[] = -1
+    replace_selection(String("z"))
+    failures += check_int("redo discarded", len(g_redo()[]), 0)
+    failures += check("branch replaced", buffer_text(), String("xz"))
+
+    print("edit: undo on an empty stack is a no-op")
+    while len(g_undo()[]) > 0:
+        _ = g_undo()[].pop()
+    let before = buffer_text()
+    failures += check_int("undo refuses", Int(undo()), 0)
+    failures += check("buffer unchanged", buffer_text(), before)
+
+    print("edit: columns and hit testing")
+    set_rope(Rope(String("ab\ncdé日f")))
+    # Byte 3 is the start of line 1; é is 2 bytes, 日 is 3.
+    failures += check_int("column at line start", display_column(3), 0)
+    failures += check_int("column after 2 ascii", display_column(5), 2)
+    failures += check_int("column after é", display_column(7), 3)
+    failures += check_int("column after 日", display_column(10), 4)
+    # A click never lands inside a character.
+    let hit = offset_at_point(0.0, 0.0)
+    failures += check_int("click before line 0", hit, 0)
 
     print()
     if failures == 0:
