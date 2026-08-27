@@ -63,6 +63,11 @@ fi
 # Positions are zero-based line/column into tools/lsp-probe/cocoa_completion.mojo.
 if [ -x dist/CocoaMojo/bin/mojo-lsp-server ]; then
   probe() {  # <line> <col> <expected-label>
+    # The server is launched directly here, so it never runs through the
+    # `cocoamojo` wrapper that normally exports this. Without it the database
+    # is unreachable and every position completes to nothing -- which looked
+    # for a while like a broken feature rather than an unset variable.
+    MODULAR_MOJO_MAX_COCOAKB_PATH="$PWD/dist/CocoaMojo/share/cocoa.sqlite" \
     tools/lsp-probe/complete.py dist/CocoaMojo/bin/mojo-lsp-server \
       tools/lsp-probe/cocoa_completion.mojo "$1" "$2" 2>/dev/null \
       | awk -F'\t' -v want="$3" '$1 == want { print; exit }'

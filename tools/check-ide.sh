@@ -83,6 +83,7 @@ fi
 if "$CM" --build ide/lsp_test.mojo -o "$TMP/lsp_test" >"$TMP/lsp_build.log" 2>&1; then
   lsp_out=$(ROAST_LSP="$PWD/dist/CocoaMojo/bin/mojo-lsp-server" \
             ROAST_IMPORTS="$PWD/dist/CocoaMojo/lib/mojo/stdlib" \
+            MODULAR_MOJO_MAX_COCOAKB_PATH="$PWD/dist/CocoaMojo/share/cocoa.sqlite" \
             timeout 180 "$TMP/lsp_test" 2>&1)
   if echo "$lsp_out" | grep -q '^lsp OK'; then
     ok "lsp client" "handshake, diagnostics and Cocoa completion"
