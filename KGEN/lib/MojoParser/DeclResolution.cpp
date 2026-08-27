@@ -1954,7 +1954,8 @@ AnyValue DeclResolver::resolveAnonymousClosure(const LambdaNode *node,
 /// is empty. What it proves is that a class can carry a synthesized function at
 /// all, which every later step depends on.
 static void synthesizeObjCRegistration(ASTDecl &structDecl,
-                                       StructDeclOp structOp) {
+                                       StructDeclOp structOp,
+                                       DeclResolver &resolver) {
   StructEmitter structEmitter(structDecl);
   SharedState &shared = structDecl.getShared();
   auto [funcOp, funcDecl] = structEmitter.synthesizeMethodInStruct(
@@ -2037,6 +2038,56 @@ static void synthesizeObjCRegistration(ASTDecl &structDecl,
   ctorOperands.add(ASTExprAnd<CValue>{literal(superclass), &loc});
   ctorOperands.add(ASTExprAnd<CValue>{literal(frameworks), &loc});
   emitter.emitConstructorCall(registrarType, std::move(ctorOperands));
+
+  // A method call on the registrar, result discarded: these all report success
+  // through a Bool nobody here can act on -- the diagnostics that matter were
+  // issued at compile time, and a failure now means the machine is not the one
+  // the class was compiled against.
+  auto callOnRegistrar = [&](StringRef method, ArrayRef<StringRef> args) {
+    CallOperands operands(CallSyntax::kMethodCall, &loc,
+                          ExprDest(EC_TopLevelStmt));
+    operands.addSelf(ASTExprAnd<AnyValue>{AnyValue(MLValue(registrarVar)),
+                                          &loc});
+    for (StringRef arg : args)
+      operands.add(ASTExprAnd<AnyValue>{AnyValue(literal(arg)), &loc});
+    emitter.emitNamedMethodCall(method, std::move(operands));
+  };
+
+  // Protocols, after the class exists and before it is registered: AppKit
+  // asks conformsToProtocol: in places -- NSTextInputClient among them -- and
+  // refuses a class that merely answers the selectors.
+  if (auto bases = structOp.getObjcBasesAttr())
+    for (size_t i = 1, e = bases.size(); i != e; ++i)
+      callOnRegistrar("add_protocol", {cast<StringAttr>(bases[i]).getValue()});
+
+  // Every method that answers a selector. Their signatures have to be resolved
+  // first: the body path deliberately does not resolve functions, but the
+  // selector and the SDK encoding are recorded during signature resolution,
+  // so without this there is nothing yet to read.
+  for (std::pair<StringAttr, TinyPtrVector<ASTDecl *>> entry :
+       structDecl.getDeclsInScope()) {
+    for (ASTDecl *methodDecl : entry.second) {
+      auto methodOp = dyn_cast_or_null<FnOp>(methodDecl->getIfOperation());
+      if (!methodOp || methodOp.getSynthetic())
+        continue;
+      if (failed(resolver.resolveSignature(*methodDecl, methodDecl->getLoc())))
+        continue;
+      auto selector = methodOp->getAttrOfType<StringAttr>("objcSelector");
+      auto encoding = methodOp->getAttrOfType<StringAttr>("objcEncoding");
+      if (!selector || !encoding)
+        continue; // Private to Mojo, or its shape could not be established.
+
+      // Everything add_method needs except the IMP, which is the piece still
+      // missing: it is a C-ABI trampoline around this method, and a method is
+      // registered only once there is a real function pointer to register.
+      // Adding it with a null IMP would produce a class that answers the
+      // selector by crashing, which is worse than not answering it.
+      (void)selector;
+      (void)encoding;
+    }
+  }
+
+  callOnRegistrar("register", {});
 
   IREmitter::emitNormalReturn(builder, Value(), /*emitEndFunc=*/true);
 }
@@ -4594,7 +4645,7 @@ ParseResult DeclResolver::resolveBody(StructDeclOp structOp, Lexer &lexer,
   // call objc_allocateClassPair, add every method, adopt every protocol and
   // register the pair. That is this function, synthesized per class.
   if (structOp.getObjcClass())
-    synthesizeObjCRegistration(structDecl, structOp);
+    synthesizeObjCRegistration(structDecl, structOp, *this);
 
   // Determine if there is an explicit conformance to Deinitable.
   if (std::optional<ConstraintAttr> deinitableConstraint =
