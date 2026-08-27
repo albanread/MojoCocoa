@@ -336,6 +336,13 @@ def start(server: String, root_uri: String, import_path: String = String()) -> B
 
 
 def stop():
+    """Terminate the server and forget everything it told us.
+
+    The state has to go with the process. A restart re-roots the server, so
+    diagnostics and completions from the old workspace are about files it is
+    no longer looking at, and half a message left in the inbox would be
+    parsed as the front of the new server's first reply.
+    """
     if not is_running():
         return
     with autoreleasepool():
@@ -345,6 +352,10 @@ def stop():
     g_task()[] = 0
     g_in()[] = 0
     g_ready()[] = 0
+    g_read_fd()[] = 0
+    set_inbox(String())
+    clear_diagnostics()
+    clear_completions()
 
 
 def did_open(uri: String, text: String):

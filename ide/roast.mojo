@@ -92,6 +92,9 @@ comptime g_idle_ticks = named_global["roast.idle", Int]
 # walks it -- a tree with a quarter of a million files under it costs whatever
 # has been expanded and nothing more.
 comptime g_root = named_global["roast.root", List[String]]
+# Where the language server is currently rooted, so re-rooting it to the same
+# place is recognised as the no-op it is rather than costing a process.
+comptime g_lsp_root = named_global["roast.lsp.root", List[String]]
 comptime g_outline = named_global["roast.outline", Int]
 comptime g_tree_cache = named_global["roast.tree.cache", Int]
 
@@ -1666,6 +1669,73 @@ def outline_display_value(item: ObjCObject) -> ObjCObject:
         return ObjCObject(0)
 
 
+def lsp_server_path() -> String:
+    """The language server to run. An editor built by this toolchain should
+    ask this toolchain's server rather than whichever one is on PATH."""
+    let explicit = getenv("ROAST_LSP")
+    if explicit != "":
+        return explicit^
+    let here = getenv("COCOAMOJO_ROOT")
+    if here == "":
+        return String()
+    return here + String("/bin/mojo-lsp-server")
+
+
+def lsp_import_path() -> String:
+    let explicit = getenv("ROAST_IMPORTS")
+    if explicit != "":
+        return explicit^
+    let here = getenv("COCOAMOJO_ROOT")
+    if here == "":
+        return String()
+    return here + String("/lib/mojo/stdlib")
+
+
+def lsp_root() -> String:
+    """The workspace the server should be rooted at.
+
+    The project, when there is one. Otherwise the folder holding the current
+    document -- a server rooted at a FILE, which is what this used to pass,
+    resolves imports against a workspace that does not exist.
+    """
+    let proj = project_root()
+    if proj != "":
+        return proj^
+    let path = document.path_at(document.current_index())
+    let cut = path.rfind("/")
+    return String(path[byte=:cut]) if cut > 0 else String()
+
+
+def start_lsp() -> Bool:
+    """(Re)start the server rooted at the current workspace.
+
+    Called at launch and again whenever the project changes. The server is
+    told about the current document afterwards, because a fresh process knows
+    nothing about what is already open.
+    """
+    let server = lsp_server_path()
+    let root = lsp_root()
+    if server == "" or root == "":
+        return False
+    if lsp.is_running() and len(g_lsp_root()[]) > 0 and g_lsp_root()[][0] == root:
+        return True  # already rooted here; a restart would buy nothing
+    lsp.stop()
+    if not lsp.start(server, String("file://") + root, lsp_import_path()):
+        return False
+    lsp.did_open(document.current_uri(), g_buffer_text())
+    let slot = g_lsp_root()
+    if len(slot[]) == 0:
+        slot[].append(root)
+    else:
+        slot[][0] = root
+    return True
+
+
+def _lsp_root_now() -> String:
+    let slot = g_lsp_root()
+    return slot[][0] if len(slot[]) > 0 else String()
+
+
 def cut_name(path: String) -> Int:
     """The byte offset of the last path component, so a status line can name
     the example rather than repeat its whole path."""
@@ -1686,6 +1756,13 @@ def open_folder(var path: String):
             _ = msg_send[ObjCObject, "NSOutlineView", "reloadData"](
                 ObjCObject(g_outline()[])
             )
+    # A server rooted at the old project is answering about files it is no
+    # longer looking at. Restart it here rather than at launch only -- but
+    # only if one is already running, because at launch this runs before
+    # there is a document to announce.
+    if lsp.is_running() and lsp_root() != _lsp_root_now():
+        if start_lsp():
+            print("roast: language server re-rooted at", project_root())
     set_status(String("Project: ") + project_root())
 
 
@@ -2430,20 +2507,10 @@ def main() raises:
         # The language server, from the distribution beside us. An editor
         # built by this toolchain should ask this toolchain's server rather
         # than whichever one is on PATH.
-        let here = getenv("COCOAMOJO_ROOT")
-        var server = getenv("ROAST_LSP")
-        var imports = getenv("ROAST_IMPORTS")
-        if server == "" and here != "":
-            server = here + String("/bin/mojo-lsp-server")
-        if imports == "" and here != "":
-            imports = here + String("/lib/mojo/stdlib")
-        if server != "" and path != "":
-            let uri = document.current_uri()
-            if lsp.start(server, String("file://") + path, imports):
-                lsp.did_open(document.current_uri(), g_buffer_text())
-                print("roast: language server started")
-        elif server == "":
+        if lsp_server_path() == "":
             print("roast: no language server (set ROAST_LSP or COCOAMOJO_ROOT)")
+        elif start_lsp():
+            print("roast: language server started at", lsp_root())
 
         # A project, if one was named. ROAST_PROJECT is a folder; use the
         # sandbox rather than the source tree, which tools/roast-sandbox.sh
