@@ -482,6 +482,68 @@ negative result; build the fixture `-g -O0` and confirm zero
 `DW_AT_APPLE_optimized` DIEs, or an optimized-away local will look like a
 finding.
 
+## Three levels, and where this actually sits
+
+The findings above are easier to act on with a name for what is missing. A
+debugger for a compiled language has three separable capabilities, and they
+are not a gradient — each needs different work from a different place:
+
+1. **Storage debugging** — locate and display the lowered bits.
+2. **Semantic value debugging** — retain source types, fields, scopes, and
+   the mapping from a source type onto its scalarized storage.
+3. **Semantic expression debugging** — resolve real Mojo declarations, their
+   methods, generics and capture rules, well enough to compile against them.
+
+This plugin is between 1 and 2. That is worth saying plainly: it is a
+Mojo-aware DWARF reader, not yet a Mojo semantic debugger. It reads the bits
+correctly and it knows a great deal about *some* types; it simply does not
+know, for a large class of values, which Mojo type those bits are.
+
+**It is not a uniform middle — it is a per-type cliff, and the predicate is
+known.** Which level a type gets is decided by `decl.isSingleElement()` at
+`LowerLITTypes.cpp:211`. Fail it, and the type survives into `KGENToLLVM` as
+a `StructInstanceType` with source identity intact: `Point` and `String` are
+level 2. Pass it, and only storage remains: `Int` and any user one-field
+wrapper are level 1. Nothing sits between. The useful consequence is that the
+boundary can be enumerated rather than guessed at — evaluate one predicate
+and you know which types are affected.
+
+**The erasure is contagious through members**, which makes the reach much
+wider than the predicate alone suggests:
+
+    (lldb) frame variable p.x
+    (__mlir_type.`!kgen.scalar<index>`) p.x = 7
+
+`Point` survives as an aggregate and its members are reachable with correct
+values — real level-2 value debugging. But `p.x` is an `Int`, so the member
+has fallen to level 1: a preserved container with erased fields. `Int` occurs
+in very nearly every Mojo type, so there is almost nothing that is wholly
+level 2 today. The debug-info contract is not a repair for a few unlucky
+types; it is load-bearing for most of them.
+
+**Levels 2 and 3 are decoupled, and neither unblocks the other.** Method loss
+is not caused by scalarization. `CompleteStructureTypeFromDWARF` populates
+from `DW_TAG_member` only, so even `Point` — preserved, correctly typed,
+members readable — has no methods. Completing the debug-info contract would
+deliver level 2 and leave level 3 exactly where it is. Different owners:
+level 2 is compiler debug-info generation, level 3 is the plugin plus a real
+declaration surface (module import or serialized compiler metadata).
+
+**A measurement problem comes before either.** There is currently no
+configuration in which a level-2 type can be exercised through the expression
+compiler: referring to a local requires `MOJO_LLDB_FRAME_LOCALS=1`, and with
+that on every expression fails wholesale, `1 + 41` included. So levels 2 and
+3 cannot be told apart experimentally right now. The frame-local type filter
+is therefore not only a defect fix — it is the instrument that makes the rest
+of this measurable, and it is the smallest piece of the three.
+
+Suggested order, then: the type filter, so the boundary can be observed; then
+the compiler-to-debugger semantic type contract as one deliberate piece
+(staging it through a "cheap" named-scalar step is a false economy — the
+dialect has no derived type, so even that step needs new dialect machinery);
+then the declaration surface for expressions. Expanding the IDE debugger
+further before the contract exists builds on storage, not on semantics.
+
 ## The risk worth watching
 
 `MojoLLDB` deps include `//AsyncRT:RuntimeGlobals` and, under
