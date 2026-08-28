@@ -489,42 +489,18 @@ comptime g_ref_at = named_global["roast.ref.at", Int]
 
 def dap_adapter() -> String:
     """The debug adapter. A setting first, so someone with their own lldb can
-    say so and have it remembered; then the toolchain's OWN lldb-dap, which
-    ships with the MojoLLDB plugin beside it and is the difference between
-    "the editor follows the stop" and "frame variable answers"
-    (spikes/MOJOLLDB-SPIKE.md); then Xcode's, which debugs but cannot
-    inspect a Mojo variable."""
+    say so and have it remembered; then Xcode's, which is where it is on a
+    machine that can build this fork at all."""
     let chosen = session.setting(String("debug.adapter"))
     if chosen != "" and file_exists(chosen):
         return chosen^
     let env = getenv("ROAST_DAP")
     if env != "":
         return env^
-    let root = toolchain_root()
-    if root != "":
-        let ours = root + String("/bin/lldb-dap")
-        if file_exists(ours):
-            return ours^
     let xcode = String(
         "/Applications/Xcode.app/Contents/Developer/usr/bin/lldb-dap"
     )
     return xcode if file_exists(xcode) else String()
-
-
-def dap_plugin(adapter: String) -> String:
-    """The MojoLLDB plugin that belongs to `adapter`, or nothing.
-
-    Looked for BESIDE the adapter (bin/lldb-dap -> lib/libMojoLLDB.dylib)
-    rather than in our own toolchain, because the plugin must match the
-    liblldb the adapter links -- handing our plugin to Xcode's lldb-dap is
-    an ABI mismatch, and the reason the whole spike exists."""
-    let slash = adapter.rfind("/")
-    if slash < 0:
-        return String()
-    let plugin = (
-        String(adapter[byte=0:slash]) + String("/../lib/libMojoLLDB.dylib")
-    )
-    return plugin if file_exists(plugin) else String()
 
 
 def _start_debug():
@@ -618,17 +594,7 @@ def _launch_debugger():
     if binary == "":
         return
     let cwd = _dir_of(binary)
-    let plugin = dap_plugin(dap_adapter())
-    var init_cmd = String()
-    if plugin != "":
-        init_cmd = String("plugin load ") + plugin
-    var pre_run = String()
-    if plugin != "" and session.setting(String("debug.break_on_raise")) == "1":
-        # The plugin's own command: stop where an error is RAISED rather
-        # than where it lands. preRun rather than init, because it needs a
-        # target to set its resolver on.
-        pre_run = String("mojo break-on-raise")
-    let started = dap.start(dap_adapter(), binary, cwd, init_cmd, pre_run)
+    let started = dap.start(dap_adapter(), binary, cwd)
     print(
         "roast: debugging", _basename(binary),
         "with", dap.breakpoint_count(), "breakpoint(s)",
@@ -694,48 +660,7 @@ def _debug_changed():
         "reason",
         dap.stop_reason(),
     )
-    _show_variables()
     refresh_grid()
-
-
-def _pretty_type(raw: String) -> String:
-    """The type as a person would write it. The DWARF names scalars by their
-    MLIR spelling -- `!kgen.scalar<index>` is what every `Int` in the
-    program prints as -- and a locals view full of MLIR is a locals view
-    nobody reads. Unrecognised types pass through untouched."""
-    if raw.find("scalar<index>") >= 0:
-        return String("Int")
-    if raw.find("scalar<bool>") >= 0:
-        return String("Bool")
-    if raw.find("scalar<f64>") >= 0:
-        return String("Float64")
-    if raw.find("scalar<f32>") >= 0:
-        return String("Float32")
-    return raw
-
-
-def _show_variables():
-    """The stopped frame's locals, into the console.
-
-    The console rather than a new pane, deliberately: it is where a debug
-    session's output already goes, it scrolls, and it needed zero new Cocoa
-    surface -- so variables shipped the same day the plugin did. A dedicated
-    pane with expandable children is the upgrade, not the prerequisite."""
-    if not dap.take_variables_fresh():
-        return
-    let n = dap.variable_count()
-    if n == 0:
-        return
-    var block = String("── locals · ") + _basename(dap.stop_file())
-    block += String(":") + String(dap.stop_line()) + String(" ──\n")
-    for i in range(n):
-        block += String("  ") + dap.variable_name(i)
-        let t = _pretty_type(dap.variable_type(i))
-        if t != "":
-            block += String(": ") + t
-        block += String(" = ") + dap.variable_value(i) + String("\n")
-    build.append_output(block^)
-    console_sync()
 
 
 # ── Navigation ──────────────────────────────────────────────────────────────
@@ -1310,26 +1235,6 @@ class RoastActions:
             _start_debug()
         except:
             set_status(String("Debug failed to start"))
-
-    def roastBreakOnRaise_(self, sender: ObjCObject):
-        """Stop where an error is RAISED, not where it lands. Takes effect on
-        the next debug session: the resolver is installed at launch, and
-        rewiring a live target is more machinery than the toggle is worth."""
-        try:
-            let on = session.setting(String("debug.break_on_raise")) != "1"
-            session.set_setting(
-                String("debug.break_on_raise"),
-                String("1") if on else String("0"),
-            )
-            Obj["NSMenuItem"](sender.addr()).setState(Int(1) if on else Int(0))
-            if on:
-                set_status(
-                    String("Break on raise: on (next debug session)")
-                )
-            else:
-                set_status(String("Break on raise: off"))
-        except:
-            pass
 
     def roastDebugStop_(self, sender: ObjCObject):
         try:
@@ -3305,12 +3210,6 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         debug_menu, String("Stop Debugging"), String("roastDebugStop:"),
         String("Y"), actions,
     )
-    let bor = add_item(
-        debug_menu, String("Break on Raise"), String("roastBreakOnRaise:"),
-        String(""), actions,
-    )
-    if session.setting(String("debug.break_on_raise")) == "1":
-        Obj["NSMenuItem"](bor.addr()).setState(Int(1))
     _ = msg_send[ObjCObject, "NSMenu", "addItem:"](
         debug_menu,
         msg_send[ObjCObject, "NSMenuItem", "separatorItem", is_class=True](
