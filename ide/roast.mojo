@@ -66,7 +66,7 @@ comptime NIL = 0
 
 # Geometry comes from gridview, which needs the same structs to do its
 # arithmetic. One declaration, not two that can drift.
-from gridview import CGPoint, CGSize, CGRect, rect
+from gridview import CGPoint, CGSize, CGRect, NSRange, rect
 
 
 # ── State the callbacks can reach ────────────────────────────────────────────
@@ -107,6 +107,9 @@ comptime g_tabbar = named_global["roast.tabbar", Int]
 comptime g_console = named_global["roast.console", Int]
 comptime g_vsplit = named_global["roast.vsplit", Int]
 comptime g_console_open = named_global["roast.console.open", Int]
+# How many bytes of build.output() the console pane is already showing, so a
+# pump appends the delta instead of re-setting the whole transcript.
+comptime g_console_shown = named_global["roast.console.shown", Int]
 comptime g_build_seen = named_global["roast.build.seen", Int]
 # The editor's share of the height when the console is showing.
 comptime EDITOR_SHARE = 0.68
@@ -222,15 +225,39 @@ def _dir_of(path: String) -> String:
 
 
 def console_sync():
-    """Show the log and keep its tail in view."""
+    """Show the log and keep its tail in view.
+
+    Appends what is new rather than re-setting the whole transcript: the pane
+    is refreshed on every pump, so setString: made showing a program's output
+    quadratic in its length -- a chatty Run got slower the longer it printed.
+    The byte count tracks build.output(); a shorter output means it was
+    cleared, and the pane starts over.
+    """
     if g_console()[] == 0:
         return
     with autoreleasepool():
         let tv = ObjCObject(g_console()[])
-        var text = build.output()
-        _ = msg_send[ObjCObject, "NSTextView", "setString:"](
-            tv, nsstring(text).ptr()
-        )
+        let text = build.output()
+        let have = g_console_shown()[]
+        if text.byte_length() < have:
+            _ = msg_send[ObjCObject, "NSTextView", "setString:"](
+                tv, nsstring(text).ptr()
+            )
+        elif text.byte_length() > have:
+            let delta = String(text[byte=have : text.byte_length()])
+            let storage = msg_send[ObjCObject, "NSTextView", "textStorage"](tv)
+            let at = msg_send[Int, "NSTextStorage", "length"](storage)
+            # Plain-string replacement at the end takes its attributes from
+            # the character before it, so the console keeps its font without
+            # an attributed string being built per append.
+            _ = msg_send[
+                ObjCObject,
+                "NSTextStorage",
+                "replaceCharactersInRange:withString:",
+            ](storage, NSRange(at, 0), nsstring(delta).ptr())
+        else:
+            return
+        g_console_shown()[] = text.byte_length()
         _ = msg_send[ObjCObject, "NSTextView", "scrollToEndOfDocument:"](
             tv, ObjCObject(0).ptr()
         )
