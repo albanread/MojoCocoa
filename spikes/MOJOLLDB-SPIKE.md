@@ -256,6 +256,13 @@ What v2 polish looks like, seen in the output: types print as
 strings carry raw hex beside the decimal. Both are formatter-layer work in
 `Language/Formatters/`, on a debugger that now runs.
 
+**Follow-through:** the IDE side landed on the `ide-debugger` branch the
+same day — the distribution ships the debugger, `dap_adapter()` prefers it,
+the plugin loads via `initCommands`, the stopped frame's locals render into
+the console, `Break on Raise` is a Debug-menu toggle, and `dap_test`
+requires variables whenever the plugin ships. The branch's log carries the
+details.
+
 ## The risk worth watching
 
 `MojoLLDB` deps include `//AsyncRT:RuntimeGlobals` and, under

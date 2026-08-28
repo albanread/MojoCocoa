@@ -15,6 +15,10 @@ from dap import (
     is_running,
     is_configured,
     is_stopped,
+    variable_count,
+    variable_name,
+    variable_value,
+    variable_type,
     stop_line,
     stop_file,
     stop_reason,
@@ -30,6 +34,7 @@ from dap import (
     resume,
 )
 from std.os import getenv
+from std.ffi import external_call
 from std.time import perf_counter_ns, sleep
 
 
@@ -107,7 +112,22 @@ def main() raises:
 
     print("dap: a breakpoint binds, and the program stops on it")
     _ = toggle_breakpoint(src, 9)
-    failures += check_int("start", 1 if start(adapter, program, ".") else 0, 1)
+    # The plugin rides beside the adapter exactly as roast finds it --
+    # bin/lldb-dap with lib/libMojoLLDB.dylib one directory over. Passing it
+    # here makes this test cover the same launch the IDE performs.
+    var init_cmd = String()
+    let slash = adapter.rfind("/")
+    if slash > 0:
+        let plugin = (
+            String(adapter[byte=0:slash])
+            + String("/../lib/libMojoLLDB.dylib")
+        )
+        var st = external_call["access", Int](plugin.unsafe_ptr(), Int(0))
+        if st == 0:
+            init_cmd = String("plugin load ") + plugin
+    failures += check_int(
+        "start", 1 if start(adapter, program, ".", init_cmd) else 0, 1
+    )
     let stopped = pump_until_stopped(120.0)
     failures += check_int("stopped", 1 if stopped else 0, 1)
     if stopped:
@@ -134,10 +154,64 @@ def main() raises:
             print("  FAIL stop file --", repr(stop_file()))
             failures += 1
 
+        # Variables. Two round trips behind the stop (scopes, then
+        # variables), so pump for them. With Xcode's adapter this section
+        # SKIPS rather than fails: no Mojo plugin means no variables, and
+        # that absence is the environment, not a regression -- exactly the
+        # terms lldb-dap's own absence is treated on.
+        var waited = 0.0
+        while variable_count() == 0 and waited < 10.0:
+            _ = pump(0.5)
+            waited += 0.5
+        if variable_count() == 0:
+            print("  --   variables          none (no MojoLLDB plugin beside this adapter); skipped")
+        else:
+            print("dap: the stopped frame answers `frame variable`")
+            # The stop is at line 9, in `main`: the locals there are
+            # `total` and the loop's `i` -- `sum` lives one frame down in
+            # `add` and a locals view must NOT show it here.
+            var seen_total = False
+            var named = 0
+            for i in range(variable_count()):
+                if variable_name(i) != "":
+                    named += 1
+                if variable_name(i) == "total":
+                    seen_total = True
+                    # The value is the DECIMAL, not lldb's hex-then-decimal
+                    # double render -- variable_value strips that.
+                    if variable_value(i).find("0000") >= 0:
+                        print("  FAIL total still carries raw hex --",
+                              repr(variable_value(i)))
+                        failures += 1
+                    else:
+                        print("  OK   total =", variable_value(i),
+                              " type", variable_type(i))
+                if variable_name(i) == "sum":
+                    print("  FAIL `sum` leaked from the wrong frame")
+                    failures += 1
+            failures += check_int(
+                "locals are named", 1 if named >= 1 else 0, 1
+            )
+            failures += check_int(
+                "`total` is among them", 1 if seen_total else 0, 1
+            )
+
         print("dap: it runs on")
-        resume()
-        failures += check_int("resumed", 1 if is_stopped() else 0, 0)
-        _ = pump(6.0)
+        # Resume until the program exits. With optimisation the breakpoint
+        # slides OUT of the loop and one resume suffices; built
+        # --no-optimization it binds inside the loop and hits five times.
+        # A person keeps pressing continue; so does this.
+        var resumes = 0
+        while not exited() and resumes < 12:
+            resume()
+            resumes += 1
+            var w = 0.0
+            while not exited() and not is_stopped() and w < 10.0:
+                _ = pump(0.5)
+                w += 0.5
+        failures += check_int("ran to exit", 1 if exited() else 0, 1)
+        print("  OK   resumes to exit =", resumes)
+        _ = pump(2.0)
         # The program prints and exits; the adapter forwards both.
         if output().find("total:") >= 0:
             print("  OK   the program's output came through the adapter")

@@ -40,6 +40,27 @@ else
   echo "   no mojo-lsp-server (build //KGEN/tools/mojo-lsp-server:mojo-lsp-server)"
 fi
 
+# The debugger: our lldb-dap with the MojoLLDB plugin beside it, which is
+# what turns "breakpoints bind and the editor follows" into "frame variable
+# answers" (spikes/MOJOLLDB-SPIKE.md records the whole story). The layout is
+# load-bearing and free: liblldb's install name is @rpath/... and the
+# binaries already carry @loader_path/../lib as their first rpath, so
+# bin/ + lib/ resolves everything with no install_name_tool and no
+# re-signing. lldb-argdumper goes in lib/ because LLDB's support-executable
+# directory is the directory liblldb lives in -- the CLI's `run` shells out
+# to it; DAP launches do not.
+echo "== debugger =="
+LLDB_B="$B/external/+llvm_configure+llvm-project/lldb"
+if [ -f "$LLDB_B/lldb-dap" ] && [ -f "$B/KGEN/libMojoLLDB.dylib" ]; then
+  cp -f "$LLDB_B/lldb-dap" "$LLDB_B/lldb" "$D/bin/"
+  cp -f "$LLDB_B/liblldb24.0.0git.dylib" "$D/lib/"
+  cp -f "$LLDB_B/lldb-argdumper" "$D/lib/"
+  cp -f "$B/KGEN/libMojoLLDB.dylib" "$D/lib/"
+  echo "   lldb-dap, lldb, liblldb, lldb-argdumper, libMojoLLDB"
+else
+  echo "   no debugger (build //KGEN:MojoLLDB @llvm-project//lldb:{lldb,lldb-dap,lldb-argdumper})"
+fi
+
 echo "== runtime dylibs =="
 for l in KGEN/libKGENCompilerRTShared.dylib \
          AsyncRT/libAsyncRTRuntimeGlobals.dylib \

@@ -71,7 +71,15 @@ fi
 # land where the adapter said it bound. Skipped rather than failed when Xcode
 # is not installed -- lldb-dap comes from Xcode, and its absence is a fact
 # about this machine and not about the code.
-DAPBIN="$(xcrun -f lldb-dap 2>/dev/null || true)"
+# The toolchain's own adapter first: it ships with the MojoLLDB plugin
+# beside it, and with it this section requires VARIABLES, not just stops.
+# Xcode's is the fallback and inspects nothing (dap_test skips that part).
+DISTROOT="$(dirname "$CM")/.."
+if [ -x "$DISTROOT/bin/lldb-dap" ]; then
+  DAPBIN="$DISTROOT/bin/lldb-dap"
+else
+  DAPBIN="$(xcrun -f lldb-dap 2>/dev/null || true)"
+fi
 # Developer mode gates every debugger attach behind an authorization prompt.
 # With it off, lldb does not fail -- it HANGS on `run`, waiting for a dialog
 # no headless check can answer, and the timeout that follows looks exactly
@@ -104,12 +112,22 @@ DBGEOF
   # --debug-level full, and the dSYM it emits beside the binary is where the
   # line table actually lives -- looking for DWARF inside the executable
   # finds nothing and is how this looked broken at first.
-  if ! "$CM" --build "$TMP/dbg/main.mojo" -o "$TMP/dbg/prog" --debug-level full \
+  if ! "$CM" --build "$TMP/dbg/main.mojo" -o "$TMP/dbg/prog" \
+       --debug-level full --no-optimization \
        >"$TMP/dbg/build.log" 2>&1; then
     bad "dap" "could not build a program with debug info"
   else
     dap_out=$(cd "$TMP/dbg" && ROAST_DAP="$DAPBIN" ROAST_DAP_PROGRAM="./prog" \
               ROAST_DAP_SOURCE="main.mojo" timeout 400 "$TMP/dap_test" 2>&1)
+    # With our own adapter the plugin is beside it, so a skip here is a
+    # packaging regression, not an environment fact.
+    if [ -x "$DISTROOT/lib/libMojoLLDB.dylib" ] || [ -f "$DISTROOT/lib/libMojoLLDB.dylib" ]; then
+      if echo "$dap_out" | grep -q "is among them = 1"; then
+        ok "dap variables" "the stopped frame answers with named locals"
+      else
+        bad "dap variables" "plugin shipped but no variables came back"
+      fi
+    fi
     if echo "$dap_out" | grep -q '^dap OK'; then
       ok "dap" "$(echo "$dap_out" | grep -c '  OK ') checks — a breakpoint binds and the stop lands on it"
     else

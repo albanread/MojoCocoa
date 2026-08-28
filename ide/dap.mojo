@@ -98,6 +98,16 @@ comptime g_trace = named_global["dap.trace", Int]
 # it asked for rather than for a fixed number of milliseconds.
 comptime g_disconnected = named_global["dap.disconnected", Int]
 
+# The stopped frame's locals. Filled by a three-request chain the `stopped`
+# event starts (stackTrace -> scopes -> variables), cleared the moment the
+# program moves again -- a variables view showing values from the previous
+# stop is worse than one showing nothing, because it looks current.
+comptime g_frame_id = named_global["dap.frame.id", Int]
+comptime g_var_names = named_global["dap.var.names", List[String]]
+comptime g_var_values = named_global["dap.var.values", List[String]]
+comptime g_var_types = named_global["dap.var.types", List[String]]
+comptime g_var_fresh = named_global["dap.var.fresh", Int]
+
 
 def _slot(list_ptr: Pointer[List[String], MutUntrackedOrigin]) -> String:
     return list_ptr[][0] if len(list_ptr[]) > 0 else String()
@@ -151,6 +161,57 @@ def clear_output():
 
 
 # ── Breakpoints ─────────────────────────────────────────────────────────────
+def take_variables_fresh() -> Bool:
+    """True exactly once per variables arrival: the render-me handshake.
+
+    The stop chain bumps the serial twice -- once when the stack lands (the
+    editor moves) and once when the variables do (the pane fills). A consumer
+    keying off the serial alone would render the block on every later bump
+    too, and a breakpoint reply is enough to cause one."""
+    if g_var_fresh()[] == 0:
+        return False
+    g_var_fresh()[] = 0
+    return True
+
+
+def variable_count() -> Int:
+    return len(g_var_names()[])
+
+
+def variable_name(i: Int) -> String:
+    return g_var_names()[][i]
+
+
+def variable_value(i: Int) -> String:
+    """The value as the adapter sent it, except for one mercy: lldb-dap
+    renders scalars as `0000000000000000  5` -- sixteen hex digits, two
+    spaces, then the number a person wanted. When the value has exactly that
+    shape, the hex is dropped. Anything else passes through untouched."""
+    let raw = g_var_values()[][i]
+    let sep = raw.find("  ")
+    if sep == 16:
+        var all_hex = True
+        let b = raw.as_bytes()
+        for j in range(16):
+            let c = Int(b[j])
+            if not ((c >= 0x30 and c <= 0x39) or (c >= 0x61 and c <= 0x66)):
+                all_hex = False
+                break
+        if all_hex:
+            return String(raw[byte = 18 : raw.byte_length()])
+    return raw
+
+
+def variable_type(i: Int) -> String:
+    return g_var_types()[][i]
+
+
+def _clear_variables():
+    g_var_names()[] = List[String]()
+    g_var_values()[] = List[String]()
+    g_var_types()[] = List[String]()
+
+
 def breakpoint_count() -> Int:
     return len(g_bp_line()[])
 
@@ -303,7 +364,13 @@ def send_breakpoints():
     g_bp_dirty()[] = 0
 
 
-def start(adapter: String, program: String, cwd: String) -> Bool:
+def start(
+    adapter: String,
+    program: String,
+    cwd: String,
+    init_command: String = String(""),
+    pre_run_command: String = String(""),
+) -> Bool:
     """Spawn the adapter and ask it to launch the program.
 
     `stopOnEntry` is false: someone who pressed Debug with no breakpoints
@@ -364,6 +431,18 @@ def start(adapter: String, program: String, cwd: String) -> Bool:
     launch_args.set(String("program"), JSON(program))
     launch_args.set(String("cwd"), JSON(cwd))
     launch_args.set(String("stopOnEntry"), JSON(False))
+    # `initCommands` run before the target exists (where `plugin load`
+    # belongs -- the type system must be registered before the first module
+    # is parsed); `preRunCommands` run with a target, before launch (where a
+    # command that sets breakpoints, like `mojo break-on-raise`, belongs).
+    if init_command != "":
+        var cmds = JSON.array()
+        cmds.push(JSON(init_command))
+        launch_args.set(String("initCommands"), cmds^)
+    if pre_run_command != "":
+        var pre = JSON.array()
+        pre.push(JSON(pre_run_command))
+        launch_args.set(String("preRunCommands"), pre^)
     _ = request(String("launch"), launch_args^)
     return True
 
@@ -421,6 +500,7 @@ def stop():
 
 # ── Driving it ──────────────────────────────────────────────────────────────
 def _resume(var command: String):
+    _clear_variables()
     if not is_stopped():
         return
     var args = JSON.object()
@@ -536,6 +616,10 @@ def _handle(var msg: JSON):
             _take_breakpoints(msg.get("body")[])
         elif command == "stackTrace":
             _take_stack(msg.get("body")[])
+        elif command == "scopes":
+            _take_scopes(msg.get("body")[])
+        elif command == "variables":
+            _take_variables(msg.get("body")[])
 
 
 def _event(name: String, body: JSON):
@@ -567,6 +651,7 @@ def _event(name: String, body: JSON):
     if name == "exited" or name == "terminated":
         g_exited()[] = 1
         g_stop_line()[] = 0
+        _clear_variables()
         _put(g_stop_reason(), String())
         g_serial()[] += 1
         return
@@ -617,4 +702,38 @@ def _take_stack(body: JSON):
     let top = frames.at(0)[]
     g_stop_line()[] = top.get("line")[].as_int()
     _put(g_stop_file(), top.get("source")[].get("path")[].as_string())
+    g_serial()[] += 1
+    # Third leg of the stop chain: the frame's scopes, then its variables.
+    g_frame_id()[] = top.get("id")[].as_int()
+    var args = JSON.object()
+    args.set(String("frameId"), JSON(g_frame_id()[]))
+    _ = request(String("scopes"), args^)
+
+
+def _take_scopes(body: JSON):
+    """Ask for the first scope's variables -- lldb-dap puts Locals first, and
+    locals-plus-arguments is what a person stopped at a breakpoint wants.
+    Globals and registers can wait for a pane that can expand things."""
+    let scopes = body.get("scopes")[]
+    if scopes.count() == 0:
+        return
+    var args = JSON.object()
+    args.set(
+        String("variablesReference"),
+        JSON(scopes.at(0)[].get("variablesReference")[].as_int()),
+    )
+    _ = request(String("variables"), args^)
+
+
+def _take_variables(body: JSON):
+    _clear_variables()
+    let vars = body.get("variables")[]
+    var i = 0
+    while i < vars.count():
+        let v = vars.at(i)[]
+        g_var_names()[].append(v.get("name")[].as_string())
+        g_var_values()[].append(v.get("value")[].as_string())
+        g_var_types()[].append(v.get("type")[].as_string())
+        i += 1
+    g_var_fresh()[] = 1
     g_serial()[] += 1

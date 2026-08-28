@@ -37,6 +37,9 @@ echo "== 1/3  building (this is the long one) =="
     //KGEN:CompilerRT \
     //KGEN:MojoCompilerShared \
     //KGEN/tools/mojo-lsp-server:mojo-lsp-server \
+    //KGEN:MojoLLDB \
+    @llvm-project//lldb:lldb @llvm-project//lldb:lldb-dap \
+    @llvm-project//lldb:lldb-argdumper \
     //bazel/llvm-shared:LLVM \
     //bazel/mlir-shared:MLIR
 
