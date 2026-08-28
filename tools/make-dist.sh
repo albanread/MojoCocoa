@@ -51,14 +51,31 @@ fi
 # to it; DAP launches do not.
 echo "== debugger =="
 LLDB_B="$B/external/+llvm_configure+llvm-project/lldb"
-if [ -f "$LLDB_B/lldb-dap" ] && [ -f "$B/KGEN/libMojoLLDB.dylib" ]; then
+# Warning and carrying on is not an option here: DIST_DIR is usually reused,
+# so a missing build would leave the PREVIOUS libMojoLLDB.dylib in place and
+# every subsequent test would silently exercise a stale plugin. That produces
+# confident, wrong answers -- the exact failure this script must not enable.
+# Set NO_DEBUGGER=1 to deliberately build a toolchain without one.
+if [ "${NO_DEBUGGER:-0}" = 1 ]; then
+  echo "   skipped (NO_DEBUGGER=1)"
+  rm -f "$D/bin/lldb" "$D/bin/lldb-dap" "$D/lib/libMojoLLDB.dylib" \
+        "$D/lib/liblldb24.0.0git.dylib" "$D/lib/lldb-argdumper"
+else
+  for f in "$LLDB_B/lldb-dap" "$LLDB_B/lldb" "$LLDB_B/liblldb24.0.0git.dylib" \
+           "$LLDB_B/lldb-argdumper" "$B/KGEN/libMojoLLDB.dylib"; do
+    [ -f "$f" ] || { echo "   MISSING: $f"; \
+      echo "   build //KGEN:MojoLLDB @llvm-project//lldb:{lldb,lldb-dap,lldb-argdumper}"; \
+      echo "   (refusing to leave a stale debugger in $D; NO_DEBUGGER=1 to skip)"; \
+      exit 1; }
+  done
   cp -f "$LLDB_B/lldb-dap" "$LLDB_B/lldb" "$D/bin/"
   cp -f "$LLDB_B/liblldb24.0.0git.dylib" "$D/lib/"
   cp -f "$LLDB_B/lldb-argdumper" "$D/lib/"
   cp -f "$B/KGEN/libMojoLLDB.dylib" "$D/lib/"
-  echo "   lldb-dap, lldb, liblldb, lldb-argdumper, libMojoLLDB"
-else
-  echo "   no debugger (build //KGEN:MojoLLDB @llvm-project//lldb:{lldb,lldb-dap,lldb-argdumper})"
+  # Prove what landed, so a stale-artifact claim can be checked, not asserted.
+  for f in "$D/bin/lldb-dap" "$D/bin/lldb" "$D/lib/libMojoLLDB.dylib"; do
+    printf "   %s  %s\n" "$(shasum -a 256 "$f" | cut -c1-12)" "$(basename "$f")"
+  done
 fi
 
 echo "== runtime dylibs =="
@@ -222,5 +239,5 @@ if [ -f "$KB" ]; then cp -f "$KB" "$D/share/cocoa.sqlite"
 else echo "   WARNING: no cocoa.sqlite at $KB -- set COCOAKB=..."; fi
 
 echo
-echo "dist/CocoaMojo ready ($(du -sh "$D" | cut -f1))"
+echo "$D ready ($(du -sh "$D" | cut -f1))"
 echo "  dist/CocoaMojo/bin/cocoamojo --run examples/mandelbrot/main.mojo"
