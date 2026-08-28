@@ -469,6 +469,12 @@ def _start_build(then_run: Bool):
 # debug info before launching it, and moving the caret to wherever the
 # program stopped.
 comptime g_dap_seen = named_global["roast.dap.seen", Int]
+comptime g_def_seen = named_global["roast.def.seen", Int]
+# The ROAST_DEFINE door's target, and whether it has fired.
+comptime g_define_line = named_global["roast.define.line", Int]
+comptime g_define_col = named_global["roast.define.col", Int]
+comptime g_define_done = named_global["roast.define.done", Int]
+comptime g_hover_seen = named_global["roast.hover.seen", Int]
 
 
 def dap_adapter() -> String:
@@ -645,6 +651,83 @@ def _debug_changed():
         dap.stop_reason(),
     )
     refresh_grid()
+
+
+# ── Navigation ──────────────────────────────────────────────────────────────
+# The language server has advertised definitionProvider and hoverProvider
+# since the first handshake, and nothing had ever asked. Eleven capabilities
+# came back; two were used. These are the two worth the least code and the
+# most in a day's editing.
+def ask_definition() -> Bool:
+    """Where is the thing under the caret defined?"""
+    if not lsp.is_ready() or document.current_uri() == "":
+        set_status(String("No language server"))
+        return False
+    if len(g_buffer()[]) == 0:
+        return False
+    let buf = g_buffer()[][0]
+    let line = buf.line_of_offset(g_caret()[])
+    # UTF-16, because that is what the protocol counts in -- the same
+    # conversion completion already makes.
+    let col = byte_to_utf16(g_caret()[]) - byte_to_utf16(buf.line_start(line))
+    flush_pending_edit()
+    _ = lsp.request_definition(document.current_uri(), line, col)
+    set_status(String("Looking…"))
+    return True
+
+
+def ask_hover() -> Bool:
+    if not lsp.is_ready() or document.current_uri() == "":
+        return False
+    if len(g_buffer()[]) == 0:
+        return False
+    let buf = g_buffer()[][0]
+    let line = buf.line_of_offset(g_caret()[])
+    let col = byte_to_utf16(g_caret()[]) - byte_to_utf16(buf.line_start(line))
+    flush_pending_edit()
+    _ = lsp.request_hover(document.current_uri(), line, col)
+    return True
+
+
+def _go_to_definition():
+    """The answer arrived. Open it and put the caret on it.
+
+    Through the same door a build error uses, because they are the same
+    action: a place in a file that may not be open. The one difference is
+    the message, since "no definition" is a normal answer to a question
+    about a local and a build error is never normal.
+    """
+    let uri = lsp.definition_uri()
+    let line = lsp.definition_line()
+    if uri == "" or line < 0:
+        set_status(String("No definition found"))
+        return
+    # Sliced out of a separate binding, the way Document.name does it:
+    # `path = String(path[...])` reads and writes the same value in one
+    # expression, which the compiler rightly refuses.
+    let full = uri
+    var path = full
+    if full.startswith("file://"):
+        path = String(full[byte=7 : full.byte_length()])
+    if not file_exists(path):
+        set_status(String("Definition is in a file that is not there: ") + path)
+        return
+    # The server counts from zero and _jump_to takes the compiler's
+    # one-based convention.
+    _jump_to(path, line + 1, lsp.definition_character() + 1)
+    print(
+        "roast: definition ->",
+        _basename(path) + String(":") + String(line + 1),
+    )
+    set_status(
+        String("→ ") + _basename(path) + String(":") + String(line + 1)
+    )
+
+
+def _show_hover():
+    let text = lsp.hover_text()
+    if text != "":
+        set_status(text)
 
 
 def _jump_to(path: String, line: Int, col: Int):
@@ -984,6 +1067,19 @@ class RoastActions:
         except:
             pass
 
+    def roastGoToDefinition_(self, sender: ObjCObject):
+        try:
+            _ = ask_definition()
+        except:
+            pass
+
+    def roastHover_(self, sender: ObjCObject):
+        try:
+            if not ask_hover():
+                set_status(String("No language server"))
+        except:
+            pass
+
     def roastDebug_(self, sender: ObjCObject):
         try:
             _start_debug()
@@ -1164,6 +1260,12 @@ class RoastActions:
                                 String(lsp.completion_count())
                                 + String(" completions")
                             )
+                    elif lsp.definition_serial() != g_def_seen()[]:
+                        g_def_seen()[] = lsp.definition_serial()
+                        _go_to_definition()
+                    elif lsp.hover_serial() != g_hover_seen()[]:
+                        g_hover_seen()[] = lsp.hover_serial()
+                        _show_hover()
                     else:
                         _report_diagnostics()
                     refresh_grid()
@@ -1192,6 +1294,26 @@ class RoastActions:
         # The compiler, on the same terms as the server: drained without blocking,
         # because a build that takes a minute must not be an editor that takes a
         # minute. pump() also reaps the process, which is what moves the serial.
+        # The definition door, once the server is ready and has the document.
+        # Twenty ticks in rather than immediately: a request about a file the
+        # server has not finished reading gets an empty answer, which would
+        # make this check pass or fail on timing rather than on behaviour.
+        if (
+            g_define_line()[] > 0
+            and g_define_done()[] == 0
+            and g_ticks()[] > 20
+            and lsp.is_ready()
+        ):
+            g_define_done()[] = 1
+            let want_line = g_define_line()[] - 1
+            if len(g_buffer()[]) > 0:
+                let buf = g_buffer()[][0]
+                if want_line < buf.line_count():
+                    set_caret(
+                        buf.line_start(want_line) + g_define_col()[] - 1
+                    )
+            _ = ask_definition()
+
         # CI, and a quick way to see the path work: fire Build or Run a few ticks
         # in, once the window is really up, with nobody at the keyboard.
         if g_ticks()[] == 3:
@@ -2879,6 +3001,16 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     )
     _ = add_item(edit, String("Hide Find"), String("roastHideFind:"), String("\u001b"), actions)
 
+    # Navigate.
+    let nav = add_submenu(bar, String("Navigate"))
+    _ = add_item(
+        nav, String("Go to Definition"), String("roastGoToDefinition:"),
+        String("j"), actions,
+    )
+    _ = add_item(
+        nav, String("Quick Help"), String("roastHover:"), String("?"), actions,
+    )
+
     # Debug. Xcode's key equivalents, because the muscle memory of anyone
     # who debugs on a Mac already has them: F6 step over, F7 in, F8 out.
     let debug_menu = add_submenu(bar, String("Debug"))
@@ -3319,6 +3451,20 @@ def main() raises:
                 set_status(
                     String("Restored ") + String(back) + String(" files")
                 )
+
+        # Go to definition, reachable without a mouse. ROAST_DEFINE is
+        # line:col in the entry point, one-based as an editor counts; the
+        # caret goes there and the request is made a few ticks later, once
+        # the server has had the document.
+        let define_at = getenv("ROAST_DEFINE")
+        if define_at != "":
+            let cut = define_at.find(":")
+            if cut > 0:
+                g_define_line()[] = Int(String(define_at[byte=:cut]))
+                g_define_col()[] = Int(
+                    String(define_at[byte = cut + 1 : define_at.byte_length()])
+                )
+                print("roast: definition asked at", define_at)
 
         # Debugging, reachable without a mouse: set a breakpoint at
         # ROAST_DEBUG_LINE in the project's entry point and press Debug. The

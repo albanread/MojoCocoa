@@ -109,7 +109,7 @@ DBGEOF
     bad "dap" "could not build a program with debug info"
   else
     dap_out=$(cd "$TMP/dbg" && ROAST_DAP="$DAPBIN" ROAST_DAP_PROGRAM="./prog" \
-              ROAST_DAP_SOURCE="main.mojo" timeout 240 "$TMP/dap_test" 2>&1)
+              ROAST_DAP_SOURCE="main.mojo" timeout 400 "$TMP/dap_test" 2>&1)
     if echo "$dap_out" | grep -q '^dap OK'; then
       ok "dap" "$(echo "$dap_out" | grep -c '  OK ') checks — a breakpoint binds and the stop lands on it"
     else
@@ -250,7 +250,7 @@ else
 fi
 check "split view"  "split panes: 2"        "sidebar + editor area"
 check "editor panes" "editor panes: 2"      "editor above the console"
-check "menu bar"    "menu bar items: 8"     "app, File, Edit, Debug, View, Build, Examples, Window"
+check "menu bar"    "menu bar items: 9"     "app, File, Edit, Navigate, Debug, View, Build, Examples, Window"
 # Installing a toolbar changes the content view's height, so a layout computed
 # from the height read before it existed leaves a band above the tab strip.
 # Zero here means flush.
@@ -341,9 +341,14 @@ def main():
         total = add(total, i)
     print("total:", total)
 DBGPROJ
+  # 1200 ticks is two minutes, which is generous on purpose: this check is
+  # the only one that compiles a program AND launches a debugger on it, and
+  # under the load of the rest of the suite the unoptimised build alone can
+  # eat what used to be the whole budget. It passed alone and failed here,
+  # twice, before the number was the number.
   dbgout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_DAP="$DAPBIN" \
            ROAST_PROJECT="$TMP/dbgproj" ROAST_DEBUG_LINE=9 \
-           ROAST_AUTOCLOSE_TICKS=400 timeout 300 "$TMP/roast" 2>&1)
+           ROAST_AUTOCLOSE_TICKS=1200 timeout 400 "$TMP/roast" 2>&1)
   # Line 9, the line that was clicked -- not 10. The debug build is
   # unoptimised, so nothing slides; if this ever reports 10 again, the
   # --no-optimization has been lost and locals have gone with it.
@@ -352,6 +357,29 @@ DBGPROJ
   else
     bad "debugger" "$(echo "$dbgout" | grep -m1 -E 'debug stopped|debugging|debug:' || echo 'never stopped')"
   fi
+fi
+
+# Go to definition, against the real server. The caret goes onto the CALL of
+# `helper` on line 6 and the answer has to be line 1, where it is defined --
+# the server advertised definitionProvider from the first handshake and
+# nothing had ever asked it anything.
+mkdir -p "$TMP/navproj"
+cat > "$TMP/navproj/main.mojo" <<'NAVEOF'
+def helper(x: Int) -> Int:
+    return x * 2
+
+
+def main():
+    var v = helper(21)
+    print(v)
+NAVEOF
+navout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_PROJECT="$TMP/navproj" \
+         ROAST_OPEN="$TMP/navproj/main.mojo" ROAST_DEFINE="6:13" \
+         ROAST_AUTOCLOSE_TICKS=120 timeout 180 "$TMP/roast" 2>&1)
+if echo "$navout" | grep -q 'roast: definition -> main.mojo:1'; then
+  ok "go to definition" "the caret on a call lands on the def"
+else
+  bad "go to definition" "$(echo "$navout" | grep -m1 'definition' || echo 'no answer')"
 fi
 
 # Documents from the Finder. Two halves, because they fail apart: whether

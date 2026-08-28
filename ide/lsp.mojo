@@ -132,6 +132,20 @@ comptime g_comp_serial = named_global["lsp.comp.serial", Int]
 # server answers.
 comptime g_comp_uri = named_global["lsp.comp.uri", List[String]]
 
+# Go to definition, and hover. Both are one outstanding request at a time:
+# they answer a place the caret IS, so an older answer is about a place the
+# caret has left, and holding several would only make it harder to say which
+# one is stale.
+comptime g_def_request = named_global["lsp.def.request", Int]
+comptime g_def_uri = named_global["lsp.def.uri", List[String]]
+comptime g_def_line = named_global["lsp.def.line", Int]
+comptime g_def_char = named_global["lsp.def.char", Int]
+comptime g_def_serial = named_global["lsp.def.serial", Int]
+
+comptime g_hover_request = named_global["lsp.hover.request", Int]
+comptime g_hover_text = named_global["lsp.hover.text", List[String]]
+comptime g_hover_serial = named_global["lsp.hover.serial", Int]
+
 
 def inbox() -> String:
     if len(g_inbox()[]) == 0:
@@ -199,6 +213,159 @@ def request_completion(uri: String, line: Int, character: Int) -> Int:
     else:
         slot[][0] = uri
     return id
+
+
+def _position_params(uri: String, line: Int, character: Int) -> JSON:
+    """textDocument/position, which is the shape of every request that asks
+    about a place rather than about a file."""
+    var pos = JSON.object()
+    pos.set(String("line"), JSON(line))
+    pos.set(String("character"), JSON(character))
+    var doc = JSON.object()
+    doc.set(String("uri"), JSON(uri))
+    var params = JSON.object()
+    params.set(String("textDocument"), doc^)
+    params.set(String("position"), pos^)
+    return params^
+
+
+def request_definition(uri: String, line: Int, character: Int) -> Int:
+    """Where is this defined? The server advertises definitionProvider and
+    has since the first handshake; nothing had ever asked."""
+    let id = request(
+        String("textDocument/definition"),
+        _position_params(uri, line, character),
+    )
+    g_def_request()[] = id
+    return id
+
+
+def request_hover(uri: String, line: Int, character: Int) -> Int:
+    """What IS this? Type and signature, for the status bar."""
+    let id = request(
+        String("textDocument/hover"), _position_params(uri, line, character)
+    )
+    g_hover_request()[] = id
+    return id
+
+
+def definition_serial() -> Int:
+    return g_def_serial()[]
+
+
+def definition_uri() -> String:
+    let slot = g_def_uri()
+    return slot[][0] if len(slot[]) > 0 else String()
+
+
+def definition_line() -> Int:
+    return g_def_line()[]
+
+
+def definition_character() -> Int:
+    return g_def_char()[]
+
+
+def hover_serial() -> Int:
+    return g_hover_serial()[]
+
+
+def hover_text() -> String:
+    let slot = g_hover_text()
+    return slot[][0] if len(slot[]) > 0 else String()
+
+
+def _location_fields(loc: JSON) -> Tuple[String, Int, Int]:
+    """uri, line and character out of one location, whichever shape it is.
+
+    A Location names `uri` and `range`; a LocationLink names `targetUri` and
+    `targetSelectionRange` (falling back to `targetRange`). Both are legal
+    replies to the same request, so both are read here rather than in the
+    caller.
+    """
+    var uri = loc.get("uri")[].as_string()
+    if uri != "":
+        let start = loc.get("range")[].get("start")[]
+        return (
+            uri^,
+            start.get("line")[].as_int(),
+            start.get("character")[].as_int(),
+        )
+    uri = loc.get("targetUri")[].as_string()
+    if uri == "":
+        return (String(), -1, 0)
+    var range_key = String("targetSelectionRange")
+    if loc.get("targetSelectionRange")[].count() == 0:
+        range_key = String("targetRange")
+    let start = loc.get(range_key)[].get("start")[]
+    return (
+        uri^,
+        start.get("line")[].as_int(),
+        start.get("character")[].as_int(),
+    )
+
+
+def _take_definition(result: JSON):
+    """A definition reply comes in three shapes and the protocol permits all
+    of them: a single Location, an array of Locations, or an array of
+    LocationLinks. A client that handles only the shape its server happens to
+    send is a client that breaks on the next server.
+
+    Read through references rather than bound to a local: JSON owns two Lists
+    and a String and is deliberately not ImplicitlyCopyable, so `var loc =
+    result` is a copy the compiler is right to refuse.
+    """
+    var found = (String(), -1, 0)
+    if result.has("uri") or result.has("targetUri"):
+        found = _location_fields(result)
+    elif result.count() > 0:
+        # An array: the first entry is the definition; the rest, if any, are
+        # alternatives nothing asks about at this size.
+        found = _location_fields(result.at(0)[])
+    let slot = g_def_uri()
+    if len(slot[]) == 0:
+        slot[].append(found[0])
+    else:
+        slot[][0] = found[0]
+    g_def_line()[] = found[1]
+    g_def_char()[] = found[2]
+    g_def_serial()[] += 1
+
+
+def _take_hover(result: JSON):
+    """Hover contents are `MarkupContent {kind, value}` in modern servers and
+    were a string, or an array of strings and {language, value} pairs, in
+    older ones. Only the first line is kept: this goes in a status bar, and
+    the first line of a hover is the signature that answers the question."""
+    var text = String()
+    let contents = result.get("contents")[]
+    if contents.has("value"):
+        text = contents.get("value")[].as_string()
+    elif contents.count() > 0:
+        let first = contents.at(0)[]
+        text = first.get("value")[].as_string() if first.has(
+            "value"
+        ) else first.as_string()
+    else:
+        text = contents.as_string()
+    # Markdown fences and blank lines are noise in one line of status bar.
+    var out = String()
+    let lines = text.split("\n")
+    var i = 0
+    while i < len(lines):
+        # String() around strip(): strip returns a span into the split's
+        # temporary, and a span outlives nothing here.
+        var one = String(String(lines[i]).strip())
+        if one != "" and not one.startswith("```"):
+            out = one^
+            break
+        i += 1
+    let slot = g_hover_text()
+    if len(slot[]) == 0:
+        slot[].append(out^)
+    else:
+        slot[][0] = out^
+    g_hover_serial()[] += 1
 
 
 def set_shown_uri(var uri: String):
@@ -427,6 +594,8 @@ def stop():
     g_ready()[] = 0
     g_read_fd()[] = 0
     set_inbox(String())
+    g_def_request()[] = 0
+    g_hover_request()[] = 0
     clear_diagnostics()
     clear_completions()
 
@@ -530,6 +699,14 @@ def _handle(var msg: JSON):
     # A reply to the outstanding completion request.
     if msg.has("id") and msg.has("result"):
         let id = msg.get("id")[].as_int()
+        if id == g_def_request()[] and id != 0:
+            g_def_request()[] = 0
+            _take_definition(msg.get("result")[])
+            return
+        if id == g_hover_request()[] and id != 0:
+            g_hover_request()[] = 0
+            _take_hover(msg.get("result")[])
+            return
         if id == g_comp_request()[] and id != 0:
             # Answered, whatever we do with it: leaving the id live would let
             # the next reply-shaped message be mistaken for this one.
