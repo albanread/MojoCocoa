@@ -38,6 +38,8 @@ from std.objc import (
     ns_to_string,
     named_global,
     box_ref,
+    Obj,
+    Cls,
     sel,
     CGPoint,
     CGSize,
@@ -110,23 +112,22 @@ def ensure_popup():
     if g_popup()[] != 0:
         return
     let NSWindow = ObjCClass.lookup["NSWindow"]()
-    var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
-        NSWindow.as_object()
-    )
+    var win = Cls["NSWindow"]().alloc()
     # Borderless, non-activating: showing candidates must not take focus away
     # from the text being typed.
-    win = msg_send[
-        ObjCObject, "NSWindow", "initWithContentRect:styleMask:backing:defer:"
-    ](win, rect(0.0, 0.0, POPUP_W, POPUP_ROW_H), Int(0), Int(2), Bool(False))
-    _ = msg_send[ObjCObject, "NSWindow", "setLevel:"](win, Int(101))
-    _ = msg_send[ObjCObject, "NSWindow", "setOpaque:"](win, False)
-    _ = msg_send[ObjCObject, "NSWindow", "setHasShadow:"](win, True)
+    win = Obj["NSWindow"](win.addr()).initWithContentRect_styleMask_backing_defer(
+        rect(0.0, 0.0, POPUP_W, POPUP_ROW_H),
+        Int(0),
+        Int(2),
+        Bool(False),
+    )
+    Obj["NSWindow"](win.addr()).setLevel(Int(101))
+    Obj["NSWindow"](win.addr()).setOpaque(False)
+    Obj["NSWindow"](win.addr()).setHasShadow(True)
 
     var view = ObjCObject(RoastCompletionView().__objc_id)
-    _ = msg_send[ObjCObject, "NSView", "setFrame:"](
-        view, rect(0.0, 0.0, POPUP_W, POPUP_ROW_H)
-    )
-    _ = msg_send[ObjCObject, "NSWindow", "setContentView:"](win, view.ptr())
+    Obj["NSView"](view.addr()).setFrame(rect(0.0, 0.0, POPUP_W, POPUP_ROW_H))
+    Obj["NSWindow"](win.addr()).setContentView(view.ptr())
     _ = external_call["objc_retain", P](win.ptr())
     g_popup()[] = win.addr()
     g_popup_view()[] = view.addr()
@@ -171,31 +172,25 @@ def show_popup(anchor_view: ObjCObject):
 
         # The caret is in view coordinates; the window wants screen ones.
         let local = rect(pos.x, pos.y + line_height(), POPUP_W, h)
-        let in_window = msg_send[CGRect, "NSView", "convertRect:toView:"](
-            anchor_view, local, ObjCObject(0).ptr()
+        let in_window = Obj["NSView"](anchor_view.addr()).convertRect_toView(
+            local, ObjCObject(0).ptr()
         )
-        let host = msg_send[ObjCObject, "NSView", "window"](anchor_view)
+        let host = Obj["NSView"](anchor_view.addr()).window()
         if host.addr() == 0:
             return
-        var screen = msg_send[CGRect, "NSWindow", "convertRectToScreen:"](
-            host, in_window
-        )
+        var screen = Obj["NSWindow"](host.addr()).convertRectToScreen(in_window)
         # The window's y is its bottom edge, and the list hangs below the
         # caret, so the origin moves down by the height.
         screen.origin.y -= h
 
         let win = ObjCObject(g_popup()[])
-        _ = msg_send[ObjCObject, "NSWindow", "setFrame:display:"](
-            win, screen, True
+        Obj["NSWindow"](win.addr()).setFrame_display(screen, True)
+        Obj["NSView"](ObjCObject(g_popup_view()[]).addr()).setFrameSize(
+            CGSize(POPUP_W, h)
         )
-        _ = msg_send[ObjCObject, "NSView", "setFrameSize:"](
-            ObjCObject(g_popup_view()[]), CGSize(POPUP_W, h)
-        )
-        _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](
-            ObjCObject(g_popup_view()[]), True
-        )
+        Obj["NSView"](ObjCObject(g_popup_view()[]).addr()).setNeedsDisplay(True)
         # orderFront, never makeKey: the text keeps the keyboard.
-        _ = msg_send[ObjCObject, "NSWindow", "orderFront:"](win, win.ptr())
+        Obj["NSWindow"](win.addr()).orderFront(win.ptr())
         g_popup_open()[] = 1
         g_popup_sel()[] = 0
 
@@ -204,8 +199,8 @@ def hide_popup():
     if g_popup()[] == 0 or g_popup_open()[] == 0:
         return
     with autoreleasepool():
-        _ = msg_send[ObjCObject, "NSWindow", "orderOut:"](
-            ObjCObject(g_popup()[]), ObjCObject(g_popup()[]).ptr()
+        Obj["NSWindow"](ObjCObject(g_popup()[]).addr()).orderOut(
+            ObjCObject(g_popup()[]).ptr()
         )
     g_popup_open()[] = 0
     clear_completions()
@@ -226,9 +221,7 @@ def popup_move(delta: Int):
         sel = 0
     g_popup_sel()[] = sel
     with autoreleasepool():
-        _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](
-            ObjCObject(g_popup_view()[]), True
-        )
+        Obj["NSView"](ObjCObject(g_popup_view()[]).addr()).setNeedsDisplay(True)
 
 
 def popup_accept() -> Bool:
@@ -316,14 +309,12 @@ class RoastGridView(NSView, NSTextInputClient):
                 # it just stops paying for paint that was never shown.
                 var vis = dirty
                 if vis.size.height <= 0.0 or vis.size.width <= 0.0:
-                    vis = msg_send[CGRect, "NSView", "visibleRect"](view)
+                    vis = Obj["NSView"](view.addr()).visibleRect()
 
                 # Background.
                 let NSColor = ObjCClass.lookup["NSColor"]()
-                let bg = msg_send[
-                    ObjCObject, "NSColor", "textBackgroundColor", is_class=True
-                ](NSColor.as_object())
-                _ = msg_send[ObjCObject, "NSColor", "setFill"](bg)
+                let bg = Cls["NSColor"]().textBackgroundColor()
+                Obj["NSColor"](bg.addr()).setFill()
                 _ = external_call["NSRectFill", NoneType](vis)
 
                 let lh = line_height()
@@ -356,13 +347,11 @@ class RoastGridView(NSView, NSTextInputClient):
                         0
                     ].line(min(last, total - 1)).byte_length()
                     let NSColorM = ObjCClass.lookup["NSColor"]()
-                    let found_bg = msg_send[
-                        ObjCObject, "NSColor", "systemYellowColor", is_class=True
-                    ](NSColorM.as_object())
-                    let faded = msg_send[
-                        ObjCObject, "NSColor", "colorWithAlphaComponent:"
-                    ](found_bg, Float64(0.35))
-                    _ = msg_send[ObjCObject, "NSColor", "setFill"](faded)
+                    let found_bg = Cls["NSColor"]().systemYellowColor()
+                    let faded = Obj["NSColor"](found_bg.addr()).colorWithAlphaComponent(
+                        Float64(0.35),
+                    )
+                    Obj["NSColor"](faded.addr()).setFill()
                     for m in buf[][0].find_all_in(q, vis_a, vis_b):
                         let a = caret_position(m)
                         let b = caret_position(m + q.byte_length())
@@ -376,11 +365,8 @@ class RoastGridView(NSView, NSTextInputClient):
                 let sel_b = sel_end()
                 if sel_a != sel_b:
                     let NSColor2 = ObjCClass.lookup["NSColor"]()
-                    let hl = msg_send[
-                        ObjCObject, "NSColor", "selectedTextBackgroundColor",
-                        is_class=True,
-                    ](NSColor2.as_object())
-                    _ = msg_send[ObjCObject, "NSColor", "setFill"](hl)
+                    let hl = Cls["NSColor"]().selectedTextBackgroundColor()
+                    Obj["NSColor"](hl.addr()).setFill()
                     let l0 = buf[][0].line_of_offset(sel_a)
                     let l1 = buf[][0].line_of_offset(sel_b)
                     var ln = max(l0, first)
@@ -407,10 +393,7 @@ class RoastGridView(NSView, NSTextInputClient):
                     # Line number, right-aligned in the gutter.
                     let num = String(i + 1)
                     let num_w = Float64(num.byte_length()) * advance()
-                    _ = msg_send[
-                        ObjCObject, "NSString", "drawAtPoint:withAttributes:"
-                    ](
-                        nsstring(num),
+                    Obj["NSString"](nsstring(num).addr()).drawAtPoint_withAttributes(
                         CGPoint(GUTTER_W - num_w - TEXT_PAD, y),
                         gutter_attrs.ptr(),
                     )
@@ -423,27 +406,19 @@ class RoastGridView(NSView, NSTextInputClient):
                     if text.byte_length() > 0:
                         let runs = highlight_runs(text)
                         for r in runs:
-                            _ = msg_send[
-                                ObjCObject,
-                                "NSString",
-                                "drawAtPoint:withAttributes:",
-                            ](
-                                nsstring(
+                            Obj["NSString"](nsstring(
                                     String(
                                         text[
                                             byte = r.byte_start : r.byte_start
                                             + r.byte_len
                                         ]
                                     )
-                                ),
-                                CGPoint(
+                                ).addr()).drawAtPoint_withAttributes(CGPoint(
                                     GUTTER_W
                                     + TEXT_PAD
                                     + Float64(r.col) * advance(),
                                     y,
-                                ),
-                                _attrs_for(r.kind).ptr(),
-                            )
+                                ), _attrs_for(r.kind).ptr())
                         if len(runs) > 0:
                             let lastr = runs[len(runs) - 1]
                             if lastr.col + lastr.cols > widest:
@@ -454,12 +429,10 @@ class RoastGridView(NSView, NSTextInputClient):
                 # wider than the view thought. Growing the frame here, from
                 # the draw, is safe because it only ever grows.
                 if note_line_cols(widest):
-                    let frame = msg_send[CGRect, "NSView", "frame"](view)
+                    let frame = Obj["NSView"](view.addr()).frame()
                     let want = document_size(frame.size.width)
                     if want.width > frame.size.width:
-                        _ = msg_send[ObjCObject, "NSView", "setFrameSize:"](
-                            view, want
-                        )
+                        Obj["NSView"](view.addr()).setFrameSize(want)
 
                 # Diagnostics from the language server. Drawn after the text so
                 # the underline sits under the glyphs it is about, and before the
@@ -480,20 +453,12 @@ class RoastGridView(NSView, NSTextInputClient):
                             continue
                         # 1 error, 2 warning, anything else advisory.
                         let sev = g_diag_sev()[][di]
-                        var ink = msg_send[
-                            ObjCObject, "NSColor", "systemRedColor", is_class=True
-                        ](NSColorD.as_object())
+                        var ink = Cls["NSColor"]().systemRedColor()
                         if sev == 2:
-                            ink = msg_send[
-                                ObjCObject, "NSColor", "systemOrangeColor",
-                                is_class=True,
-                            ](NSColorD.as_object())
+                            ink = Cls["NSColor"]().systemOrangeColor()
                         elif sev > 2:
-                            ink = msg_send[
-                                ObjCObject, "NSColor", "systemBlueColor",
-                                is_class=True,
-                            ](NSColorD.as_object())
-                        _ = msg_send[ObjCObject, "NSColor", "setFill"](ink)
+                            ink = Cls["NSColor"]().systemBlueColor()
+                        Obj["NSColor"](ink.addr()).setFill()
 
                         let y = Float64(dline) * lh
                         # The gutter mark: a bar at the left edge, which reads at a
@@ -519,10 +484,8 @@ class RoastGridView(NSView, NSTextInputClient):
                 # artefact rather than a cursor.
                 if g_focused()[] != 0 and g_blink_on()[] != 0 and sel_a == sel_b:
                     let NSColor3 = ObjCClass.lookup["NSColor"]()
-                    let ink = msg_send[
-                        ObjCObject, "NSColor", "textColor", is_class=True
-                    ](NSColor3.as_object())
-                    _ = msg_send[ObjCObject, "NSColor", "setFill"](ink)
+                    let ink = Cls["NSColor"]().textColor()
+                    Obj["NSColor"](ink.addr()).setFill()
                     let pos = caret_position(g_caret()[])
                     _ = external_call["NSRectFill", NoneType](
                         rect(pos.x, pos.y, 2.0, lh)
@@ -534,10 +497,8 @@ class RoastGridView(NSView, NSTextInputClient):
                     let a = caret_position(g_marked_at()[])
                     let b = caret_position(g_marked_at()[] + g_marked_len()[])
                     let NSColor4 = ObjCClass.lookup["NSColor"]()
-                    let mark = msg_send[
-                        ObjCObject, "NSColor", "textColor", is_class=True
-                    ](NSColor4.as_object())
-                    _ = msg_send[ObjCObject, "NSColor", "setFill"](mark)
+                    let mark = Cls["NSColor"]().textColor()
+                    Obj["NSColor"](mark.addr()).setFill()
                     _ = external_call["NSRectFill", NoneType](
                         rect(a.x, a.y + lh - 2.0, max(b.x - a.x, advance()), 1.0)
                     )
@@ -549,17 +510,15 @@ class RoastGridView(NSView, NSTextInputClient):
         try:
             with autoreleasepool():
                 let view = ObjCObject(self.__objc_id)
-                let win_pt = msg_send[CGPoint, "NSEvent", "locationInWindow"](
-                    event
-                )
-                let local = msg_send[CGPoint, "NSView", "convertPoint:fromView:"](
-                    view, win_pt, ObjCObject(0).ptr()
+                let win_pt = Obj["NSEvent"](event.addr()).locationInWindow()
+                let local = Obj["NSView"](view.addr()).convertPoint_fromView(
+                    win_pt, ObjCObject(0).ptr()
                 )
                 let at = offset_at_point(local.x, local.y)
                 set_caret(at)
                 g_coalesce_at()[] = -1
-                _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
-                    msg_send[ObjCObject, "NSView", "window"](view), view.ptr()
+                _ = Obj["NSWindow"](Obj["NSView"](view.addr()).window().addr()).makeFirstResponder(
+                    view.ptr(),
                 )
                 _refresh(P(unsafe_from_address=self.__objc_id))
         except:
@@ -569,11 +528,9 @@ class RoastGridView(NSView, NSTextInputClient):
         try:
             with autoreleasepool():
                 let view = ObjCObject(self.__objc_id)
-                let win_pt = msg_send[CGPoint, "NSEvent", "locationInWindow"](
-                    event
-                )
-                let local = msg_send[CGPoint, "NSView", "convertPoint:fromView:"](
-                    view, win_pt, ObjCObject(0).ptr()
+                let win_pt = Obj["NSEvent"](event.addr()).locationInWindow()
+                let local = Obj["NSView"](view.addr()).convertPoint_fromView(
+                    win_pt, ObjCObject(0).ptr()
                 )
                 # Move the caret, leave the anchor: that is a selection.
                 g_caret()[] = offset_at_point(local.x, local.y)
@@ -599,8 +556,8 @@ class RoastGridView(NSView, NSTextInputClient):
             with autoreleasepool():
                 let view = ObjCObject(self.__objc_id)
                 let pos = caret_position(g_caret()[])
-                _ = msg_send[ObjCObject, "NSView", "setNeedsDisplayInRect:"](
-                    view, rect(pos.x - 1.0, pos.y, 4.0, line_height())
+                Obj["NSView"](view.addr()).setNeedsDisplayInRect(
+                    rect(pos.x - 1.0, pos.y, 4.0, line_height())
                 )
         except:
             pass
@@ -619,12 +576,8 @@ class RoastGridView(NSView, NSTextInputClient):
             with autoreleasepool():
                 let view = ObjCObject(self.__objc_id)
                 let NSArray = ObjCClass.lookup["NSArray"]()
-                let one = msg_send[
-                    ObjCObject, "NSArray", "arrayWithObject:", is_class=True
-                ](NSArray.as_object(), event)
-                _ = msg_send[ObjCObject, "NSView", "interpretKeyEvents:"](
-                    view, one.ptr()
-                )
+                let one = Cls["NSArray"]().arrayWithObject(event)
+                Obj["NSView"](view.addr()).interpretKeyEvents(one.ptr())
         except:
             pass
 
@@ -635,10 +588,8 @@ class RoastGridView(NSView, NSTextInputClient):
                 let obj = text
                 # Either an NSString or an NSAttributedString; ask for the string.
                 var s = obj
-                if msg_send[Bool, "NSObject", "isKindOfClass:"](
-                    obj, ObjCClass.lookup["NSAttributedString"]().as_object().ptr()
-                ):
-                    s = msg_send[ObjCObject, "NSAttributedString", "string"](obj)
+                if Obj["NSObject"](obj.addr()).isKindOfClass(ObjCClass.lookup["NSAttributedString"]().as_object().ptr()):
+                    s = Obj["NSAttributedString"](obj.addr()).string().object()
                 # A composition being committed replaces what it was composing.
                 if g_marked_len()[] > 0:
                     g_anchor()[] = g_marked_at()[]
@@ -660,10 +611,8 @@ class RoastGridView(NSView, NSTextInputClient):
             with autoreleasepool():
                 let obj = text
                 var s = obj
-                if msg_send[Bool, "NSObject", "isKindOfClass:"](
-                    obj, ObjCClass.lookup["NSAttributedString"]().as_object().ptr()
-                ):
-                    s = msg_send[ObjCObject, "NSAttributedString", "string"](obj)
+                if Obj["NSObject"](obj.addr()).isKindOfClass(ObjCClass.lookup["NSAttributedString"]().as_object().ptr()):
+                    s = Obj["NSAttributedString"](obj.addr()).string().object()
                 let str = ns_to_string(s)
 
                 # Replace whatever was marked before, or the selection if nothing.
@@ -713,9 +662,7 @@ class RoastGridView(NSView, NSTextInputClient):
         try:
             with autoreleasepool():
                 let NSArray = ObjCClass.lookup["NSArray"]()
-                return msg_send[ObjCObject, "NSArray", "array", is_class=True](
-                    NSArray.as_object()
-                )
+                return Cls["NSArray"]().array().object()
         except:
             return ObjCObject(0)
 
@@ -730,9 +677,7 @@ class RoastGridView(NSView, NSTextInputClient):
                 let b = utf16_to_byte(range.location + range.length)
                 let s = g_buffer()[][0].slice(a, b)
                 let NSAttributedString = ObjCClass.lookup["NSAttributedString"]()
-                var att = msg_send[
-                    ObjCObject, "NSAttributedString", "alloc", is_class=True
-                ](NSAttributedString.as_object())
+                var att = Cls["NSAttributedString"]().alloc()
                 # Named for the concrete class, not the facade. NSAttributedString
                 # is a class cluster: `[NSAttributedString alloc]` hands back an
                 # NSConcreteAttributedString, and the database is a runtime dump,
@@ -740,10 +685,15 @@ class RoastGridView(NSView, NSTextInputClient):
                 # the public name. The class parameter only chooses which metadata
                 # to read -- dispatch happens on the receiver either way -- so this
                 # names where the selector actually lives.
-                att = msg_send[
-                    ObjCObject, "NSConcreteAttributedString", "initWithString:"
-                ](att, nsstring(s).ptr())
-                return att
+                # A new binding rather than an assignment: `Obj` has no
+                # variance, so an Obj["NSConcreteAttributedString"] is not an
+                # Obj["NSAttributedString"] even though the object is both.
+                # That is the honest consequence of the class living in the
+                # type, and `.object()` is the way out of it.
+                let made = Obj["NSConcreteAttributedString"](
+                    att.addr()
+                ).initWithString(nsstring(s).ptr())
+                return made.object()
         except:
             return ObjCObject(0)
 
@@ -766,15 +716,13 @@ class RoastGridView(NSView, NSTextInputClient):
                 )
                 # View -> window -> screen. `convertRect:toView:` with a nil view
                 # means "to the window", which is the conversion wanted here.
-                let in_window = msg_send[
-                    CGRect, "NSView", "convertRect:toView:"
-                ](view, local, ObjCObject(0).ptr())
-                let w = msg_send[ObjCObject, "NSView", "window"](view)
+                let in_window = Obj["NSView"](view.addr()).convertRect_toView(
+                    local, ObjCObject(0).ptr()
+                )
+                let w = Obj["NSView"](view.addr()).window()
                 if w.addr() == 0:
                     return in_window
-                return msg_send[CGRect, "NSWindow", "convertRectToScreen:"](
-                    w, in_window
-                )
+                return Obj["NSWindow"](w.addr()).convertRectToScreen(in_window)
         except:
             return rect(0.0, 0.0, 0.0, 0.0)
 
@@ -801,7 +749,7 @@ class RoastGridView(NSView, NSTextInputClient):
             # A page is however many lines the viewport actually shows.
             var page = 40
             with autoreleasepool():
-                let vis = msg_send[CGRect, "NSView", "visibleRect"](view)
+                let vis = Obj["NSView"](view.addr()).visibleRect()
                 if line_height() > 0.0:
                     page = max(1, Int(vis.size.height / line_height()) - 1)
             apply_command(name, page)
@@ -877,15 +825,13 @@ class RoastCompletionView(NSView):
         try:
             with autoreleasepool():
                 let view = ObjCObject(self.__objc_id)
-                let bounds = msg_send[CGRect, "NSView", "bounds"](view)
+                let bounds = Obj["NSView"](view.addr()).bounds()
                 let NSColorP = ObjCClass.lookup["NSColor"]()
 
                 # Background and a hairline border, so it reads as a panel rather
                 # than text that has escaped.
-                let bg = msg_send[
-                    ObjCObject, "NSColor", "controlBackgroundColor", is_class=True
-                ](NSColorP.as_object())
-                _ = msg_send[ObjCObject, "NSColor", "setFill"](bg)
+                let bg = Cls["NSColor"]().controlBackgroundColor()
+                Obj["NSColor"](bg.addr()).setFill()
                 _ = external_call["NSRectFill", NoneType](bounds)
 
                 let n = min(completion_count(), POPUP_MAX_ROWS)
@@ -895,18 +841,12 @@ class RoastCompletionView(NSView):
                 while row < n:
                     let y = Float64(row) * POPUP_ROW_H
                     if row == g_popup_sel()[]:
-                        let hl = msg_send[
-                            ObjCObject, "NSColor", "selectedContentBackgroundColor",
-                            is_class=True,
-                        ](NSColorP.as_object())
-                        _ = msg_send[ObjCObject, "NSColor", "setFill"](hl)
+                        let hl = Cls["NSColor"]().selectedContentBackgroundColor()
+                        Obj["NSColor"](hl.addr()).setFill()
                         _ = external_call["NSRectFill", NoneType](
                             rect(0.0, y, bounds.size.width, POPUP_ROW_H)
                         )
-                    _ = msg_send[
-                        ObjCObject, "NSString", "drawAtPoint:withAttributes:"
-                    ](
-                        nsstring(g_comp_label()[][row]),
+                    Obj["NSString"](nsstring(g_comp_label()[][row]).addr()).drawAtPoint_withAttributes(
                         CGPoint(8.0, y + 2.0),
                         attrs.ptr(),
                     )
@@ -917,10 +857,7 @@ class RoastCompletionView(NSView):
                         for _ in detail.codepoints():
                             chars += 1
                         let dx = bounds.size.width - 8.0 - Float64(chars) * advance()
-                        _ = msg_send[
-                            ObjCObject, "NSString", "drawAtPoint:withAttributes:"
-                        ](
-                            nsstring(detail),
+                        Obj["NSString"](nsstring(detail).addr()).drawAtPoint_withAttributes(
                             CGPoint(max(dx, 180.0), y + 2.0),
                             dim.ptr(),
                         )
@@ -969,50 +906,35 @@ def build_type():
     """
     with autoreleasepool():
         let NSFont = ObjCClass.lookup["NSFont"]()
-        let font = msg_send[
-            ObjCObject,
-            "NSFont",
-            "monospacedSystemFontOfSize:weight:",
-            is_class=True,
-        ](NSFont.as_object(), font_size(), Float64(0.0))
+        let font = Cls["NSFont"]().monospacedSystemFontOfSize_weight(
+            font_size(), Float64(0.0)
+        )
         _ = external_call["objc_retain", P](font.ptr())
         _drop_retained(g_font()[])
         g_font()[] = font.addr()
 
         let NSMutableDictionary = ObjCClass.lookup["NSMutableDictionary"]()
-        var attrs = msg_send[
-            ObjCObject, "NSMutableDictionary", "dictionary", is_class=True
-        ](NSMutableDictionary.as_object())
-        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
-            attrs, font.ptr(), extern_object["NSFontAttributeName"]().ptr()
+        var attrs = Cls["NSMutableDictionary"]().dictionary()
+        Obj["NSMutableDictionary"](attrs.addr()).setObject_forKey(
+            font.ptr(), extern_object["NSFontAttributeName"]().ptr()
         )
         let NSColor = ObjCClass.lookup["NSColor"]()
-        let fg = msg_send[ObjCObject, "NSColor", "textColor", is_class=True](
-            NSColor.as_object()
-        )
-        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
-            attrs,
-            fg.ptr(),
-            extern_object["NSForegroundColorAttributeName"]().ptr(),
+        let fg = Cls["NSColor"]().textColor()
+        Obj["NSMutableDictionary"](attrs.addr()).setObject_forKey(
+            fg.ptr(), extern_object["NSForegroundColorAttributeName"]().ptr()
         )
         _ = external_call["objc_retain", P](attrs.ptr())
         _drop_retained(g_attrs()[])
         g_attrs()[] = attrs.addr()
 
         # The gutter, dimmer.
-        var gattrs = msg_send[
-            ObjCObject, "NSMutableDictionary", "dictionary", is_class=True
-        ](NSMutableDictionary.as_object())
-        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
-            gattrs, font.ptr(), extern_object["NSFontAttributeName"]().ptr()
+        var gattrs = Cls["NSMutableDictionary"]().dictionary()
+        Obj["NSMutableDictionary"](gattrs.addr()).setObject_forKey(
+            font.ptr(), extern_object["NSFontAttributeName"]().ptr()
         )
-        let dim = msg_send[
-            ObjCObject, "NSColor", "tertiaryLabelColor", is_class=True
-        ](NSColor.as_object())
-        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
-            gattrs,
-            dim.ptr(),
-            extern_object["NSForegroundColorAttributeName"]().ptr(),
+        let dim = Cls["NSColor"]().tertiaryLabelColor()
+        Obj["NSMutableDictionary"](gattrs.addr()).setObject_forKey(
+            dim.ptr(), extern_object["NSForegroundColorAttributeName"]().ptr()
         )
         _ = external_call["objc_retain", P](gattrs.ptr())
         _drop_retained(g_gutter_attrs()[])
@@ -1020,40 +942,32 @@ def build_type():
 
         # Syntax colours. System colours rather than chosen ones, so the
         # editor follows the appearance the rest of the machine is using.
-        let comment_c = msg_send[
-            ObjCObject, "NSColor", "systemGreenColor", is_class=True
-        ](NSColor.as_object())
-        let string_c = msg_send[
-            ObjCObject, "NSColor", "systemRedColor", is_class=True
-        ](NSColor.as_object())
-        let keyword_c = msg_send[
-            ObjCObject, "NSColor", "systemPurpleColor", is_class=True
-        ](NSColor.as_object())
-        let number_c = msg_send[
-            ObjCObject, "NSColor", "systemBlueColor", is_class=True
-        ](NSColor.as_object())
+        let comment_c = Cls["NSColor"]().systemGreenColor()
+        let string_c = Cls["NSColor"]().systemRedColor()
+        let keyword_c = Cls["NSColor"]().systemPurpleColor()
+        let number_c = Cls["NSColor"]().systemBlueColor()
         _drop_retained(g_attr_comment()[])
         _drop_retained(g_attr_string()[])
         _drop_retained(g_attr_keyword()[])
         _drop_retained(g_attr_number()[])
-        g_attr_comment()[] = _make_attrs(comment_c)
-        g_attr_string()[] = _make_attrs(string_c)
-        g_attr_keyword()[] = _make_attrs(keyword_c)
-        g_attr_number()[] = _make_attrs(number_c)
+        g_attr_comment()[] = _make_attrs(comment_c.object())
+        g_attr_string()[] = _make_attrs(string_c.object())
+        g_attr_keyword()[] = _make_attrs(keyword_c.object())
+        g_attr_number()[] = _make_attrs(number_c.object())
 
         # Advance: the width of one character in a face where they are all
         # the same width. Measured, not assumed.
         let probe = nsstring(String("0000000000"))
-        let probe_size = msg_send[CGSize, "NSString", "sizeWithAttributes:"](
-            probe, attrs.ptr()
+        let probe_size = Obj["NSString"](probe.addr()).sizeWithAttributes(
+            attrs.ptr()
         )
         g_advance_x1000()[] = Int(probe_size.width / 10.0 * 1000.0)
 
         # Line height from the font's own metrics, so descenders are not
         # clipped.
-        let ascender = msg_send[Float64, "NSFont", "ascender"](font)
-        let descender = msg_send[Float64, "NSFont", "descender"](font)
-        let leading = msg_send[Float64, "NSFont", "leading"](font)
+        let ascender = Obj["NSFont"](font.addr()).ascender()
+        let descender = Obj["NSFont"](font.addr()).descender()
+        let leading = Obj["NSFont"](font.addr()).leading()
         g_line_h_x1000()[] = Int((ascender - descender + leading + 2.0) * 1000.0)
 
 
@@ -1072,21 +986,15 @@ def make_grid_view(frame: CGRect) -> ObjCObject:
     var proto = external_call["objc_getProtocol", P](
         "NSTextInputClient".ptr()
     )
-    if not msg_send[Bool, "NSObject", "conformsToProtocol:"](view, proto):
+    if not Obj["NSObject"](view.addr()).conformsToProtocol(proto):
         print("roast: NSTextInputClient protocol not registered")
-    _ = msg_send[ObjCObject, "NSView", "setFrame:"](view, frame)
+    Obj["NSView"](view.addr()).setFrame(frame)
 
     # The blink. 0.53 s is what Cocoa uses, and matching it means the caret
     # keeps time with every other text field on screen.
     g_blink_on()[] = 1
     let NSTimer = ObjCClass.lookup["NSTimer"]()
-    _ = msg_send[
-        ObjCObject,
-        "NSTimer",
-        "scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:",
-        is_class=True,
-    ](
-        NSTimer.as_object(),
+    _ = Cls["NSTimer"]().scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
         Float64(0.53),
         view.ptr(),
         sel["roastBlink:"]().ptr(),
@@ -1509,16 +1417,13 @@ def _attrs_for(kind: Int) -> ObjCObject:
 def _make_attrs(colour: ObjCObject) -> Int:
     """An attribute dictionary for one colour, retained for the process."""
     let NSMutableDictionary = ObjCClass.lookup["NSMutableDictionary"]()
-    var d = msg_send[
-        ObjCObject, "NSMutableDictionary", "dictionary", is_class=True
-    ](NSMutableDictionary.as_object())
-    _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
-        d, ObjCObject(g_font()[]).ptr(),
+    var d = Cls["NSMutableDictionary"]().dictionary()
+    Obj["NSMutableDictionary"](d.addr()).setObject_forKey(
+        ObjCObject(g_font()[]).ptr(),
         extern_object["NSFontAttributeName"]().ptr(),
     )
-    _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
-        d, colour.ptr(),
-        extern_object["NSForegroundColorAttributeName"]().ptr(),
+    Obj["NSMutableDictionary"](d.addr()).setObject_forKey(
+        colour.ptr(), extern_object["NSForegroundColorAttributeName"]().ptr()
     )
     _ = external_call["objc_retain", P](d.ptr())
     return d.addr()
@@ -1782,12 +1687,9 @@ def clipboard_write(text: String) -> Bool:
     """Put a string on the general pasteboard, replacing what was there."""
     with autoreleasepool():
         let NSPasteboard = ObjCClass.lookup["NSPasteboard"]()
-        let pb = msg_send[
-            ObjCObject, "NSPasteboard", "generalPasteboard", is_class=True
-        ](NSPasteboard.as_object())
-        _ = msg_send[Int, "NSPasteboard", "clearContents"](pb)
-        return msg_send[Bool, "NSPasteboard", "setString:forType:"](
-            pb,
+        let pb = Cls["NSPasteboard"]().generalPasteboard()
+        _ = Obj["NSPasteboard"](pb.addr()).clearContents()
+        return Obj["NSPasteboard"](pb.addr()).setString_forType(
             nsstring(text).ptr(),
             extern_object["NSPasteboardTypeString"]().ptr(),
         )
@@ -1798,15 +1700,13 @@ def clipboard_read() -> String:
     something a text editor can paste."""
     with autoreleasepool():
         let NSPasteboard = ObjCClass.lookup["NSPasteboard"]()
-        let pb = msg_send[
-            ObjCObject, "NSPasteboard", "generalPasteboard", is_class=True
-        ](NSPasteboard.as_object())
-        let s = msg_send[ObjCObject, "NSPasteboard", "stringForType:"](
-            pb, extern_object["NSPasteboardTypeString"]().ptr()
+        let pb = Cls["NSPasteboard"]().generalPasteboard()
+        let s = Obj["NSPasteboard"](pb.addr()).stringForType(
+            extern_object["NSPasteboardTypeString"]().ptr()
         )
         if s.addr() == 0:
             return String()
-        return ns_to_string(s)
+        return ns_to_string(s.object())
 
 
 def copy_selection() -> Bool:
@@ -1839,8 +1739,8 @@ def reveal_caret(view: ObjCObject):
     with autoreleasepool():
         let pos = caret_position(g_caret()[])
         let lh = line_height()
-        _ = msg_send[ObjCObject, "NSView", "scrollRectToVisible:"](
-            view, rect(pos.x - 40.0, pos.y - lh, 160.0, lh * 3.0)
+        _ = Obj["NSView"](view.addr()).scrollRectToVisible(
+            rect(pos.x - 40.0, pos.y - lh, 160.0, lh * 3.0)
         )
 
 
@@ -2104,11 +2004,11 @@ def _refresh(view_ptr: P):
     try:
         with autoreleasepool():
             let view = ObjCObject(Int(view_ptr))
-            let frame = msg_send[CGRect, "NSView", "frame"](view)
+            let frame = Obj["NSView"](view.addr()).frame()
             let want = document_size(frame.size.width)
             if want.height != frame.size.height:
-                _ = msg_send[ObjCObject, "NSView", "setFrameSize:"](view, want)
-            _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](view, True)
+                Obj["NSView"](view.addr()).setFrameSize(want)
+            Obj["NSView"](view.addr()).setNeedsDisplay(True)
     except:
         pass
 

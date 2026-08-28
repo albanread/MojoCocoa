@@ -12,6 +12,8 @@
 # editor that stops responding whenever the server thinks.
 from json import JSON, parse
 from std.objc import (
+    Obj,
+    Cls,
     ObjCClass,
     ObjCObject,
     msg_send,
@@ -311,12 +313,8 @@ def send(var message: JSON) -> Bool:
     with autoreleasepool():
         let text = frame(message.serialize())
         var local = text
-        let data = msg_send[
-            ObjCObject, "NSString", "dataUsingEncoding:"
-        ](nsstring(local), Int(4))  # NSUTF8StringEncoding
-        _ = msg_send[ObjCObject, "NSFileHandle", "writeData:"](
-            ObjCObject(g_in()[]), data.ptr()
-        )
+        let data = Obj["NSString"](nsstring(local).addr()).dataUsingEncoding(Int(4))  # NSUTF8StringEncoding
+        Obj["NSFileHandle"](ObjCObject(g_in()[]).addr()).writeData(data.ptr())
     return True
 
 
@@ -354,14 +352,10 @@ def start(server: String, root_uri: String, import_path: String = String()) -> B
         return True
     with autoreleasepool():
         let NSTask = ObjCClass.lookup["NSTask"]()
-        var task = msg_send[ObjCObject, "NSTask", "alloc", is_class=True](
-            NSTask.as_object()
-        )
-        task = msg_send[ObjCObject, "NSObject", "init"](task)
+        var task = Cls["NSTask"]().alloc()
+        task = Obj["NSTask"](task.addr()).init()
         var path = server
-        _ = msg_send[ObjCObject, "NSTask", "setLaunchPath:"](
-            task, nsstring(path).ptr()
-        )
+        Obj["NSTask"](task.addr()).setLaunchPath(nsstring(path).ptr())
 
         # The server needs the stdlib, and it will not guess where it is.
         # IDE-EMBEDDING.md is blunt about this: there is no lex-only mode, so
@@ -374,50 +368,28 @@ def start(server: String, root_uri: String, import_path: String = String()) -> B
         # server the same way.
         if import_path != "":
             let NSProcessInfo = ObjCClass.lookup["NSProcessInfo"]()
-            let info = msg_send[
-                ObjCObject, "NSProcessInfo", "processInfo", is_class=True
-            ](NSProcessInfo.as_object())
-            let inherited = msg_send[
-                ObjCObject, "NSProcessInfo", "environment"
-            ](info)
+            let info = Cls["NSProcessInfo"]().processInfo()
+            let inherited = Obj["NSProcessInfo"](info.addr()).environment()
             let NSMutableDictionary = ObjCClass.lookup["NSMutableDictionary"]()
-            var env = msg_send[
-                ObjCObject,
-                "NSMutableDictionary",
-                "dictionaryWithDictionary:",
-                is_class=True,
-            ](NSMutableDictionary.as_object(), inherited.ptr())
+            var env = Cls["NSMutableDictionary"]().dictionaryWithDictionary(
+                inherited.ptr()
+            )
             var ip = import_path
-            _ = msg_send[
-                ObjCObject, "NSMutableDictionary", "setObject:forKey:"
-            ](
-                env,
+            Obj["NSMutableDictionary"](env.addr()).setObject_forKey(
                 nsstring(ip).ptr(),
                 nsstring(String("MODULAR_MOJO_MAX_IMPORT_PATH")).ptr(),
             )
-            _ = msg_send[ObjCObject, "NSTask", "setEnvironment:"](
-                task, env.ptr()
-            )
+            Obj["NSTask"](task.addr()).setEnvironment(env.ptr())
 
         let NSPipe = ObjCClass.lookup["NSPipe"]()
-        let inp = msg_send[ObjCObject, "NSPipe", "pipe", is_class=True](
-            NSPipe.as_object()
-        )
-        let outp = msg_send[ObjCObject, "NSPipe", "pipe", is_class=True](
-            NSPipe.as_object()
-        )
-        _ = msg_send[ObjCObject, "NSTask", "setStandardInput:"](task, inp.ptr())
-        _ = msg_send[ObjCObject, "NSTask", "setStandardOutput:"](
-            task, outp.ptr()
-        )
+        let inp = Cls["NSPipe"]().pipe()
+        let outp = Cls["NSPipe"]().pipe()
+        Obj["NSTask"](task.addr()).setStandardInput(inp.ptr())
+        Obj["NSTask"](task.addr()).setStandardOutput(outp.ptr())
 
-        let writer = msg_send[
-            ObjCObject, "NSPipe", "fileHandleForWriting"
-        ](inp)
-        let reader = msg_send[
-            ObjCObject, "NSPipe", "fileHandleForReading"
-        ](outp)
-        let fd = msg_send[Int, "NSFileHandle", "fileDescriptor"](reader)
+        let writer = Obj["NSPipe"](inp.addr()).fileHandleForWriting()
+        let reader = Obj["NSPipe"](outp.addr()).fileHandleForReading()
+        let fd = Obj["NSFileHandle"](reader.addr()).fileDescriptor()
 
         # Retained for the process's life: these outlive the pool.
         _ = external_call["objc_retain", P](task.ptr())
@@ -427,7 +399,7 @@ def start(server: String, root_uri: String, import_path: String = String()) -> B
         g_in()[] = writer.addr()
         g_read_fd()[] = fd
 
-        _ = msg_send[ObjCObject, "NSTask", "launch"](task)
+        Obj["NSTask"](task.addr()).launch()
 
     var params = JSON.object()
     params.set(String("processId"), JSON())
@@ -449,9 +421,7 @@ def stop():
     if not is_running():
         return
     with autoreleasepool():
-        _ = msg_send[ObjCObject, "NSTask", "terminate"](
-            ObjCObject(g_task()[])
-        )
+        Obj["NSTask"](ObjCObject(g_task()[]).addr()).terminate()
     g_task()[] = 0
     g_in()[] = 0
     g_ready()[] = 0
