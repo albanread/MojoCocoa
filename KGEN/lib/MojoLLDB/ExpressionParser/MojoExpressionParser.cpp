@@ -341,18 +341,31 @@ MojoExpressionParser::~MojoExpressionParser() = default;
 /// stopped in someone else's function has nothing in. The frame has them all
 /// along; nobody was asking.
 ///
-/// Two conditions, both structural rather than fussy. The variable's type
-/// must belong to OUR type system: a Mojo frame can hold a C global whose
-/// type came from Clang, and handing that opaque pointer to the Mojo parser
-/// would be a crash rather than a diagnostic. And it must be materializable
-/// -- `AddVariable` is what arranges for the value to be copied into the
-/// expression's argument struct before the JIT runs and back out after, so a
-/// variable it rejects (no location at this PC, optimized away) is one the
-/// expression must not name.
+/// One real condition, and one thing that is NOT a check although an earlier
+/// version of this comment claimed it was.
 ///
-/// Shadowing is resolved the way a reader expects: the frame wins over a
-/// persistent variable of the same name, because the frame is what the user
-/// is looking at.
+/// The condition: the variable's type must be a Mojo type. A Mojo frame can
+/// hold a C global whose type came from Clang, and handing that opaque
+/// pointer to the Mojo parser is a crash rather than a diagnostic. The test
+/// is the type system's KIND, not its identity -- a variable's type belongs
+/// to the type system of the MODULE whose DWARF declared it, while the
+/// expression compiles in the target's scratch instance, and those are
+/// legitimately different objects. One shared MLIR context makes that safe.
+///
+/// The non-check: `Materializer::AddVariable` validates nothing. It inserts
+/// an entity and returns its struct offset, and never touches the `Status`
+/// it is handed -- a variable with no location at this PC fails LATER,
+/// during materialization. So its success proves nothing about readability
+/// and this loop must not be read as a filter. The honest preflight is
+/// `GetValueObjectForFrameVariable(..., eNoDynamicValues)` and its error;
+/// that is not done yet.
+///
+/// Shadowing, stated as it BEHAVES rather than as it should: persistent
+/// variables are collected first and seed `alreadyPresent`, so a persistent
+/// variable of the same name currently wins. That is backwards -- the frame
+/// is what the user is looking at -- and it is a known wrong behaviour to
+/// fix deliberately, with a test, rather than by reordering two loops and
+/// hoping.
 static void collectFrameVariables(
     ExecutionContextScope *exeScope, Materializer *materializer,
     SmallVectorImpl<std::pair<StringRef, mlir::Type>> &variables,
@@ -462,12 +475,40 @@ MojoExpressionParser::parse(MojoPersistentExpressionState &state,
   // Collection works: set MOJO_LLDB_FRAME_LOCALS=1 and `total + 41` at a
   // breakpoint stops saying "use of unknown declaration" -- the name
   // resolves, because the frame's variables reach the REPL wrapper as
-  // arguments. What does not work yet is running the result, and the reason
-  // is a layout disagreement rather than anything subtle: the wrapper takes
-  // each variable as `Pointer[Pointer[T]]`, the shape a REPL persistent
-  // variable has, while `Materializer::AddVariable` lays a frame local out
-  // in lldb's own entity format. The two have to agree before the JIT can
-  // read the value, and making them agree is the next piece of work.
+  // arguments.
+  //
+  // What does not work is READING the value, and the shapes are specific:
+  //
+  //     persistent variable:  context -> reference cell -> T
+  //     frame local:          context -> T
+  //
+  // A persistent variable has an extra allocated reference cell, so the
+  // wrapper declares `Pointer[Pointer[T]]` and dereferences twice. What
+  // `AddVariable` puts in the context is ONE pointer-sized slot holding the
+  // frame variable's address -- so a frame local needs `Pointer[T]` and one
+  // dereference. A `(name, type)` pair cannot carry that distinction, which
+  // is why the wrapper generator cannot tell them apart today.
+  //
+  // Behind that sits an ordering bug that appears once both kinds coexist:
+  // the wrapper emits persistent fields first and frame locals after, while
+  // the materializer receives frame locals HERE (during parsing) and
+  // persistent entities later, in prepareForExecution. Two independently
+  // ordered lists -- and the offset `AddVariable` returns is discarded
+  // rather than checked against the field it is meant to match.
+  //
+  // The fix for both is one explicit contract instead of two implicit ones:
+  // an ordered list of bindings, each carrying its capture kind
+  //
+  //     struct ExpressionBinding {
+  //       StringRef name;
+  //       mlir::Type type;
+  //       CaptureKind kind;          // PersistentIndirect | FrameAddress
+  //       lldb::VariableSP frameVariable;
+  //     };
+  //
+  // used to generate the field AND its dereference depth, to register
+  // materializer entities in exactly that order after compilation, and to
+  // assert each returned offset equals the field the wrapper expects.
   //
   // Default off because half of it is worse than none: with collection on,
   // an expression that used to fail with "unknown declaration" now fails
