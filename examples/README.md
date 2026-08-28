@@ -13,6 +13,8 @@ which opens itself when a build starts and toggles with ⌘0.
     fluid/        Stable Fluids on the GPU, every kernel written in Mojo
     mandelbrot/   a live-zooming fractal at 60fps, every pixel computed
                   and coloured by one Mojo kernel on the Apple GPU
+    ferns/        a landscape of Barnsley ferns growing live over a
+                  procedural lawn, under a cloudy dusk sky
 
 ## What a project is
 
@@ -68,7 +70,13 @@ of hundred times — then zooms into the seahorse valley until you click
 somewhere better. The cross-checking of GPU against CPU arithmetic lives on
 as `spikes/mandelbrot/compute_smoke.mojo`.
 
-`life/`, `fluid/` and `mandelbrot/` are the three that look like applications. Both declare
+`ferns/` is `fern/`'s showy sibling: the same four affine maps, but a dozen
+plants in different shades of green growing point-by-point at 60fps, out of a
+lawn of fourteen thousand procedural grass blades, under value-noise clouds.
+Click to plant another — lower on screen means closer, so it comes up bigger.
+
+`life/`, `fluid/`, `mandelbrot/` and `ferns/` are the ones that look like
+applications. Both declare
 Objective-C classes with `class` — the view whose mouse and key handlers Cocoa
 calls, the app delegate, the timer target, the Apple Event handler — so there
 is no `ObjCClassBuilder`, no hand-written type encoding, and no `cmd` slot
