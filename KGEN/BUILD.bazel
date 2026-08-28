@@ -871,6 +871,10 @@ modular_cc_library(
         ("//:modular_config_ci_build", "//:modular_config_release", "//:modular_config_production"): ["BUILD_TYPE=release"],
     }),
     deps = [
+        # COCOA: KGENAttrs folds `cocoakb_query` at attribute level so a
+        # database answer can select a type during type checking, which is
+        # far earlier than the elaborator runs.
+        ":CocoaCompletion",
         ":HLCFDialect",
         ":Interpreter",
         ":KGENAttrInterfacesIncGen",

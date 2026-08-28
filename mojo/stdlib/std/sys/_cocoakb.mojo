@@ -365,3 +365,66 @@ def cocoakb_db_hash() -> StaticString:
         `> : !kgen.string`,
     ]
     return StaticString(res)
+
+
+# ===----------------------------------------------------------------------=== #
+# Foldable queries
+# ===----------------------------------------------------------------------=== #
+#
+# The queries above are `def`s, and a `def` call cannot be evaluated in a TYPE
+# position -- so a conditional type cannot branch on one:
+#
+#     comptime T: AnyType = Int if cocoakb_struct_size["CGSize"]() == 16
+#                           else Bool          # stays symbolic
+#
+# Two things were in the way and both are gone. `cocoakb_query` now folds at
+# attribute level (KGENAttrs.cpp) rather than only in the elaborator, which is
+# far too late to choose a type. And the name reaches the query as a
+# `!kgen.string` PARAMETER here, taken from `StringLiteral`'s own parameter,
+# rather than through `_get_kgen_string` -- whose `data_to_str` expression does
+# not fold at attribute level, and would have blocked the chain one link down.
+#
+# The result is that a database answer is an ordinary compile-time constant,
+# and a call site can be typed from the SDK.
+
+
+comptime cocoakb_p_struct_size[name: StringLiteral] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "struct_size" : !kgen.string, `,
+        name.value,
+        `> : index`,
+    ]
+)
+"""`cocoakb_struct_size`, foldable in a parameter position."""
+
+
+comptime cocoakb_p_method_ret_kind[
+    cls: StringLiteral, sel: StringLiteral, is_class: StringLiteral
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "method_ret_kind" : !kgen.string, `,
+        cls.value,
+        `, `,
+        sel.value,
+        `, `,
+        is_class.value,
+        `> : index`,
+    ]
+)
+"""The code point of the result KIND of `cls`'s `sel` -- see method_ret_kind.
+
+A code point rather than a character so that it folds: an integer comparison
+is something the parameter evaluator can decide, and choosing a type is
+exactly what that decision is for.
+"""
+
+
+comptime cocoakb_p_selector_ret_kind[sel: StringLiteral] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "selector_ret_kind" : !kgen.string, `,
+        sel.value,
+        `> : index`,
+    ]
+)
+"""The same, keyed on the selector alone: the majority reading across every
+class that implements it, for a receiver whose class is not known."""

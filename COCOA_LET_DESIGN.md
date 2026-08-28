@@ -244,8 +244,22 @@ and a struct matched by name to `NSRect`/`NSPoint`/`NSSize`/`NSRange` with
 anything else synthesized as a flat record. That is a lot of typing for free,
 and we have every byte of the input for it.
 
-**One thing stands between us and the same result, and it is a compiler
-task.** A conditional type folds when its condition is a comptime constant --
+**That one compiler task is done.** `cocoakb_query` folds at attribute level
+now (`KGENAttrs.cpp`), so a database answer is an ordinary compile-time
+constant and can choose a type. `method_ret_kind` is derived upstream in
+CocoaBaseMCP and reproduces MacModula2's answers exactly, and
+`typed_result_test.mojo` types `length` as `Int`, `uppercaseString` as
+`ObjCObject` and `isEqualToString:` as `Bool` with no annotation at the call.
+
+One link below the fix mattered and is worth remembering: the class and
+selector must reach the query as `!kgen.string` PARAMETERS, taken from
+`StringLiteral`'s own parameter. Routed through `_get_kgen_string` instead
+they arrive as a `data_to_str` expression, which does not fold at attribute
+level and breaks the chain one level under the part that was repaired -- which
+is why the first attempt looked like the fix had not worked at all.
+
+What follows was the diagnosis before that, kept because it is the shape of
+the problem: A conditional type folds when its condition is a comptime constant --
 
 ```mojo
 comptime T: AnyType = Bool if 16 == 16 else Int      # folds

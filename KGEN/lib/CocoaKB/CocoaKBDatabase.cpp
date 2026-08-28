@@ -108,6 +108,22 @@ constexpr StringRef kMethodRetClassSQL =
     COCOAKB_METHOD_CTE("m.ret_class", "method_abi");
 constexpr StringRef kMethodArgClassesSQL =
     COCOAKB_METHOD_CTE("m.arg_classes", "method_abi");
+
+// The KIND of a method's result -- what TYPE to give the call site, as
+// distinct from which register the answer arrives in. `method_ret_class`
+// cannot tell an Int from a Bool from an object because AAPCS64 puts all
+// three in x0; this can, because it comes from the @encode string:
+//
+//   @ object   # Class    : SEL      * char*
+//   i signed   u unsigned  d float    B bool     v void
+//   R NSRect   P NSPoint   S NSSize   N NSRange  { other struct
+//   ^ pointer  ? unmodelable
+//
+// Returned as the character's CODE POINT rather than the character, so it
+// arrives as an integer the parameter evaluator can fold into a conditional
+// type. The table itself stays readable.
+constexpr StringRef kMethodRetKindSQL =
+    COCOAKB_METHOD_CTE("unicode(m.kind)", "method_ret_kind");
 #undef COCOAKB_METHOD_CTE
 
 // Selector-keyed ABI: for a protocol-typed object (id<MTLTexture>, a Cocoa
@@ -121,6 +137,9 @@ constexpr StringRef kSelectorVariantSQL =
 constexpr StringRef kSelectorArgClassesSQL =
     "SELECT arg_classes FROM method_abi WHERE selector = ?1 "
     "GROUP BY arg_classes ORDER BY COUNT(*) DESC LIMIT 1";
+constexpr StringRef kSelectorRetKindSQL =
+    "SELECT unicode(kind) FROM method_ret_kind WHERE selector = ?1 "
+    "GROUP BY kind ORDER BY COUNT(*) DESC LIMIT 1";
 constexpr StringRef kSelectorRetClassSQL =
     "SELECT ret_class FROM method_abi WHERE selector = ?1 "
     "GROUP BY ret_class ORDER BY COUNT(*) DESC LIMIT 1";
@@ -150,9 +169,11 @@ const CocoaKBQueryDef kCocoaQueries[] = {
     {"msgsend_variant", 3, kMsgSendVariantSQL},
     {"method_ret_class", 3, kMethodRetClassSQL},
     {"method_arg_classes", 3, kMethodArgClassesSQL},
+    {"method_ret_kind", 3, kMethodRetKindSQL},
     {"selector_variant", 1, kSelectorVariantSQL},
     {"selector_arg_classes", 1, kSelectorArgClassesSQL},
     {"selector_ret_class", 1, kSelectorRetClassSQL},
+    {"selector_ret_kind", 1, kSelectorRetKindSQL},
     {"selector_encoding", 1, kSelectorEncodingSQL},
     {"posix_sig", 1, kPosixSigSQL},
     {"posix_ret_class", 1, kPosixRetClassSQL},
