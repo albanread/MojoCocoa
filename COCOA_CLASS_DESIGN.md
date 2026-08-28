@@ -589,10 +589,23 @@ C string.
 
 It returns a POINTER, which is the point. `T()` hands back a copy of the box
 and field writes through it go nowhere -- the constructor-copy wart -- while
-a write through `box_ref` reaches the object. The safety condition is stated
-rather than checked: `id` must be a live instance of T or a subclass, and the
-caller checks for nil, because `Pointer` is non-nullable and there is no nil
-to hand back.
+a write through `box_ref` reaches the object.
+
+**Nil is a state, not a hazard.** The first version returned a bare pointer
+and stated its safety condition in a docstring: `id` must be live, and the
+caller must check for nil first. That is not the same as being safe. A nil
+`id` has no box, and `id + offset` is a pointer into the first page rather
+than an object, so it answers `None` instead -- `OptionalReg`, which keeps
+the answer in a register, so the check costs a compare against a value that
+had to be loaded anyway. A class with no box at all answers the same way, for
+the same reason: there is nothing to point at. This is sprint 6's "nil as a
+first-class state" arriving in the one place that already needed it.
+
+The remaining safety condition is genuinely a condition: `id` must be an
+instance of T or a subclass. Handing it an unrelated class finds no ivar of
+T's, so that answers `None` too -- but an instance of a class that happens to
+have one is not checked, and cannot be without a runtime type test on every
+access.
 
 ### Autorelease pools
 

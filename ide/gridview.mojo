@@ -1107,7 +1107,8 @@ comptime _pre_max_cols = named_global["roast.max.cols", Int]
 def g_max_cols() -> Pointer[Int, MutUntrackedOrigin]:
     """`max_cols`, on the view. Spelled as it always was, so no call site moved.
 
-    Two storages, and which one is live is decided by whether a view exists.
+    Two storages, and which one is live is decided by whether there is a view
+    to hold one -- which is the same question as whether `box_ref` answers.
     That is not a transition artefact: `edit_test` drives the whole editor
     without ever making a view -- deliberately, since the risk there is the
     arithmetic and not the Objective-C -- and writes through this accessor
@@ -1117,10 +1118,10 @@ def g_max_cols() -> Pointer[Int, MutUntrackedOrigin]:
     until a view exists, and `make_grid_view` records `g_grid` in the same
     breath as it makes the view, leaving no window in which one is written
     and the other read."""
-    var id = g_grid()[]
-    if id == 0:
+    var box = box_ref[RoastGridView](g_grid()[])
+    if not box:
         return _pre_max_cols()
-    return Pointer(to=box_ref[RoastGridView](id)[].max_cols)
+    return Pointer(to=box.value()[].max_cols)
 
 
 def note_line_cols(cols: Int) -> Bool:
@@ -1183,7 +1184,8 @@ comptime _pre_caret = named_global["roast.caret", Int]
 def g_caret() -> Pointer[Int, MutUntrackedOrigin]:
     """`caret`, on the view. Spelled as it always was, so no call site moved.
 
-    Two storages, and which one is live is decided by whether a view exists.
+    Two storages, and which one is live is decided by whether there is a view
+    to hold one -- which is the same question as whether `box_ref` answers.
     That is not a transition artefact: `edit_test` drives the whole editor
     without ever making a view -- deliberately, since the risk there is the
     arithmetic and not the Objective-C -- and writes through this accessor
@@ -1193,17 +1195,18 @@ def g_caret() -> Pointer[Int, MutUntrackedOrigin]:
     until a view exists, and `make_grid_view` records `g_grid` in the same
     breath as it makes the view, leaving no window in which one is written
     and the other read."""
-    var id = g_grid()[]
-    if id == 0:
+    var box = box_ref[RoastGridView](g_grid()[])
+    if not box:
         return _pre_caret()
-    return Pointer(to=box_ref[RoastGridView](id)[].caret)
+    return Pointer(to=box.value()[].caret)
 comptime _pre_anchor = named_global["roast.anchor", Int]
 
 
 def g_anchor() -> Pointer[Int, MutUntrackedOrigin]:
     """`anchor`, on the view. Spelled as it always was, so no call site moved.
 
-    Two storages, and which one is live is decided by whether a view exists.
+    Two storages, and which one is live is decided by whether there is a view
+    to hold one -- which is the same question as whether `box_ref` answers.
     That is not a transition artefact: `edit_test` drives the whole editor
     without ever making a view -- deliberately, since the risk there is the
     arithmetic and not the Objective-C -- and writes through this accessor
@@ -1213,10 +1216,10 @@ def g_anchor() -> Pointer[Int, MutUntrackedOrigin]:
     until a view exists, and `make_grid_view` records `g_grid` in the same
     breath as it makes the view, leaving no window in which one is written
     and the other read."""
-    var id = g_grid()[]
-    if id == 0:
+    var box = box_ref[RoastGridView](g_grid()[])
+    if not box:
         return _pre_anchor()
-    return Pointer(to=box_ref[RoastGridView](id)[].anchor)
+    return Pointer(to=box.value()[].anchor)
 # The composing region, in bytes; length 0 means nothing is being composed.
 comptime _pre_marked_at = named_global["roast.marked.at", Int]
 
@@ -1224,7 +1227,8 @@ comptime _pre_marked_at = named_global["roast.marked.at", Int]
 def g_marked_at() -> Pointer[Int, MutUntrackedOrigin]:
     """`marked_at`, on the view. Spelled as it always was, so no call site moved.
 
-    Two storages, and which one is live is decided by whether a view exists.
+    Two storages, and which one is live is decided by whether there is a view
+    to hold one -- which is the same question as whether `box_ref` answers.
     That is not a transition artefact: `edit_test` drives the whole editor
     without ever making a view -- deliberately, since the risk there is the
     arithmetic and not the Objective-C -- and writes through this accessor
@@ -1234,17 +1238,18 @@ def g_marked_at() -> Pointer[Int, MutUntrackedOrigin]:
     until a view exists, and `make_grid_view` records `g_grid` in the same
     breath as it makes the view, leaving no window in which one is written
     and the other read."""
-    var id = g_grid()[]
-    if id == 0:
+    var box = box_ref[RoastGridView](g_grid()[])
+    if not box:
         return _pre_marked_at()
-    return Pointer(to=box_ref[RoastGridView](id)[].marked_at)
+    return Pointer(to=box.value()[].marked_at)
 comptime _pre_marked_len = named_global["roast.marked.len", Int]
 
 
 def g_marked_len() -> Pointer[Int, MutUntrackedOrigin]:
     """`marked_len`, on the view. Spelled as it always was, so no call site moved.
 
-    Two storages, and which one is live is decided by whether a view exists.
+    Two storages, and which one is live is decided by whether there is a view
+    to hold one -- which is the same question as whether `box_ref` answers.
     That is not a transition artefact: `edit_test` drives the whole editor
     without ever making a view -- deliberately, since the risk there is the
     arithmetic and not the Objective-C -- and writes through this accessor
@@ -1254,10 +1259,10 @@ def g_marked_len() -> Pointer[Int, MutUntrackedOrigin]:
     until a view exists, and `make_grid_view` records `g_grid` in the same
     breath as it makes the view, leaving no window in which one is written
     and the other read."""
-    var id = g_grid()[]
-    if id == 0:
+    var box = box_ref[RoastGridView](g_grid()[])
+    if not box:
         return _pre_marked_len()
-    return Pointer(to=box_ref[RoastGridView](id)[].marked_len)
+    return Pointer(to=box.value()[].marked_len)
 
 # Undo is a stack of whole buffers, which is only sane because they share
 # structure: a thousand entries of a 14 MB file cost kilobytes, not gigabytes.
@@ -1524,7 +1529,8 @@ comptime _pre_blink_on = named_global["roast.blink", Int]
 def g_blink_on() -> Pointer[Int, MutUntrackedOrigin]:
     """`blink_on`, on the view. Spelled as it always was, so no call site moved.
 
-    Two storages, and which one is live is decided by whether a view exists.
+    Two storages, and which one is live is decided by whether there is a view
+    to hold one -- which is the same question as whether `box_ref` answers.
     That is not a transition artefact: `edit_test` drives the whole editor
     without ever making a view -- deliberately, since the risk there is the
     arithmetic and not the Objective-C -- and writes through this accessor
@@ -1534,17 +1540,18 @@ def g_blink_on() -> Pointer[Int, MutUntrackedOrigin]:
     until a view exists, and `make_grid_view` records `g_grid` in the same
     breath as it makes the view, leaving no window in which one is written
     and the other read."""
-    var id = g_grid()[]
-    if id == 0:
+    var box = box_ref[RoastGridView](g_grid()[])
+    if not box:
         return _pre_blink_on()
-    return Pointer(to=box_ref[RoastGridView](id)[].blink_on)
+    return Pointer(to=box.value()[].blink_on)
 comptime _pre_focused = named_global["roast.focused", Int]
 
 
 def g_focused() -> Pointer[Int, MutUntrackedOrigin]:
     """`focused`, on the view. Spelled as it always was, so no call site moved.
 
-    Two storages, and which one is live is decided by whether a view exists.
+    Two storages, and which one is live is decided by whether there is a view
+    to hold one -- which is the same question as whether `box_ref` answers.
     That is not a transition artefact: `edit_test` drives the whole editor
     without ever making a view -- deliberately, since the risk there is the
     arithmetic and not the Objective-C -- and writes through this accessor
@@ -1554,10 +1561,10 @@ def g_focused() -> Pointer[Int, MutUntrackedOrigin]:
     until a view exists, and `make_grid_view` records `g_grid` in the same
     breath as it makes the view, leaving no window in which one is written
     and the other read."""
-    var id = g_grid()[]
-    if id == 0:
+    var box = box_ref[RoastGridView](g_grid()[])
+    if not box:
         return _pre_focused()
-    return Pointer(to=box_ref[RoastGridView](id)[].focused)
+    return Pointer(to=box.value()[].focused)
 
 
 def sel_start() -> Int:

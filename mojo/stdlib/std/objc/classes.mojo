@@ -12,6 +12,7 @@
 
 from std.ffi import external_call
 from std.memory import OpaquePointer, MutPointer, unsafe_destroy_n
+from std.collections.optional import OptionalReg
 from std.collections.string.string_span import _get_kgen_string
 from std.sys._cocoakb import cocoakb_selector_encoding
 from .runtime import ObjCClass, ObjCObject, msg_send, sel, load_framework_dynamic
@@ -645,15 +646,15 @@ fn _box_dealloc_imp[T: Deinitable](self_: P, _cmd: P):
 
 def box_ref[
     T: AnyType
-](id: Int) -> MutPointer[T, MutUntrackedOrigin]:
-    """A pointer to the box of `id`, typed as the class `T`.
+](id: Int) -> OptionalReg[MutPointer[T, MutUntrackedOrigin]]:
+    """A pointer to the box of `id`, typed as the class `T`, or nothing.
 
     The way back in. A `class`'s fields live in a box inside the instance, and
     inside a method `self` already points at it -- but a method is the only
     place that is true. Anything else holding an `id` (a free function, a
     different class's method, another module) had no way to reach those
-    fields at all, which is why so much editor state that belongs to a view
-    is still parked in process globals instead.
+    fields at all, which is why so much state that belongs to an object is
+    still parked in process globals beside it.
 
     Every piece of this was already proven by `_box_dealloc_imp`: the ivar is
     named for its class, `class_getInstanceVariable` walks up from the
@@ -664,14 +665,19 @@ def box_ref[
     difference between this and `T()`, whose result is a copy of the box and
     whose field writes go nowhere.
 
-    Safety:
+    **Nil is a state, not a hazard.** A nil `id` has no box, and `id + offset`
+    would be a pointer into the first page rather than an object: this
+    returned one, and said so in a docstring, which is not the same as being
+    safe. It answers `None` instead. `Pointer` is non-nullable by
+    construction -- Mojo's own guidance is to model nullability with an
+    optional -- and `OptionalReg` keeps the answer in a register, so the
+    check costs a compare against a value that had to be loaded anyway.
 
-    - `id` must be a live instance of `T` (or of a subclass). A nil id, or an
-      instance of an unrelated class, has no box of T's at the offset this
-      finds, and writing through the result would corrupt whatever is there.
-      Check for nil at the call site: this returns a pointer, and `Pointer` is
-      non-nullable, so there is no nil to hand back.
+    The same is true of a class with no box at all: no fields, nothing to
+    point at, `None`.
     """
+    if id == 0:
+        return None
     comptime name = reflect[T].base_name()
     comptime slot = StaticString(_get_kgen_string["boxoffset.ref/", name]())
     var cache = named_global[slot, Int]()
@@ -688,6 +694,8 @@ def box_ref[
             name,
         )
         cache[] = off
+    if off == 0:
+        return None
     return MutPointer[T, MutUntrackedOrigin](unsafe_from_address=id + off)
 
 

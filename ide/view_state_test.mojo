@@ -46,7 +46,7 @@ def main() raises:
     # ...and it really is the object's memory, seen from the other direction.
     check(
         "the write landed in the view's box",
-        box_ref[RoastGridView](first.addr())[].caret == 12,
+        box_ref[RoastGridView](first.addr()).value()[].caret == 12,
     )
 
     # The whole reason for the migration: a second view has its own cursor.
@@ -55,15 +55,19 @@ def main() raises:
     check("a second view starts at its own caret", g_caret()[] == 0)
     check(
         "and the first view kept its own",
-        box_ref[RoastGridView](first.addr())[].caret == 12,
+        box_ref[RoastGridView](first.addr()).value()[].caret == 12,
     )
 
     g_caret()[] = 99
     check(
         "editing the second leaves the first alone",
-        box_ref[RoastGridView](first.addr())[].caret == 12
-        and box_ref[RoastGridView](second.addr())[].caret == 99,
+        box_ref[RoastGridView](first.addr()).value()[].caret == 12
+        and box_ref[RoastGridView](second.addr()).value()[].caret == 99,
     )
+
+    # Nil is a state, not a hazard: this used to hand back a pointer into the
+    # first page and say so only in a docstring.
+    check("a nil id has no box", not box_ref[RoastGridView](0))
 
     if g_failures()[] != 0:
         raise Error("view state is not per view")

@@ -12,6 +12,7 @@
 from std.objc import (
     ObjCObject, msg_send, box_ref, named_global, load_framework,
 )
+from std.collections.optional import OptionalReg
 
 comptime g_id = named_global["boxref.id", Int]
 comptime g_other = named_global["boxref.other", Int]
@@ -28,15 +29,15 @@ class Editor(NSObject):
 
 def move_caret(to: Int):
     """A FREE FUNCTION writing an object's field. This is the whole point."""
-    box_ref[Editor](g_id()[])[].caret = to
+    box_ref[Editor](g_id()[]).value()[].caret = to
 
 
 def rename(to: String):
-    box_ref[Editor](g_id()[])[].label = to
+    box_ref[Editor](g_id()[]).value()[].label = to
 
 
 def read_caret() -> Int:
-    return box_ref[Editor](g_id()[])[].caret
+    return box_ref[Editor](g_id()[]).value()[].caret
 
 
 def main() raises:
@@ -68,5 +69,11 @@ def main() raises:
     g_id()[] = saved
     if read_caret() != 42:
         raise Error("the first instance lost its value")
+
+    # Nil is a state, not a hazard. `id + offset` on a nil id is a pointer
+    # into the first page, and returning one while documenting the danger is
+    # not the same as being safe.
+    if box_ref[Editor](0):
+        raise Error("a nil id answered with a box")
 
     print("box_ref OK")
