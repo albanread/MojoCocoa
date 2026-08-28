@@ -10,7 +10,9 @@
 # close -> terminate with nobody at the keyboard.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-CM="dist/CocoaMojo/bin/cocoamojo"
+# Overridable, so compiler work can check the IDE against a private
+# distribution instead of rewriting the one a running Roast is sitting on.
+CM="${COCOAMOJO:-dist/CocoaMojo/bin/cocoamojo}"
 [ -x "$CM" ] || { echo "no distribution -- run ./tools/release.sh first"; exit 1; }
 
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
