@@ -146,6 +146,24 @@ comptime g_hover_request = named_global["lsp.hover.request", Int]
 comptime g_hover_text = named_global["lsp.hover.text", List[String]]
 comptime g_hover_serial = named_global["lsp.hover.serial", Int]
 
+# References: a list rather than one place, so flat parallel lists like the
+# diagnostics -- they are read from a draw loop, which wants no allocation.
+comptime g_ref_request = named_global["lsp.ref.request", Int]
+comptime g_ref_uri = named_global["lsp.ref.uri", List[String]]
+comptime g_ref_line = named_global["lsp.ref.line", List[Int]]
+comptime g_ref_char = named_global["lsp.ref.char", List[Int]]
+comptime g_ref_serial = named_global["lsp.ref.serial", Int]
+
+# Signature help: the one signature being shown, its documentation, and
+# which parameter the caret is inside. The active parameter is the whole
+# point -- a signature with nothing highlighted is a docstring, and you
+# already had one of those.
+comptime g_sig_request = named_global["lsp.sig.request", Int]
+comptime g_sig_label = named_global["lsp.sig.label", List[String]]
+comptime g_sig_param = named_global["lsp.sig.param", List[String]]
+comptime g_sig_active = named_global["lsp.sig.active", Int]
+comptime g_sig_serial = named_global["lsp.sig.serial", Int]
+
 
 def inbox() -> String:
     if len(g_inbox()[]) == 0:
@@ -247,6 +265,148 @@ def request_hover(uri: String, line: Int, character: Int) -> Int:
     )
     g_hover_request()[] = id
     return id
+
+
+def request_references(uri: String, line: Int, character: Int) -> Int:
+    """Everywhere this is used. `includeDeclaration` is true because the
+    question someone asks is "where does this appear", and the definition is
+    an appearance -- an editor that hides it makes you look twice."""
+    var params = _position_params(uri, line, character)
+    var context = JSON.object()
+    context.set(String("includeDeclaration"), JSON(True))
+    params.set(String("context"), context^)
+    let id = request(String("textDocument/references"), params^)
+    g_ref_request()[] = id
+    return id
+
+
+def request_signature(uri: String, line: Int, character: Int) -> Int:
+    let id = request(
+        String("textDocument/signatureHelp"),
+        _position_params(uri, line, character),
+    )
+    g_sig_request()[] = id
+    return id
+
+
+def reference_count() -> Int:
+    return len(g_ref_line()[])
+
+
+def reference_uri(i: Int) -> String:
+    return g_ref_uri()[][i] if i >= 0 and i < reference_count() else String()
+
+
+def reference_line(i: Int) -> Int:
+    return g_ref_line()[][i] if i >= 0 and i < reference_count() else 0
+
+
+def reference_character(i: Int) -> Int:
+    return g_ref_char()[][i] if i >= 0 and i < reference_count() else 0
+
+
+def references_serial() -> Int:
+    return g_ref_serial()[]
+
+
+def clear_references():
+    let u = g_ref_uri()
+    let l = g_ref_line()
+    let c = g_ref_char()
+    while len(l[]) > 0:
+        _ = u[].pop()
+        _ = l[].pop()
+        _ = c[].pop()
+
+
+def signature_serial() -> Int:
+    return g_sig_serial()[]
+
+
+def signature_label() -> String:
+    let slot = g_sig_label()
+    return slot[][0] if len(slot[]) > 0 else String()
+
+
+def signature_parameter() -> String:
+    """The parameter the caret is inside, or empty. Kept apart from the label
+    so a caller can emphasise it without parsing the label back apart."""
+    let slot = g_sig_param()
+    return slot[][0] if len(slot[]) > 0 else String()
+
+
+def _take_references(result: JSON):
+    clear_references()
+    var i = 0
+    while i < result.count():
+        let one = result.at(i)[]
+        let uri = one.get("uri")[].as_string()
+        if uri != "":
+            let start = one.get("range")[].get("start")[]
+            g_ref_uri()[].append(uri)
+            g_ref_line()[].append(start.get("line")[].as_int())
+            g_ref_char()[].append(start.get("character")[].as_int())
+        i += 1
+    g_ref_serial()[] += 1
+
+
+def _take_signature(result: JSON):
+    """One signature and the parameter the caret is in.
+
+    `activeSignature` picks which overload the server thinks is meant, and
+    `activeParameter` which argument the caret sits in -- and the parameter
+    index can live on the signature OR on the reply, with the signature's
+    taking precedence. Servers differ, the specification allows both, and
+    getting it wrong highlights the wrong argument, which is worse than
+    highlighting none.
+    """
+    let sigs = result.get("signatures")[]
+    if sigs.count() == 0:
+        _put_sig(String(), String())
+        g_sig_serial()[] += 1
+        return
+    var which = result.get("activeSignature")[].as_int()
+    if which < 0 or which >= sigs.count():
+        which = 0
+    let sig = sigs.at(which)[]
+    let label = sig.get("label")[].as_string()
+
+    var active = -1
+    if sig.has("activeParameter"):
+        active = sig.get("activeParameter")[].as_int()
+    elif result.has("activeParameter"):
+        active = result.get("activeParameter")[].as_int()
+    var param = String()
+    let params = sig.get("parameters")[]
+    if active >= 0 and active < params.count():
+        let p = params.at(active)[]
+        # A parameter's label is a string, or a [start, end] pair of offsets
+        # into the signature's label -- both legal, and the second is what a
+        # server sends when it wants the editor to highlight in place.
+        let plabel = p.get("label")[]
+        if plabel.count() == 2:
+            let a = plabel.at(0)[].as_int()
+            let b = plabel.at(1)[].as_int()
+            if a >= 0 and b > a and b <= label.byte_length():
+                param = String(label[byte=a:b])
+        else:
+            param = plabel.as_string()
+    g_sig_active()[] = active
+    _put_sig(label, param^)
+    g_sig_serial()[] += 1
+
+
+def _put_sig(var label: String, var param: String):
+    let l = g_sig_label()
+    if len(l[]) == 0:
+        l[].append(label^)
+    else:
+        l[][0] = label^
+    let pp = g_sig_param()
+    if len(pp[]) == 0:
+        pp[].append(param^)
+    else:
+        pp[][0] = param^
 
 
 def definition_serial() -> Int:
@@ -596,6 +756,9 @@ def stop():
     set_inbox(String())
     g_def_request()[] = 0
     g_hover_request()[] = 0
+    g_ref_request()[] = 0
+    g_sig_request()[] = 0
+    clear_references()
     clear_diagnostics()
     clear_completions()
 
@@ -706,6 +869,14 @@ def _handle(var msg: JSON):
         if id == g_hover_request()[] and id != 0:
             g_hover_request()[] = 0
             _take_hover(msg.get("result")[])
+            return
+        if id == g_ref_request()[] and id != 0:
+            g_ref_request()[] = 0
+            _take_references(msg.get("result")[])
+            return
+        if id == g_sig_request()[] and id != 0:
+            g_sig_request()[] = 0
+            _take_signature(msg.get("result")[])
             return
         if id == g_comp_request()[] and id != 0:
             # Answered, whatever we do with it: leaving the id live would let

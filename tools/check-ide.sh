@@ -382,6 +382,29 @@ else
   bad "go to definition" "$(echo "$navout" | grep -m1 'definition' || echo 'no answer')"
 fi
 
+# Find all references, against the real server. `helper` is declared once and
+# called twice, so the answer is three -- includeDeclaration is true because
+# the question someone asks is "where does this appear".
+mkdir -p "$TMP/refproj"
+cat > "$TMP/refproj/main.mojo" <<'REFEOF'
+def helper(x: Int) -> Int:
+    return x * 2
+
+
+def main():
+    var a = helper(1)
+    var b = helper(2)
+    print(a + b)
+REFEOF
+refout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_PROJECT="$TMP/refproj" \
+         ROAST_OPEN="$TMP/refproj/main.mojo" ROAST_REFS="1:5" \
+         ROAST_AUTOCLOSE_TICKS=120 timeout 200 "$TMP/roast" 2>&1)
+if echo "$refout" | grep -q 'roast: references 3'; then
+  ok "find references" "one declaration and two calls"
+else
+  bad "find references" "$(echo "$refout" | grep -m1 'references' || echo 'no answer')"
+fi
+
 # Documents from the Finder. Two halves, because they fail apart: whether
 # AppKit can FIND the handler is selector derivation, and whether it works is
 # open_path. A file becomes a tab, a folder becomes the project.

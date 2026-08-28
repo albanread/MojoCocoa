@@ -706,10 +706,18 @@ class RoastGridView(NSView, NSTextInputClient):
                     g_caret()[] = g_marked_at()[] + g_marked_len()[]
                 replace_selection(ns_to_string(s))
                 # A word character continues a completion; anything else ends one.
+                let typed = ns_to_string(s)
                 if popup_open():
-                    let typed = ns_to_string(s)
                     if typed.byte_length() != 1:
                         hide_popup()
+                # No signature-help trigger here on purpose. `(` and `,`
+                # are where every editor asks -- but measured against this
+                # server, a request anywhere inside `combine(10, 20)` answers
+                # `__init__` of whatever literal the caret is near, and at one
+                # column a wall of mangled MLIR. Firing that on every open
+                # paren would replace the status bar with a wrong answer while
+                # someone is typing. Signature help stays on demand until the
+                # server resolves the enclosing call.
                 _refresh(P(unsafe_from_address=self.__objc_id))
         except:
             pass

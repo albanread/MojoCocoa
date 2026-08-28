@@ -474,23 +474,57 @@ comptime g_def_seen = named_global["roast.def.seen", Int]
 comptime g_define_line = named_global["roast.define.line", Int]
 comptime g_define_col = named_global["roast.define.col", Int]
 comptime g_define_done = named_global["roast.define.done", Int]
+# The references and signature doors share the definition door's machinery:
+# one place, one kind, fired once the server has the document.
+comptime g_probe_line = named_global["roast.probe.line", Int]
+comptime g_probe_col = named_global["roast.probe.col", Int]
+comptime g_probe_kind = named_global["roast.probe.kind", Int]
+comptime g_probe_done = named_global["roast.probe.done", Int]
 comptime g_hover_seen = named_global["roast.hover.seen", Int]
+comptime g_ref_seen = named_global["roast.ref.seen", Int]
+comptime g_sig_seen = named_global["roast.sig.seen", Int]
+# Where the cycle through references has got to.
+comptime g_ref_at = named_global["roast.ref.at", Int]
 
 
 def dap_adapter() -> String:
     """The debug adapter. A setting first, so someone with their own lldb can
-    say so and have it remembered; then Xcode's, which is where it is on a
-    machine that can build this fork at all."""
+    say so and have it remembered; then the toolchain's OWN lldb-dap, which
+    ships with the MojoLLDB plugin beside it and is the difference between
+    "the editor follows the stop" and "frame variable answers"
+    (spikes/MOJOLLDB-SPIKE.md); then Xcode's, which debugs but cannot
+    inspect a Mojo variable."""
     let chosen = session.setting(String("debug.adapter"))
     if chosen != "" and file_exists(chosen):
         return chosen^
     let env = getenv("ROAST_DAP")
     if env != "":
         return env^
+    let root = toolchain_root()
+    if root != "":
+        let ours = root + String("/bin/lldb-dap")
+        if file_exists(ours):
+            return ours^
     let xcode = String(
         "/Applications/Xcode.app/Contents/Developer/usr/bin/lldb-dap"
     )
     return xcode if file_exists(xcode) else String()
+
+
+def dap_plugin(adapter: String) -> String:
+    """The MojoLLDB plugin that belongs to `adapter`, or nothing.
+
+    Looked for BESIDE the adapter (bin/lldb-dap -> lib/libMojoLLDB.dylib)
+    rather than in our own toolchain, because the plugin must match the
+    liblldb the adapter links -- handing our plugin to Xcode's lldb-dap is
+    an ABI mismatch, and the reason the whole spike exists."""
+    let slash = adapter.rfind("/")
+    if slash < 0:
+        return String()
+    let plugin = (
+        String(adapter[byte=0:slash]) + String("/../lib/libMojoLLDB.dylib")
+    )
+    return plugin if file_exists(plugin) else String()
 
 
 def _start_debug():
@@ -584,7 +618,17 @@ def _launch_debugger():
     if binary == "":
         return
     let cwd = _dir_of(binary)
-    let started = dap.start(dap_adapter(), binary, cwd)
+    let plugin = dap_plugin(dap_adapter())
+    var init_cmd = String()
+    if plugin != "":
+        init_cmd = String("plugin load ") + plugin
+    var pre_run = String()
+    if plugin != "" and session.setting(String("debug.break_on_raise")) == "1":
+        # The plugin's own command: stop where an error is RAISED rather
+        # than where it lands. preRun rather than init, because it needs a
+        # target to set its resolver on.
+        pre_run = String("mojo break-on-raise")
+    let started = dap.start(dap_adapter(), binary, cwd, init_cmd, pre_run)
     print(
         "roast: debugging", _basename(binary),
         "with", dap.breakpoint_count(), "breakpoint(s)",
@@ -650,7 +694,48 @@ def _debug_changed():
         "reason",
         dap.stop_reason(),
     )
+    _show_variables()
     refresh_grid()
+
+
+def _pretty_type(raw: String) -> String:
+    """The type as a person would write it. The DWARF names scalars by their
+    MLIR spelling -- `!kgen.scalar<index>` is what every `Int` in the
+    program prints as -- and a locals view full of MLIR is a locals view
+    nobody reads. Unrecognised types pass through untouched."""
+    if raw.find("scalar<index>") >= 0:
+        return String("Int")
+    if raw.find("scalar<bool>") >= 0:
+        return String("Bool")
+    if raw.find("scalar<f64>") >= 0:
+        return String("Float64")
+    if raw.find("scalar<f32>") >= 0:
+        return String("Float32")
+    return raw
+
+
+def _show_variables():
+    """The stopped frame's locals, into the console.
+
+    The console rather than a new pane, deliberately: it is where a debug
+    session's output already goes, it scrolls, and it needed zero new Cocoa
+    surface -- so variables shipped the same day the plugin did. A dedicated
+    pane with expandable children is the upgrade, not the prerequisite."""
+    if not dap.take_variables_fresh():
+        return
+    let n = dap.variable_count()
+    if n == 0:
+        return
+    var block = String("── locals · ") + _basename(dap.stop_file())
+    block += String(":") + String(dap.stop_line()) + String(" ──\n")
+    for i in range(n):
+        block += String("  ") + dap.variable_name(i)
+        let t = _pretty_type(dap.variable_type(i))
+        if t != "":
+            block += String(": ") + t
+        block += String(" = ") + dap.variable_value(i) + String("\n")
+    build.append_output(block^)
+    console_sync()
 
 
 # ── Navigation ──────────────────────────────────────────────────────────────
@@ -722,6 +807,124 @@ def _go_to_definition():
     set_status(
         String("→ ") + _basename(path) + String(":") + String(line + 1)
     )
+
+
+def ask_references() -> Bool:
+    if not lsp.is_ready() or document.current_uri() == "":
+        set_status(String("No language server"))
+        return False
+    if len(g_buffer()[]) == 0:
+        return False
+    let buf = g_buffer()[][0]
+    let line = buf.line_of_offset(g_caret()[])
+    let col = byte_to_utf16(g_caret()[]) - byte_to_utf16(buf.line_start(line))
+    flush_pending_edit()
+    _ = lsp.request_references(document.current_uri(), line, col)
+    set_status(String("Searching…"))
+    return True
+
+
+def ask_signature() -> Bool:
+    if not lsp.is_ready() or document.current_uri() == "":
+        return False
+    if len(g_buffer()[]) == 0:
+        return False
+    let buf = g_buffer()[][0]
+    let line = buf.line_of_offset(g_caret()[])
+    let col = byte_to_utf16(g_caret()[]) - byte_to_utf16(buf.line_start(line))
+    flush_pending_edit()
+    _ = lsp.request_signature(document.current_uri(), line, col)
+    return True
+
+
+def _ref_path(i: Int) -> String:
+    let full = lsp.reference_uri(i)
+    if full.startswith("file://"):
+        return String(full[byte=7 : full.byte_length()])
+    return full
+
+
+def _show_references():
+    """The list goes to the console, and the caret goes to the first.
+
+    The console because it is already a scrolling pane of text that someone
+    is looking at during a build, and because `path:line:col:` is the shape
+    the compiler's own diagnostics take -- so a list of references reads like
+    the rest of what appears there rather than like a new kind of thing.
+    """
+    let n = lsp.reference_count()
+    g_ref_at()[] = 0
+    if n == 0:
+        set_status(String("No references found"))
+        return
+    var out = String("\n─── ") + String(n)
+    out += String(" reference" if n == 1 else " references")
+    out += String(" ───\n")
+    var i = 0
+    while i < n:
+        let path = _ref_path(i)
+        out += path
+        out += String(":")
+        out += String(lsp.reference_line(i) + 1)
+        out += String(":")
+        out += String(lsp.reference_character(i) + 1)
+        out += String("\n")
+        i += 1
+    build.append_output(out^)
+    show_console(True)
+    console_sync()
+    print("roast: references", n)
+    _go_to_reference(0)
+
+
+def _go_to_reference(index: Int):
+    let n = lsp.reference_count()
+    if n == 0:
+        return
+    var at = index % n
+    if at < 0:
+        at += n
+    g_ref_at()[] = at
+    let path = _ref_path(at)
+    if path == "" or not file_exists(path):
+        return
+    _jump_to(path, lsp.reference_line(at) + 1, lsp.reference_character(at) + 1)
+    set_status(
+        String("Reference ")
+        + String(at + 1)
+        + String(" of ")
+        + String(n)
+        + String("  ·  ")
+        + _basename(path)
+        + String(":")
+        + String(lsp.reference_line(at) + 1)
+    )
+
+
+def _show_signature():
+    """The signature, with the argument the caret is in called out.
+
+    One line of status bar, so the label and the active parameter are joined
+    rather than styled -- but the parameter is named, because a signature
+    with nothing highlighted is a docstring and the editor already shows you
+    one of those on hover.
+    """
+    let label = lsp.signature_label()
+    if label == "":
+        return
+    print("roast: signature", repr(label), "param", repr(lsp.signature_parameter()))
+    # Truncated, because a signature is not always a signature: this server
+    # can answer with a mangled MLIR type four hundred characters long, and a
+    # status bar full of `!lit.ref.pack<:param_list<...` tells nobody
+    # anything. What fits is what helps.
+    var shown = label
+    if shown.byte_length() > 140:
+        shown = String(shown[byte=:137]) + String("…")
+    let param = lsp.signature_parameter()
+    if param != "" and param.byte_length() < 60:
+        set_status(shown + String("      ← ") + param)
+    else:
+        set_status(shown^)
 
 
 def _show_hover():
@@ -1080,11 +1283,53 @@ class RoastActions:
         except:
             pass
 
+    def roastFindReferences_(self, sender: ObjCObject):
+        try:
+            _ = ask_references()
+        except:
+            pass
+
+    def roastNextReference_(self, sender: ObjCObject):
+        try:
+            if lsp.reference_count() == 0:
+                set_status(String("No references — find them first (⇧⌘F)"))
+                return
+            _go_to_reference(g_ref_at()[] + 1)
+        except:
+            pass
+
+    def roastSignature_(self, sender: ObjCObject):
+        try:
+            if not ask_signature():
+                set_status(String("No language server"))
+        except:
+            pass
+
     def roastDebug_(self, sender: ObjCObject):
         try:
             _start_debug()
         except:
             set_status(String("Debug failed to start"))
+
+    def roastBreakOnRaise_(self, sender: ObjCObject):
+        """Stop where an error is RAISED, not where it lands. Takes effect on
+        the next debug session: the resolver is installed at launch, and
+        rewiring a live target is more machinery than the toggle is worth."""
+        try:
+            let on = session.setting(String("debug.break_on_raise")) != "1"
+            session.set_setting(
+                String("debug.break_on_raise"),
+                String("1") if on else String("0"),
+            )
+            Obj["NSMenuItem"](sender.addr()).setState(Int(1) if on else Int(0))
+            if on:
+                set_status(
+                    String("Break on raise: on (next debug session)")
+                )
+            else:
+                set_status(String("Break on raise: off"))
+        except:
+            pass
 
     def roastDebugStop_(self, sender: ObjCObject):
         try:
@@ -1266,6 +1511,12 @@ class RoastActions:
                     elif lsp.hover_serial() != g_hover_seen()[]:
                         g_hover_seen()[] = lsp.hover_serial()
                         _show_hover()
+                    elif lsp.references_serial() != g_ref_seen()[]:
+                        g_ref_seen()[] = lsp.references_serial()
+                        _show_references()
+                    elif lsp.signature_serial() != g_sig_seen()[]:
+                        g_sig_seen()[] = lsp.signature_serial()
+                        _show_signature()
                     else:
                         _report_diagnostics()
                     refresh_grid()
@@ -1313,6 +1564,23 @@ class RoastActions:
                         buf.line_start(want_line) + g_define_col()[] - 1
                     )
             _ = ask_definition()
+
+        if (
+            g_probe_kind()[] != 0
+            and g_probe_done()[] == 0
+            and g_ticks()[] > 20
+            and lsp.is_ready()
+        ):
+            g_probe_done()[] = 1
+            let want = g_probe_line()[] - 1
+            if len(g_buffer()[]) > 0:
+                let buf = g_buffer()[][0]
+                if want < buf.line_count():
+                    set_caret(buf.line_start(want) + g_probe_col()[] - 1)
+            if g_probe_kind()[] == 1:
+                _ = ask_references()
+            else:
+                _ = ask_signature()
 
         # CI, and a quick way to see the path work: fire Build or Run a few ticks
         # in, once the window is really up, with nobody at the keyboard.
@@ -3010,6 +3278,21 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     _ = add_item(
         nav, String("Quick Help"), String("roastHover:"), String("?"), actions,
     )
+    let refs = add_item(
+        nav, String("Find All References"), String("roastFindReferences:"),
+        String("F"), actions,
+    )
+    _ = msg_send[ObjCObject, "NSMenuItem", "setKeyEquivalentModifierMask:"](
+        refs, Int(0x20000 | 0x100000)
+    )
+    _ = add_item(
+        nav, String("Next Reference"), String("roastNextReference:"),
+        String("e"), actions,
+    )
+    _ = add_item(
+        nav, String("Signature Help"), String("roastSignature:"),
+        String("k"), actions,
+    )
 
     # Debug. Xcode's key equivalents, because the muscle memory of anyone
     # who debugs on a Mac already has them: F6 step over, F7 in, F8 out.
@@ -3022,6 +3305,12 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         debug_menu, String("Stop Debugging"), String("roastDebugStop:"),
         String("Y"), actions,
     )
+    let bor = add_item(
+        debug_menu, String("Break on Raise"), String("roastBreakOnRaise:"),
+        String(""), actions,
+    )
+    if session.setting(String("debug.break_on_raise")) == "1":
+        Obj["NSMenuItem"](bor.addr()).setState(Int(1))
     _ = msg_send[ObjCObject, "NSMenu", "addItem:"](
         debug_menu,
         msg_send[ObjCObject, "NSMenuItem", "separatorItem", is_class=True](
@@ -3451,6 +3740,30 @@ def main() raises:
                 set_status(
                     String("Restored ") + String(back) + String(" files")
                 )
+
+        # Find-all-references and signature help, reachable without a
+        # mouse. Same line:col shape as ROAST_DEFINE, and the same wait for
+        # the server to have the document.
+        let refs_at = getenv("ROAST_REFS")
+        if refs_at != "":
+            let rcut = refs_at.find(":")
+            if rcut > 0:
+                g_probe_line()[] = Int(String(refs_at[byte=:rcut]))
+                g_probe_col()[] = Int(
+                    String(refs_at[byte = rcut + 1 : refs_at.byte_length()])
+                )
+                g_probe_kind()[] = 1
+                print("roast: references asked at", refs_at)
+        let sig_at = getenv("ROAST_SIGNATURE")
+        if sig_at != "":
+            let scut = sig_at.find(":")
+            if scut > 0:
+                g_probe_line()[] = Int(String(sig_at[byte=:scut]))
+                g_probe_col()[] = Int(
+                    String(sig_at[byte = scut + 1 : sig_at.byte_length()])
+                )
+                g_probe_kind()[] = 2
+                print("roast: signature asked at", sig_at)
 
         # Go to definition, reachable without a mouse. ROAST_DEFINE is
         # line:col in the entry point, one-based as an editor counts; the
