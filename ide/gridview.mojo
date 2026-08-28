@@ -1141,10 +1141,15 @@ comptime KIND_NUMBER = 4
 
 
 def _is_keyword(w: String) -> Bool:
-    """cocoa-mojo's keywords, `let` and `fn` among them -- this fork revived
-    both, and an editor that greys them out would be quietly wrong."""
+    """cocoa-mojo's keywords, `let`, `fn` and `class` among them -- this fork
+    revived the first two and made the third declare a real Objective-C
+    class, and an editor that greys any of them out would be quietly wrong
+    about the language it is for. The argument conventions (`imm`, `mut`,
+    `out`, `deinit`, `where`) are contextual soft identifiers, coloured here
+    on the same terms as each other."""
     return (
-        w == "def" or w == "fn" or w == "let" or w == "var" or w == "struct"
+        w == "def" or w == "fn" or w == "let" or w == "var" or w == "class"
+        or w == "struct"
         or w == "trait" or w == "comptime" or w == "alias" or w == "import"
         or w == "from" or w == "as" or w == "if" or w == "elif" or w == "else"
         or w == "while" or w == "for" or w == "in" or w == "return"
@@ -1152,8 +1157,8 @@ def _is_keyword(w: String) -> Bool:
         or w == "with" or w == "yield" or w == "pass" or w == "break"
         or w == "continue" or w == "and" or w == "or" or w == "not"
         or w == "is" or w == "True" or w == "False" or w == "None"
-        or w == "self" or w == "Self" or w == "mut" or w == "out"
-        or w == "deinit" or w == "ref" or w == "where"
+        or w == "self" or w == "Self" or w == "imm" or w == "mut"
+        or w == "out" or w == "deinit" or w == "ref" or w == "where"
     )
 
 

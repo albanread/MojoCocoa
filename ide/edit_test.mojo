@@ -247,6 +247,14 @@ def main() raises:
     # be quietly wrong about the language it is for.
     failures += check("let is a keyword", kinds_of(String("let")), String("333"))
     failures += check("fn is a keyword", kinds_of(String("fn")), String("33"))
+    # `class` declares a real Objective-C class in this fork -- its flagship
+    # keyword, and until now uncoloured in its own IDE.
+    failures += check(
+        "class is a keyword", kinds_of(String("class A")), String("3333300")
+    )
+    failures += check(
+        "imm is a keyword", kinds_of(String("imm x")), String("33300")
+    )
     # A keyword inside a longer identifier is not a keyword.
     failures += check(
         "define is not def", kinds_of(String("define")), String("000000")
