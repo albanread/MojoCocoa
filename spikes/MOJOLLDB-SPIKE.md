@@ -645,6 +645,74 @@ riding on the `DILocalVariable` should survive that. "Should" has been wrong
 three times in this document, so make **"type ID resolves in an inlined
 frame"** an explicit acceptance test rather than an assumption.
 
+### What landed, and the standard that drops us
+
+The transport is now a keyed protocol rather than a one-off. The reader takes
+a key (`extractMojoAnnotation(die, key)`, with `extractSourceName` demoted to
+a caller), the writer gained `addMojoAnnotation`, and the keys live in one
+header both ends include (`Support/DebugInfoDialect/IR/DebugInfoAttrs.h`) so
+they cannot drift apart. `mojo_source_name` still lands 325/325 and function
+identity still resolves.
+
+Adding the *first* new key produced the finding that matters:
+
+    key                object file    linked dSYM
+    mojo_source_name        83            325
+    mojo_debug_schema       83              0
+
+**An annotation whose value repeats across dies does not survive the link.**
+`mojo_debug_schema="1"` is identical on every subprogram; `dsymutil` keeps
+the unique annotations beside it and drops the constant. Silently. Nothing
+warns, and the metadata is simply absent later.
+
+Two consequences. Narrowly: every key must carry a value that varies with the
+die it hangs on, and a new key must be verified in the **linked dSYM**, never
+in the object file. Identity keys satisfy that by construction; a per-module
+constant does not, which is why the schema key is defined and read but not
+emitted -- it has no carrier that outlives the linker yet, and the reader
+already treats its absence as "predates the contract".
+
+Broadly, and more importantly: **we are piggybacking on a standard that drops
+us.** DWARF plus `dsymutil` is a pipeline built around C-family and Swift
+semantics, and it prunes on heuristics we do not control and cannot see. We
+did not hit a documented limit; we hit a linker deciding our metadata was not
+worth keeping, with no diagnostic. Every future key inherits that exposure,
+and the failure mode is invisible until someone specifically diffs the linked
+dSYM against the object file.
+
+So the design should stop trying to widen the piggyback. Key the sidecar off
+identity the linker **cannot** drop:
+
+    mangled function symbol   linking requires it; it cannot be pruned
+    local variable name       already in DWARF and load-bearing for DWARF
+    scope/line disambiguator  for shadowed names in nested scopes
+
+    (mangled symbol, local name, scope) -> mojo_type_id -> sidecar
+
+That join needs *no new DWARF surface at all*. Both halves are demonstrably
+present in our dSYM today -- `total`, `dist` and `sum` carry `DW_AT_name`,
+and the mangled symbols must survive for the binary to link. It also sidesteps
+the carrier problem entirely, which is worth knowing because the carrier
+options are poor:
+
+    carrier             LLVM C++ metadata    MLIR attr
+    DISubprogram        annotations          annotations   <- used today
+    DICompositeType     annotations          none
+    DIDerivedType       annotations          none
+    DILocalVariable     none                 none
+
+Attaching identity to a *variable* die would mean adding an `Annotations`
+field to LLVM's `DILocalVariable` -- bitcode format, verifier, DWARF
+emission, `dsymutil`. Attaching it to a distinct per-source-type derived die
+is cheaper (LLVM already supports it; only the MLIR attr lacks it), and it is
+the only annotation-shaped option worth considering, because the *physical*
+type die cannot carry identity at all: `total`, `dist` and `sum` share one
+die, so it would have to describe `Int` and `Meters` simultaneously.
+
+But both are annotation routes, and annotations are what just got dropped.
+Symbol-and-name keying avoids the question. Prefer it unless something it
+cannot express turns up.
+
 ## The risk worth watching
 
 `MojoLLDB` deps include `//AsyncRT:RuntimeGlobals` and, under
