@@ -280,7 +280,19 @@ bool MojoUserExpression::Parse(DiagnosticManager &diagnosticManager,
         "target mojo process does not exist", lldb::eSeverityError, false));
     return false;
   }
-  auto *exeScope = process ? (ExecutionContextScope *)process : &impl->target;
+  // The FRAME when there is one, and only the process when there is not.
+  //
+  // This used to pick the process unconditionally, and the difference is the
+  // whole of frame-local injection: a process can calculate a target but
+  // never a stack frame, so the expression parser had no way to see the
+  // variables of the function the user is stopped in. `total + 41` at a
+  // breakpoint answered "use of unknown declaration". Everything a process
+  // scope could do, a frame scope also does -- it calculates the same
+  // process and target -- so this is strictly more context, never less.
+  ExecutionContextScope *exeScope = exeCtx.GetFramePtr();
+  if (!exeScope)
+    exeScope = process ? (ExecutionContextScope *)process
+                       : (ExecutionContextScope *)&impl->target;
 
   // On exit, log all of the diagnostics that were collected.
   auto broadcastDiagnostics = llvm::scope_exit([&] {
