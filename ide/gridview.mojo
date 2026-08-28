@@ -762,8 +762,18 @@ class RoastGridView(NSView, NSTextInputClient):
             if Int(raw) == 0:
                 return
             let name = String(unsafe_from_utf8_ptr=raw.unsafe_bitcast[c_char]())
-            apply_command(name)
+            let view = ObjCObject(self.__objc_id)
+            # A page is however many lines the viewport actually shows.
+            var page = 40
+            with autoreleasepool():
+                let vis = msg_send[CGRect, "NSView", "visibleRect"](view)
+                if line_height() > 0.0:
+                    page = max(1, Int(vis.size.height / line_height()) - 1)
+            apply_command(name, page)
             _refresh(P(unsafe_from_address=self.__objc_id))
+            # Movement must be watchable: an arrow key that puts the caret
+            # somewhere the viewport is not reads as a dead key.
+            reveal_caret(view)
         except:
             pass
 
@@ -1509,13 +1519,110 @@ def reveal_caret(view: ObjCObject):
         )
 
 
-def apply_command(name: String):
+def _prev_codepoint(buf: Rope, at: Int) -> Int:
+    """One character left of `at`, never landing inside a UTF-8 sequence.
+
+    A windowed slice rather than to_string(): stepping the caret must not
+    cost a copy of the buffer, and a UTF-8 sequence is at most four bytes.
+    """
+    if at <= 0:
+        return 0
+    let window_at = max(0, at - 8)
+    let bytes = buf.slice(window_at, at).as_bytes()
+    var back = at - 1
+    while back > window_at and (Int(bytes[back - window_at]) & 0xC0) == 0x80:
+        back -= 1
+    return back
+
+
+def _next_codepoint(buf: Rope, at: Int) -> Int:
+    """One character right, same terms."""
+    let n = buf.byte_length()
+    if at >= n:
+        return n
+    let bytes = buf.slice(at, min(n, at + 8)).as_bytes()
+    var fwd = at + 1
+    while fwd < n and fwd - at < len(bytes) and (
+        Int(bytes[fwd - at]) & 0xC0
+    ) == 0x80:
+        fwd += 1
+    return fwd
+
+
+def _is_word_byte(b: Int) -> Bool:
+    """What ⌥-arrow jumps over: identifier characters, and any non-ASCII
+    byte -- multibyte text is words, not punctuation."""
+    return (
+        (b >= 0x30 and b <= 0x39)
+        or (b >= 0x41 and b <= 0x5A)
+        or (b >= 0x61 and b <= 0x7A)
+        or b == 0x5F
+        or b >= 0x80
+    )
+
+
+def _word_left(buf: Rope, at: Int) -> Int:
+    """⌥←: over the separators, then over the word they end. Newlines are
+    separators, so this crosses lines the way every editor does."""
+    let window_at = max(0, at - 512)
+    let bytes = buf.slice(window_at, at).as_bytes()
+    var i = len(bytes)
+    while i > 0 and not _is_word_byte(Int(bytes[i - 1])):
+        i -= 1
+    while i > 0 and _is_word_byte(Int(bytes[i - 1])):
+        i -= 1
+    return window_at + i
+
+
+def _word_right(buf: Rope, at: Int) -> Int:
+    let n = buf.byte_length()
+    let bytes = buf.slice(at, min(n, at + 512)).as_bytes()
+    var i = 0
+    while i < len(bytes) and not _is_word_byte(Int(bytes[i])):
+        i += 1
+    while i < len(bytes) and _is_word_byte(Int(bytes[i])):
+        i += 1
+    return at + i
+
+
+def _vertical(buf: Rope, from_: Int, lines: Int) -> Int:
+    """The offset `lines` lines away, keeping the column.
+
+    Off the top lands at the start, off the bottom at the end -- which is what
+    an arrow key at the edge of the document does everywhere. The column is
+    walked in codepoints on the target line, so arriving beside a multibyte
+    character cannot land inside it.
+    """
+    let line = buf.line_of_offset(from_)
+    let col = from_ - buf.line_start(line)
+    let target = line + lines
+    if target < 0:
+        return 0
+    if target >= buf.line_count():
+        return buf.byte_length()
+    let ls = buf.line_start(target)
+    let text = buf.line(target)
+    var seen = 0
+    for c in text.codepoints():
+        let w = len(String(c).as_bytes())
+        if seen + w > col:
+            break
+        seen += w
+    return ls + seen
+
+
+def apply_command(name: String, page_lines: Int = 40):
     """Movement and deletion, separated from the plumbing that delivers it.
 
     Everything here is buffer arithmetic, which is where the bugs live -- a
     backspace that eats half a UTF-8 sequence, an up-arrow that forgets which
     column it started in. ide/edit_test.mojo drives this directly, with no
     window and no event loop.
+
+    Selection is not a separate mode: every movement selector has an
+    AndModifySelection: twin that AppKit sends for the shifted key, and the
+    twin is the same motion leaving the anchor where it was. Resolving the
+    suffix once means a motion added later is selectable for free.
     """
     try:
         if not has_rope():
@@ -1555,8 +1662,10 @@ def apply_command(name: String):
 
         if name == "insertNewline:":
             replace_selection(String("\n"))
+            return
         elif name == "insertTab:":
             replace_selection(String("    "))
+            return
         elif name == "deleteBackward:":
             if sel_start() != sel_end():
                 replace_selection(String())
@@ -1564,39 +1673,103 @@ def apply_command(name: String):
                 # One codepoint, not one byte: deleting half a character is
                 # how a buffer stops being valid UTF-8.
                 push_undo()
-                var back = g_caret()[] - 1
-                let bytes = buf.to_string().as_bytes()
-                while back > 0 and (Int(bytes[back]) & 0xC0) == 0x80:
-                    back -= 1
+                let back = _prev_codepoint(buf, g_caret()[])
                 set_rope(buf.replace(back, g_caret()[], String()))
                 set_caret(back)
+            return
         elif name == "deleteForward:":
             if sel_start() != sel_end():
                 replace_selection(String())
             elif g_caret()[] < n:
                 push_undo()
-                set_rope(buf.replace(g_caret()[], g_caret()[] + 1, String()))
-        elif name == "moveLeft:":
-            set_caret(max(0, g_caret()[] - 1))
-        elif name == "moveRight:":
-            set_caret(min(n, g_caret()[] + 1))
-        elif name == "moveUp:" or name == "moveDown:":
+                set_rope(
+                    buf.replace(
+                        g_caret()[], _next_codepoint(buf, g_caret()[]), String()
+                    )
+                )
+            return
+        elif name == "deleteWordBackward:":
+            # ⌥⌫. With a selection it is just delete; the word rule is for a
+            # collapsed caret.
+            if sel_start() != sel_end():
+                replace_selection(String())
+            elif g_caret()[] > 0:
+                g_anchor()[] = _word_left(buf, g_caret()[])
+                replace_selection(String())
+            return
+        elif name == "deleteWordForward:":
+            if sel_start() != sel_end():
+                replace_selection(String())
+            elif g_caret()[] < n:
+                g_anchor()[] = _word_right(buf, g_caret()[])
+                replace_selection(String())
+            return
+        elif name == "deleteToBeginningOfLine:":
+            # ⌘⌫, the whole line behind the caret.
+            if sel_start() != sel_end():
+                replace_selection(String())
+            else:
+                let ls = buf.line_start(buf.line_of_offset(g_caret()[]))
+                if g_caret()[] > ls:
+                    g_anchor()[] = ls
+                    replace_selection(String())
+            return
+
+        # Movement. The shifted key sends the same name with a suffix; strip
+        # it once and every motion below gains its selecting twin.
+        var motion = name
+        var select = False
+        if name.endswith("AndModifySelection:"):
+            select = True
+            motion = String(
+                name[byte = 0 : name.byte_length() - 19]
+            ) + String(":")
+
+        var to = -1
+        if motion == "moveLeft:":
+            # An unshifted arrow with a selection collapses to its edge
+            # rather than moving -- the Mac rule, and what makes shift-select
+            # then tap-arrow land where the eye expects.
+            if not select and sel_start() != sel_end():
+                to = sel_start()
+            else:
+                to = _prev_codepoint(buf, g_caret()[])
+        elif motion == "moveRight:":
+            if not select and sel_start() != sel_end():
+                to = sel_end()
+            else:
+                to = _next_codepoint(buf, g_caret()[])
+        elif motion == "moveUp:":
+            to = _vertical(buf, g_caret()[], -1)
+        elif motion == "moveDown:":
+            to = _vertical(buf, g_caret()[], 1)
+        elif motion == "moveWordLeft:" or motion == "moveWordBackward:":
+            to = _word_left(buf, g_caret()[])
+        elif motion == "moveWordRight:" or motion == "moveWordForward:":
+            to = _word_right(buf, g_caret()[])
+        elif (
+            motion == "moveToBeginningOfLine:"
+            or motion == "moveToLeftEndOfLine:"
+        ):
+            to = buf.line_start(buf.line_of_offset(g_caret()[]))
+        elif (
+            motion == "moveToEndOfLine:"
+            or motion == "moveToRightEndOfLine:"
+        ):
             let line = buf.line_of_offset(g_caret()[])
-            let col = g_caret()[] - buf.line_start(line)
-            let target = line - 1 if name == "moveUp:" else line + 1
-            if target >= 0 and target < buf.line_count():
-                let ls = buf.line_start(target)
-                let ll = buf.line(target).byte_length()
-                set_caret(ls + min(col, ll))
-        elif name == "moveToBeginningOfLine:":
-            set_caret(buf.line_start(buf.line_of_offset(g_caret()[])))
-        elif name == "moveToBeginningOfDocument:":
-            set_caret(0)
-        elif name == "moveToEndOfDocument:":
-            set_caret(buf.byte_length())
-        elif name == "moveToEndOfLine:":
-            let line = buf.line_of_offset(g_caret()[])
-            set_caret(buf.line_start(line) + buf.line(line).byte_length())
+            to = buf.line_start(line) + buf.line(line).byte_length()
+        elif motion == "moveToBeginningOfDocument:":
+            to = 0
+        elif motion == "moveToEndOfDocument:":
+            to = n
+        elif motion == "pageUp:" or motion == "scrollPageUp:":
+            to = _vertical(buf, g_caret()[], -max(1, page_lines))
+        elif motion == "pageDown:" or motion == "scrollPageDown:":
+            to = _vertical(buf, g_caret()[], max(1, page_lines))
+        if to >= 0:
+            g_caret()[] = to
+            if not select:
+                g_anchor()[] = to
     except:
         pass
 
