@@ -15,6 +15,8 @@ from dap import (
     is_running,
     is_configured,
     is_stopped,
+    frame_count,
+    frame_name,
     variable_count,
     variable_name,
     variable_value,
@@ -195,6 +197,17 @@ def main() raises:
             failures += check_int(
                 "`total` is among them", 1 if seen_total else 0, 1
             )
+            # The stack came with the stop: the top frame is main's, and the
+            # runtime's startup frames are below it -- proof the walk has
+            # depth, not just a top.
+            failures += check_int(
+                "stack has depth", 1 if frame_count() >= 2 else 0, 1
+            )
+            if frame_name(0).find("main") >= 0:
+                print("  OK   top frame =", frame_name(0))
+            else:
+                print("  FAIL top frame --", repr(frame_name(0)))
+                failures += 1
 
         print("dap: it runs on")
         # Resume until the program exits. With optimisation the breakpoint

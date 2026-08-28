@@ -734,6 +734,23 @@ def _show_variables():
         if t != "":
             block += String(": ") + t
         block += String(" = ") + dap.variable_value(i) + String("\n")
+    # The stack under the locals: how the program got here, top first. The
+    # runtime's startup frames are real but nobody is debugging THEM, so the
+    # walk stops at the first frame whose source is not the user's -- which
+    # in practice is `__wrap_and_execute_main` in _startup.mojo.
+    if dap.frame_count() > 1:
+        block += String("  stack:\n")
+        for i in range(dap.frame_count()):
+            let file = dap.frame_file(i)
+            if i > 0 and file.find("_startup.mojo") >= 0:
+                break
+            block += String("    ") + dap.frame_name(i)
+            if file != "":
+                block += (
+                    String("  ·  ") + _basename(file) + String(":")
+                    + String(dap.frame_line(i))
+                )
+            block += String("\n")
     build.append_output(block^)
     console_sync()
 

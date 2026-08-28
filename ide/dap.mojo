@@ -108,6 +108,13 @@ comptime g_var_values = named_global["dap.var.values", List[String]]
 comptime g_var_types = named_global["dap.var.types", List[String]]
 comptime g_var_fresh = named_global["dap.var.fresh", Int]
 
+# The call stack at the stop, top first: where the program IS, and how it got
+# there. Eight levels -- a person reads three, the runtime's startup frames
+# fill the rest, and past eight is scenery.
+comptime g_frame_names = named_global["dap.frame.names", List[String]]
+comptime g_frame_files = named_global["dap.frame.files", List[String]]
+comptime g_frame_lines = named_global["dap.frame.lines", List[Int]]
+
 
 def _slot(list_ptr: Pointer[List[String], MutUntrackedOrigin]) -> String:
     return list_ptr[][0] if len(list_ptr[]) > 0 else String()
@@ -174,6 +181,22 @@ def take_variables_fresh() -> Bool:
     return True
 
 
+def frame_count() -> Int:
+    return len(g_frame_names()[])
+
+
+def frame_name(i: Int) -> String:
+    return g_frame_names()[][i]
+
+
+def frame_file(i: Int) -> String:
+    return g_frame_files()[][i]
+
+
+def frame_line(i: Int) -> Int:
+    return g_frame_lines()[][i]
+
+
 def variable_count() -> Int:
     return len(g_var_names()[])
 
@@ -207,9 +230,24 @@ def variable_type(i: Int) -> String:
 
 
 def _clear_variables():
+    """Variables only. The frames are NOT cleared here, deliberately: the
+    variables reply arrives two round trips after the stack it belongs to,
+    and _take_variables resets before filling -- clearing frames there
+    would wipe the stack the same stop just stored. Frames clear on
+    MOTION, in _clear_stop."""
     g_var_names()[] = List[String]()
     g_var_values()[] = List[String]()
     g_var_types()[] = List[String]()
+
+
+def _clear_stop():
+    """Everything a stop learned: locals and the stack. For resume, step,
+    and exit -- stale frames pointing at the previous stop are worse than
+    none, because they look current."""
+    _clear_variables()
+    g_frame_names()[] = List[String]()
+    g_frame_files()[] = List[String]()
+    g_frame_lines()[] = List[Int]()
 
 
 def breakpoint_count() -> Int:
@@ -500,7 +538,7 @@ def stop():
 
 # ── Driving it ──────────────────────────────────────────────────────────────
 def _resume(var command: String):
-    _clear_variables()
+    _clear_stop()
     if not is_stopped():
         return
     var args = JSON.object()
@@ -645,13 +683,13 @@ def _event(name: String, body: JSON):
         var args = JSON.object()
         args.set(String("threadId"), JSON(g_stop_thread()[]))
         args.set(String("startFrame"), JSON(0))
-        args.set(String("levels"), JSON(1))
+        args.set(String("levels"), JSON(8))
         _ = request(String("stackTrace"), args^)
         return
     if name == "exited" or name == "terminated":
         g_exited()[] = 1
         g_stop_line()[] = 0
-        _clear_variables()
+        _clear_stop()
         _put(g_stop_reason(), String())
         g_serial()[] += 1
         return
@@ -699,6 +737,18 @@ def _take_stack(body: JSON):
     let frames = body.get("stackFrames")[]
     if frames.count() == 0:
         return
+    g_frame_names()[] = List[String]()
+    g_frame_files()[] = List[String]()
+    g_frame_lines()[] = List[Int]()
+    var i = 0
+    while i < frames.count():
+        let f = frames.at(i)[]
+        g_frame_names()[].append(f.get("name")[].as_string())
+        g_frame_files()[].append(
+            f.get("source")[].get("path")[].as_string()
+        )
+        g_frame_lines()[].append(f.get("line")[].as_int())
+        i += 1
     let top = frames.at(0)[]
     g_stop_line()[] = top.get("line")[].as_int()
     _put(g_stop_file(), top.get("source")[].get("path")[].as_string())
