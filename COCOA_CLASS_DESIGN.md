@@ -567,6 +567,33 @@ encodings and the database is keyed on the distinction. And an instance
 method declared beside a class method still finds its own box, which the same
 test pins.
 
+### `box_ref`: the way back in
+
+`self` points at the box, but a method is the only place that is true. Any
+other holder of an `id` -- a free function, another class's method, another
+module -- had no way to reach a class's fields at all.
+
+That is not a small gap, and counting made it concrete. `ide/gridview.mojo`
+parks 36 process globals beside a class that should own most of them, and of
+those exactly **one** is used solely inside a `RoastGridView` method. Twenty-two
+are used only from free functions, thirteen from both, and eleven from other
+files entirely -- `g_caret` alone has 42 uses outside gridview.mojo. Fields
+could not replace any of that, because nothing outside a method could see a
+field.
+
+`box_ref[T](id)` closes it, and needed no compiler work: every piece was
+already proven by `_box_dealloc_imp`. The ivar is named for its class, so
+`class_getInstanceVariable` walks up from the instance's class to whichever
+class declared it, and the offset is cached per T because the lookup leaks a
+C string.
+
+It returns a POINTER, which is the point. `T()` hands back a copy of the box
+and field writes through it go nowhere -- the constructor-copy wart -- while
+a write through `box_ref` reaches the object. The safety condition is stated
+rather than checked: `id` must be a live instance of T or a subclass, and the
+caller checks for nil, because `Pointer` is non-nullable and there is no nil
+to hand back.
+
 ### Autorelease pools
 
 We do not create, drain, or otherwise interact with a pool. `dealloc` is

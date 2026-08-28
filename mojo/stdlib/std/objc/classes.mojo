@@ -643,6 +643,54 @@ fn _box_dealloc_imp[T: Deinitable](self_: P, _cmd: P):
     objc_super_send_void(Int(self_), defining, sel_dynamic("dealloc"))
 
 
+def box_ref[
+    T: AnyType
+](id: Int) -> MutPointer[T, MutUntrackedOrigin]:
+    """A pointer to the box of `id`, typed as the class `T`.
+
+    The way back in. A `class`'s fields live in a box inside the instance, and
+    inside a method `self` already points at it -- but a method is the only
+    place that is true. Anything else holding an `id` (a free function, a
+    different class's method, another module) had no way to reach those
+    fields at all, which is why so much editor state that belongs to a view
+    is still parked in process globals instead.
+
+    Every piece of this was already proven by `_box_dealloc_imp`: the ivar is
+    named for its class, `class_getInstanceVariable` walks up from the
+    instance's class to whichever class declared it, and the offset is cached
+    per T because the lookup leaks a C string.
+
+    Writing through the result writes the OBJECT, not a copy -- which is the
+    difference between this and `T()`, whose result is a copy of the box and
+    whose field writes go nowhere.
+
+    Safety:
+
+    - `id` must be a live instance of `T` (or of a subclass). A nil id, or an
+      instance of an unrelated class, has no box of T's at the offset this
+      finds, and writing through the result would corrupt whatever is there.
+      Check for nil at the call site: this returns a pointer, and `Pointer` is
+      non-nullable, so there is no nil to hand back.
+    """
+    comptime name = reflect[T].base_name()
+    comptime slot = StaticString(_get_kgen_string["boxoffset.ref/", name]())
+    var cache = named_global[slot, Int]()
+    var off = cache[]
+    if off == 0:
+        off = box_offset(
+            ObjCClass(
+                Int(
+                    external_call["object_getClass", P](
+                        P(unsafe_from_address=id)
+                    )
+                )
+            ),
+            name,
+        )
+        cache[] = off
+    return MutPointer[T, MutUntrackedOrigin](unsafe_from_address=id + off)
+
+
 comptime BOX_IVAR_PREFIX = "__mojo_box_"
 """Every class's box is its OWN ivar, named for the class.
 

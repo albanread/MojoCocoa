@@ -23,6 +23,7 @@ from .classes import (
     ObjCClassBuilder,
     ObjCClassRegistrar,
     box_offset,
+    box_ref,
     IMP0,
     IMP1,
     IMP0Bool,
