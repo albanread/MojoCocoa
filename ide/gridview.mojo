@@ -281,7 +281,15 @@ class RoastGridView(NSView, NSTextInputClient):
         try:
             with autoreleasepool():
                 let view = ObjCObject(self.__objc_id)
-                let vis = msg_send[CGRect, "NSView", "visibleRect"](view)
+                # The dirty rect, not the viewport. For a keystroke they are
+                # the same thing; for the caret blink the dirty rect is a
+                # four-point sliver, and drawing the viewport instead meant
+                # re-lexing every visible line twice a second to blink a
+                # cursor. AppKit clips to the dirty region anyway -- honouring
+                # it just stops paying for paint that was never shown.
+                var vis = dirty
+                if vis.size.height <= 0.0 or vis.size.width <= 0.0:
+                    vis = msg_send[CGRect, "NSView", "visibleRect"](view)
 
                 # Background.
                 let NSColor = ObjCClass.lookup["NSColor"]()
@@ -300,8 +308,8 @@ class RoastGridView(NSView, NSTextInputClient):
                 let buf = g_buffer()
                 let total = buf[][0].line_count()
 
-                # Exactly the lines the viewport covers, with one either side so a
-                # partially scrolled line is not clipped away.
+                # Exactly the lines the damage covers, with one either side so
+                # a partially scrolled line is not clipped away.
                 var first = Int(vis.origin.y / lh) - 1
                 if first < 0:
                     first = 0
@@ -381,52 +389,39 @@ class RoastGridView(NSView, NSTextInputClient):
                         gutter_attrs.ptr(),
                     )
                     # The line, in runs of one colour each. Monospaced means a
-                    # run's x is just its column times the advance, so drawing in
-                    # pieces costs a few more calls and no layout at all.
+                    # run's x is just its column times the advance, so drawing
+                    # in pieces costs a few more calls and no layout at all.
+                    # The runs come straight from the lexer; each is one slice
+                    # of the line, not a character-by-character rebuild.
                     let text = buf[][0].line(i)
                     if text.byte_length() > 0:
-                        let kinds = highlight(text)
-                        var col = 0
-                        var run = String()
-                        var run_kind = KIND_PLAIN
-                        var run_col = 0
-                        for c in text.codepoints():
-                            let k = kinds[col] if col < len(kinds) else KIND_PLAIN
-                            if k != run_kind and run.byte_length() > 0:
-                                _ = msg_send[
-                                    ObjCObject,
-                                    "NSString",
-                                    "drawAtPoint:withAttributes:",
-                                ](
-                                    nsstring(run),
-                                    CGPoint(
-                                        GUTTER_W
-                                        + TEXT_PAD
-                                        + Float64(run_col) * advance(),
-                                        y,
-                                    ),
-                                    _attrs_for(run_kind).ptr(),
-                                )
-                                run = String()
-                                run_col = col
-                            if run.byte_length() == 0:
-                                run_col = col
-                            run_kind = k
-                            run += String(c)
-                            col += 1
-                        if run.byte_length() > 0:
+                        let runs = highlight_runs(text)
+                        for r in runs:
                             _ = msg_send[
-                                ObjCObject, "NSString", "drawAtPoint:withAttributes:"
+                                ObjCObject,
+                                "NSString",
+                                "drawAtPoint:withAttributes:",
                             ](
-                                nsstring(run),
+                                nsstring(
+                                    String(
+                                        text[
+                                            byte = r.byte_start : r.byte_start
+                                            + r.byte_len
+                                        ]
+                                    )
+                                ),
                                 CGPoint(
-                                    GUTTER_W + TEXT_PAD + Float64(run_col) * advance(),
+                                    GUTTER_W
+                                    + TEXT_PAD
+                                    + Float64(r.col) * advance(),
                                     y,
                                 ),
-                                _attrs_for(run_kind).ptr(),
+                                _attrs_for(r.kind).ptr(),
                             )
-                        if col > widest:
-                            widest = col
+                        if len(runs) > 0:
+                            let lastr = runs[len(runs) - 1]
+                            if lastr.col + lastr.cols > widest:
+                                widest = lastr.col + lastr.cols
                     i += 1
 
                 # A longer line than any seen before means the document is
@@ -1163,90 +1158,149 @@ def _is_keyword(w: String) -> Bool:
     )
 
 
-def highlight(line: String) -> List[Int]:
-    """One kind per character of the line.
+@fieldwise_init
+struct Run(ImplicitlyCopyable, Movable):
+    """One same-coloured stretch of a line: where it starts in columns and
+    bytes, how far it runs in each, and its kind."""
 
-    A lexer rather than a parser, and deliberately: this runs on every visible
-    line of every frame and has to be right about comments, strings and
-    keywords without knowing anything else. Semantic tokens from the server
-    layer on top when they arrive; this is what shows instantly, and what still
-    shows when there is no server at all.
+    var col: Int
+    var byte_start: Int
+    var byte_len: Int
+    var cols: Int
+    var kind: Int
+
+
+def _push_run(
+    mut runs: List[Run],
+    col: Int,
+    byte_start: Int,
+    byte_len: Int,
+    cols: Int,
+    kind: Int,
+):
+    """Append, merging with the previous run when the colour is the same."""
+    let n = len(runs)
+    if n > 0 and runs[n - 1].kind == kind:
+        runs[n - 1].byte_len += byte_len
+        runs[n - 1].cols += cols
+        return
+    runs.append(Run(col, byte_start, byte_len, cols, kind))
+
+
+def _char_width(b: Int) -> Int:
+    """Bytes in the UTF-8 sequence this lead byte starts."""
+    if b >= 0xF0:
+        return 4
+    if b >= 0xE0:
+        return 3
+    if b >= 0xC0:
+        return 2
+    return 1
+
+
+def highlight_runs(line: String) -> List[Run]:
+    """The line as same-coloured runs.
+
+    A lexer rather than a parser, and deliberately: this is on the draw path
+    and has to be right about comments, strings and keywords without knowing
+    anything else. It walks bytes and allocates one Run per colour change --
+    the old shape built a String PER CHARACTER and a kind per character, and
+    the draw loop then rebuilt those characters into runs with another String
+    append each. Sixty lines of that per frame, twice a second at idle for
+    the caret blink, was the editor lexing the world to blink a cursor.
     """
-    var kinds = List[Int]()
-    var chars = List[String]()
-    for c in line.codepoints():
-        chars.append(String(c))
-        kinds.append(KIND_PLAIN)
-
+    var runs = List[Run]()
+    let bytes = line.as_bytes()
+    let n = len(bytes)
     var i = 0
-    let n = len(chars)
+    var col = 0
     while i < n:
-        let c = chars[i]
-        if c == "#":
-            # To end of line, and nothing after it is anything else.
-            while i < n:
-                kinds[i] = KIND_COMMENT
-                i += 1
+        let b = Int(bytes[i])
+        if b == 0x23:  # '#' -- comment to end of line, nothing else after
+            var cols = 0
+            var j = i
+            while j < n:
+                if (Int(bytes[j]) & 0xC0) != 0x80:
+                    cols += 1
+                j += 1
+            _push_run(runs, col, i, n - i, cols, KIND_COMMENT)
             break
-        if c == '"' or c == "'":
-            let quote = c
-            kinds[i] = KIND_STRING
-            i += 1
-            while i < n:
-                kinds[i] = KIND_STRING
-                if chars[i] == "\\" and i + 1 < n:
-                    i += 1
-                    kinds[i] = KIND_STRING
-                elif chars[i] == quote:
-                    i += 1
+        if b == 0x22 or b == 0x27:  # a string, escapes included
+            let quote = b
+            var j = i + 1
+            var cols = 1
+            var escaped = False
+            while j < n:
+                let c = Int(bytes[j])
+                if (c & 0xC0) != 0x80:
+                    cols += 1
+                j += 1
+                if escaped:
+                    escaped = False
+                elif c == 0x5C:
+                    escaped = True
+                elif c == quote:
                     break
-                i += 1
+            _push_run(runs, col, i, j - i, cols, KIND_STRING)
+            col += cols
+            i = j
             continue
-        let b = Int(ord(c)) if len(c.as_bytes()) == 1 else 0x100
-        if b >= 0x30 and b <= 0x39:
-            while i < n:
-                let d = Int(ord(chars[i])) if len(chars[i].as_bytes()) == 1 else 0x100
+        if b >= 0x30 and b <= 0x39:  # a number, with . _ and suffix letters
+            var j = i
+            var cols = 0
+            while j < n:
+                let c = Int(bytes[j])
                 if not (
-                    (d >= 0x30 and d <= 0x39)
-                    or d == 0x2E
-                    or d == 0x5F
-                    or (d >= 0x61 and d <= 0x7A)
-                    or (d >= 0x41 and d <= 0x5A)
+                    (c >= 0x30 and c <= 0x39)
+                    or c == 0x2E
+                    or c == 0x5F
+                    or (c >= 0x61 and c <= 0x7A)
+                    or (c >= 0x41 and c <= 0x5A)
                 ):
                     break
-                kinds[i] = KIND_NUMBER
-                i += 1
+                cols += 1
+                j += 1
+            _push_run(runs, col, i, j - i, cols, KIND_NUMBER)
+            col += cols
+            i = j
             continue
         let ident = (
             (b >= 0x41 and b <= 0x5A) or (b >= 0x61 and b <= 0x7A) or b == 0x5F
         )
         if ident:
-            # `var`, not `let`. In cocoa-mojo `let x = y` binds to y rather
-            # than copying it, so `let start = i` followed i as the loop
-            # advanced and the keyword span came out empty. That is the
-            # revived binding doing exactly what it says -- an immutable
-            # binding to a place -- and it is a trap wherever the intent was a
-            # snapshot of a value.
-            var start = i
-            var word = String()
-            while i < n:
-                let d = Int(ord(chars[i])) if len(chars[i].as_bytes()) == 1 else 0x100
+            var j = i
+            while j < n:
+                let c = Int(bytes[j])
                 if not (
-                    (d >= 0x41 and d <= 0x5A)
-                    or (d >= 0x61 and d <= 0x7A)
-                    or (d >= 0x30 and d <= 0x39)
-                    or d == 0x5F
+                    (c >= 0x41 and c <= 0x5A)
+                    or (c >= 0x61 and c <= 0x7A)
+                    or (c >= 0x30 and c <= 0x39)
+                    or c == 0x5F
                 ):
                     break
-                word += chars[i]
-                i += 1
-            if _is_keyword(word):
-                var k = start
-                while k < i:
-                    kinds[k] = KIND_KEYWORD
-                    k += 1
+                j += 1
+            let word = String(line[byte=i:j])
+            let kind = KIND_KEYWORD if _is_keyword(word) else KIND_PLAIN
+            _push_run(runs, col, i, j - i, j - i, kind)
+            col += j - i
+            i = j
             continue
-        i += 1
+        # Anything else is one plain character, however many bytes wide.
+        let w = _char_width(b)
+        _push_run(runs, col, i, min(w, n - i), 1, KIND_PLAIN)
+        col += 1
+        i += w
+    return runs^
+
+
+def highlight(line: String) -> List[Int]:
+    """One kind per character -- the runs, expanded. The draw loop reads the
+    runs directly; this shape remains for the tests, which assert per-character
+    and would hide an off-by-one if they asserted runs."""
+    var kinds = List[Int]()
+    for r in highlight_runs(line):
+        for _ in range(r.cols):
+            kinds.append(r.kind)
     return kinds^
 
 
