@@ -63,6 +63,37 @@ def main() raises:
     failures += check("utf8 round trip", u.to_string(), String("héllo\nwörld\n日本語"))
 
     # A file big enough to cross many leaves and several tree levels.
+    print("rope: find_all in one pass")
+    let fa = Rope(String("ab ab ab"))
+    failures += check_int("all matches", len(fa.find_all_in(String("ab"), 0, 8)), 3)
+    failures += check_int(
+        "range excludes a start past end",
+        len(fa.find_all_in(String("ab"), 0, 6)),
+        2,
+    )
+    failures += check_int(
+        "range excludes before start",
+        len(fa.find_all_in(String("ab"), 1, 8)),
+        2,
+    )
+    # A needle straddling leaves is found once, not twice, by the carry rule.
+    var fa_straddle = String()
+    for _ in range(2000):
+        fa_straddle += String("filler line here\n")
+    let fa_cut = fa_straddle.byte_length()
+    fa_straddle += String("NEEDLE")
+    fa_straddle += String(" tail")
+    let fa_fs = Rope(fa_straddle)
+    let fa_hits = fa_fs.find_all_in(String("NEEDLE"), 0, fa_fs.byte_length())
+    failures += check_int("straddling hit count", len(fa_hits), 1)
+    failures += check_int("straddling hit place", fa_hits[0], fa_cut)
+    failures += check_int(
+        "find skips ahead", fa_fs.find(String("NEEDLE"), fa_cut - 3), fa_cut
+    )
+    failures += check_int(
+        "find from past it", fa_fs.find(String("NEEDLE"), fa_cut + 1), -1
+    )
+
     print("rope: UTF-16 offsets")
     # a(1) é(2 bytes, 1 unit) 日(3 bytes, 1 unit) 𐍈(4 bytes, 2 units) z(1)
     let u16r = Rope(String("aé日𐍈z"))

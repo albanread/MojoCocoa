@@ -309,18 +309,22 @@ struct Rope(Movable, Copyable):
     def find_all_in(
         self, needle: String, start: Int, end: Int
     ) -> List[Int]:
-        """Every match beginning within [start, end). For highlighting what is
-        on screen, which is all that ever needs highlighting."""
+        """Every match beginning within [start, end), in one pass.
+
+        This used to call find() once per match, and find() walks from the
+        root -- O(matches x buffer), which match_count() then ran on every
+        keystroke in the search field. Searching a big file for a common
+        letter was seconds of copying. One walk collects them all.
+        """
         var out = List[Int]()
         if needle.byte_length() == 0:
             return out^
-        var at = start
-        while True:
-            let hit = self.find(needle, at)
-            if hit < 0 or hit >= end:
-                break
-            out.append(hit)
-            at = hit + 1
+        var st = _ScanAll(needle, start, min(end, self.byte_length()))
+        _scan_all(self.root, 0, st)
+        # Element copy rather than a move: a field cannot be moved out of a
+        # value that still has a destructor to run.
+        for h in st.hits:
+            out.append(h)
         return out^
 
 
@@ -399,6 +403,13 @@ struct _Scan(Movable):
 def _scan(node: ArcPointer[Node], base: Int, mut st: _Scan):
     if st.found >= 0:
         return
+    # A whole subtree before the search start contributes nothing: a match
+    # STARTS at or after from_offset, so bytes wholly before it are never part
+    # of one, and the carry only matters between leaves actually scanned.
+    # Without this, find-next from the middle of a big file still walked -- and
+    # copied -- everything before the caret.
+    if base + node[].nbytes <= st.from_offset:
+        return
     if node[].is_leaf:
         # Everything before the search start is not worth looking at, but the
         # carry still has to be maintained across it.
@@ -425,6 +436,73 @@ def _scan(node: ArcPointer[Node], base: Int, mut st: _Scan):
     for k in node[].kids:
         _scan(k, at, st)
         if st.found >= 0:
+            return
+        at += k[].nbytes
+
+
+struct _ScanAll(Movable):
+    """Like _Scan, but keeps every hit in [start, end) instead of the first."""
+
+    var needle: String
+    var start: Int
+    var end: Int
+    var carry: String
+    var carry_at: Int
+    var hits: List[Int]
+    var done: Bool
+
+    def __init__(out self, var needle: String, start: Int, end: Int):
+        self.needle = needle^
+        self.start = start
+        self.end = end
+        self.carry = String()
+        self.carry_at = 0
+        self.hits = []
+        self.done = False
+
+
+def _scan_all(node: ArcPointer[Node], base: Int, mut st: _ScanAll):
+    if st.done:
+        return
+    # Before the range: nothing here can start a match (same argument as
+    # _scan). Past it: a match starting at or after `end` is not wanted, and
+    # everything from here on starts later still.
+    if base + node[].nbytes <= st.start:
+        return
+    if base >= st.end:
+        st.done = True
+        return
+    if node[].is_leaf:
+        let m = st.needle.byte_length()
+        var window = st.carry
+        window += node[].text
+        let window_at = st.carry_at if st.carry.byte_length() > 0 else base
+        var rel = max(0, st.start - window_at)
+        while True:
+            let hit = window.find(st.needle, start=rel)
+            if hit < 0:
+                break
+            let pos = window_at + hit
+            if pos >= st.end:
+                st.done = True
+                return
+            st.hits.append(pos)
+            rel = hit + 1
+        # A match entirely inside the carry was found in the previous window
+        # (it is shorter than the needle is long), so carrying the tail cannot
+        # double-count -- the same argument _scan rests on.
+        let keep = min(m - 1, window.byte_length())
+        var cut = window.byte_length() - keep
+        let bytes = window.as_bytes()
+        while cut < window.byte_length() and (Int(bytes[cut]) & 0xC0) == 0x80:
+            cut += 1
+        st.carry = String(window[byte=cut : window.byte_length()])
+        st.carry_at = window_at + cut
+        return
+    var at = base
+    for k in node[].kids:
+        _scan_all(k, at, st)
+        if st.done:
             return
         at += k[].nbytes
 
