@@ -755,13 +755,30 @@ flakiness.
     name="ptr" line=1497   type='!kgen.string *'   and   type='index *'
     in std::builtin::variadics::VariadicPack::consume_elements[...]
 
-A variadic pack expanded once per element type. Every instantiation shares one
-linkage name and one source line, and the declarations differ only in their
-type. So the tuple is ~99.7% sufficient and fails precisely where the user
-predicted: generic and compiler-generated expansion. Adding the type name to
-the tuple separates these two, but that is luck rather than a guarantee --
-two instantiations at the *same* type would still collide, and the honest fix
-is for the linkage name to carry the substitution.
+So the tuple is ~99.7% sufficient. The cause is **not** what it looks like,
+and the obvious fix does not apply:
+
+    0x0000251a:     DW_TAG_lexical_block          <- ONE block, 16 pc ranges
+    0x0000251f:       DW_TAG_variable "ptr"  index *
+    0x0000252f:       DW_TAG_variable "ptr"  !kgen.string *
+
+Both dies are children of the *same* lexical block in the *same* function.
+This is not two instantiations sharing a name -- it is one instantiation whose
+body was unrolled at compile time, once per pack element, with every copy
+emitted into a single scope at a single source line.
+
+Linkage names are therefore not the problem, and making them carry the generic
+substitution would fix nothing: they already do (`[def[::SIMD[::DType(int),
+::SIMDLength(1)]]...` is part of the name), and measured across the corpus,
+**297 distinct linkage names carry 297 distinct signatures -- zero clashes**.
+Function-level identity is already exact.
+
+The defect is scope emission: a compile-time unrolled body should be its own
+`DW_TAG_lexical_block` per expansion, so each copy of a same-named local lives
+in a distinct scope and the join can key on the block path. Until then the
+type name disambiguates these two, but only by luck -- a pack with two
+same-typed elements would collide again, and `DW_AT_decl_column` will not
+save it because the copies share source text as well as a line.
 
 Note the direction of the numbers: the optimized build has **fewer** dies and
 **no** ambiguity, because variables have been optimized away rather than
