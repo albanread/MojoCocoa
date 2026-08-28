@@ -359,6 +359,29 @@ def main() raises:
     failures += check_int("shift-page-up caret", g_caret()[], 11)
     failures += check_int("shift-page-up anchor", g_anchor()[], 17)
 
+    print("edit: completion accept")
+    # popup_accept had no coverage at all -- it is the code path that types
+    # into the buffer on Enter. Headless: no popup window exists, so
+    # hide_popup returns early, which is fine -- the arithmetic is the point.
+    from gridview import popup_accept, g_popup_open, g_popup_sel, g_popup_from
+    from lsp import g_comp_label, g_comp_detail, g_comp_insert
+    set_rope(Rope(String("x = setTit")))
+    set_caret(10)
+    g_comp_label()[].append(String("setTitle:"))
+    g_comp_detail()[].append(String("(ObjCObject) -> None"))
+    g_comp_insert()[].append(String("setTitle:"))
+    g_popup_open()[] = 1
+    g_popup_sel()[] = 0
+    g_popup_from()[] = 4  # where the word being completed starts
+    failures += check_int("accept", 1 if popup_accept() else 0, 1)
+    failures += check("accept replaces the prefix", buffer_text(), String("x = setTitle:"))
+    failures += check_int("caret after accept", g_caret()[], 13)
+    g_popup_open()[] = 0
+    while len(g_comp_label()[]) > 0:
+        _ = g_comp_label()[].pop()
+        _ = g_comp_detail()[].pop()
+        _ = g_comp_insert()[].pop()
+
     print("edit: undo history is bounded")
     from gridview import push_undo, UNDO_CAP
     set_rope(Rope(String("x")))

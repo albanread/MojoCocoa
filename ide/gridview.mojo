@@ -236,7 +236,14 @@ def popup_accept() -> Bool:
     if not popup_open() or completion_count() == 0:
         return False
     let sel = min(g_popup_sel()[], completion_count() - 1)
-    let text = g_comp_insert()[][sel]
+    # `var`, not `let`. The revived `let` binds to the list slot, and
+    # hide_popup() clears that list -- so the insert below read a String
+    # whose storage had been freed. It printed the right text anyway,
+    # because freed heap memory usually still holds its bytes, which is the
+    # worst kind of working. The checker cannot see it: named_global routes
+    # through an untracked origin, exactly where invalidated-reference
+    # analysis goes blind. `var` copies while the slot is still alive.
+    var text = g_comp_insert()[][sel]
     let from_ = g_popup_from()[]
     hide_popup()
     if not has_rope():
