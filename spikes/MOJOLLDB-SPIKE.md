@@ -645,73 +645,82 @@ riding on the `DILocalVariable` should survive that. "Should" has been wrong
 three times in this document, so make **"type ID resolves in an inlined
 frame"** an explicit acceptance test rather than an assumption.
 
-### What landed, and the standard that drops us
+### What landed, and how the identity join should be keyed
 
 The transport is now a keyed protocol rather than a one-off. The reader takes
 a key (`extractMojoAnnotation(die, key)`, with `extractSourceName` demoted to
 a caller), the writer gained `addMojoAnnotation`, and the keys live in one
 header both ends include (`Support/DebugInfoDialect/IR/DebugInfoAttrs.h`) so
-they cannot drift apart. `mojo_source_name` still lands 325/325 and function
-identity still resolves.
+they cannot drift apart. `mojo_source_name` lands 325/325, function identity
+resolves, and `mojo_debug_schema` now rides beside it.
 
-Adding the *first* new key produced the finding that matters:
+**A correction, because a wrong version of this was briefly recorded here.**
+Adding the schema key appeared to prove that `dsymutil` silently drops
+annotations whose value repeats across dies -- 83 in the object file, zero in
+the linked dSYM. That was false, and false for a reason worth knowing: **the
+compiler caches compilation output keyed on source**, so building with a new
+compiler over an unchanged file silently reuses the old DWARF. Every
+measurement behind the claim was reading a stale artifact, which is also why
+swapping the annotation order changed nothing -- neither build was running
+the new code.
 
-    key                object file    linked dSYM
-    mojo_source_name        83            325
-    mojo_debug_schema       83              0
+Rebuilt from a file the compiler had not seen, with probe keys alongside: a
+constant-valued key and a per-die-varying key both survive the link 1:1,
+several annotations per die survive together, and nothing is dropped. There
+is no "values must vary per die" invariant; do not make it a compiler rule.
 
-**An annotation whose value repeats across dies does not survive the link.**
-`mojo_debug_schema="1"` is identical on every subprogram; `dsymutil` keeps
-the unique annotations beside it and drops the constant. Silently. Nothing
-warns, and the metadata is simply absent later.
+What the episode does establish is a testing rule, now recorded where the
+keys are defined: **verify a new key in the LINKED dSYM, and rebuild from a
+source the compiler has not seen.** A stale artifact reads exactly like the
+linker dropping your annotation. Also compare like with like -- the 83-vs-325
+figures were one object file against every linked compile unit, which is not
+a ratio at all.
 
-Two consequences. Narrowly: every key must carry a value that varies with the
-die it hangs on, and a new key must be verified in the **linked dSYM**, never
-in the object file. Identity keys satisfy that by construction; a per-module
-constant does not, which is why the schema key is defined and read but not
-emitted -- it has no carrier that outlives the linker yet, and the reader
-already treats its absence as "predates the contract".
+**Identity should not be keyed on names or symbols.** The tempting join is
+(mangled symbol, local name, scope), on the reasoning that linking cannot
+prune a symbol. That reasoning is too strong:
 
-Broadly, and more importantly: **we are piggybacking on a standard that drops
-us.** DWARF plus `dsymutil` is a pipeline built around C-family and Swift
-semantics, and it prunes on heuristics we do not control and cannot see. We
-did not hit a documented limit; we hit a linker deciding our metadata was not
-worth keeping, with no diagnostic. Every future key inherits that exposure,
-and the failure mode is invisible until someone specifically diffs the linked
-dSYM against the object file.
+- fully inlined functions may have only abstract origins and no concrete
+  linked symbol;
+- dead stripping removes unused functions, and stripping can remove a live
+  function's symbol-table name while its code remains;
+- LTO clones, internalizes and renames;
+- concrete inlined-variable dies inherit their name via
+  `DW_AT_abstract_origin`;
+- shadowed variables can share function, name *and* source line.
 
-So the design should stop trying to widen the piggyback. Key the sidecar off
-identity the linker **cannot** drop:
+`DW_AT_linkage_name` is a useful lookup coordinate, not semantic identity.
 
-    mangled function symbol   linking requires it; it cannot be pruned
-    local variable name       already in DWARF and load-bearing for DWARF
-    scope/line disambiguator  for shadowed names in nested scopes
+The durable key is final dSYM identity:
 
-    (mangled symbol, local name, scope) -> mojo_type_id -> sidecar
+    (dSYM UUID, canonical DWARF DIE offset) -> mojo_type_id -> sidecar
 
-That join needs *no new DWARF surface at all*. Both halves are demonstrably
-present in our dSYM today -- `total`, `dist` and `sum` carry `DW_AT_name`,
-and the mangled symbols must survive for the binary to link. It also sidesteps
-the carrier problem entirely, which is worth knowing because the carrier
-options are poor:
+For an inlined variable, follow `DW_AT_abstract_origin` to the canonical
+declaration die. That falls out correctly for shadowed names (distinct
+declaration dies), inlined instances (a shared abstract origin), identically
+named locals, generic instantiations, and compiler-generated scopes -- and it
+still works for a function whose symbol-table entry was stripped but whose
+die remains.
 
-    carrier             LLVM C++ metadata    MLIR attr
-    DISubprogram        annotations          annotations   <- used today
-    DICompositeType     annotations          none
-    DIDerivedType       annotations          none
-    DILocalVariable     none                 none
+The consequence for the build: **the sidecar must be generated or finalized
+after `dsymutil`**, because DIE offsets are rewritten by it. A post-link step
+reads the final dSYM, joins its variables to the compiler's semantic records,
+canonicalizes abstract origins, and writes the DIE-offset-to-type-ID table
+beside the dSYM. The (linkage name, local name, source position) tuple keeps
+its value there -- as the **join algorithm** in that post-link step, never as
+the persistent lookup key. Once joined, record the exact final DIE offset and
+never repeat the fuzzy match at debug time.
 
-Attaching identity to a *variable* die would mean adding an `Annotations`
-field to LLVM's `DILocalVariable` -- bitcode format, verifier, DWARF
-emission, `dsymutil`. Attaching it to a distinct per-source-type derived die
-is cheaper (LLVM already supports it; only the MLIR attr lacks it), and it is
-the only annotation-shaped option worth considering, because the *physical*
-type die cannot carry identity at all: `total`, `dist` and `sum` share one
-die, so it would have to describe `Int` and `Meters` simultaneously.
+The sidecar carries its own schema version, compiler version and dSYM UUID,
+so `mojo_debug_schema` need not be transported through DWARF at all; it stays
+as cheap provenance on the dies themselves.
 
-But both are annotation routes, and annotations are what just got dropped.
-Symbol-and-name keying avoids the question. Prefer it unless something it
-cannot express turns up.
+**A cheap test before the format is designed**: enumerate every local and
+formal die in representative `-O0` and optimized dSYMs, canonicalize
+`DW_AT_abstract_origin`, compute the proposed natural tuple, and report
+collisions -- including nested shadowing, generics, closures and forced
+inlining. If the tuple collides there, the post-link join needs more than
+names before any of this is worth building.
 
 ## The risk worth watching
 
