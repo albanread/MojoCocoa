@@ -57,7 +57,7 @@ Read from the source rather than the README:
 
 ## Why it has to be our own lldb
 
-Two independent reasons, either one sufficient.
+Three independent reasons, any one sufficient.
 
 **ABI.** `Plugin.cpp` exports `PluginInitialize(SBDebugger)` — LLDB's
 standard runtime plugin entry point — and the target is a
@@ -66,15 +66,25 @@ the deps name `@llvm-project//lldb:lldb24.0.0git`, and Xcode ships
 `lldb-1703.0.236.103`, Apple's own fork. An LLDB plugin links the host's C++
 ABI; upstream 24 into Apple 1703 fails to load at best.
 
-**Global state, which is the real one.** `RELEASE.md` already has a section
+**Symbol visibility, which is subtler.** A TypeSystem/Language/
+LanguageRuntime plugin is written against `lldb_private` — not the SB API —
+and a stock `liblldb` does not export those symbols at all. So even a
+perfectly ABI-matched dylib would fail to resolve at load. This is the
+silent killer of the "just build against some lldb" idea, and it is why the
+tree carries `bazel/public-patches/llvm-lldb-exports.patch`: 99 selective
+`LLDB_PRIVATE_EXPORT` annotations, exactly the `lldb_private` surface the
+plugin uses, applied to the overlay by `llvm_source.bzl`. Somebody already
+fought this fight; the patch is the trophy.
+
+**Global state, which is the loudest.** `RELEASE.md` already has a section
 titled "LLVM is a shared library", and `check-dist.sh` already fails with
 `duplicate LLVM CommandLine registry`, because two copies of LLVM in one
 process means two `ManagedStatic` registries and two sets of `cl::opt`.
 Apple's `lldb` has its own LLVM inside it. Loading a `libMojoLLDB` that
 pulls OUR `libLLVM` into that process is that abort by construction.
 
-So the shortcut — drop a dylib next to Xcode's lldb — is dead on both
-counts. We ship our own `lldb-dap` or we do not have this feature.
+So the shortcut — drop a dylib next to Xcode's lldb — is dead three ways.
+We ship our own `lldb-dap` or we do not have this feature.
 
 ## The shape it takes here, which is the encouraging part
 
@@ -96,23 +106,53 @@ ships:
 more consumer of the same set, exactly as `mojo-lsp-server` "shares
 libLLVM.dylib with the compiler rather than carrying a second copy".
 
-The stipulation that follows:
+The stipulation that follows, now with the overlay's actual shape:
 
 > **`liblldb` must link the same shared `libLLVM`/`libMLIR` the distribution
-> ships.** `--config=release` already links both as shared libraries, and
-> the `@llvm-project//lldb:liblldb.wrapper` in the deps suggests the wrapper
-> exists for exactly this. Confirm rather than assume.
+> ships — and today it does not.** In the overlay, `lldb24.0.0git` is a
+> `cc_binary(linkshared = True)` over the overlay's **static** LLVM
+> libraries, and `liblldb.wrapper` is nothing but a `cc_import` of that
+> dylib. Built naively, `lldb-dap` embeds a private LLVM inside `liblldb`,
+> and loading `libMojoLLDB` (which pulls `@rpath/libLLVM`) into it is the
+> two-registry abort again — this time entirely from our own build. Making
+> liblldb a consumer of `//bazel/llvm-shared:LLVM` is the same trick
+> `RELEASE.md` documents for the compiler, and the export list in
+> `bazel/llvm-shared/BUILD.bazel` is where a missing-symbol failure gets
+> fixed.
 
-Bazel already exposes what is needed:
+The targets the spike needs all exist in the overlay: `lldb` (line 1025),
+`lldb-dap` (1258), `liblldb.wrapper` (1003). And
+`bazel/public-patches/llvm-fix-lldb-dap-console.patch` is already applied to
+`lldb-dap`'s sources — evidence that building it from this tree was already
+contemplated, or done, by whoever left the patch.
 
-    @llvm-project//lldb:lldb
-    @llvm-project//lldb:lldb-dap
+## If `plugin load` misbehaves: the embedding fallback
+
+`Plugin.cpp` states it plainly: *"LLDB has two different types of plugin
+initialization, we support them both."* Alongside
+`PluginInitialize(SBDebugger)` there is a C-callable
+`MODULAR_EXPORT bool LLDBPluginInitialize()`, and **MojoJupyter is shipped
+prior art for it** — `KGEN/lib/MojoJupyter/Kernel.cpp` includes the
+plugin's headers directly and links `:MojoLLDB` and `liblldb` into one
+process, no `dlopen` anywhere. So the worst plausible outcome of the spike
+is not "no feature"; it is "link the plugin into our `lldb-dap` instead of
+loading it", which trades a JSON key in the IDE for a one-target build
+change.
 
 ## The spike
 
 Time-boxed to a day. Stop at the first thing that does not work and write
 down what it was — a negative answer here is worth as much as a positive
 one, because it decides whether the IDE's debugger stays at v1 permanently.
+
+0. **Two probes before any real work, seconds each.**
+
+       nm -gU bazel-bin/.../liblldb*.dylib | grep -m1 DumpDataExtractor
+       otool -L bazel-bin/KGEN/libMojoLLDB.dylib | grep libLLVM
+
+   The first proves the exports patch reached the build (pick any symbol
+   the patch annotates). The second shows whether `libMojoLLDB` links the
+   shared LLVM — which side of the two-registry problem we are on.
 
 1. **Build the three artefacts.**
 
@@ -124,15 +164,18 @@ one, because it decides whether the IDE's debugger stays at v1 permanently.
 
 2. **Prove there is one LLVM.** The probe `check-dist.sh` already runs for
    `mojo-lsp-server` — start it, watch for `duplicate LLVM CommandLine
-   registry`. If it aborts, the rest of the spike is moot until the wrapper
-   is doing its job.
+   registry`. If it aborts, apply the `bazel/llvm-shared` pattern to
+   liblldb before going further; the rest of the spike is moot until there
+   is one LLVM in the process.
 
 3. **Load the plugin.** With `lldb-dap` from step 1:
 
        plugin load .../libMojoLLDB.dylib
 
    In DAP this is a `launch` field, `initCommands`, so the IDE side is one
-   JSON key and needs no new plumbing.
+   JSON key and needs no new plumbing. If load fails here with the build
+   otherwise healthy, switch to the embedding fallback above rather than
+   debugging `dlopen`.
 
 4. **Ask it the question that started this.** Build the program below with
    `--debug-level full --no-optimization`, break on line 9, and run
@@ -150,6 +193,10 @@ one, because it decides whether the IDE's debugger stays at v1 permanently.
                total = add(total, i)
            print("total:", total)
 
+   When it answers, this becomes a `check-ide.sh` check the same day — a
+   working `frame variable` is exactly the kind of thing that regresses
+   silently.
+
 5. **Measure the size.** Xcode's `lldb-dap` is 67 MB, but ours links the
    shared LLVM rather than embedding it, so the increment should be far
    smaller. The distribution is 921 MB and the disk image 162 MB; this
@@ -162,7 +209,7 @@ one, because it decides whether the IDE's debugger stays at v1 permanently.
 GPU runtime, inside the debugger's process. `Plugin.cpp` releases AsyncRT on
 `SBDebugger::Destroy`, so somebody has already thought about this, but it is
 this fork's own AIR/Metal code meeting a process with strong opinions about
-global state. If the spike dies anywhere, expect it here.
+global state. If the spike dies anywhere unpatched, expect it here.
 
 ## What lands on the IDE side afterwards
 
@@ -173,7 +220,19 @@ Small, and already scaffolded — recorded so the estimate is honest:
 - `initCommands` on `launch` in `ide/dap.mojo`: one JSON key.
 - A variables pane: `scopes` then `variables` requests, both plain DAP, and
   the client's request/response machinery already exists.
+- Hover and a watch row are the `evaluate` request against the same
+  machinery — but they run Mojo code **in the debuggee**, so they arrive
+  as explicit gestures, not as something that fires on every mouse move.
 - `mojo break-on-raise` as a Debug-menu toggle: an `initCommands` entry.
+
+And one that is ours alone, noted here so it is not forgotten: a `class`
+keeps its fields in a single `__mojo_box_<Name>` ivar
+(COCOA_CLASS_DESIGN.md). To stock formatters that is an opaque blob on an
+`id`. The decorator-driven synthetic path in `Language/Formatters/` is where
+a provider goes so that `self` at a breakpoint inside a `RoastGridView`
+method shows `caret` and `anchor` — the compiler that invented the box and
+the debugger that displays it are in the same tree, which is the whole
+argument for shipping our own.
 
 ## Notes from building v1, which cost time and might cost yours
 
