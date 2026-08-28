@@ -248,6 +248,59 @@ void updateSubprogram(mlir::FunctionOpInterface op, StringAttr linkageName,
 /// Update the location of the op as if it was inlined at the given caller
 /// location, handling special location interfaces.
 void updateInlinedLoc(Operation *op, Location callerLoc);
+
+//===----------------------------------------------------------------------===//
+// Mojo debug metadata contract
+//===----------------------------------------------------------------------===//
+//
+// Mojo semantics that DWARF has no way to express travel as keyed
+// `DW_TAG_LLVM_annotation` children hung off the die they describe. The
+// compiler attaches them; MojoLLDB reads them back with
+// `MojoDWARFParser::extractMojoAnnotation`. These keys are the contract, and
+// they live here so the writer and the reader cannot drift apart.
+//
+// Rules that make this survivable:
+//
+//  - Keys are additive. A reader that does not know a key ignores it; a
+//    reader that finds no `mojo_debug_schema` is looking at a binary from
+//    before the contract and must fall back, not fail.
+//  - `mojo_source_name` is for DISPLAY and backward compatibility. It is a
+//    structural name, and names collide across modules, overloads and generic
+//    instantiations, so it must never be used as identity once identity keys
+//    exist.
+//  - Identity keys are opaque to the reader. It matches them; it does not
+//    parse them.
+//
+//  - **An annotation whose value repeats across dies does not survive the
+//    link.** Measured: emitting `mojo_debug_schema="1"` on every subprogram
+//    gives 83 annotations in the object file and ZERO in the linked dSYM,
+//    while the per-function `mojo_source_name` beside it survives 1:1.
+//    `dsymutil` keeps the unique ones and drops the constant. So every key
+//    must carry a value that varies with the die it hangs on. Identity keys
+//    satisfy this by construction; a per-module constant does not, and needs
+//    a different home (`DW_AT_producer` on the compile unit survives and is
+//    the obvious candidate; `DICompileUnitAttr` has no annotations list).
+//    Verify any new key in the LINKED dSYM, never in the object file.
+//
+/// Bump when the meaning of an existing key changes. Adding a key does not
+/// require a bump, because unknown keys are ignored by construction.
+constexpr unsigned kMojoDebugSchemaVersion = 1;
+
+/// The schema version a die was emitted under. Absent means "predates the
+/// contract" -- which is every binary today: see the survival rule above,
+/// this key has no surviving carrier yet and is not emitted. The reader
+/// handles its absence, so it can start being emitted the moment it has a
+/// home that outlives the linker.
+constexpr llvm::StringLiteral kMojoDebugSchema = "mojo_debug_schema";
+
+/// Human-readable structural identity, for display and for readers older than
+/// the identity keys. Not an identifier.
+constexpr llvm::StringLiteral kMojoSourceName = "mojo_source_name";
+
+/// Stable identity of an instantiated type, and of a declaration. Opaque:
+/// they key the semantic sidecar and are never parsed for meaning.
+constexpr llvm::StringLiteral kMojoTypeId = "mojo_type_id";
+constexpr llvm::StringLiteral kMojoDeclId = "mojo_decl_id";
 } // namespace M::DebugInfo
 
 #endif // SUPPORT_DEBUGINFODIALECT_IR_DEBUGINFOATTRS_H
