@@ -340,6 +340,148 @@ that: reads of locals and arguments, nested shadowing, frame-versus-
 persistent name collisions, unavailable locals failing with words, repeated
 evaluations and fix-it retries, and both scalar and nontrivial values.
 
+### Why `total + 41` cannot work yet: two erasures, not one
+
+The type-check failure above is not a plugin defect. It is the visible end of
+something that happens in the compiler, and it is worth stating precisely
+because two plausible-looking fixes are both wrong.
+
+There are **two** erasures, and they are independent:
+
+1. **Representation erasure** — `Meters` becomes the storage it lowers to,
+   `index`.
+2. **Declaration erasure** — the tie to the real `Meters` *declaration* (its
+   fields, its methods, its module) is gone.
+
+Repairing only the first buys nothing. A name attached to a scalar DIE is not
+a semantic Mojo type.
+
+**What is still intact, and where.** Instrumenting
+`createDebugVariableForVarDecl` (`KGEN/lib/LowerLIT/CheckLifetimes.cpp:103`),
+where the debug variable is built, shows full source identity at that point:
+
+    dist : lit.struct<@types::@Meters>
+    p    : !lit.struct<@types::@Point>
+    n    : !kgen.param<:meta<!lit.struct<@std::@builtin::@simd::@SIMD<
+             {:dtype index}, SIMDLength{1}>>>
+           sugar_alias(*"Int`0x1", @std::@builtin::@simd::@SIMD<...>)>
+
+Two things fall out of that third line. `Int` **is not a struct**: it is
+`SIMD[DType.index, 1]`, which is why its DWARF DIE is a one-element
+`DW_TAG_array_type` — that part was never a bug. And its surface name
+survives only as a `SugarAttr` (`SugarKind::Alias`), which the debug path
+discards: `MojoParser/DebugInfo.cpp:179` wraps `getCanonicalType(type)`.
+
+**Where it goes.** `LowerLITTypes.cpp:211`:
+
+    if (decl.isSingleElement())
+      return replacer.replace(fieldTypes.front(), LowerLITReplacer::AsType);
+
+This is the **type** domain, not a debug-info decision, and that is the whole
+difficulty: one replacement serves both codegen and debug info, so erasing
+for the value representation necessarily erases for the source type. Debug
+types are deferred by design — *"Use unresolved types now for simplicity,
+these will get resolved during compilation"* — so `DIUnresolvedMLIRType`
+resolves through the very replacer that performed the erasure and inherits
+it. `Int` and a user's own one-field struct converge on one shared DIE:
+
+    total  0x230  array_type      '!kgen.scalar<index>'
+    dist   0x230  array_type      '!kgen.scalar<index>'   <- Meters
+    sum    0x230  array_type      '!kgen.scalar<index>'
+    p      0x4f6  structure_type  'module types::struct Point'
+    label  0x514  structure_type  '...::struct String'
+
+`dist` does not merely share a *name* with the `Int`s. It has no DIE of its
+own. Check the `DW_AT_type` reference, not the presence of a name string: an
+unused `Meters` DIE elsewhere would read as a false positive.
+
+**Where the surviving names actually come from**, because this cost real
+time: not `LowerLITTypes.cpp`. Its `debugTypeConverter` never runs in this
+pipeline — both entry points instrumented, marker strings confirmed present
+in the staged binary, zero hits. `Point` is named at
+`KGENToLLVM/DebugInfoTypeConverter.cpp:293`,
+`DIStructType::get(type.getName(), memberTypes)`, where `StructInstanceType`
+still carries source identity. `Meters` never reaches it.
+
+**The approach to avoid.** Emitting a `DIBasicType` carrying `Meters`'
+encoded `SourceName` produces a `DW_TAG_base_type`, and
+`MojoDWARFParser.cpp:397` assumes every base type is a builtin scalar: it
+tries the name as a dtype, then as an MLIR type, fails both, and yields no
+`CompilerType` at all. Guessing surface types from scalar names is worse than
+incomplete — it is ambiguous, since a user's one-field wrapper lowers to the
+same scalar as `Int`, and it loses identity again for a one-field *pointer*
+wrapper.
+
+The model to hold instead:
+
+    source type:   Meters, with declaration identity and members
+    storage type:  index, describing how the bits are located and read
+
+- **Short term** — a named derived source type (`Meters -> index`), lowered
+  as `DW_TAG_typedef` or a dedicated annotated derived type, with
+  MojoDWARFParser decoding its `SourceName` while reading storage through the
+  underlying type. Cost worth knowing before choosing: **the DebugInfo
+  dialect has no derived/typedef type**. It has `DIArray`, `DIBasic`,
+  `DIMember`, `DIPointer`, `DIStruct`, `DISubroutine`,
+  `TargetIndependentPointer`, `DIUnresolvedMLIR`, `DIUnspecified`,
+  `DIVariant`, `DIVector` — so this means a new tablegen type plus bytecode,
+  LLVM lowering and parser support, not a small patch. (`DIVectorType` has an
+  optional name, the nearest existing hook, but it is vector-shaped and does
+  not cover the pointer wrapper.)
+- **Long term** — keep `DIStructType(Meters, members)` and describe
+  scalarization through the variable's location expression and fragments.
+  Type metadata describes the source program; location metadata describes
+  optimized storage. The flattening site already says so:
+  `TODO(#23914): Track this optimization with DWARF expressions.`
+- **Separately** — expression compilation must resolve that source name to
+  the *real* declaration. `getOrCreateStructDecl` (`MojoTypeSystem.cpp:1249`)
+  creates an empty synthetic decl, and `CompleteStructureTypeFromDWARF`
+  (`MojoDWARFParser.cpp:548`) adds `DW_TAG_member` fields only. Layout can be
+  restored that way; **methods never can**. User types need the module
+  declaration surface imported, not reconstructed from DWARF members. Expect
+  `Int` and a user type to diverge here: `lookupSingleMember` returns early
+  on an existing decl, so `Int` may bind to the real prelude declaration
+  while `Meters` gets only a skeleton — a partial success that reads like
+  progress and is not.
+
+**Acceptance has to distinguish all three**, or a fix to one will be mistaken
+for a fix to the others:
+
+    frame variable sum    -> Meters, and a readable value
+    expr sum.value        -> field / layout reconstruction
+    expr sum.method()     -> real declaration and method resolution
+
+Today all three fail at the same upstream point, so none of them
+discriminates yet.
+
+### The gate is not merely inert: it poisons unrelated expressions
+
+Measured with an expression that mentions no locals at all:
+
+    MOJO_LLDB_FRAME_LOCALS=0   expr 1 + 41   -> evaluates
+    MOJO_LLDB_FRAME_LOCALS=1   expr 1 + 41   -> fails
+
+With collection on, *every* frame local goes into the wrapper, so `Point` and
+`String` arrive as `Pointer[T]` with `AnyType` / `AnyStruct[Point]`
+mismatches and take the whole expression down with them. So "collection
+works" was true and incomplete: it works by breaking everything else. Frame
+locals need a type filter before they need anything else, and that is a
+stronger reason for the default-off gate than the one recorded above. A
+separate defect surfaced alongside it: `unable to locate module 'types'` —
+the expression parser cannot find the user's own module.
+
+### Provenance, since a stale artifact will happily confirm anything
+
+`tools/make-dist.sh` used to warn and continue when the debugger had not been
+built. `DIST_DIR` is normally reused, so that left the *previous*
+`libMojoLLDB.dylib` in place and every later test silently exercised a stale
+plugin. It now fails with the missing path named (`NO_DEBUGGER=1` to opt out)
+and prints the sha256 prefix of each staged binary. Stage into a fresh
+directory and compare hashes against `bazel-bin` before believing any
+negative result; build the fixture `-g -O0` and confirm zero
+`DW_AT_APPLE_optimized` DIEs, or an optimized-away local will look like a
+finding.
+
 ## The risk worth watching
 
 `MojoLLDB` deps include `//AsyncRT:RuntimeGlobals` and, under
