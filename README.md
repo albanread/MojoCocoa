@@ -119,33 +119,62 @@ block-taking API work with no adaptation layer.
 
 ### What that looks like
 
-A window, its delegate, and a repeating timer — all of it Mojo, called by
-Cocoa through the real `[NSApp run]` loop
-([`spikes/playground/p0_window.mojo`](spikes/playground/p0_window.mojo)):
+The unit of a desktop application is a class Cocoa can call — a delegate, a
+view, a timer target. Declaring one is now a language feature, not an API:
 
 ```mojo
-fn did_finish_launching(self_: P, cmd: P, note: P):
-    print("delegate: applicationDidFinishLaunching: (Cocoa -> Mojo)")
+class RoastAppDelegate:
+    """No base named, so it subclasses NSObject."""
 
-fn timer_tick(self_: P, cmd: P, timer: P):
-    ticks()[] += 1
-    set_label(String("ticks: ") + String(ticks()[]))
+    def applicationShouldTerminateAfterLastWindowClosed_(
+        self, app: ObjCObject
+    ) -> Bool:
+        return True
 
-def main() raises:
-    if not load_framework["AppKit"]():
-        raise Error("could not load AppKit")
 
-    with autoreleasepool():
-        let app = msg_send[ObjCObject, "NSApplication",
-                           "sharedApplication", is_class=True](NSApplication)
+class RoastGridView(NSView, NSTextInputClient):
+    """A real NSView subclass, conforming to a real protocol."""
 
-        var db = ObjCClassBuilder("PlaygroundAppDelegate")
-        db.add_method["applicationDidFinishLaunching:"](did_finish_launching)
-        let delegate = new_instance(db^.register())
+    var caret: Int   # per-instance state, living on the object itself
+
+    def mouseDown_(mut self, event: ObjCObject):
+        self.caret = offset_under(event)
+
+    def drawRect_(self, dirty: CGRect):
+        draw_the_visible_lines(dirty)
 ```
 
-`add_method` looks the selector's type encoding up in the SDK and checks your
-`fn` against it. A delegate method with the wrong shape does not compile.
+Everything the Objective-C runtime needs is derived or looked up, never
+written by hand:
+
+- the **selector** comes from the method name — a trailing `_` per colon, so
+  `mouseDown_` is `mouseDown:` — and a leading `_` keeps a method Mojo-only;
+- the **type encoding** is taken from the SDK when the selector exists on the
+  superclass chain, and derived when it is yours, so a delegate method with
+  the wrong shape does not compile;
+- **protocol conformance** is declared in the base list and registered for
+  real — AppKit asks `conformsToProtocol:` before it will speak
+  NSTextInputClient to a view, and merely implementing the selectors is not
+  conforming;
+- **fields** are per-instance state on the object: one hidden ivar holds a
+  box of `sizeof(Self)`, so a field can be any Mojo type rather than only
+  what ivar layout can describe, written through `mut self`;
+- a Mojo class can subclass an SDK class **or another Mojo class**, and
+  `@staticmethod` becomes a real class method;
+- **instantiating the class is what registers it** — methods, encodings,
+  protocols and all. There is no builder object, no encoding string, no IMP
+  cast, and no `cmd` slot anywhere in an application.
+
+The earlier way — an `ObjCClassBuilder` given method pointers and selector
+strings — still exists underneath as the runtime machinery, but no
+application code has been written that way since `class` landed: the IDE
+below replaced twenty-three `add_method` calls and twenty-one hand-written
+encoding strings with declarations.
+
+State that Cocoa's callbacks can reach completes the picture. A callback
+arrives with no closure, so `named_global` gives a program named, zero-
+initialised process globals that any `fn` or method can find — and for state
+that is per-instance by nature, the class's own fields now do the job.
 
 Cocoa's error convention — a trailing `NSError**` and failure signalled by the
 *return value* — becomes Mojo's, because the two are the same idea wearing
@@ -190,6 +219,18 @@ covering both keywords, weak references, error bridging, GCD with real blocks,
 and — deliberately — the failures: a misspelled selector, a wrong argument
 count, an `fn` that raises, a reassigned `let`. **A check that cannot fail
 proves nothing, so the must-fail half is half the suite.**
+
+The standing proof is that the desktop story is used daily, on itself.
+[`ide/roast.mojo`](ide/roast.mojo) is **Roast**, an IDE written in cocoa-mojo
+— a real Mac application window with menu bar, toolbar, a scrolling tab
+strip, a project sidebar, a build-and-run console, and a language-server
+client giving completions and diagnostics — about nine thousand lines whose
+every Cocoa callback lands on a `class` declaration. This repository's own
+IDE work is edited in it. Beside it, [`examples/`](examples/) holds thirteen
+projects it can open and run: windowed applications (`life`, `fluid`,
+`mandelbrot`, `ferns`, `fernwind` — the last three GPU-composited or
+GPU-computed), and five of Modular's own examples carried over **unmodified**,
+including their GPU kernels, which run on the Apple GPU as written.
 
 96 of 119 in-scope GPU tests pass; the rest is triaged, named, and written
 down in [`STATUS.md`](STATUS.md). `cocoamojo --run` JITs GPU code as happily as
