@@ -164,6 +164,19 @@ comptime g_sig_param = named_global["lsp.sig.param", List[String]]
 comptime g_sig_active = named_global["lsp.sig.active", Int]
 comptime g_sig_serial = named_global["lsp.sig.serial", Int]
 
+# Rename. A reply is a WorkspaceEdit -- edits in several files at once -- so
+# this is a flat list of (uri, start, end, text) with the positions already
+# taken apart. Flat parallel lists again, for the same reason as everywhere
+# else here: no allocation to read one.
+comptime g_ren_request = named_global["lsp.ren.request", Int]
+comptime g_ren_uri = named_global["lsp.ren.uri", List[String]]
+comptime g_ren_l0 = named_global["lsp.ren.l0", List[Int]]
+comptime g_ren_c0 = named_global["lsp.ren.c0", List[Int]]
+comptime g_ren_l1 = named_global["lsp.ren.l1", List[Int]]
+comptime g_ren_c1 = named_global["lsp.ren.c1", List[Int]]
+comptime g_ren_text = named_global["lsp.ren.text", List[String]]
+comptime g_ren_serial = named_global["lsp.ren.serial", Int]
+
 
 def inbox() -> String:
     if len(g_inbox()[]) == 0:
@@ -287,6 +300,114 @@ def request_signature(uri: String, line: Int, character: Int) -> Int:
     )
     g_sig_request()[] = id
     return id
+
+
+def request_rename(
+    uri: String, line: Int, character: Int, new_name: String
+) -> Int:
+    var params = _position_params(uri, line, character)
+    params.set(String("newName"), JSON(new_name))
+    let id = request(String("textDocument/rename"), params^)
+    g_ren_request()[] = id
+    return id
+
+
+def rename_count() -> Int:
+    return len(g_ren_l0()[])
+
+
+def rename_uri(i: Int) -> String:
+    return g_ren_uri()[][i] if i >= 0 and i < rename_count() else String()
+
+
+def rename_start_line(i: Int) -> Int:
+    return g_ren_l0()[][i] if i >= 0 and i < rename_count() else 0
+
+
+def rename_start_char(i: Int) -> Int:
+    return g_ren_c0()[][i] if i >= 0 and i < rename_count() else 0
+
+
+def rename_end_line(i: Int) -> Int:
+    return g_ren_l1()[][i] if i >= 0 and i < rename_count() else 0
+
+
+def rename_end_char(i: Int) -> Int:
+    return g_ren_c1()[][i] if i >= 0 and i < rename_count() else 0
+
+
+def rename_text(i: Int) -> String:
+    return g_ren_text()[][i] if i >= 0 and i < rename_count() else String()
+
+
+def rename_serial() -> Int:
+    return g_ren_serial()[]
+
+
+def clear_rename():
+    let u = g_ren_uri()
+    let a = g_ren_l0()
+    let b = g_ren_c0()
+    let c = g_ren_l1()
+    let d = g_ren_c1()
+    let t = g_ren_text()
+    while len(a[]) > 0:
+        _ = u[].pop()
+        _ = a[].pop()
+        _ = b[].pop()
+        _ = c[].pop()
+        _ = d[].pop()
+        _ = t[].pop()
+
+
+def _add_edit(uri: String, edit: JSON):
+    let rng = edit.get("range")[]
+    let start = rng.get("start")[]
+    let end = rng.get("end")[]
+    g_ren_uri()[].append(uri)
+    g_ren_l0()[].append(start.get("line")[].as_int())
+    g_ren_c0()[].append(start.get("character")[].as_int())
+    g_ren_l1()[].append(end.get("line")[].as_int())
+    g_ren_c1()[].append(end.get("character")[].as_int())
+    g_ren_text()[].append(edit.get("newText")[].as_string())
+
+
+def _take_rename(result: JSON):
+    """A WorkspaceEdit, in either of the two shapes the protocol defines.
+
+    `changes` is an object keyed by uri; `documentChanges` is an array of
+    {textDocument, edits}. Servers pick one, clients must read both, and a
+    rename that silently edits nothing because the reply came in the other
+    shape is the worst possible failure for this feature -- it looks like
+    "no occurrences" and it means "I did not look".
+    """
+    clear_rename()
+    if result.has("changes"):
+        let changes = result.get("changes")[]
+        # `keys` is parallel to `items` for an object, so the members are
+        # walked by index rather than by a lookup per key.
+        var k = 0
+        while k < len(changes.keys):
+            let uri = changes.keys[k]
+            let edits = changes.items[k][]
+            var i = 0
+            while i < edits.count():
+                _add_edit(uri, edits.at(i)[])
+                i += 1
+            k += 1
+    if result.has("documentChanges"):
+        let docs = result.get("documentChanges")[]
+        var d = 0
+        while d < docs.count():
+            let one = docs.at(d)[]
+            let uri = one.get("textDocument")[].get("uri")[].as_string()
+            let edits = one.get("edits")[]
+            var i = 0
+            while i < edits.count():
+                _add_edit(uri, edits.at(i)[])
+                i += 1
+            d += 1
+    g_ren_serial()[] += 1
 
 
 def reference_count() -> Int:
@@ -758,6 +879,8 @@ def stop():
     g_hover_request()[] = 0
     g_ref_request()[] = 0
     g_sig_request()[] = 0
+    g_ren_request()[] = 0
+    clear_rename()
     clear_references()
     clear_diagnostics()
     clear_completions()
@@ -860,6 +983,41 @@ def _handle(var msg: JSON):
         _take_diagnostics(msg.get("params")[])
         return
     # A reply to the outstanding completion request.
+    if msg.has("id") and msg.has("error"):
+        # An error reply has no `result`, so it fell through every branch
+        # below and left the request id live -- meaning the feature waited
+        # forever for an answer that had already arrived, and the NEXT reply
+        # with that id would have been taken for it. Clear whichever request
+        # it answers, and let the app see a serial move so it can say so.
+        let bad = msg.get("id")[].as_int()
+        let why = msg.get("error")[].get("message")[].as_string()
+        if bad != 0:
+            if bad == g_def_request()[]:
+                g_def_request()[] = 0
+                g_def_line()[] = -1
+                g_def_serial()[] += 1
+            elif bad == g_ref_request()[]:
+                g_ref_request()[] = 0
+                clear_references()
+                g_ref_serial()[] += 1
+            elif bad == g_sig_request()[]:
+                g_sig_request()[] = 0
+                _put_sig(String(), String())
+                g_sig_serial()[] += 1
+            elif bad == g_ren_request()[]:
+                g_ren_request()[] = 0
+                clear_rename()
+                g_ren_serial()[] += 1
+            elif bad == g_comp_request()[]:
+                g_comp_request()[] = 0
+                clear_completions()
+                g_comp_serial()[] += 1
+            elif bad == g_hover_request()[]:
+                g_hover_request()[] = 0
+                g_hover_serial()[] += 1
+            print("lsp: request", bad, "failed:", why)
+        return
+
     if msg.has("id") and msg.has("result"):
         let id = msg.get("id")[].as_int()
         if id == g_def_request()[] and id != 0:
@@ -877,6 +1035,10 @@ def _handle(var msg: JSON):
         if id == g_sig_request()[] and id != 0:
             g_sig_request()[] = 0
             _take_signature(msg.get("result")[])
+            return
+        if id == g_ren_request()[] and id != 0:
+            g_ren_request()[] = 0
+            _take_rename(msg.get("result")[])
             return
         if id == g_comp_request()[] and id != 0:
             # Answered, whatever we do with it: leaving the id live would let

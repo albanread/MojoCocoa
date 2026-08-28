@@ -63,7 +63,7 @@ import build
 import session
 import dap
 from json import JSON, parse
-from gridview import set_shown_path
+from gridview import set_shown_path, push_undo
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -481,11 +481,21 @@ comptime g_probe_line = named_global["roast.probe.line", Int]
 comptime g_probe_col = named_global["roast.probe.col", Int]
 comptime g_probe_kind = named_global["roast.probe.kind", Int]
 comptime g_probe_done = named_global["roast.probe.done", Int]
+comptime g_probe_name = named_global["roast.probe.name", List[String]]
+
+
+def _put_rename_name(var name: String):
+    let slot = g_probe_name()
+    if len(slot[]) == 0:
+        slot[].append(name^)
+    else:
+        slot[][0] = name^
 comptime g_hover_seen = named_global["roast.hover.seen", Int]
 comptime g_ref_seen = named_global["roast.ref.seen", Int]
 comptime g_sig_seen = named_global["roast.sig.seen", Int]
 # Where the cycle through references has got to.
 comptime g_ref_at = named_global["roast.ref.at", Int]
+comptime g_ren_seen = named_global["roast.ren.seen", Int]
 
 
 def dap_adapter() -> String:
@@ -934,6 +944,263 @@ def _go_to_reference(index: Int):
     )
 
 
+def _offset_of(rope: Rope, line: Int, character: Int) -> Int:
+    """A protocol position as a byte offset in this rope.
+
+    `character` counts UTF-16 units, which for an identifier is the same as
+    bytes and for a line with an emoji in it is not. Walked rather than
+    assumed, because the one time it differs is the one time a rename would
+    silently cut a character in half.
+    """
+    if line < 0 or line >= rope.line_count():
+        return -1
+    let start = rope.line_start(line)
+    if character <= 0:
+        return start
+    let text = rope.line(line)
+    var seen = 0
+    var at = start
+    for c in text.codepoints():
+        if seen >= character:
+            break
+        seen += 2 if Int(c) > 0xFFFF else 1
+        at += len(String(c).as_bytes())
+    return at
+
+
+def ask_rename(new_name: String) -> Bool:
+    if not lsp.is_ready() or document.current_uri() == "":
+        set_status(String("No language server"))
+        return False
+    if len(g_buffer()[]) == 0 or new_name == "":
+        return False
+    let buf = g_buffer()[][0]
+    let line = buf.line_of_offset(g_caret()[])
+    let col = byte_to_utf16(g_caret()[]) - byte_to_utf16(buf.line_start(line))
+    flush_pending_edit()
+    _ = lsp.request_rename(document.current_uri(), line, col, new_name)
+    set_status(String("Renaming…"))
+    return True
+
+
+def _rename_path(i: Int) -> String:
+    let full = lsp.rename_uri(i)
+    if full.startswith("file://"):
+        return String(full[byte=7 : full.byte_length()])
+    return full
+
+
+def _apply_rename():
+    """Apply the WorkspaceEdit the server sent back.
+
+    Two rules decide whether this is correct or a corrupter of files.
+
+    Edits within a file are applied BACK TO FRONT. Every edit is a range in
+    the text as it was when the server read it, so applying the first one
+    shifts every range after it; going backwards means no edit ever moves a
+    range that has not been applied yet. The server does not promise an
+    order, so they are sorted here rather than trusted.
+
+    And each file gets ONE undo entry, taken before its first edit. A rename
+    is one action to the person who asked for it, and undoing it one
+    occurrence at a time would be its own kind of damage.
+
+    Files are left dirty rather than saved. A rename touching a file nobody
+    has looked at is exactly when someone wants to look before committing to
+    it, and Build saves dirty files anyway.
+    """
+    let n = lsp.rename_count()
+    if n == 0:
+        print("roast: renamed 0 — the server returned no edits")
+        set_status(String("Nothing renamed — no occurrences, or not renameable"))
+        return
+    let started_at = document.current_index()
+    var files = 0
+    var edits_done = 0
+
+    # One pass per distinct file, found by scanning rather than by building a
+    # set: a rename touches a handful of files, and a set would cost more to
+    # write than it saves.
+    var seen = List[String]()
+    var i = 0
+    while i < n:
+        let path = _rename_path(i)
+        var already = False
+        for s in seen:
+            if s == path:
+                already = True
+                break
+        if already or path == "" or not file_exists(path):
+            i += 1
+            continue
+        seen.append(path)
+
+        let uri = String("file://") + path
+        var tab = document.index_of(uri)
+        if tab < 0:
+            if not load_file(path):
+                i += 1
+                continue
+            tab = document.index_of(uri)
+        if tab < 0 or not switch_document(tab):
+            if document.current_index() != tab:
+                i += 1
+                continue
+
+        # This file's edits, sorted by position, applied backwards.
+        var idx = List[Int]()
+        var j = 0
+        while j < n:
+            if _rename_path(j) == path:
+                idx.append(j)
+            j += 1
+        # Insertion sort by (line, character): a handful of edits, and the
+        # order has to be exact rather than fast.
+        var a = 1
+        while a < len(idx):
+            let key = idx[a]
+            var b = a - 1
+            while b >= 0 and (
+                lsp.rename_start_line(idx[b]) > lsp.rename_start_line(key)
+                or (
+                    lsp.rename_start_line(idx[b]) == lsp.rename_start_line(key)
+                    and lsp.rename_start_char(idx[b])
+                    > lsp.rename_start_char(key)
+                )
+            ):
+                idx[b + 1] = idx[b]
+                b -= 1
+            idx[b + 1] = key
+            a += 1
+
+        if len(g_buffer()[]) == 0:
+            i += 1
+            continue
+        push_undo()
+        var k = len(idx) - 1
+        var applied = 0
+        while k >= 0:
+            let e = idx[k]
+            let rope = g_buffer()[][0]
+            let from_ = _offset_of(
+                rope, lsp.rename_start_line(e), lsp.rename_start_char(e)
+            )
+            let to_ = _offset_of(
+                rope, lsp.rename_end_line(e), lsp.rename_end_char(e)
+            )
+            if from_ >= 0 and to_ >= from_:
+                set_rope(rope.replace(from_, to_, lsp.rename_text(e)))
+                applied += 1
+            k -= 1
+        if applied > 0:
+            files += 1
+            edits_done += applied
+            set_caret(min(g_caret()[], g_buffer()[][0].byte_length()))
+        i += 1
+
+    _ = switch_document(started_at)
+    after_switch()
+    refresh_tabs()
+    refresh_grid()
+    print("roast: renamed", edits_done, "in", files, "file(s)")
+    if getenv("ROAST_RENAME") != "" and len(g_buffer()[]) > 0:
+        # The count is not the claim; the text is. A door that reports two
+        # edits over a buffer saying something else is the exact failure a
+        # rename has, and the only way to see it is to print the lines.
+        let rope = g_buffer()[][0]
+        var ln = 0
+        while ln < rope.line_count():
+            let text = rope.line(ln)
+            if text != "":
+                print("roast: line", ln + 1, repr(text))
+            ln += 1
+    set_status(
+        String("Renamed ")
+        + String(edits_done)
+        + String(" occurrence" if edits_done == 1 else " occurrences")
+        + String(" in ")
+        + String(files)
+        + String(" file" if files == 1 else " files")
+        + String(" — unsaved")
+    )
+
+
+def ask_new_name(old: String) -> String:
+    """The rename prompt. An alert with a text field in it, which is what a
+    Mac app uses when it needs one short string and nothing else."""
+    with autoreleasepool():
+        let NSAlert = ObjCClass.lookup["NSAlert"]()
+        var alert = msg_send[ObjCObject, "NSAlert", "alloc", is_class=True](
+            NSAlert.as_object()
+        )
+        alert = msg_send[ObjCObject, "NSObject", "init"](alert)
+        _ = msg_send[ObjCObject, "NSAlert", "setMessageText:"](
+            alert, nsstring(String("Rename")).ptr()
+        )
+        _ = msg_send[ObjCObject, "NSAlert", "setInformativeText:"](
+            alert,
+            nsstring(
+                String("Every use in the project is renamed with it.")
+            ).ptr(),
+        )
+        _ = msg_send[ObjCObject, "NSAlert", "addButtonWithTitle:"](
+            alert, nsstring(String("Rename")).ptr()
+        )
+        _ = msg_send[ObjCObject, "NSAlert", "addButtonWithTitle:"](
+            alert, nsstring(String("Cancel")).ptr()
+        )
+        let NSTextField = ObjCClass.lookup["NSTextField"]()
+        var field = msg_send[
+            ObjCObject, "NSTextField", "alloc", is_class=True
+        ](NSTextField.as_object())
+        field = msg_send[ObjCObject, "NSView", "initWithFrame:"](
+            field, rect(0.0, 0.0, 260.0, 24.0)
+        )
+        _ = msg_send[ObjCObject, "NSControl", "setStringValue:"](
+            field, nsstring(old).ptr()
+        )
+        _ = msg_send[ObjCObject, "NSAlert", "setAccessoryView:"](
+            alert, field.ptr()
+        )
+        let win = msg_send[ObjCObject, "NSAlert", "window"](alert)
+        _ = msg_send[Bool, "NSWindow", "makeFirstResponder:"](win, field.ptr())
+        if msg_send[Int, "NSAlert", "runModal"](alert) != 1000:
+            return String()
+        return ns_to_string(
+            msg_send[ObjCObject, "NSControl", "stringValue"](field)
+        )
+
+
+def word_under_caret() -> String:
+    """The identifier the caret is in, for the prompt's initial value."""
+    if len(g_buffer()[]) == 0:
+        return String()
+    let buf = g_buffer()[][0]
+    let line = buf.line_of_offset(g_caret()[])
+    let start = buf.line_start(line)
+    let text = buf.line(line)
+    let at = g_caret()[] - start
+    let bytes = text.as_bytes()
+    var a = at
+    while a > 0 and _is_ident_byte(Int(bytes[a - 1])):
+        a -= 1
+    var b = at
+    while b < len(bytes) and _is_ident_byte(Int(bytes[b])):
+        b += 1
+    if b <= a:
+        return String()
+    return String(text[byte=a:b])
+
+
+def _is_ident_byte(b: Int) -> Bool:
+    return (
+        (b >= 0x30 and b <= 0x39)
+        or (b >= 0x41 and b <= 0x5A)
+        or (b >= 0x61 and b <= 0x7A)
+        or b == 0x5F
+    )
+
+
 def _show_signature():
     """The signature, with the argument the caret is in called out.
 
@@ -1331,6 +1598,22 @@ class RoastActions:
         except:
             pass
 
+    def roastRename_(self, sender: ObjCObject):
+        try:
+            if not lsp.is_ready():
+                set_status(String("No language server"))
+                return
+            let old = word_under_caret()
+            if old == "":
+                set_status(String("Put the caret on a name first"))
+                return
+            let fresh = ask_new_name(old)
+            if fresh == "" or fresh == old:
+                return
+            _ = ask_rename(fresh)
+        except:
+            pass
+
     def roastSignature_(self, sender: ObjCObject):
         try:
             if not ask_signature():
@@ -1566,6 +1849,9 @@ class RoastActions:
                     elif lsp.signature_serial() != g_sig_seen()[]:
                         g_sig_seen()[] = lsp.signature_serial()
                         _show_signature()
+                    elif lsp.rename_serial() != g_ren_seen()[]:
+                        g_ren_seen()[] = lsp.rename_serial()
+                        _apply_rename()
                     else:
                         _report_diagnostics()
                     refresh_grid()
@@ -1628,6 +1914,10 @@ class RoastActions:
                     set_caret(buf.line_start(want) + g_probe_col()[] - 1)
             if g_probe_kind()[] == 1:
                 _ = ask_references()
+            elif g_probe_kind()[] == 3:
+                let slot = g_probe_name()
+                if len(slot[]) > 0:
+                    _ = ask_rename(slot[][0])
             else:
                 _ = ask_signature()
 
@@ -3342,6 +3632,15 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         nav, String("Signature Help"), String("roastSignature:"),
         String("k"), actions,
     )
+    _ = msg_send[ObjCObject, "NSMenu", "addItem:"](
+        nav,
+        msg_send[ObjCObject, "NSMenuItem", "separatorItem", is_class=True](
+            ObjCClass.lookup["NSMenuItem"]().as_object()
+        ).ptr(),
+    )
+    _ = add_item(
+        nav, String("Rename…"), String("roastRename:"), String("r"), actions,
+    )
 
     # Debug. Xcode's key equivalents, because the muscle memory of anyone
     # who debugs on a Mac already has them: F6 step over, F7 in, F8 out.
@@ -3793,6 +4092,25 @@ def main() raises:
                 set_status(
                     String("Restored ") + String(back) + String(" files")
                 )
+
+        # Rename, reachable without a prompt: line:col:newname. The alert
+        # needs a hand on the keyboard, so the door skips it and calls the
+        # request directly -- what is worth checking is the WorkspaceEdit
+        # coming back and being applied, not that an NSAlert can be typed in.
+        let ren = getenv("ROAST_RENAME")
+        if ren != "":
+            let c1 = ren.find(":")
+            if c1 > 0:
+                let rest = String(ren[byte = c1 + 1 : ren.byte_length()])
+                let c2 = rest.find(":")
+                if c2 > 0:
+                    g_probe_line()[] = Int(String(ren[byte=:c1]))
+                    g_probe_col()[] = Int(String(rest[byte=:c2]))
+                    _put_rename_name(
+                        String(rest[byte = c2 + 1 : rest.byte_length()])
+                    )
+                    g_probe_kind()[] = 3
+                    print("roast: rename asked at", ren)
 
         # Find-all-references and signature help, reachable without a
         # mouse. Same line:col shape as ROAST_DEFINE, and the same wait for

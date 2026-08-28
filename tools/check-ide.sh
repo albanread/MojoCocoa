@@ -423,6 +423,33 @@ else
   bad "find references" "$(echo "$refout" | grep -m1 'references' || echo 'no answer')"
 fi
 
+# Rename, against the real server. `a` is a local used twice, and the check
+# is the TEXT rather than a count: a rename that reports two edits over a
+# buffer saying something else is the exact failure this feature has.
+mkdir -p "$TMP/renproj"
+cat > "$TMP/renproj/main.mojo" <<'RENEOF'
+def helper(x: Int) -> Int:
+    return x * 2
+
+
+def main():
+    var a = helper(1)
+    var b = helper(2)
+    print(a + b)
+RENEOF
+renout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_PROJECT="$TMP/renproj" \
+         ROAST_OPEN="$TMP/renproj/main.mojo" ROAST_RENAME="6:9:total" \
+         ROAST_AUTOCLOSE_TICKS=140 timeout 240 "$TMP/roast" 2>&1)
+if ! echo "$renout" | grep -q 'roast: renamed 2 in 1 file'; then
+  bad "rename" "$(echo "$renout" | grep -m1 'renamed\|failed:' || echo 'no answer')"
+elif echo "$renout" | grep -q "var total = helper(1)" \
+  && echo "$renout" | grep -q "print(total + b)" \
+  && echo "$renout" | grep -q "var b = helper(2)"; then
+  ok "rename" "both uses renamed, the neighbouring name untouched"
+else
+  bad "rename" "the count was right and the text was not"
+fi
+
 # Documents from the Finder. Two halves, because they fail apart: whether
 # AppKit can FIND the handler is selector derivation, and whether it works is
 # open_path. A file becomes a tab, a folder becomes the project.
