@@ -86,6 +86,11 @@ comptime g_in = named_global["lsp.in", Int]      # NSFileHandle we write to
 comptime g_read_fd = named_global["lsp.readfd", Int]
 comptime g_next_id = named_global["lsp.nextid", Int]
 comptime g_ready = named_global["lsp.ready", Int]
+# Bumped each time a server finishes its handshake. The app watches this to
+# know when to announce the documents that are already open -- a server that
+# just became ready knows about none of them, whether this is startup or a
+# project-change restart handing us a brand-new process.
+comptime g_ready_serial = named_global["lsp.ready.serial", Int]
 
 # Bytes that arrived but do not yet make a whole message. A one-element list,
 # for the same reason every other buffer here is: a zero-initialised global
@@ -146,6 +151,11 @@ def is_running() -> Bool:
 
 def is_ready() -> Bool:
     return g_ready()[] != 0
+
+
+def ready_serial() -> Int:
+    """How many times a server has completed its handshake."""
+    return g_ready_serial()[]
 
 
 def diagnostic_count() -> Int:
@@ -567,6 +577,7 @@ def _handle(var msg: JSON):
             var empty = JSON.object()
             notify(String("initialized"), empty^)
             g_ready()[] = 1
+            g_ready_serial()[] += 1
 
 
 def _completion_still_wanted() -> Bool:

@@ -120,6 +120,8 @@ comptime TAB_CLOSE = 16.0
 comptime TAB_GUTTER = 14.0
 comptime g_tab_scroll = named_global["roast.tab.scroll", Int]
 comptime g_pending_completion = named_global["roast.completing", Int]
+# The last handshake this app has announced its open documents to.
+comptime g_lsp_announced = named_global["roast.lsp.announced", Int]
 comptime g_comp_seen = named_global["roast.comp.seen", Int]
 
 
@@ -772,6 +774,16 @@ class RoastActions:
         # editor that has stopped responding.
         try:
             if lsp.is_running():
+                # A handshake that just completed means a server that knows
+                # nothing yet -- startup, or the fresh process a project
+                # change launched. Tell it what is open before asking it
+                # anything.
+                if (
+                    lsp.is_ready()
+                    and g_lsp_announced()[] != lsp.ready_serial()
+                ):
+                    g_lsp_announced()[] = lsp.ready_serial()
+                    announce_open_documents()
                 if lsp.poll() > 0:
                     # A completion reply arrives as a bump in the serial; showing
                     # the popup is the app's job, not the client's.
@@ -1001,6 +1013,30 @@ class RoastActions:
 
     def controlTextDidChange_(self, note: ObjCObject):
         self.roastFindChanged_(note)
+
+
+def announce_open_documents():
+    """did_open for every open tab.
+
+    load_file announces a file when the server is ready at the time -- which
+    it is not at startup (the handshake takes a poll cycle), and not for any
+    tab that was open when a project change swapped in a fresh server process.
+    Those documents were silently unknown: no diagnostics until an edit, and
+    then a didChange for a document the server was never told about, which the
+    protocol does not define. This runs when the handshake completes, however
+    many times that happens.
+    """
+    var i = 0
+    var told = 0
+    while i < document.count():
+        let uri = document.uri_at(i)
+        if uri != "":
+            lsp.did_open(uri, document.text_at(i))
+            document.mark_announced(i)
+            told += 1
+        i += 1
+    lsp.set_shown_uri(document.current_uri())
+    print("roast: announced", told, "documents to the server")
 
 
 def refresh_grid():
@@ -1568,10 +1604,16 @@ def after_switch():
                 grid, document_size(frame.size.width)
             )
             _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](grid, True)
-    # The server is told about whichever document is showing, so its
-    # diagnostics are about the text on screen.
+    # The server is told about whichever document is showing -- but only if
+    # it is behind. This used to resend the full text on every switch, which
+    # on a large file made changing tabs cost a copy of the buffer and the
+    # server a re-parse of text it already had.
     try:
-        if lsp.is_ready() and document.current_uri() != "":
+        if (
+            lsp.is_ready()
+            and document.current_uri() != ""
+            and g_revision()[] != document.sent_revision()
+        ):
             lsp.did_change(
                 document.current_uri(), g_revision()[], g_buffer_text()
             )
@@ -1829,9 +1871,9 @@ def lsp_root() -> String:
 def start_lsp() -> Bool:
     """(Re)start the server rooted at the current workspace.
 
-    Called at launch and again whenever the project changes. The server is
-    told about the current document afterwards, because a fresh process knows
-    nothing about what is already open.
+    Called at launch and again whenever the project changes. The open
+    documents are announced when the new process finishes its handshake,
+    not here -- see announce_open_documents.
     """
     let server = lsp_server_path()
     let root = lsp_root()
@@ -1843,7 +1885,10 @@ def start_lsp() -> Bool:
     if not lsp.start(server, String("file://") + root, lsp_import_path()):
         return False
     lsp.set_shown_uri(document.current_uri())
-    lsp.did_open(document.current_uri(), g_buffer_text())
+    # No didOpen here: the protocol says nothing goes out before the server
+    # answers initialize, and this used to fire immediately -- with uri ""
+    # when the current tab was the scratch buffer. The open documents are
+    # announced when the handshake completes, in announce_open_documents.
     let slot = g_lsp_root()
     if len(slot[]) == 0:
         slot[].append(root)
@@ -1955,10 +2000,16 @@ def open_folder(var path: String):
                 ObjCObject(g_outline()[])
             )
     # A server rooted at the old project is answering about files it is no
-    # longer looking at. Restart it here rather than at launch only -- but
-    # only if one is already running, because at launch this runs before
-    # there is a document to announce.
-    if lsp.is_running() and lsp_root() != _lsp_root_now():
+    # longer looking at -- and an app launched with only its scratch buffer
+    # has no root at all, so its startup start_lsp() did nothing. Opening a
+    # folder is the moment a workspace exists: start the server if none is
+    # running, re-root it if it is rooted elsewhere. Without the first arm,
+    # picking an example in a fresh window meant no server for the whole
+    # session -- no completions, no diagnostics, silently.
+    if not lsp.is_running():
+        if start_lsp():
+            print("roast: language server started at", lsp_root())
+    elif lsp_root() != _lsp_root_now():
         if start_lsp():
             print("roast: language server re-rooted at", project_root())
     set_status(String("Project: ") + project_root())
@@ -1986,6 +2037,14 @@ def save_current() -> Bool:
                     msg_send[ObjCObject, "NSURL", "path"](url)
                 )
                 document.set_current_uri(String("file://") + path)
+                # Under its new name this is a document the server has never
+                # heard of; announce it so diagnostics follow the save.
+                if lsp.is_ready():
+                    lsp.did_open(
+                        String("file://") + path, g_buffer_text()
+                    )
+                    document.set_sent_revision(g_revision()[])
+                    lsp.set_shown_uri(String("file://") + path)
             # The rope is written from a snapshot, so a save cannot tear even
             # if the keyboard is busy -- which is the whole point of the tree
             # being immutable.

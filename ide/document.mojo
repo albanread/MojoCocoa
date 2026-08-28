@@ -317,6 +317,27 @@ def set_current_uri(var uri: String):
         docs[][at].uri = uri^
 
 
+def text_at(index: Int) -> String:
+    """A document's full text: the working set for the current tab, the
+    stored rope for a background one."""
+    if index < 0 or index >= count():
+        return String()
+    if index == current_index() and len(g_buffer()[]) > 0:
+        return g_buffer()[][0].to_string()
+    return g_docs()[][index].rope.to_string()
+
+
+def mark_announced(index: Int):
+    """The server was just told this document's current text."""
+    if index < 0 or index >= count():
+        return
+    let docs = g_docs()
+    if index == current_index():
+        docs[][index].sent_revision = g_revision()[]
+    else:
+        docs[][index].sent_revision = docs[][index].revision
+
+
 def dirty_count() -> Int:
     var n = 0
     var i = 0

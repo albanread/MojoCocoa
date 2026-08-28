@@ -199,13 +199,26 @@ else
   bad "example menu" "$(echo "$exout" | grep -m1 'project rows:' || echo 'no rows reported')"
 fi
 # The tab bar half, and the working tree rather than the distribution, so a
-# stale share/examples cannot make this pass.
+# stale share/examples cannot make this pass. Sixty ticks, not twelve: the
+# same run also has to live long enough for the language server handshake,
+# so the announce check below is a check and not a race.
 exout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_EXAMPLE="$PWD/examples/fern" \
-        ROAST_AUTOCLOSE_TICKS=12 timeout 90 "$TMP/roast" 2>&1)
+        ROAST_AUTOCLOSE_TICKS=60 timeout 120 "$TMP/roast" 2>&1)
 if echo "$exout" | grep -q 'roast: example files: 3'; then
   ok "example project" "fern opens its three files, not just main.mojo"
 else
   bad "example project" "$(echo "$exout" | grep -m1 'example files:' || echo 'no count reported')"
+fi
+# Opening a project in a fresh window must START the server -- it used to
+# only re-root a running one, so an app launched onto its scratch buffer had
+# no server for the whole session -- and a server that just finished its
+# handshake knows nothing, so every open tab is announced to it then.
+if ! echo "$exout" | grep -q 'roast: language server started'; then
+  bad "server starts" "opening a project did not start the language server"
+elif echo "$exout" | grep -q 'roast: announced 3 documents to the server'; then
+  ok "server told" "all three open files announced after the handshake"
+else
+  bad "server told" "$(echo "$exout" | grep -m1 'announced' || echo 'no announce before autoclose')"
 fi
 # The first named_globals migrated onto class fields: the tab bar builds its
 # label attributes lazily in its own box, and says so exactly once.
