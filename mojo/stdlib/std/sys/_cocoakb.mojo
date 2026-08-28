@@ -428,3 +428,30 @@ comptime cocoakb_p_selector_ret_kind[sel: StringLiteral] = Int(
 )
 """The same, keyed on the selector alone: the majority reading across every
 class that implements it, for a receiver whose class is not known."""
+
+
+comptime cocoakb_p_method_ret_class[
+    cls: StringLiteral, sel: StringLiteral, is_class: StringLiteral
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "method_ret_objc_class" : !kgen.string, `,
+        cls.value,
+        `, `,
+        sel.value,
+        `, `,
+        is_class.value,
+        `> : !kgen.string`,
+    ]
+)
+"""WHICH object `cls`'s `sel` returns, where that is knowable.
+
+The method's own encoding never says -- every object is a bare `@` -- but a
+PROPERTY's attribute string does, and a property is read by a selector. That
+plus the instancetype family covers a little over half of every
+object-returning instance method; the rest needs the SDK headers.
+
+An answer of `@self` is the instancetype rule and means the receiver's own
+class. `alloc`, `new` and the `init` family are declared on NSObject, so
+resolving them through the superclass chain would otherwise say that
+`[NSString alloc]` is an NSObject.
+"""

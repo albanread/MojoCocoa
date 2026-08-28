@@ -223,26 +223,34 @@ its encoding from the SDK, and sends a real message.
 **So the call direction needs no compiler work.** It is library design, which
 is where this document always wanted it.
 
-**Return types: what is recoverable is the KIND, not the CLASS.** An earlier
-draft of this note said "return types are not recoverable", which was too
-strong, and MacModula2 is the reason to correct it — it has shipped this and
-its README claims "return types inferred from a 5,500-plus-selector database
-so `[arr count]` is a `CARDINAL` and `[view frame]` is an `NSRect`, no casts."
+**Return types: the kind, and — after being told to look again — most of the
+class too.** Two drafts of this note were wrong in opposite directions. The
+first said "return types are not recoverable"; the second corrected that to
+"the KIND is recoverable, the CLASS is not, and only the headers have it".
 
-Reading how: `library/macrtdef/cocoa-selectors.json`, 5,587 selectors over 40
-classes, each `{"ret": "..."}`. And `uppercaseString` is `"@"`. `textStorage`
-is `"@"`. Its generator's `m2_type` maps `"@" => "ObjC.Id"`, full stop, and
-its own documentation says an unbound selector "just defaults to an `id`
-result". So **MacModula2 does not recover the class of a returned object
-either** — nobody does, because the only place that information exists is the
-SDK headers.
+The second was still wrong, and the question that broke it was "the class
+returned is returned at runtime as an id, how can we not know the type?"
 
-What it recovers, and what makes the "no casts" claim true, is the result's
-KIND, taken from the same `@encode` string we already hold: `q/l/i/s` →
-INTEGER, `Q/L/I/S` → CARDINAL, `d/f` → REAL, `B/c/C` → BOOLEAN, `v` → void,
-and a struct matched by name to `NSRect`/`NSPoint`/`NSSize`/`NSRange` with
-anything else synthesized as a flat record. That is a lot of typing for free,
-and we have every byte of the input for it.
+**The kind** comes from the `@encode` string, and MacModula2 has shipped
+exactly this: `q/l/i/s` → INTEGER, `Q/L/I/S` → CARDINAL, `d/f` → REAL,
+`B/c/C` → BOOLEAN, structs matched by name to NSRect/NSPoint/NSSize/NSRange.
+`method_ret_kind` in CocoaBaseMCP reproduces its answers on every selector
+checked.
+
+**The class** is not in a method's encoding — a bare `@`, 48 of 522,170
+carry the typed form, and BridgeSupport records only the retvals that are
+unusual. That is where both earlier drafts stopped. But it IS in a
+**property's** attribute string: `T@"NSTextStorage"`, and a property is read
+by a selector, so a getter's return class is simply known. We were ingesting
+no properties at all. `rt_properties` (145,196 of them) plus the instancetype
+family now answers **88,117 of 160,797** object-returning instance methods,
+and `[textView textStorage]` — the example both drafts used to argue it was
+impossible — is an `NSTextStorage`.
+
+What remains header-only is the non-property surface:
+`stringByAppendingString:`, `objectAtIndex:`. Reading the headers with clang
+is the route to those, and it stays a database change rather than a compiler
+one.
 
 **That one compiler task is done.** `cocoakb_query` folds at attribute level
 now (`KGENAttrs.cpp`), so a database answer is an ordinary compile-time

@@ -21,7 +21,9 @@
 # own parameter. Routed through `_get_kgen_string` instead they arrive as a
 # `data_to_str` expression, which does not fold at attribute level, and the
 # chain breaks one level below the part that was fixed.
-from std.sys._cocoakb import cocoakb_p_method_ret_kind
+from std.sys._cocoakb import (
+    cocoakb_p_method_ret_kind, cocoakb_p_method_ret_class,
+)
 from std.objc import (
     ObjCObject, msg_send, load_framework, nsstring, ns_to_string, CGRect,
 )
@@ -66,5 +68,26 @@ def main() raises:
     ](s, s.ptr())
     if not empty:
         raise Error("a boolean result was not typed as a boolean")
+
+    # And WHICH object, which I twice claimed was unknowable. It is not in
+    # the method's encoding -- every object there is a bare `@` -- but a
+    # PROPERTY's attribute string carries `T@"NSTextStorage"`, and a property
+    # is read by a selector. Ingesting properties covers a little over half of
+    # every object-returning instance method.
+    comptime storage = cocoakb_p_method_ret_class[
+        "NSTextView", "textStorage", "0"
+    ]
+    comptime window = cocoakb_p_method_ret_class["NSView", "window", "0"]
+    if storage != StaticString("NSTextStorage") or window != StaticString("NSWindow"):
+        print("textStorage ->", storage, " window ->", window)
+        raise Error("the returned class did not come from the SDK")
+
+    # `@self` is the instancetype rule: alloc/new/init answer the RECEIVER's
+    # class, and they are declared on NSObject, so a chain-walking lookup
+    # would otherwise report [NSString alloc] as an NSObject.
+    comptime allocd = cocoakb_p_method_ret_class["NSObject", "alloc", "1"]
+    if allocd != StaticString("@self"):
+        print("alloc ->", allocd)
+        raise Error("instancetype was resolved to a fixed class")
 
     print("typed results OK")

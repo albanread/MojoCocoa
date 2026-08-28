@@ -124,6 +124,20 @@ constexpr StringRef kMethodArgClassesSQL =
 // type. The table itself stays readable.
 constexpr StringRef kMethodRetKindSQL =
     COCOAKB_METHOD_CTE("unicode(m.kind)", "method_ret_kind");
+
+// WHICH object a method returns, where that is knowable. The method's own
+// encoding never says -- `method_getTypeEncoding` gives a bare `@` for every
+// object in the system -- but a PROPERTY's attribute string does
+// (`T@"NSTextStorage"`), and a property is read by a selector. That plus the
+// instancetype family covers a little over half of every object-returning
+// instance method.
+//
+// An answer of `@self` is the instancetype rule and means "the receiver's own
+// class": those methods are declared on NSObject, so a chain-walking lookup
+// would otherwise report that `[NSString alloc]` is an NSObject. The caller
+// substitutes the receiver.
+constexpr StringRef kMethodRetObjCClassSQL =
+    COCOAKB_METHOD_CTE("m.ret_class", "method_ret_class");
 #undef COCOAKB_METHOD_CTE
 
 // Selector-keyed ABI: for a protocol-typed object (id<MTLTexture>, a Cocoa
@@ -170,6 +184,10 @@ const CocoaKBQueryDef kCocoaQueries[] = {
     {"method_ret_class", 3, kMethodRetClassSQL},
     {"method_arg_classes", 3, kMethodArgClassesSQL},
     {"method_ret_kind", 3, kMethodRetKindSQL},
+    // Distinct from `method_ret_class` above, which is an ABI REGISTER
+    // class (g/f/h4/...). This one is the Objective-C class of the
+    // object that comes back.
+    {"method_ret_objc_class", 3, kMethodRetObjCClassSQL},
     {"selector_variant", 1, kSelectorVariantSQL},
     {"selector_arg_classes", 1, kSelectorArgClassesSQL},
     {"selector_ret_class", 1, kSelectorRetClassSQL},
