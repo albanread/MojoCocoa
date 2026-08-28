@@ -14,7 +14,9 @@ which opens itself when a build starts and toggles with ⌘0.
     mandelbrot/   a live-zooming fractal at 60fps, every pixel computed
                   and coloured by one Mojo kernel on the Apple GPU
     ferns/        a landscape of Barnsley ferns growing live over a
-                  procedural lawn, under a cloudy dusk sky
+                  procedural lawn, under a cloudy dusk sky (CPU)
+    fernwind/     the same meadow swaying in the wind: every fern redrawn
+                  from scratch each frame by 24,576 GPU chaos-game streams
 
 ## What a project is
 
@@ -75,8 +77,18 @@ plants in different shades of green growing point-by-point at 60fps, out of a
 lawn of fourteen thousand procedural grass blades, under value-noise clouds.
 Click to plant another — lower on screen means closer, so it comes up bigger.
 
-`life/`, `fluid/`, `mandelbrot/` and `ferns/` are the ones that look like
-applications. Both declare
+`fernwind/` is the fractal-flame answer to `ferns/`. The CPU version cannot
+move -- its picture IS the accumulation -- so this one redraws every fern from
+scratch each frame: thousands of GPU threads each run a short chaos game and
+their hits meet in density buffers through atomic adds. Redrawing from
+scratch is what buys the wind: each fern's climb map is rotated a fraction of
+a degree by a travelling gust field, and because that map applies recursively
+up the plant, the rotation compounds into a progressive bend -- stems lean,
+tips whip. `mandelbrot/`, `fluid/` and `fernwind/` compute on the GPU;
+`life/` and `ferns/` compute on the CPU and use Metal only to present.
+
+`life/`, `fluid/`, `mandelbrot/`, `ferns/` and `fernwind/` are the ones that
+look like applications. Both declare
 Objective-C classes with `class` — the view whose mouse and key handlers Cocoa
 calls, the app delegate, the timer target, the Apple Event handler — so there
 is no `ObjCClassBuilder`, no hand-written type encoding, and no `cmd` slot
