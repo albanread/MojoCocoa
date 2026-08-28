@@ -27,6 +27,7 @@ from std.ffi import external_call
 from std.objc import ns_to_string, SEL
 from gridview import (
     g_caret,
+    g_grid,
     make_grid_view,
     set_rope,
     document_size,
@@ -79,7 +80,6 @@ comptime g_status = named_global["roast.status", Int]
 comptime g_ticks = named_global["roast.ticks", Int]
 comptime g_autoclose = named_global["roast.autoclose", Int]
 comptime g_actions = named_global["roast.actions", Int]
-comptime g_grid = named_global["roast.grid", Int]
 comptime g_findfield = named_global["roast.findfield", Int]
 
 # Edits bump gridview's revision; the timer notices and sends one didChange
@@ -2751,7 +2751,8 @@ def main() raises:
         _ = msg_send[ObjCObject, "NSScrollView", "setVerticalScrollElasticity:"](
             edit_scroll, Int(1)
         )
-        g_grid()[] = grid.addr()
+        # `make_grid_view` already parked this: the view's own accessors read
+        # it to find their box, so it cannot wait until here.
 
         # The editor and the console share the right-hand side, stacked. A
         # nested split rather than a view that gets resized by hand: the

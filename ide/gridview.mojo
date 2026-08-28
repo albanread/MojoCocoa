@@ -37,6 +37,7 @@ from std.objc import (
     extern_object,
     ns_to_string,
     named_global,
+    box_ref,
     sel,
     CGPoint,
     CGSize,
@@ -261,6 +262,25 @@ class RoastGridView(NSView, NSTextInputClient):
     not conforming, and AppKit asks `conformsToProtocol:` before it will
     speak NSTextInputClient to a view.
     """
+
+    # The view's own state, in its box rather than in process globals beside
+    # it. Every one of these is per editor view by nature -- a second view
+    # would need its own caret, not a share of this one -- and the accessors
+    # below keep the 149 existing call sites spelled exactly as they were.
+    var caret: Int
+    """the insertion point, in bytes from the start of the rope"""
+    var anchor: Int
+    """the other end of the selection; equal to the caret when there is none"""
+    var marked_at: Int
+    """IME marked text: where it starts"""
+    var marked_len: Int
+    """IME marked text: how long it is"""
+    var blink_on: Int
+    """whether the caret is currently drawn"""
+    var focused: Int
+    """whether this view is first responder"""
+    var max_cols: Int
+    """the widest line seen, for the document width"""
 
     def isFlipped(self) -> Bool:
         # Origin at the top-left. Text goes down the page; the arithmetic should
@@ -1038,6 +1058,10 @@ def make_grid_view(frame: CGRect) -> ObjCObject:
     # conformance report the smoke test asserts stays: it now checks what the
     # declaration claims rather than what a builder was told.
     var view = ObjCObject(RoastGridView().__objc_id)
+    # Parked immediately, not by the caller later: the accessors above read it
+    # to find their box, so any gap between making the view and recording it
+    # is a window where the view's own state goes somewhere else.
+    g_grid()[] = view.addr()
     var proto = external_call["objc_getProtocol", P](
         "NSTextInputClient".ptr()
     )
@@ -1070,7 +1094,26 @@ def make_grid_view(frame: CGRect) -> ObjCObject:
 # file up front would cost a full scan on open, and the width only matters
 # once a long line has actually been on screen. Until then there is nothing
 # past the right edge to scroll to.
-comptime g_max_cols = named_global["roast.max.cols", Int]
+comptime _pre_max_cols = named_global["roast.max.cols", Int]
+
+
+def g_max_cols() -> Pointer[Int, MutUntrackedOrigin]:
+    """`max_cols`, on the view. Spelled as it always was, so no call site moved.
+
+    Two storages, and which one is live is decided by whether a view exists.
+    That is not a transition artefact: `edit_test` drives the whole editor
+    without ever making a view -- deliberately, since the risk there is the
+    arithmetic and not the Objective-C -- and writes through this accessor
+    constantly. So the fallback is a real, used path, not a start-up nicety.
+
+    They cannot disagree. The field carries no initializer, so both read zero
+    until a view exists, and `make_grid_view` records `g_grid` in the same
+    breath as it makes the view, leaving no window in which one is written
+    and the other read."""
+    var id = g_grid()[]
+    if id == 0:
+        return _pre_max_cols()
+    return Pointer(to=box_ref[RoastGridView](id)[].max_cols)
 
 
 def note_line_cols(cols: Int) -> Bool:
@@ -1122,11 +1165,92 @@ def document_size(width: Float64) -> CGSize:
 comptime NOT_FOUND = NSRange.NOT_FOUND
 
 # Caret and selection, in byte offsets. anchor == caret means no selection.
-comptime g_caret = named_global["roast.caret", Int]
-comptime g_anchor = named_global["roast.anchor", Int]
+comptime g_grid = named_global["roast.grid", Int]
+"""The one editor view's id. Declared here rather than in roast.mojo because
+the accessors below need it to find their box, and roast.mojo imports from
+this module rather than the other way round."""
+
+comptime _pre_caret = named_global["roast.caret", Int]
+
+
+def g_caret() -> Pointer[Int, MutUntrackedOrigin]:
+    """`caret`, on the view. Spelled as it always was, so no call site moved.
+
+    Two storages, and which one is live is decided by whether a view exists.
+    That is not a transition artefact: `edit_test` drives the whole editor
+    without ever making a view -- deliberately, since the risk there is the
+    arithmetic and not the Objective-C -- and writes through this accessor
+    constantly. So the fallback is a real, used path, not a start-up nicety.
+
+    They cannot disagree. The field carries no initializer, so both read zero
+    until a view exists, and `make_grid_view` records `g_grid` in the same
+    breath as it makes the view, leaving no window in which one is written
+    and the other read."""
+    var id = g_grid()[]
+    if id == 0:
+        return _pre_caret()
+    return Pointer(to=box_ref[RoastGridView](id)[].caret)
+comptime _pre_anchor = named_global["roast.anchor", Int]
+
+
+def g_anchor() -> Pointer[Int, MutUntrackedOrigin]:
+    """`anchor`, on the view. Spelled as it always was, so no call site moved.
+
+    Two storages, and which one is live is decided by whether a view exists.
+    That is not a transition artefact: `edit_test` drives the whole editor
+    without ever making a view -- deliberately, since the risk there is the
+    arithmetic and not the Objective-C -- and writes through this accessor
+    constantly. So the fallback is a real, used path, not a start-up nicety.
+
+    They cannot disagree. The field carries no initializer, so both read zero
+    until a view exists, and `make_grid_view` records `g_grid` in the same
+    breath as it makes the view, leaving no window in which one is written
+    and the other read."""
+    var id = g_grid()[]
+    if id == 0:
+        return _pre_anchor()
+    return Pointer(to=box_ref[RoastGridView](id)[].anchor)
 # The composing region, in bytes; length 0 means nothing is being composed.
-comptime g_marked_at = named_global["roast.marked.at", Int]
-comptime g_marked_len = named_global["roast.marked.len", Int]
+comptime _pre_marked_at = named_global["roast.marked.at", Int]
+
+
+def g_marked_at() -> Pointer[Int, MutUntrackedOrigin]:
+    """`marked_at`, on the view. Spelled as it always was, so no call site moved.
+
+    Two storages, and which one is live is decided by whether a view exists.
+    That is not a transition artefact: `edit_test` drives the whole editor
+    without ever making a view -- deliberately, since the risk there is the
+    arithmetic and not the Objective-C -- and writes through this accessor
+    constantly. So the fallback is a real, used path, not a start-up nicety.
+
+    They cannot disagree. The field carries no initializer, so both read zero
+    until a view exists, and `make_grid_view` records `g_grid` in the same
+    breath as it makes the view, leaving no window in which one is written
+    and the other read."""
+    var id = g_grid()[]
+    if id == 0:
+        return _pre_marked_at()
+    return Pointer(to=box_ref[RoastGridView](id)[].marked_at)
+comptime _pre_marked_len = named_global["roast.marked.len", Int]
+
+
+def g_marked_len() -> Pointer[Int, MutUntrackedOrigin]:
+    """`marked_len`, on the view. Spelled as it always was, so no call site moved.
+
+    Two storages, and which one is live is decided by whether a view exists.
+    That is not a transition artefact: `edit_test` drives the whole editor
+    without ever making a view -- deliberately, since the risk there is the
+    arithmetic and not the Objective-C -- and writes through this accessor
+    constantly. So the fallback is a real, used path, not a start-up nicety.
+
+    They cannot disagree. The field carries no initializer, so both read zero
+    until a view exists, and `make_grid_view` records `g_grid` in the same
+    breath as it makes the view, leaving no window in which one is written
+    and the other read."""
+    var id = g_grid()[]
+    if id == 0:
+        return _pre_marked_len()
+    return Pointer(to=box_ref[RoastGridView](id)[].marked_len)
 
 # Undo is a stack of whole buffers, which is only sane because they share
 # structure: a thousand entries of a 14 MB file cost kilobytes, not gigabytes.
@@ -1387,8 +1511,46 @@ def _make_attrs(colour: ObjCObject) -> Int:
     _ = external_call["objc_retain", P](d.ptr())
     return d.addr()
 
-comptime g_blink_on = named_global["roast.blink", Int]
-comptime g_focused = named_global["roast.focused", Int]
+comptime _pre_blink_on = named_global["roast.blink", Int]
+
+
+def g_blink_on() -> Pointer[Int, MutUntrackedOrigin]:
+    """`blink_on`, on the view. Spelled as it always was, so no call site moved.
+
+    Two storages, and which one is live is decided by whether a view exists.
+    That is not a transition artefact: `edit_test` drives the whole editor
+    without ever making a view -- deliberately, since the risk there is the
+    arithmetic and not the Objective-C -- and writes through this accessor
+    constantly. So the fallback is a real, used path, not a start-up nicety.
+
+    They cannot disagree. The field carries no initializer, so both read zero
+    until a view exists, and `make_grid_view` records `g_grid` in the same
+    breath as it makes the view, leaving no window in which one is written
+    and the other read."""
+    var id = g_grid()[]
+    if id == 0:
+        return _pre_blink_on()
+    return Pointer(to=box_ref[RoastGridView](id)[].blink_on)
+comptime _pre_focused = named_global["roast.focused", Int]
+
+
+def g_focused() -> Pointer[Int, MutUntrackedOrigin]:
+    """`focused`, on the view. Spelled as it always was, so no call site moved.
+
+    Two storages, and which one is live is decided by whether a view exists.
+    That is not a transition artefact: `edit_test` drives the whole editor
+    without ever making a view -- deliberately, since the risk there is the
+    arithmetic and not the Objective-C -- and writes through this accessor
+    constantly. So the fallback is a real, used path, not a start-up nicety.
+
+    They cannot disagree. The field carries no initializer, so both read zero
+    until a view exists, and `make_grid_view` records `g_grid` in the same
+    breath as it makes the view, leaving no window in which one is written
+    and the other read."""
+    var id = g_grid()[]
+    if id == 0:
+        return _pre_focused()
+    return Pointer(to=box_ref[RoastGridView](id)[].focused)
 
 
 def sel_start() -> Int:

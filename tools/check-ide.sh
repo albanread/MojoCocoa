@@ -64,6 +64,23 @@ else
   bad "editing" "$(grep -m1 'error' "$TMP/edit_build.log" || echo 'build failed')"
 fi
 
+# The view's own state, in its box. edit_test drives the editor without ever
+# making a view, so every accessor there takes the pre-view fallback -- it
+# proves the migration changed no behaviour and nothing at all about the box.
+# This makes the view, which is the path the running app takes, and then
+# checks the thing the migration was for: two views, two carets.
+if "$CM" --build ide/view_state_test.mojo -o "$TMP/view_state" \
+     >"$TMP/vs_build.log" 2>&1; then
+  vs_out=$(timeout 120 "$TMP/view_state" 2>&1)
+  if echo "$vs_out" | grep -q '^view state OK'; then
+    ok "view state" "$(echo "$vs_out" | grep -c '  OK ') checks — per-view caret, selection, width"
+  else
+    bad "view state" "$(echo "$vs_out" | grep -m1 FAIL || echo 'tests failed')"
+  fi
+else
+  bad "view state" "$(grep -m1 'error' "$TMP/vs_build.log" || echo 'build failed')"
+fi
+
 # The build driver: which file gets compiled, where the binary goes, and
 # taking the compiler's diagnostics apart. All string arithmetic, no window.
 if "$CM" --build ide/build_test.mojo -o "$TMP/build_test" >"$TMP/bt_build.log" 2>&1; then
