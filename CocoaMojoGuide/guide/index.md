@@ -4,7 +4,8 @@ This guide teaches CocoaMojo in the order you meet it: get a compiler running,
 learn what the language actually is at this frozen version, understand the
 object model Mojo has on its own, then send your first message to Cocoa, get
 memory right, let Cocoa call back into your code, and finally assemble and read
-a real windowed application.
+a real windowed application. A final chapter reads the fork's own IDE — the
+largest cocoa-mojo program there is — for the shapes that appear at scale.
 
 Read it in order the first time. Each chapter assumes the one before it.
 
@@ -19,6 +20,7 @@ Read it in order the first time. Each chapter assumes the one before it.
 | [7. A complete application](07-an-application.md) | Put a window on screen, handle events, and drive a run loop |
 | [8. Concurrency and blocks](08-concurrency.md) | Dispatch work across GCD queues, and call block-only Cocoa APIs |
 | [9. A demo, walked through](09-walkthrough.md) | Read Conway's Life — a complete 644-line Cocoa application — and see how little of it is Cocoa |
+| [10. Roast: the IDE, read as a program](10-roast.md) | Read the fork's own 9,000-line IDE and learn the shapes a large cocoa-mojo program settles into |
 
 When you want to look something up rather than learn it, use the
 [Reference Manual](../reference/).
