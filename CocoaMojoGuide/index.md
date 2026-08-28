@@ -36,11 +36,13 @@ accept. `@parameter if` and `@parameter for` have given way to `comptime if`
 and `comptime for`, and `alias` is deprecated in favour of `comptime`.
 
 This fork has also stopped following upstream's declaration model and named
-itself **cocoa-mojo**. Two keywords upstream removed are back, with new and
-narrower meanings: **`fn`** is now the foreign-callable function — thin,
-non-raising, C ABI, exactly the Objective-C `IMP` contract — and **`let`** is
-an immutable, scope-bound binding. Neither means what it meant in older Mojo,
-and neither means what upstream would mean by it.
+itself **cocoa-mojo**. Three keywords carry revived, narrower meanings:
+**`fn`** is now the foreign-callable function — thin, non-raising, C ABI,
+exactly the Objective-C `IMP` contract — **`let`** is an immutable,
+scope-bound binding, and **`class`**, which upstream reserved for a
+Python-style class that never came, declares a real Objective-C class. None
+of the three means what it meant in older Mojo, and none means what upstream
+would mean by it.
 
 **Everything in these documents was checked against the source tree of this
 frozen compiler, not against published documentation.** Where the two disagree,

@@ -97,8 +97,10 @@ input, stamped into the artefact.
 
 ### The language met it halfway
 
-Upstream removed two keywords. We brought them back, narrower, because the
-Cocoa boundary has exactly two directions and each wanted one:
+Upstream removed two keywords and left a third reserved but empty. We gave
+all three a meaning, narrower than they ever had, because the Cocoa boundary
+has exactly these shapes: the object you hold, the code they call, and the
+type they call it on.
 
 **`let` — the foreign object we hold.** An immutable, scope-bound binding.
 The object stays mutable; the binding does not. ARC rides underneath:
@@ -116,6 +118,14 @@ error: 'fn' declares a foreign-callable (C ABI, non-raising) function in
 
 A capture-less `fn` *is* a global block, bit for bit, so GCD and every
 block-taking API work with no adaptation layer.
+
+**`class` — the type the foreign runtime holds.** Both directions at once:
+Cocoa owns the object and calls the code, so `class` declares a real
+Objective-C class — registered with the runtime, subclassing an SDK class or
+another Mojo class, conforming to real protocols, carrying per-instance Mojo
+fields. Upstream reserved the word for a Python-style class that never came;
+here it is the declaration a desktop application is made of, and the next
+section is what it looks like.
 
 ### What that looks like
 
