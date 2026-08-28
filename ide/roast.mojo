@@ -29,6 +29,7 @@ from std.ffi import external_call
 from std.objc import ns_to_string, SEL
 from gridview import (
     g_caret,
+    selected_text,
     g_grid,
     make_grid_view,
     set_rope,
@@ -695,7 +696,22 @@ def _debug_changed():
         dap.stop_reason(),
     )
     _show_variables()
+    _show_eval()
     refresh_grid()
+
+
+def _show_eval():
+    """One evaluation's answer, into the console. Failure prints too --
+    the JIT's complaint is the answer when the expression was wrong."""
+    if not dap.take_eval_fresh():
+        return
+    var block = String("  eval ") + dap.eval_expr()
+    if dap.eval_ok():
+        block += String(" = ") + dap.eval_result() + String("\n")
+    else:
+        block += String("  — ") + dap.eval_result() + String("\n")
+    build.append_output(block^)
+    console_sync()
 
 
 def _pretty_type(raw: String) -> String:
@@ -1327,6 +1343,22 @@ class RoastActions:
             _start_debug()
         except:
             set_status(String("Debug failed to start"))
+
+    def roastEvaluate_(self, sender: ObjCObject):
+        """Run the selected text as Mojo, in the stopped frame, in the
+        debuggee. The answer lands in the console beside the locals."""
+        try:
+            if not dap.is_stopped():
+                set_status(String("Evaluate needs a stopped program"))
+                return
+            let expr = selected_text()
+            if expr.byte_length() == 0:
+                set_status(String("Select an expression to evaluate"))
+                return
+            if dap.evaluate(expr):
+                set_status(String("Evaluating…"))
+        except:
+            pass
 
     def roastBreakOnRaise_(self, sender: ObjCObject):
         """Stop where an error is RAISED, not where it lands. Takes effect on
@@ -3328,6 +3360,10 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     )
     if session.setting(String("debug.break_on_raise")) == "1":
         Obj["NSMenuItem"](bor.addr()).setState(Int(1))
+    _ = add_item(
+        debug_menu, String("Evaluate Selection"), String("roastEvaluate:"),
+        String("E"), actions,
+    )
     _ = msg_send[ObjCObject, "NSMenu", "addItem:"](
         debug_menu,
         msg_send[ObjCObject, "NSMenuItem", "separatorItem", is_class=True](

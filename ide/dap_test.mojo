@@ -15,6 +15,10 @@ from dap import (
     is_running,
     is_configured,
     is_stopped,
+    evaluate,
+    take_eval_fresh,
+    eval_result,
+    eval_ok,
     frame_count,
     frame_name,
     variable_count,
@@ -207,6 +211,54 @@ def main() raises:
                 print("  OK   top frame =", frame_name(0))
             else:
                 print("  FAIL top frame --", repr(frame_name(0)))
+                failures += 1
+
+            # Evaluate: first a plain variable, then an EXPRESSION -- the
+            # plugin's JIT compiling Mojo against the live frame and running
+            # it in the debuggee. The second is the whole reason the
+            # ExpressionParser ships.
+            print("dap: the stopped frame evaluates Mojo")
+            failures += check_int(
+                "evaluate accepted", 1 if evaluate(String("total")) else 0, 1
+            )
+            var ew = 0.0
+            while not take_eval_fresh() and ew < 20.0:
+                _ = pump(0.5)
+                ew += 0.5
+            if ew >= 20.0:
+                print("  FAIL evaluate: no reply")
+                failures += 1
+            else:
+                failures += check_int(
+                    "total evaluates", 1 if eval_ok() else 0, 1
+                )
+                print("  OK   total ->", eval_result())
+
+            # An expression over a frame LOCAL cannot evaluate yet: the
+            # plugin materializes only REPL-persistent variables, and
+            # injecting frame locals into the JIT is the next plugin
+            # feature, not a regression. What this pins instead is the part
+            # that was broken and is now fixed: the failure REACHES US WITH
+            # WORDS. The diagnostics used to be cleared on the way out by a
+            # broadcast to a listener that only Jupyter attaches, so every
+            # expression error arrived as an empty string.
+            _ = evaluate(String("total + 41"))
+            ew = 0.0
+            while not take_eval_fresh() and ew < 30.0:
+                _ = pump(0.5)
+                ew += 0.5
+            if ew >= 30.0:
+                print("  FAIL expression: no reply")
+                failures += 1
+            elif eval_ok():
+                print("  OK   locals in expressions arrived early:",
+                      eval_result())
+            elif eval_result().find("unknown declaration") >= 0:
+                print("  OK   the JIT's refusal has words:",
+                      repr(String(eval_result()[byte=0:40])))
+            else:
+                print("  FAIL expression error is unreadable --",
+                      repr(eval_result()))
                 failures += 1
 
         print("dap: it runs on")

@@ -111,6 +111,15 @@ comptime g_var_fresh = named_global["dap.var.fresh", Int]
 # The call stack at the stop, top first: where the program IS, and how it got
 # there. Eight levels -- a person reads three, the runtime's startup frames
 # fill the rest, and past eight is scenery.
+# One evaluation in flight at a time: the expression as asked, the answer or
+# the error, and a take-once flag for the renderer. A queue would imply a
+# watch list re-evaluated on every stop; that is a later thing, and its cost
+# (running target code per stop, unasked) deserves its own decision.
+comptime g_eval_expr = named_global["dap.eval.expr", List[String]]
+comptime g_eval_result = named_global["dap.eval.result", List[String]]
+comptime g_eval_ok = named_global["dap.eval.ok", Int]
+comptime g_eval_fresh = named_global["dap.eval.fresh", Int]
+
 comptime g_frame_names = named_global["dap.frame.names", List[String]]
 comptime g_frame_files = named_global["dap.frame.files", List[String]]
 comptime g_frame_lines = named_global["dap.frame.lines", List[Int]]
@@ -179,6 +188,44 @@ def take_variables_fresh() -> Bool:
         return False
     g_var_fresh()[] = 0
     return True
+
+
+def evaluate(var expr: String) -> Bool:
+    """Run `expr` in the stopped frame -- real Mojo, compiled by the plugin's
+    JIT and executed IN the debuggee. That is what makes it a debugger
+    feature and not a calculator: `total + 1` reads the live `total`.
+
+    Only while stopped, because the frame is what gives names meaning."""
+    if not is_stopped():
+        return False
+    _put(g_eval_expr(), expr)
+    var args = JSON.object()
+    args.set(String("expression"), JSON(expr^))
+    args.set(String("frameId"), JSON(g_frame_id()[]))
+    # "watch" forces expression evaluation; "repl" would let the adapter
+    # mistake an expression for an lldb command when it looks like one.
+    args.set(String("context"), JSON(String("watch")))
+    _ = request(String("evaluate"), args^)
+    return True
+
+
+def take_eval_fresh() -> Bool:
+    if g_eval_fresh()[] == 0:
+        return False
+    g_eval_fresh()[] = 0
+    return True
+
+
+def eval_expr() -> String:
+    return _slot(g_eval_expr())
+
+
+def eval_result() -> String:
+    return _slot(g_eval_result())
+
+
+def eval_ok() -> Bool:
+    return g_eval_ok()[] != 0
 
 
 def frame_count() -> Int:
@@ -658,6 +705,26 @@ def _handle(var msg: JSON):
             _take_scopes(msg.get("body")[])
         elif command == "variables":
             _take_variables(msg.get("body")[])
+        elif command == "evaluate":
+            # Failure carries its explanation in `message`, success its
+            # answer in `body.result`; either way the asker hears back.
+            if msg.get("success")[].as_bool():
+                g_eval_ok()[] = 1
+                _put(g_eval_result(), msg.get("body")[].get("result")[].as_string())
+            else:
+                g_eval_ok()[] = 0
+                # lldb-dap does not use the DAP `message` field: the text
+                # lives in body.error.format. Read both, prefer whichever
+                # actually says something.
+                var text = msg.get("message")[].as_string()
+                if text == "":
+                    text = (
+                        msg.get("body")[].get("error")[].get("format")[]
+                        .as_string()
+                    )
+                _put(g_eval_result(), text^)
+            g_eval_fresh()[] = 1
+            g_serial()[] += 1
 
 
 def _event(name: String, body: JSON):

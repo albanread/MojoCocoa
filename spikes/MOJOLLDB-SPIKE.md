@@ -263,6 +263,32 @@ the console, `Break on Raise` is a Debug-menu toggle, and `dap_test`
 requires variables whenever the plugin ships. The branch's log carries the
 details.
 
+### Findings, second day: expressions
+
+`expr` looked like a crash and was nothing of the kind. Batch lldb stops on
+a command error and exits 1; the error was EMPTY, so nothing printed and the
+exit read as a die. Two causes, both fixed on main:
+
+- **No search paths.** An expression is real Mojo compiled by the type
+  system's own parser, and it could not find the stdlib. The plugin now
+  self-locates via `dladdr` — `<root>/lib/libMojoLLDB.dylib` beside
+  `<root>/lib/mojo` — with `COCOAMOJO_ROOT` as the override.
+- **Diagnostics erased on exit.** `MojoUserExpression::Parse` broadcast its
+  DiagnosticManager to the expression logger's listeners and then CLEARED
+  it, unconditionally. Jupyter listens; lldb and lldb-dap do not, so every
+  expression error left as an empty string. The hand-off is now conditional
+  on a listener existing.
+
+What works now: pure expressions JIT and run in the debuggee from the CLI
+(`String("hi ") + String(42)` allocates and executes there); a frame
+variable evaluates over DAP; and a failure arrives with words. What does
+not, named precisely for whoever picks it up: **frame locals are not
+injected into the JIT** (the plugin materializes only REPL-persistent
+variables, so `total + 41` is "unknown declaration"), and **statement-
+wrapped expressions produce no result over DAP** (the CLI's fix-it turns
+`1 + 1` into `_ = 1 + 1`, which runs and answers nothing). Those two are
+the debugger's next plugin features, in that order.
+
 ## The risk worth watching
 
 `MojoLLDB` deps include `//AsyncRT:RuntimeGlobals` and, under
