@@ -544,6 +544,107 @@ dialect has no derived type, so even that step needs new dialect machinery);
 then the declaration surface for expressions. Expanding the IDE debugger
 further before the contract exists builds on storage, not on semantics.
 
+## The semantic sidecar: the contract levels 2 and 3 both need
+
+The conclusion the findings point at: **do not try to reverse type erasure
+inside LLDB.** A debug build should preserve a semantic snapshot beside the
+optimized executable, and the debugger should consume that contract rather
+than infer source types from storage widths and names.
+
+Three artifacts, none sufficient alone:
+
+    semantic sidecar   "sum has type Meters"; Meters' fields, methods,
+                       traits, generic arguments, module identity
+    DWARF              "sum is currently in register x8"; scope, lifetime,
+                       pieces, storage size and location
+    link               DWARF variable -> stable Mojo type/decl ID -> sidecar
+
+The division of labour matters and is easy to get wrong: the semantic
+analyser can emit the declaration graph *before* lowering destroys it, but it
+cannot produce the debugger artifact by itself. The backend must carry the
+stable IDs into DWARF while it produces the physical locations. One artifact
+knows what the type is; the other knows where the bits are; only the link
+makes either useful.
+
+**The link already exists in miniature.** `DebugInfoToLLVM.cpp:168` attaches
+`mojo_source_name` to a subprogram as a `DW_TAG_LLVM_annotation`, and
+`MojoDWARFParser.cpp:650` decodes it back through `SourceNameAttr::decode`.
+Both ends are built and wired; it is simply limited to functions, and keyed
+by a *name*. Names are the wrong identity — they collide across modules,
+overloads and generic instantiations — so the change is to keep the carrier,
+the attach point and the decode site, and swap the value for a compact
+`mojo_type_id`. The name-keyed path then survives as the fallback for old
+binaries rather than becoming dead code.
+
+**Where it lives.** Not `.sym`: macOS already has `.dSYM` and "symbol file"
+means several things. Inside the dSYM bundle, so UUID-based lookup is
+inherited rather than reinvented:
+
+    Program.dSYM/
+      Contents/Resources/DWARF/Program
+      Contents/Resources/Mojo/Program.mojodebug
+
+**What it carries.** Stable IDs for packages, modules, declarations and
+instantiated types; complete nominal identity including generic arguments;
+fields with their source-level types; method and operator signatures with
+overload sets; traits and conformances needed for expression type-checking;
+mutability and ownership information; links to compiled method symbols where
+callable code exists; and optionally the function bodies needed to
+instantiate generics or evaluate code that was inlined away.
+
+**Tiers, and one constraint on them.**
+
+    -g                    types, fields, signatures, conformances
+    -gfull / -gmojo-expr  additionally the bodies needed for JIT expressions
+    -gline-tables-only    no semantic sidecar
+
+The tiers must select **metadata volume only, never codegen**. Today's `-g`
+already fails this: our fixture needed `-O0` before locals were readable, and
+at plain `-g` `total` and `p` were reported optimized out. If the tiers are
+allowed to touch optimization, `-gfull` quietly becomes "and also
+deoptimize", which is how we end up preserving artificial runtime structs for
+LLDB's benefit -- the exact outcome this design exists to avoid. `Meters`
+should stay one register at runtime while the debugger still understands it
+as a `Meters`, fields and methods included.
+
+**Binding, because a stale sidecar will confirm anything.** Tie it to the
+exact binary: Mach-O UUID/build ID, target info, compiler version, module
+hashes. On mismatch MojoLLDB must refuse, not interpret.
+
+**The implementation shortcut is already in the tree.** Do not design a new
+semantic format: `KGEN/lib/Support/MojoPrecompiledFile.cpp` (the `.mojoc`
+machinery) already writes MLIR bytecode behind a version header and, on
+load, checks the compiler version *and* an MLIR bytecode checksum, refusing
+with a specific diagnostic when either disagrees -- including the case where
+versions match but the bytecode does not. That is the staleness discipline
+above, already built. A stripped debug snapshot is a use of that serializer,
+not a new one. (Verified: bytecode, version header, checksum, refusal. **Not
+verified: lazy declaration loading** -- confirm it before relying on it, as
+it is what keeps the debugger from paging in the world.)
+
+It also lands where the plugin already is. `getOrCreateStructDecl`
+(`MojoTypeSystem.cpp:1249`) builds a real `LIT::StructDeclOp` in the plugin's
+own MLIR context -- so loading serialized LIT declarations is the same IR the
+plugin already fabricates, minus the fabrication. No translation layer.
+
+**What it changes:**
+
+    today:     DWARF storage type -> synthesize an empty Mojo declaration
+    proposed:  DWARF mojo_type_id -> load the exact declaration from
+                                     .mojodebug
+               DWARF location     -> materialize its current value
+
+**Two things this does not do.** It does not subsume the frame-local type
+filter: even with exact declarations the wrapper still injects every local
+and dies on `Point`/`String` before evaluating anything, so the filter stays
+first -- and it is what makes the sidecar's effect measurable when it lands.
+And it does not automatically survive inlining. The variable-to-ID binding
+lives in DWARF, and inlined frames are where it is most likely to be
+dropped; we saw `compute` inlined into `main` at default `-g`. Annotations
+riding on the `DILocalVariable` should survive that. "Should" has been wrong
+three times in this document, so make **"type ID resolves in an inlined
+frame"** an explicit acceptance test rather than an assumption.
+
 ## The risk worth watching
 
 `MojoLLDB` deps include `//AsyncRT:RuntimeGlobals` and, under
