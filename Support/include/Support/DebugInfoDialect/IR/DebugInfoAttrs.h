@@ -271,27 +271,26 @@ void updateInlinedLoc(Operation *op, Location callerLoc);
 //  - Identity keys are opaque to the reader. It matches them; it does not
 //    parse them.
 //
-//  - **An annotation whose value repeats across dies does not survive the
-//    link.** Measured: emitting `mojo_debug_schema="1"` on every subprogram
-//    gives 83 annotations in the object file and ZERO in the linked dSYM,
-//    while the per-function `mojo_source_name` beside it survives 1:1.
-//    `dsymutil` keeps the unique ones and drops the constant. So every key
-//    must carry a value that varies with the die it hangs on. Identity keys
-//    satisfy this by construction; a per-module constant does not, and needs
-//    a different home (`DW_AT_producer` on the compile unit survives and is
-//    the obvious candidate; `DICompileUnitAttr` has no annotations list).
-//    Verify any new key in the LINKED dSYM, never in the object file.
+//  - Verify a new key in the LINKED dSYM, and rebuild from a source file the
+//    compiler has not seen. The compiler caches compilation output keyed on
+//    source, so a new compiler over unchanged source silently reuses the old
+//    DWARF -- which reads exactly like the linker dropping your annotation.
+//    Measured: constant-valued and per-die-varying keys both survive the link
+//    1:1, and several annotations per die survive together. Nothing is
+//    dropped; a stale artifact merely looked like it.
 //
 /// Bump when the meaning of an existing key changes. Adding a key does not
 /// require a bump, because unknown keys are ignored by construction.
 constexpr unsigned kMojoDebugSchemaVersion = 1;
 
 /// The schema version a die was emitted under. Absent means "predates the
-/// contract" -- which is every binary today: see the survival rule above,
-/// this key has no surviving carrier yet and is not emitted. The reader
-/// handles its absence, so it can start being emitted the moment it has a
-/// home that outlives the linker.
+/// contract", which readers must tolerate: binaries built before this key
+/// existed carry `mojo_source_name` and nothing else.
 constexpr llvm::StringLiteral kMojoDebugSchema = "mojo_debug_schema";
+
+/// The emitted form of kMojoDebugSchemaVersion. Kept beside it so the two
+/// cannot drift; annotation values are strings.
+constexpr llvm::StringLiteral kMojoDebugSchemaString = "1";
 
 /// Human-readable structural identity, for display and for readers older than
 /// the identity keys. Not an identifier.

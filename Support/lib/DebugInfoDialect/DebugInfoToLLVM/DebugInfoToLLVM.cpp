@@ -174,6 +174,8 @@ LLVM::DISubprogramAttr
 MetadataConverter::convertAttrImpl(DISubprogramAttr attr) {
   MLIRContext *ctx = attr.getContext();
   SmallVector<LLVM::DINodeAttr> annotations;
+  addMojoAnnotation(ctx, annotations, kMojoDebugSchema,
+                    StringAttr::get(ctx, kMojoDebugSchemaString));
   addMojoAnnotation(ctx, annotations, kMojoSourceName,
                     attr.getSourceName().encode());
 
