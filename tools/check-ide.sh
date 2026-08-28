@@ -66,6 +66,47 @@ else
   bad "session" "$(grep -m1 'error' "$TMP/sess_build.log" || echo 'build failed')"
 fi
 
+# The debug adapter, against a real lldb-dap and a real program: compile a
+# tiny thing WITH debug info, set a breakpoint on it, and require the stop to
+# land where the adapter said it bound. Skipped rather than failed when Xcode
+# is not installed -- lldb-dap comes from Xcode, and its absence is a fact
+# about this machine and not about the code.
+DAPBIN="$(xcrun -f lldb-dap 2>/dev/null || true)"
+if [ -z "$DAPBIN" ]; then
+  echo "  --   dap                lldb-dap not found (no Xcode); skipped"
+elif ! "$CM" --build ide/dap_test.mojo -o "$TMP/dap_test" >"$TMP/dap_build.log" 2>&1; then
+  bad "dap" "$(grep -m1 'error' "$TMP/dap_build.log" || echo 'build failed')"
+else
+  mkdir -p "$TMP/dbg"
+  cat > "$TMP/dbg/main.mojo" <<'DBGEOF'
+def add(a: Int, b: Int) -> Int:
+    var sum = a + b
+    return sum
+
+
+def main():
+    var total = 0
+    for i in range(5):
+        total = add(total, i)
+    print("total:", total)
+DBGEOF
+  # --debug-level full, and the dSYM it emits beside the binary is where the
+  # line table actually lives -- looking for DWARF inside the executable
+  # finds nothing and is how this looked broken at first.
+  if ! "$CM" --build "$TMP/dbg/main.mojo" -o "$TMP/dbg/prog" --debug-level full \
+       >"$TMP/dbg/build.log" 2>&1; then
+    bad "dap" "could not build a program with debug info"
+  else
+    dap_out=$(cd "$TMP/dbg" && ROAST_DAP="$DAPBIN" ROAST_DAP_PROGRAM="./prog" \
+              ROAST_DAP_SOURCE="main.mojo" timeout 240 "$TMP/dap_test" 2>&1)
+    if echo "$dap_out" | grep -q '^dap OK'; then
+      ok "dap" "$(echo "$dap_out" | grep -c '  OK ') checks — a breakpoint binds and the stop lands on it"
+    else
+      bad "dap" "$(echo "$dap_out" | grep -m1 FAIL || echo 'tests failed')"
+    fi
+  fi
+fi
+
 # Editing behaviour, also without a window: the text input client's risk is
 # the arithmetic, not the Objective-C plumbing.
 if "$CM" --build ide/edit_test.mojo -o "$TMP/edit_test" >"$TMP/edit_build.log" 2>&1; then
