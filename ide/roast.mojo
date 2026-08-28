@@ -518,7 +518,8 @@ def _start_debug():
     build.clear_output()
     dap.clear_output()
     var head = String("cocoamojo --build ") + entry
-    head += String(" --debug-level full -o ") + binary + String("\n")
+    head += String(" --debug-level full --no-optimization -o ") + binary
+    head += String("\n")
     if saved > 0:
         head = String("saved ") + String(saved) + String(" file(s)\n") + head
     build.append_output(head^)
@@ -528,6 +529,13 @@ def _start_debug():
     args.append(entry)
     args.append(String("--debug-level"))
     args.append(String("full"))
+    # Unoptimised as well as annotated, and the second is not optional. With
+    # optimisation on, `total` and `sum` in a five-line program are not in the
+    # DWARF at all -- eliminated before any debug info could describe them --
+    # and breakpoints slide to whatever line survived. Measured on exactly
+    # that program: -O0 puts both locals back and the breakpoint binds on the
+    # line that was clicked instead of the next one down.
+    args.append(String("--no-optimization"))
     args.append(String("-o"))
     args.append(binary)
     # The adapter is started by _build_finished when this exits zero, the

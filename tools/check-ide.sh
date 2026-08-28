@@ -344,8 +344,11 @@ DBGPROJ
   dbgout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_DAP="$DAPBIN" \
            ROAST_PROJECT="$TMP/dbgproj" ROAST_DEBUG_LINE=9 \
            ROAST_AUTOCLOSE_TICKS=400 timeout 300 "$TMP/roast" 2>&1)
-  if echo "$dbgout" | grep -q 'roast: debug stopped at main.mojo:10 reason breakpoint'; then
-    ok "debugger" "breakpoint on line 9 bound to 10, and the program stopped there"
+  # Line 9, the line that was clicked -- not 10. The debug build is
+  # unoptimised, so nothing slides; if this ever reports 10 again, the
+  # --no-optimization has been lost and locals have gone with it.
+  if echo "$dbgout" | grep -q 'roast: debug stopped at main.mojo:9 reason breakpoint'; then
+    ok "debugger" "a breakpoint on line 9 binds to line 9, and the program stops there"
   else
     bad "debugger" "$(echo "$dbgout" | grep -m1 -E 'debug stopped|debugging|debug:' || echo 'never stopped')"
   fi
