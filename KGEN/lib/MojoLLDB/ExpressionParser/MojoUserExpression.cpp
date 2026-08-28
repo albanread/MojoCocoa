@@ -294,10 +294,21 @@ bool MojoUserExpression::Parse(DiagnosticManager &diagnosticManager,
     exeScope = process ? (ExecutionContextScope *)process
                        : (ExecutionContextScope *)&impl->target;
 
-  // On exit, log all of the diagnostics that were collected.
+  // On exit, hand the collected diagnostics to whoever is LISTENING --
+  // and only then. Jupyter attaches a listener and renders these itself,
+  // so clearing avoids the kernel and lldb printing the same error twice.
+  // But in plain lldb and lldb-dap nobody listens, and clearing
+  // unconditionally erased every expression error on the way out: `expr`
+  // failed with an EMPTY message, which batch mode turns into a silent
+  // exit(1) and DAP into an error string nobody can read. The check is
+  // the fix: no listener, no hand-off, and the DiagnosticManager reaches
+  // the caller intact -- which is what it is for.
   auto broadcastDiagnostics = llvm::scope_exit([&] {
-    impl->expressionLogger.broadcastDiagnostics(diagnosticManager);
-    diagnosticManager.Clear();
+    if (impl->expressionLogger.EventTypeHasListeners(
+            MojoExpressionLogger::eBroadcastUserMessage)) {
+      impl->expressionLogger.broadcastDiagnostics(diagnosticManager);
+      diagnosticManager.Clear();
+    }
   });
 
   // Process any magics used in the cell.
