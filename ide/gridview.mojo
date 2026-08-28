@@ -317,7 +317,6 @@ class RoastGridView(NSView, NSTextInputClient):
                 if last > total:
                     last = total
 
-                let attrs = ObjCObject(g_attrs()[])
                 let gutter_attrs = ObjCObject(g_gutter_attrs()[])
 
                 # Every match on screen, faintly. Only the visible byte range is
@@ -990,7 +989,7 @@ def make_grid_view(frame: CGRect) -> ObjCObject:
     # declaration claims rather than what a builder was told.
     var view = ObjCObject(RoastGridView().__objc_id)
     var proto = external_call["objc_getProtocol", P](
-        "NSTextInputClient".unsafe_ptr()
+        "NSTextInputClient".ptr()
     )
     if not msg_send[Bool, "NSObject", "conformsToProtocol:"](view, proto):
         print("roast: NSTextInputClient protocol not registered")

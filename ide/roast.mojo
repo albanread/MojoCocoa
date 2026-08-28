@@ -24,7 +24,7 @@ from std.objc import (
 from std.memory import OpaquePointer
 from std.os import getenv
 from std.ffi import external_call
-from std.objc import ns_to_string
+from std.objc import ns_to_string, SEL
 from gridview import (
     g_caret,
     make_grid_view,
@@ -80,11 +80,9 @@ comptime g_actions = named_global["roast.actions", Int]
 comptime g_grid = named_global["roast.grid", Int]
 comptime g_findfield = named_global["roast.findfield", Int]
 
-# The open document's URI, and the revision the server was last told about.
 # Edits bump gridview's revision; the timer notices and sends one didChange
-# for a burst of typing rather than one per keystroke.
-comptime g_uri = named_global["roast.uri", List[String]]
-comptime g_sent_revision = named_global["roast.sent.revision", Int]
+# for a burst of typing rather than one per keystroke. (The uri and the
+# sent revision live per-document in document.mojo.)
 comptime g_idle_ticks = named_global["roast.idle", Int]
 
 # The project: a folder, and the outline view showing what is in it. Children
@@ -980,9 +978,11 @@ class RoastActions:
                     return item
 
                 # Which item was asked for? Compare against each identifier.
-                var title = String("?")
-                var symbol = String("questionmark")
-                var action = sel["roastStop:"]()
+                # Declared, not initialised: the else returns, so every path
+                # that continues assigns all three.
+                var title: String
+                var symbol: String
+                var action: SEL
                 if msg_send[Bool, "NSString", "isEqualToString:"](
                     key, nsstring(String(TB_BUILD)).ptr()
                 ):
@@ -1038,12 +1038,9 @@ class RoastActions:
         except:
             return ObjCObject(0)
 
-    def controlTextDidChange_(self, note: ObjCObject):
-        self.roastFindChanged_(note)
-
 
 def announce_open_documents():
-    """did_open for every open tab.
+    """Send didOpen for every open tab.
 
     load_file announces a file when the server is ready at the time -- which
     it is not at startup (the handshake takes a poll cycle), and not for any
@@ -1072,7 +1069,6 @@ def refresh_grid():
         return
     with autoreleasepool():
         let grid = ObjCObject(g_grid()[])
-        let pos = caret_position(0)
         _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](grid, True)
 
 
@@ -1125,7 +1121,7 @@ def report_matches():
 def load_file(path: String) -> Bool:
     """Read a file into the buffer and tell the server about it."""
     try:
-        var text = String()
+        var text: String
         with open(path, "r") as f:
             text = f.read()
         let uri = String("file://") + path
@@ -2285,7 +2281,7 @@ def sel_named(name: String) -> ObjCObject:
     """A selector from a runtime string. `sel[...]` needs a literal."""
     var local = name
     let p = external_call["sel_registerName", P](
-        local.as_c_string_slice().unsafe_ptr()
+        local.as_c_string_slice().ptr()
     )
     return ObjCObject(Int(p))
 
@@ -2557,7 +2553,6 @@ def main() raises:
         # Status bar: a label pinned to the bottom, and a hairline above it.
         comptime STATUS_H = 22.0
         let NSTextField = ObjCClass.lookup["NSTextField"]()
-        let NSButton = ObjCClass.lookup["NSButton"]()
         let status = msg_send[
             ObjCObject, "NSTextField", "labelWithString:", is_class=True
         ](NSTextField.as_object(), nsstring(String("Ready")).ptr())
@@ -2682,7 +2677,7 @@ def main() raises:
         if proj != "":
             open_folder(proj)
 
-        var text = String()
+        var text: String
         let path = getenv("ROAST_OPEN")
         if path != "":
             try:
