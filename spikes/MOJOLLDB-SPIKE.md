@@ -743,12 +743,20 @@ generics instantiated at several types, a closure shadowing its capture, and a
 
 Two failure modes, and only one is fatal. **Multiplicity is a quarter of all
 tuples**: one source entity described by many dies, because the same function
-is emitted into many compile units. That is not an error, but it is a hard
-requirement on the map -- it must be **one semantic record to many die
-offsets**. Build the obvious 1:1 table and you silently drop ~25% of the dies,
-and the debugger fails to resolve a type depending on which compile unit it
-happens to stop in. That is exactly the kind of bug that looks like
-flakiness.
+is emitted into many compile units and every inlined instance sits behind an
+abstract declaration. That is not an error, but it is a hard requirement on
+the map -- it must be **one semantic record to many die offsets**.
+
+The cost of getting that wrong is much larger than the tuple count suggests,
+because multiplicity is concentrated: a quarter of the *tuples* cover most of
+the *dies*. Measured with the map built below, a 1:1 table would drop
+
+    -O0          2873 of 3513 variable dies   (81%)
+    optimized     767 of 1020 variable dies   (75%)
+
+leaving the debugger unable to resolve a type depending on which compile unit
+it happened to stop in -- which presents as flakiness, not as a missing
+feature. The widest single record is described by **68 dies**.
 
 **Ambiguity is nearly zero but not zero.** Both cases at `-O0`:
 
@@ -788,6 +796,45 @@ Three conclusions for the format. The join must be one-to-many. It must not
 be attempted on names alone. And it must run post-link, where these numbers
 were measured -- the same test on the object file would have reported the
 multiplicity as ambiguity and sent the design somewhere expensive and wrong.
+
+### The join map, built and validated
+
+`spikes/mojo-join-map.py` builds the post-link table: every variable and
+formal die in a final dSYM, joined to a semantic record by the natural tuple,
+keyed so the debugger can go from a die it is standing on to the record that
+describes it.
+
+    record  ->  many die offsets      one entity, many descriptions
+    offset  ->  exactly one record    what the debugger looks up
+
+    dSYM                          -O0        optimized
+    variable dies mapped        3513/3513    1020/1020
+    semantic records              640           253
+    records with >1 die           290           210
+    max fan-out                    68            32
+    tuples needing type to split    2             0
+    validation                     OK            OK
+
+Three properties it enforces, each of which is a way this could have quietly
+gone wrong:
+
+- **Coverage is checked, not assumed.** Every variable die must appear in the
+  map; a map nobody validated is a map that loses dies silently.
+- **Record ids are a digest of the tuple, not allocation order**, so an
+  incremental rebuild that changes one function does not renumber every
+  record. The compiler's eventual `mojo_type_id` drops into the same slot
+  without changing the shape.
+- **The dSYM UUID is recorded and its absence is an error**, so a map can be
+  refused rather than misapplied to a binary it was not built from.
+
+Types are compared by name, never by die offset -- the same type has a
+different offset in every compile unit, so an offset comparison would split
+one record into many and reintroduce the problem the map exists to solve.
+
+What it does not do yet: the records carry the natural tuple, not real
+semantic types, because the compiler does not emit them. That is the next
+piece, and the map's shape does not change when it arrives -- only the
+contents of a record.
 
 ## The risk worth watching
 
