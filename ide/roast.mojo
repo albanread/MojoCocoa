@@ -164,6 +164,14 @@ def set_status(text: String):
 comptime TB_BUILD = "roast.build"
 comptime TB_RUN = "roast.run"
 comptime TB_STOP = "roast.stop"
+# The debugger's transport controls. They sit in the bar at all times rather
+# than appearing when a session starts: a toolbar that changes shape while you
+# are reaching for it is worse than one whose items grey out, and NSToolbar
+# already knows how to grey an item out.
+comptime TB_CONTINUE = "roast.continue"
+comptime TB_STEP_OVER = "roast.stepover"
+comptime TB_STEP_IN = "roast.stepin"
+comptime TB_STEP_OUT = "roast.stepout"
 comptime TB_FIND = "roast.find"
 
 
@@ -175,6 +183,13 @@ def toolbar_ids() -> ObjCObject:
         String(TB_BUILD),
         String(TB_RUN),
         String(TB_STOP),
+        # A space, then the debugger's controls in the order you reach for
+        # them: continue first, the three steps after it.
+        String("NSToolbarSpaceItem"),
+        String(TB_CONTINUE),
+        String(TB_STEP_OVER),
+        String(TB_STEP_IN),
+        String(TB_STEP_OUT),
         # Flexible space then search: the find field sits at the trailing edge,
         # where every Mac app puts it.
         String("NSToolbarFlexibleSpaceItem"),
@@ -2075,6 +2090,26 @@ class RoastActions:
                     title = String("Stop")
                     symbol = String("stop.fill")
                     action = sel["roastStop:"]()
+                # The debugger's four. Each already had a menu item and an
+                # action behind it; this only puts them where the hand is.
+                # The symbols read as directions rather than as pictures of a
+                # debugger: along, down into, up out of.
+                elif Obj["NSString"](key.addr()).isEqualToString(nsstring(String(TB_CONTINUE)).ptr()):
+                    title = String("Continue")
+                    symbol = String("forward.fill")
+                    action = sel["roastContinue:"]()
+                elif Obj["NSString"](key.addr()).isEqualToString(nsstring(String(TB_STEP_OVER)).ptr()):
+                    title = String("Step Over")
+                    symbol = String("arrow.right.circle")
+                    action = sel["roastStepOver:"]()
+                elif Obj["NSString"](key.addr()).isEqualToString(nsstring(String(TB_STEP_IN)).ptr()):
+                    title = String("Step Into")
+                    symbol = String("arrow.down.circle")
+                    action = sel["roastStepIn:"]()
+                elif Obj["NSString"](key.addr()).isEqualToString(nsstring(String(TB_STEP_OUT)).ptr()):
+                    title = String("Step Out")
+                    symbol = String("arrow.up.circle")
+                    action = sel["roastStepOut:"]()
                 else:
                     return ObjCObject(0)
 
