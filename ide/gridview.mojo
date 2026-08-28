@@ -767,6 +767,62 @@ class RoastGridView(NSView, NSTextInputClient):
         except:
             pass
 
+    # ── Edit menu actions ───────────────────────────────────────────────────
+    # The menu wires cut:, copy:, paste:, undo:, redo: and selectAll: to the
+    # responder chain, and the chain ends at whoever implements them. Until
+    # these existed it ended nowhere: every one of those items -- and its key
+    # equivalent -- did nothing in the editor, because a menu action never
+    # goes through doCommandBySelector:. A code editor without paste.
+
+    def copy_(self, sender: ObjCObject):
+        try:
+            _ = copy_selection()
+        except:
+            pass
+
+    def cut_(self, sender: ObjCObject):
+        try:
+            if cut_selection():
+                _refresh(P(unsafe_from_address=self.__objc_id))
+        except:
+            pass
+
+    def paste_(self, sender: ObjCObject):
+        try:
+            if paste_clipboard():
+                let view = ObjCObject(self.__objc_id)
+                _refresh(P(unsafe_from_address=self.__objc_id))
+                reveal_caret(view)
+        except:
+            pass
+
+    def undo_(self, sender: ObjCObject):
+        try:
+            if undo():
+                let view = ObjCObject(self.__objc_id)
+                _refresh(P(unsafe_from_address=self.__objc_id))
+                reveal_caret(view)
+        except:
+            pass
+
+    def redo_(self, sender: ObjCObject):
+        try:
+            if redo():
+                let view = ObjCObject(self.__objc_id)
+                _refresh(P(unsafe_from_address=self.__objc_id))
+                reveal_caret(view)
+        except:
+            pass
+
+    def selectAll_(self, sender: ObjCObject):
+        try:
+            if has_rope():
+                g_anchor()[] = 0
+                g_caret()[] = g_buffer()[][0].byte_length()
+                _refresh(P(unsafe_from_address=self.__objc_id))
+        except:
+            pass
+
 
 class RoastCompletionView(NSView):
     """The completion popup's content view."""
@@ -1379,6 +1435,78 @@ def replace_selection(text: String):
     g_coalesce_at()[] = g_caret()[] if typing else -1
     g_marked_at()[] = 0
     g_marked_len()[] = 0
+
+
+def selected_text() -> String:
+    if not has_rope():
+        return String()
+    return g_buffer()[][0].slice(sel_start(), sel_end())
+
+
+def clipboard_write(text: String) -> Bool:
+    """Put a string on the general pasteboard, replacing what was there."""
+    with autoreleasepool():
+        let NSPasteboard = ObjCClass.lookup["NSPasteboard"]()
+        let pb = msg_send[
+            ObjCObject, "NSPasteboard", "generalPasteboard", is_class=True
+        ](NSPasteboard.as_object())
+        _ = msg_send[Int, "NSPasteboard", "clearContents"](pb)
+        return msg_send[Bool, "NSPasteboard", "setString:forType:"](
+            pb,
+            nsstring(text).ptr(),
+            extern_object["NSPasteboardTypeString"]().ptr(),
+        )
+
+
+def clipboard_read() -> String:
+    """The pasteboard's string, or empty -- an image on the clipboard is not
+    something a text editor can paste."""
+    with autoreleasepool():
+        let NSPasteboard = ObjCClass.lookup["NSPasteboard"]()
+        let pb = msg_send[
+            ObjCObject, "NSPasteboard", "generalPasteboard", is_class=True
+        ](NSPasteboard.as_object())
+        let s = msg_send[ObjCObject, "NSPasteboard", "stringForType:"](
+            pb, extern_object["NSPasteboardTypeString"]().ptr()
+        )
+        if s.addr() == 0:
+            return String()
+        return ns_to_string(s)
+
+
+def copy_selection() -> Bool:
+    """Copy the selection. Nothing selected copies nothing -- clearing the
+    clipboard because the caret was collapsed would surprise, and surprise at
+    paste time is data loss at copy time."""
+    let text = selected_text()
+    if text.byte_length() == 0:
+        return False
+    return clipboard_write(text)
+
+
+def cut_selection() -> Bool:
+    if not copy_selection():
+        return False
+    replace_selection(String())
+    return True
+
+
+def paste_clipboard() -> Bool:
+    let text = clipboard_read()
+    if text.byte_length() == 0:
+        return False
+    replace_selection(text)
+    return True
+
+
+def reveal_caret(view: ObjCObject):
+    """Scroll the caret into view. A paste or an undo can land it anywhere."""
+    with autoreleasepool():
+        let pos = caret_position(g_caret()[])
+        let lh = line_height()
+        _ = msg_send[ObjCObject, "NSView", "scrollRectToVisible:"](
+            view, rect(pos.x - 40.0, pos.y - lh, 160.0, lh * 3.0)
+        )
 
 
 def apply_command(name: String):

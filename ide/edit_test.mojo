@@ -6,6 +6,11 @@
 from gridview import (
     set_rope,
     undo,
+    copy_selection,
+    cut_selection,
+    paste_clipboard,
+    clipboard_write,
+    clipboard_read,
     redo,
     g_undo,
     g_redo,
@@ -33,6 +38,7 @@ from gridview import (
     utf16_to_byte,
 )
 from rope import Rope
+from std.objc import load_framework
 
 
 def buffer_text() -> String:
@@ -249,6 +255,56 @@ def main() raises:
     failures += check(
         "hash in string", kinds_of(String('"#"')), String("222")
     )
+
+    print("edit: clipboard")
+    # NSPasteboard needs AppKit but no window and no run loop, so this stays a
+    # windowless test. The general pasteboard is shared machine state; the
+    # round trip writes before it reads, so a busy clipboard cannot fail it.
+    if load_framework["AppKit"]():
+        set_rope(Rope(String("keep THIS not that")))
+        g_anchor()[] = 5
+        g_caret()[] = 9
+        failures += check_int(
+            "copy wants a selection", 1 if copy_selection() else 0, 1
+        )
+        failures += check("copied text", clipboard_read(), String("THIS"))
+        set_caret(0)
+        failures += check_int(
+            "copy with no selection refuses",
+            1 if copy_selection() else 0,
+            0,
+        )
+        failures += check(
+            "refused copy leaves the clipboard", clipboard_read(), String("THIS")
+        )
+        g_anchor()[] = 0
+        g_caret()[] = g_buffer()[][0].byte_length()
+        replace_selection(String(""))
+        failures += check("cleared", buffer_text(), String(""))
+        failures += check_int(
+            "paste", 1 if paste_clipboard() else 0, 1
+        )
+        failures += check("pasted text", buffer_text(), String("THIS"))
+        failures += check_int("caret after paste", g_caret()[], 4)
+
+        # Cut is copy plus delete, and must be one undo entry.
+        set_rope(Rope(String("abcdef")))
+        g_anchor()[] = 2
+        g_caret()[] = 4
+        failures += check_int("cut", 1 if cut_selection() else 0, 1)
+        failures += check("cut removes", buffer_text(), String("abef"))
+        failures += check("cut copies", clipboard_read(), String("cd"))
+        _ = undo()
+        failures += check("undo after cut", buffer_text(), String("abcdef"))
+
+        # UTF-8 through the clipboard, byte-exact.
+        _ = clipboard_write(String("café 日本"))
+        failures += check(
+            "unicode round trip", clipboard_read(), String("café 日本")
+        )
+    else:
+        print("  FAIL clipboard -- AppKit did not load")
+        failures += 1
 
     print()
     if failures == 0:
