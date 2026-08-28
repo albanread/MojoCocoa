@@ -537,6 +537,36 @@ With that, the chain falls out: each dealloc empties its own box and passes
 `[super dealloc]` up. `inherit_test` checks two levels, a leaf with no box of
 its own, `isKindOfClass:`, and exactly one destruction per box.
 
+### Class methods, and the crash that was sitting there
+
+`@staticmethod` in a `class` body **crashed the compiler**. Not diagnosed, not
+mis-registered: crashed, on a declaration the grammar plainly allows. Every
+line of the trampoline assumed the callee's argument 0 was the receiver, and a
+class method's argument 0 is its first real argument -- or, for a nullary one,
+does not exist.
+
+It is now the simplest trampoline in the file, which is the honest shape of
+the thing. The C ABI still hands over two leading words, but the first is the
+CLASS object rather than an instance; with no `self` there is no box to find
+and nothing to convert, so both are dropped and the rest forwarded straight
+through. Calling the Mojo method needs one different step -- there is no
+receiver to look the method up ON, so it is looked up on the TYPE, via
+`OverloadSet::lookupAndResolve`, which already knows how to drop the self
+operand for a static.
+
+Where the IMP goes is the part that is easy to get backwards, and easy not to
+notice: a `+` method lives on the **metaclass**, the class object's own class.
+Put it on the class instead and `[instance make]` answers while
+`[Klass make]` does not -- exactly reversed, and it looks like it worked. So
+`class_method_test` checks both directions, and the negative one is the half
+that matters.
+
+Two smaller things fall out. Encoding and ABI lookups pass `is_class = 1` for
+these, because `+alloc` and `-alloc` are different methods with different
+encodings and the database is keyed on the distinction. And an instance
+method declared beside a class method still finds its own box, which the same
+test pins.
+
 ### Autorelease pools
 
 We do not create, drain, or otherwise interact with a pool. `dealloc` is

@@ -176,3 +176,13 @@ class Derived(Boxed):
 # against nil -- a root class that answers nothing, silently.
 # CHECK-DAG: __objc_ensure_super
 # CHECK-DAG: lit.struct.field own
+
+
+# A `@staticmethod` is a `+` method: no receiver to convert, and it goes on
+# the METACLASS, so `[Klass make]` works and `[instance make]` does not.
+class Klass(NSObject):
+    @staticmethod
+    def isProxy() -> Bool:
+        return True
+
+# CHECK-DAG: add_class_method

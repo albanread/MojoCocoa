@@ -67,6 +67,11 @@ struct ObjCClassRegistrar:
     ](mut self, selector: StringSlice, encoding: StringSlice, imp: F) -> Bool:
         return False
 
+    def add_class_method[
+        F: AnyType
+    ](mut self, selector: StringSlice, encoding: StringSlice, imp: F) -> Bool:
+        return False
+
     def add_protocol(mut self, name: StringSlice) -> Bool:
         return False
 
