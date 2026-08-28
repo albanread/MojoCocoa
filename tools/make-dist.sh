@@ -180,6 +180,22 @@ rsync -a --delete --delete-excluded \
       "$ROOT/examples/" "$D/share/examples/"
 echo "   $(find "$D/share/examples" -name '*.mojo' | wc -l | tr -d ' ') files in $(ls "$D/share/examples" | grep -vc README) projects"
 
+echo "== the IDE =="
+# Roast, built with the compiler this distribution just assembled -- the same
+# toolchain someone opening it will compile with. It ships because
+# share/examples ships: the Examples menu resolves them through
+# COCOAMOJO_ROOT, which only points somewhere real for a Roast that lives
+# here. Built rather than copied, because a hand-placed binary is stale the
+# moment the IDE changes, which is exactly what it was.
+if COCOAMOJO_ROOT="$D" "$D/bin/cocoamojo" --build "$ROOT/ide/roast.mojo" \
+     -o "$D/bin/roast" >"$D/bin/.roast.log" 2>&1; then
+  rm -f "$D/bin/.roast.log"
+  echo "   roast ($(stat -f%z "$D/bin/roast" | awk '{printf "%.0f KB", $1/1024}'))"
+else
+  echo "   WARNING: roast did not build -- see $D/bin/.roast.log"
+  rm -f "$D/bin/roast"
+fi
+
 echo "== cocoa database =="
 if [ -f "$KB" ]; then cp -f "$KB" "$D/share/cocoa.sqlite"
 else echo "   WARNING: no cocoa.sqlite at $KB -- set COCOAKB=..."; fi
