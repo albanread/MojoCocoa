@@ -33,6 +33,24 @@ comptime LEAF_TARGET = 4096
 comptime FANOUT = 32
 
 
+def _utf16_of(s: String) -> Int:
+    """UTF-16 units in a string, counted from bytes without decoding.
+
+    A 1-, 2- or 3-byte sequence is one unit; a 4-byte sequence is a surrogate
+    pair, two. So the count is every non-continuation byte, plus one more for
+    each 4-byte lead (0xF0 and up). One pass, no allocation.
+    """
+    let bytes = s.as_bytes()
+    var u = 0
+    for i in range(len(bytes)):
+        let b = Int(bytes[i])
+        if (b & 0xC0) != 0x80:
+            u += 1
+            if b >= 0xF0:
+                u += 1
+    return u
+
+
 struct Node(Movable, Deinitable):
     """One rope node: either a run of text, or a list of children."""
 
@@ -41,12 +59,14 @@ struct Node(Movable, Deinitable):
     var kids: List[ArcPointer[Node]]
     var nbytes: Int
     var nlines: Int  # newline characters beneath this node, not line count
+    var nutf16: Int  # UTF-16 units beneath this node -- what Cocoa counts in
 
     def __init__(out self, var text: String):
         """A leaf."""
         self.is_leaf = True
         self.nbytes = text.byte_length()
         self.nlines = text.count("\n")
+        self.nutf16 = _utf16_of(text)
         self.text = text^
         self.kids = []
 
@@ -54,14 +74,17 @@ struct Node(Movable, Deinitable):
         """An interior node, summing its children."""
         var b = 0
         var l = 0
+        var u = 0
         for k in kids:
             b += k[].nbytes
             l += k[].nlines
+            u += k[].nutf16
         self.is_leaf = False
         self.text = String()
         self.kids = kids^
         self.nbytes = b
         self.nlines = l
+        self.nutf16 = u
 
 
 def _leaf(var text: String) -> ArcPointer[Node]:
@@ -190,6 +213,28 @@ struct Rope(Movable, Copyable):
     def line_of_offset(self, offset: Int) -> Int:
         """Which line a byte offset falls on."""
         return _count_newlines_before(self.root, min(offset, self.byte_length()))
+
+    def utf16_length(self) -> Int:
+        return self.root[].nutf16
+
+    def byte_to_utf16(self, offset: Int) -> Int:
+        """A byte offset as a UTF-16 offset, the unit Cocoa's text system
+        counts in. O(log n) on the cached per-node counts plus one leaf scan;
+        this used to be a copy of the whole prefix, which put a multi-megabyte
+        walk inside selectedRange -- called on essentially every keystroke."""
+        return _u16_before(
+            self.root, max(0, min(offset, self.byte_length()))
+        )
+
+    def utf16_to_byte(self, u16: Int) -> Int:
+        """The inverse, same cost. An offset landing inside a surrogate pair
+        snaps to the start of the character -- Cocoa can ask for one when a
+        range splits an astral-plane glyph, and half a pair is not a place."""
+        if u16 <= 0:
+            return 0
+        if u16 >= self.root[].nutf16:
+            return self.byte_length()
+        return _byte_of_u16(self.root, u16)
 
     # ── Editing ─────────────────────────────────────────────────────────────
     def replace(self, start: Int, end: Int, var text: String) -> Self:
@@ -423,6 +468,61 @@ def _offset_of_newline(node: ArcPointer[Node], index: Int) -> Int:
         if remaining < k[].nlines:
             return at + _offset_of_newline(k, remaining)
         remaining -= k[].nlines
+        at += k[].nbytes
+    return node[].nbytes
+
+
+def _u16_before(node: ArcPointer[Node], offset: Int) -> Int:
+    """UTF-16 units in the first `offset` bytes."""
+    if node[].is_leaf:
+        let bytes = node[].text.as_bytes()
+        var u = 0
+        var i = 0
+        while i < len(bytes) and i < offset:
+            let b = Int(bytes[i])
+            if (b & 0xC0) != 0x80:
+                u += 1
+                if b >= 0xF0:
+                    u += 1
+            i += 1
+        return u
+    var at = 0
+    var u = 0
+    for k in node[].kids:
+        if offset <= at:
+            break
+        if offset >= at + k[].nbytes:
+            u += k[].nutf16
+        else:
+            u += _u16_before(k, offset - at)
+            break
+        at += k[].nbytes
+    return u
+
+
+def _byte_of_u16(node: ArcPointer[Node], u16: Int) -> Int:
+    """The byte offset where the `u16`-th UTF-16 unit begins."""
+    if node[].is_leaf:
+        let bytes = node[].text.as_bytes()
+        var u = 0
+        var i = 0
+        while i < len(bytes):
+            let b = Int(bytes[i])
+            if (b & 0xC0) != 0x80:
+                var w = 1
+                if b >= 0xF0:
+                    w = 2
+                if u + w > u16:
+                    return i
+                u += w
+            i += 1
+        return node[].nbytes
+    var at = 0
+    var remaining = u16
+    for k in node[].kids:
+        if remaining < k[].nutf16:
+            return at + _byte_of_u16(k, remaining)
+        remaining -= k[].nutf16
         at += k[].nbytes
     return node[].nbytes
 

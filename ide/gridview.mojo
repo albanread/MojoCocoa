@@ -1253,35 +1253,23 @@ def set_caret(at: Int):
     g_anchor()[] = at
 
 
-def _utf16_len(s: String) -> Int:
-    """UTF-16 units in a string. Cocoa counts these; the rope counts bytes."""
-    var n = 0
-    for c in s.codepoints():
-        n += 2 if Int(c) > 0xFFFF else 1
-    return n
-
-
 def byte_to_utf16(offset: Int) -> Int:
-    """A byte offset in the buffer as a UTF-16 offset, for Cocoa."""
+    """A byte offset in the buffer as a UTF-16 offset, for Cocoa.
+
+    The rope answers from cached per-node counts. The old version here sliced
+    the whole prefix into a fresh String -- and selectedRange calls this on
+    essentially every keystroke, so on a big file every keypress paid a
+    multi-megabyte copy before the character landed."""
     if not has_rope():
         return 0
-    return _utf16_len(g_buffer()[][0].slice(0, offset))
+    return g_buffer()[][0].byte_to_utf16(offset)
 
 
 def utf16_to_byte(u16: Int) -> Int:
-    """The inverse. Walks the buffer once; the ranges Cocoa asks about are
-    near the caret, so this is short in practice."""
+    """The inverse. This one flattened the ENTIRE buffer with to_string()."""
     if not has_rope():
         return 0
-    let text = g_buffer()[][0].to_string()
-    var seen = 0
-    var at = 0
-    for c in text.codepoints():
-        if seen >= u16:
-            break
-        seen += 2 if Int(c) > 0xFFFF else 1
-        at += len(String(c).as_bytes())
-    return at
+    return g_buffer()[][0].utf16_to_byte(u16)
 
 
 def push_undo(coalescing: Bool = False):

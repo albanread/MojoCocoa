@@ -63,6 +63,45 @@ def main() raises:
     failures += check("utf8 round trip", u.to_string(), String("héllo\nwörld\n日本語"))
 
     # A file big enough to cross many leaves and several tree levels.
+    print("rope: UTF-16 offsets")
+    # a(1) é(2 bytes, 1 unit) 日(3 bytes, 1 unit) 𐍈(4 bytes, 2 units) z(1)
+    let u16r = Rope(String("aé日𐍈z"))
+    failures += check_int("utf16 length", u16r.utf16_length(), 6)
+    failures += check_int("b→u16 at 0", u16r.byte_to_utf16(0), 0)
+    failures += check_int("b→u16 after a", u16r.byte_to_utf16(1), 1)
+    failures += check_int("b→u16 after é", u16r.byte_to_utf16(3), 2)
+    failures += check_int("b→u16 after 日", u16r.byte_to_utf16(6), 3)
+    failures += check_int("b→u16 after 𐍈", u16r.byte_to_utf16(10), 5)
+    failures += check_int("b→u16 at end", u16r.byte_to_utf16(11), 6)
+    failures += check_int("u16→b at 0", u16r.utf16_to_byte(0), 0)
+    failures += check_int("u16→b unit 2", u16r.utf16_to_byte(2), 3)
+    failures += check_int("u16→b unit 3", u16r.utf16_to_byte(3), 6)
+    failures += check_int("u16→b unit 5", u16r.utf16_to_byte(5), 10)
+    # Half a surrogate pair is not a place: snap to the character's start.
+    failures += check_int("u16→b inside pair snaps", u16r.utf16_to_byte(4), 6)
+    failures += check_int("u16→b past end clamps", u16r.utf16_to_byte(99), 11)
+    # The counts survive the path-copy edit, not just construction.
+    let u16e = u16r.insert(1, String("𐍈"))
+    failures += check_int("utf16 after edit", u16e.utf16_length(), 8)
+    failures += check_int("b→u16 after edit", u16e.byte_to_utf16(5), 3)
+    # And a multi-leaf rope sums its children.
+    var u16big = String()
+    for _ in range(3000):
+        u16big += String("é日𐍈\n")
+    let u16b = Rope(u16big)
+    failures += check_int("utf16 across leaves", u16b.utf16_length(), 3000 * 5)
+    failures += check_int(
+        "b→u16 across leaves", u16b.byte_to_utf16(10 * 1000), 5 * 1000
+    )
+    failures += check_int(
+        "u16→b across leaves", u16b.utf16_to_byte(5 * 1000), 10 * 1000
+    )
+    failures += check_int(
+        "round trip across leaves",
+        u16b.byte_to_utf16(u16b.utf16_to_byte(7777)),
+        7777,
+    )
+
     print("rope: searching")
     let hay = Rope(String("alpha beta gamma beta delta"))
     failures += check_int("find first", hay.find(String("beta")), 6)
