@@ -239,6 +239,19 @@ elif echo "$exout" | grep -q 'roast: announced 3 documents to the server'; then
 else
   bad "server told" "$(echo "$exout" | grep -m1 'announced' || echo 'no announce before autoclose')"
 fi
+# Documents from the Finder. Two halves, because they fail apart: whether
+# AppKit can FIND the handler is selector derivation, and whether it works is
+# open_path. A file becomes a tab, a folder becomes the project.
+fout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_OPEN_FILE="$PWD/examples/fern/ifs.mojo" \
+       ROAST_AUTOCLOSE_TICKS=50 timeout 120 "$TMP/roast" 2>&1)
+if ! echo "$fout" | grep -q 'roast: openFile responds: True True'; then
+  bad "open file" "the delegate does not answer application:openFile(s):"
+elif echo "$fout" | grep -q 'roast: openFile: True'; then
+  ok "open file" "a .mojo handed over by the Finder opens as a tab"
+else
+  bad "open file" "$(echo "$fout" | grep -m1 'openFile:' || echo 'no result reported')"
+fi
+
 # The first named_globals migrated onto class fields: the tab bar builds its
 # label attributes lazily in its own box, and says so exactly once.
 check "box fields"  "tab attributes built in the box" "per-instance state, built on first draw"

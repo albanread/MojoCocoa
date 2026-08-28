@@ -87,9 +87,8 @@ echo "   $(stat -f%z "$C/MacOS/Roast" | awk '{printf "%.0f KB", $1/1024}'), rpat
 # ── the bundle's paperwork ─────────────────────────────────────────────────
 # LSMinimumSystemVersion matches what the toolchain needs; NSHighResolution
 # because a text editor on a blurry backing store is unusable. The document
-# type makes .mojo files openable with Roast from the Finder -- Roast does
-# not implement application:openFile: yet, so this advertises rather than
-# promises, and is the next thing to wire.
+# type makes .mojo files openable with Roast from the Finder, which the app
+# delegate's application:openFile: actually honours.
 cat > "$C/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -113,8 +112,31 @@ cat > "$C/Info.plist" <<PLIST
     <dict>
       <key>CFBundleTypeName</key>      <string>Mojo source</string>
       <key>CFBundleTypeRole</key>      <string>Editor</string>
-      <key>LSItemContentTypes</key>    <array><string>public.plain-text</string></array>
-      <key>CFBundleTypeExtensions</key><array><string>mojo</string></array>
+      <key>LSHandlerRank</key>         <string>Owner</string>
+      <key>LSItemContentTypes</key>
+      <array><string>org.mojococoa.mojo-source</string></array>
+    </dict>
+  </array>
+  <!-- An exported type, so .mojo is a kind of source code the system knows
+       about rather than a claim on every plain text file. Listing
+       public.plain-text as the content type -- which this did first -- makes
+       Roast a candidate handler for README.txt, which is not the offer we
+       want to make. Owner rank because nothing else on the machine defines
+       this type. -->
+  <key>UTExportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key>      <string>org.mojococoa.mojo-source</string>
+      <key>UTTypeDescription</key>     <string>Mojo source</string>
+      <key>UTTypeConformsTo</key>
+      <array>
+        <string>public.source-code</string>
+        <string>public.utf8-plain-text</string>
+      </array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key><array><string>mojo</string></array>
+      </dict>
     </dict>
   </array>
 </dict>

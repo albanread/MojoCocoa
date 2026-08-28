@@ -199,6 +199,60 @@ class RoastAppDelegate:
         # so this stays true once tabbing is on.
         return True
 
+    def application_openFile_(self, app: ObjCObject, path: ObjCObject) -> Bool:
+        """Open a document: double-clicked in the Finder, dropped on the icon,
+        or `open -a Roast foo.mojo`.
+
+        AppKit sends this during launch as well as later, which is safe here
+        because the window and its views are built before [NSApp run] -- so
+        there is no moment when a path can arrive and find nothing to put it
+        in. Returning False makes the Finder report that the app could not
+        open the document, so the answer is the one open_path actually got.
+        """
+        try:
+            let opened = open_path(ns_to_string(path))
+            if opened:
+                bring_to_front()
+            return opened
+        except:
+            return False
+
+    def application_openFiles_(self, app: ObjCObject, paths: ObjCObject):
+        """Several at once -- a multiple selection, or a drop of more than one
+        file. AppKit calls THIS and not openFile: when it exists, so both are
+        implemented rather than trusting it to fall back.
+
+        replyToOpenOrPrint: is not optional: without it the Finder waits, and
+        during launch the app never finishes launching. 0 is success, 2 is
+        failure, and a batch counts as opened if any of it did.
+        """
+        try:
+            var any = False
+            with autoreleasepool():
+                let n = msg_send[Int, "NSArray", "count"](paths)
+                var i = 0
+                while i < n:
+                    let one = ns_to_string(
+                        msg_send[ObjCObject, "NSArray", "objectAtIndex:"](
+                            paths, i
+                        )
+                    )
+                    if open_path(one):
+                        any = True
+                    i += 1
+            if any:
+                bring_to_front()
+            _ = msg_send[ObjCObject, "NSApplication", "replyToOpenOrPrint:"](
+                app, Int(0) if any else Int(2)
+            )
+        except:
+            try:
+                _ = msg_send[
+                    ObjCObject, "NSApplication", "replyToOpenOrPrint:"
+                ](app, Int(2))
+            except:
+                pass
+
     def applicationWillTerminate_(self, note: ObjCObject):
         # The body may raise; the boundary catches. Hence no `try` around a
         # call that can only fail by the server having already gone.
@@ -1162,6 +1216,48 @@ def load_file(path: String) -> Bool:
         return False
 
 
+def open_path(path: String) -> Bool:
+    """Open whatever the Finder handed us: a folder becomes the project, a
+    file becomes a tab.
+
+    The server is re-rooted either way. Opening a lone file from somewhere
+    else on disk with a server still rooted at the last project is how you
+    get diagnostics about imports that resolve fine -- lsp_root() falls back
+    to the file's own directory, so this makes that fallback take effect.
+    """
+    if path == "":
+        return False
+    if is_directory(path):
+        open_folder(path)
+        return True
+    if not load_file(path):
+        return False
+    after_switch()
+    ensure_lsp_rooted()
+    return True
+
+
+def bring_to_front():
+    """Come forward. Double-clicking a document in the Finder means looking
+    at it, and macOS does not activate an already-running app for us."""
+    try:
+        with autoreleasepool():
+            let NSApplication = ObjCClass.lookup["NSApplication"]()
+            let app = msg_send[
+                ObjCObject, "NSApplication", "sharedApplication", is_class=True
+            ](NSApplication.as_object())
+            _ = msg_send[
+                ObjCObject, "NSApplication", "activateIgnoringOtherApps:"
+            ](app, True)
+            if g_window()[] != 0:
+                let win = ObjCObject(g_window()[])
+                _ = msg_send[ObjCObject, "NSWindow", "makeKeyAndOrderFront:"](
+                    win, win.ptr()
+                )
+    except:
+        pass
+
+
 # ── Tab bar ─────────────────────────────────────────────────────────────────
 # Tabs inside the window rather than macOS window tabs. Every editor does it
 # this way, and it suits the architecture: one grid view drawing whichever
@@ -1958,20 +2054,27 @@ def open_folder(var path: String):
     if g_outline()[] != 0:
         with autoreleasepool():
             Obj["NSOutlineView"](ObjCObject(g_outline()[]).addr()).reloadData()
-    # A server rooted at the old project is answering about files it is no
-    # longer looking at -- and an app launched with only its scratch buffer
-    # has no root at all, so its startup start_lsp() did nothing. Opening a
-    # folder is the moment a workspace exists: start the server if none is
-    # running, re-root it if it is rooted elsewhere. Without the first arm,
-    # picking an example in a fresh window meant no server for the whole
-    # session -- no completions, no diagnostics, silently.
+    ensure_lsp_rooted()
+    set_status(String("Project: ") + project_root())
+
+
+def ensure_lsp_rooted():
+    """Point the language server at where we are now.
+
+    A server rooted at the old project answers about files it is no longer
+    looking at -- and an app launched with only its scratch buffer has no
+    root at all, so its startup start_lsp() did nothing. Opening a folder, or
+    a file from the Finder, is the moment a workspace exists: start a server
+    if none is running, re-root one that is rooted elsewhere. Without the
+    first arm, picking an example in a fresh window meant no server for the
+    whole session -- no completions, no diagnostics, silently.
+    """
     if not lsp.is_running():
         if start_lsp():
             print("roast: language server started at", lsp_root())
     elif lsp_root() != _lsp_root_now():
         if start_lsp():
-            print("roast: language server re-rooted at", project_root())
-    set_status(String("Project: ") + project_root())
+            print("roast: language server re-rooted at", lsp_root())
 
 
 def save_current() -> Bool:
@@ -2658,6 +2761,31 @@ def main() raises:
                     example, example + String("/main.mojo")
                 ),
             )
+
+        # What the Finder does when a .mojo is double-clicked, reachable
+        # without one: the delegate method itself, not a reimplementation of
+        # it, so the check covers the path AppKit actually takes.
+        let dropped = getenv("ROAST_OPEN_FILE")
+        if dropped != "":
+            # Two halves, because they fail apart. Whether AppKit can FIND
+            # the method is selector derivation -- application_openFile_ has
+            # to have become `application:openFile:` -- and respondsToSelector
+            # is the same question AppKit asks before it sends. Whether the
+            # method WORKS is open_path, called here directly. (Sending the
+            # message would cover both, but `send` derives its argument
+            # classes from the SDK and the database carries class selectors,
+            # not protocol ones: "the Cocoa metadata has no
+            # selector_arg_classes for application:openFile:".)
+            print(
+                "roast: openFile responds:",
+                msg_send[Bool, "NSObject", "respondsToSelector:"](
+                    delegate, sel["application:openFile:"]().ptr()
+                ),
+                msg_send[Bool, "NSObject", "respondsToSelector:"](
+                    delegate, sel["application:openFiles:"]().ptr()
+                ),
+            )
+            print("roast: openFile:", open_path(dropped))
 
         # The same thing again, through the menu item rather than around it.
         # Comma-separated, because picking a second example is a different
