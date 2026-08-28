@@ -287,6 +287,39 @@ def show_console(want: Bool):
     g_console_open()[] = 1 if want else 0
 
 
+# ── Where the toolchain is ──────────────────────────────────────────────────
+def toolchain_root() -> String:
+    """The CocoaMojo the editor compiles, completes and runs with.
+
+    COCOAMOJO_ROOT first: `cocoamojo` exports it, so a Roast launched by the
+    driver finds the toolchain that built it, and a harness can point
+    somewhere else. Otherwise the app asks itself where it is -- a Roast
+    double-clicked in the Finder inherits no environment at all, and an
+    application that cannot find its own compiler is not an application.
+
+    NSBundle answers `Contents/Resources` inside a bundle and the executable's
+    own directory outside one, so the same two lines serve a shipped app and a
+    bare binary sitting beside a distribution.
+    """
+    let env = getenv("COCOAMOJO_ROOT")
+    if env != "":
+        return env^
+    try:
+        with autoreleasepool():
+            let NSBundle = ObjCClass.lookup["NSBundle"]()
+            let main = msg_send[
+                ObjCObject, "NSBundle", "mainBundle", is_class=True
+            ](NSBundle.as_object())
+            if main.addr() == 0:
+                return String()
+            let res = msg_send[ObjCObject, "NSBundle", "resourcePath"](main)
+            if res.addr() == 0:
+                return String()
+            return ns_to_string(res) + String("/CocoaMojo")
+    except:
+        return String()
+
+
 # ── Build and run ───────────────────────────────────────────────────────────
 def _driver() -> String:
     """The cocoamojo beside us. An editor built by this toolchain should
@@ -294,7 +327,7 @@ def _driver() -> String:
     var here = getenv("ROAST_COCOAMOJO")
     if here != "":
         return here^
-    let root = getenv("COCOAMOJO_ROOT")
+    let root = toolchain_root()
     if root == "":
         return String()
     return root + String("/bin/cocoamojo")
@@ -1767,7 +1800,7 @@ def lsp_server_path() -> String:
     let explicit = getenv("ROAST_LSP")
     if explicit != "":
         return explicit^
-    let here = getenv("COCOAMOJO_ROOT")
+    let here = toolchain_root()
     if here == "":
         return String()
     return here + String("/bin/mojo-lsp-server")
@@ -1777,7 +1810,7 @@ def lsp_import_path() -> String:
     let explicit = getenv("ROAST_IMPORTS")
     if explicit != "":
         return explicit^
-    let here = getenv("COCOAMOJO_ROOT")
+    let here = toolchain_root()
     if here == "":
         return String()
     return here + String("/lib/mojo/stdlib")
@@ -2036,7 +2069,7 @@ def examples_root() -> String:
     let override = getenv("ROAST_EXAMPLES")
     if override != "":
         return override^
-    let root = getenv("COCOAMOJO_ROOT")
+    let root = toolchain_root()
     if root == "":
         return String()
     return root + String("/share/examples")
@@ -2717,6 +2750,8 @@ def main() raises:
             project_root(), document.path_at(document.current_index())
         ))
         print("roast: menu bar items:", n_menus)
+        let tc = toolchain_root()
+        print("roast: toolchain:", tc if tc != "" else String("(none found)"))
         let gframe = Obj["NSView"](grid.addr()).frame()
         print(
             "roast: document:",
