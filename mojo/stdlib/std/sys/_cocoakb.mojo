@@ -455,3 +455,25 @@ class. `alloc`, `new` and the `init` family are declared on NSObject, so
 resolving them through the superclass chain would otherwise say that
 `[NSString alloc]` is an NSObject.
 """
+
+
+comptime cocoakb_p_ret_class_str[
+    cls: StringLiteral, sel: StringLiteral, is_class: StringLiteral
+] = __mlir_attr[
+    `#kgen.param.expr<cocoakb_query, "method_ret_objc_class" : !kgen.string, `,
+    cls.value,
+    `, `,
+    sel.value,
+    `, `,
+    is_class.value,
+    `> : !kgen.string`,
+]
+"""`cocoakb_p_method_ret_class` as a raw `!kgen.string` rather than a
+`StaticString`.
+
+The difference is what it can be used FOR. `StringLiteral`'s own parameter is
+a `!kgen.string`, so this form can parameterize a type -- `Obj[
+StringLiteral[cocoakb_p_ret_class_str[...]]]` -- which is how a call's result
+gets the class the SDK says it has, without anyone writing it down. A
+`StaticString` is a value and cannot.
+"""

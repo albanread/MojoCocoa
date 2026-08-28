@@ -24,6 +24,22 @@
 from std.sys._cocoakb import (
     cocoakb_p_method_ret_kind, cocoakb_p_method_ret_class,
 )
+
+
+@fieldwise_init
+struct Obj[cls: StaticString](Copyable, Movable):
+    """A reference carrying its class in its type -- the shape the call
+    direction needs, and the reason knowing a returned class matters."""
+
+    var id: Int
+
+    def name(self) -> StaticString:
+        return Self.cls
+
+
+comptime RetOf[
+    cls: StringLiteral, sel: StringLiteral, is_class: StringLiteral = "0"
+] = cocoakb_p_method_ret_class[cls, sel, is_class]
 from std.objc import (
     ObjCObject, msg_send, load_framework, nsstring, ns_to_string, CGRect,
 )
@@ -69,25 +85,30 @@ def main() raises:
     if not empty:
         raise Error("a boolean result was not typed as a boolean")
 
-    # And WHICH object, which I twice claimed was unknowable. It is not in
-    # the method's encoding -- every object there is a bare `@` -- but a
-    # PROPERTY's attribute string carries `T@"NSTextStorage"`, and a property
-    # is read by a selector. Ingesting properties covers a little over half of
-    # every object-returning instance method.
-    comptime storage = cocoakb_p_method_ret_class[
-        "NSTextView", "textStorage", "0"
-    ]
-    comptime window = cocoakb_p_method_ret_class["NSView", "window", "0"]
-    if storage != StaticString("NSTextStorage") or window != StaticString("NSWindow"):
-        print("textStorage ->", storage, " window ->", window)
-        raise Error("the returned class did not come from the SDK")
+    # And WHICH object. Not in the method's encoding -- every object there is
+    # a bare `@` -- but a PROPERTY's attribute string carries
+    # `T@"NSTextStorage"`, and a property is read by a selector. Ingesting
+    # properties answers this for a little over half of every
+    # object-returning instance method.
+    #
+    # It parameterises a TYPE, which is the point: a result carries the class
+    # the SDK says it has, with nobody writing it down.
+    var storage = Obj[RetOf["NSTextView", "textStorage"]](0)
+    var window = Obj[RetOf["NSView", "window"]](0)
+    if storage.name() != StaticString("NSTextStorage"):
+        print("textStorage ->", storage.name())
+        raise Error("a returned class did not come from the SDK")
+    if window.name() != StaticString("NSWindow"):
+        raise Error("a returned class did not come from the SDK")
 
-    # `@self` is the instancetype rule: alloc/new/init answer the RECEIVER's
-    # class, and they are declared on NSObject, so a chain-walking lookup
-    # would otherwise report [NSString alloc] as an NSObject.
-    comptime allocd = cocoakb_p_method_ret_class["NSObject", "alloc", "1"]
-    if allocd != StaticString("@self"):
-        print("alloc ->", allocd)
-        raise Error("instancetype was resolved to a fixed class")
+    # instancetype resolves to the RECEIVER, and the difference is not
+    # academic: `alloc` is declared on NSObject, so the chain walk finds it
+    # there. `[NSString alloc]` is an NSString, and answering NSObject would
+    # be wrong in the quiet way that matters -- it type-checks.
+    var allocd = Obj[RetOf["NSString", "alloc", "1"]](0)
+    if allocd.name() != StaticString("NSString"):
+        print("NSString.alloc ->", allocd.name())
+        raise Error("instancetype resolved to the declaring class, not the "
+                    "receiver")
 
     print("typed results OK")

@@ -132,12 +132,23 @@ constexpr StringRef kMethodRetKindSQL =
 // instancetype family covers a little over half of every object-returning
 // instance method.
 //
-// An answer of `@self` is the instancetype rule and means "the receiver's own
-// class": those methods are declared on NSObject, so a chain-walking lookup
-// would otherwise report that `[NSString alloc]` is an NSObject. The caller
-// substitutes the receiver.
-constexpr StringRef kMethodRetObjCClassSQL =
-    COCOAKB_METHOD_CTE("m.ret_class", "method_ret_class");
+// The stored `@self` -- the instancetype rule, on methods declared upstream on
+// NSObject -- is resolved HERE, to ?1, because ?1 is the receiver: the chain
+// walk starts at the class being asked about. So `[NSString alloc]` answers
+// NSString rather than the NSObject a naive chain walk would find, and no
+// consumer has to know the sentinel exists.
+//
+// Resolving it in SQL rather than in the caller is not only tidier. The
+// caller would have to compare the answer against "@self", and a string
+// comparison does not fold during parameter evaluation -- so a type
+// conditioned on it stays symbolic and the whole point is lost.
+constexpr StringRef kMethodRetObjCClassSQL = COCOAKB_METHOD_CTE(
+    // ?1, not chain.c: the chain walk finds `alloc` on NSObject, which is
+    // where it is DECLARED, and the whole point of the sentinel is that the
+    // answer is where the message was SENT. `[NSString alloc]` is an
+    // NSString.
+    "CASE WHEN m.ret_class = '@self' THEN ?1 ELSE m.ret_class END",
+    "method_ret_class");
 #undef COCOAKB_METHOD_CTE
 
 // Selector-keyed ABI: for a protocol-typed object (id<MTLTexture>, a Cocoa
