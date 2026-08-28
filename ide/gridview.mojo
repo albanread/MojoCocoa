@@ -905,84 +905,134 @@ class RoastCompletionView(NSView):
         return True
 
 
+# Editor font size in tenths of a point; zero means the 13.0 default, which
+# is what a zero-initialised process global has to mean.
+comptime g_font_pts_x10 = named_global["roast.font.pts", Int]
+
+
+def font_size() -> Float64:
+    let v = g_font_pts_x10()[]
+    return Float64(v) / 10.0 if v != 0 else 13.0
+
+
+def set_font_size(pts: Float64):
+    """Change the editor's type size and rebuild everything derived from it.
+    Clamped to what remains legible on either end."""
+    var want = pts
+    if want < 8.0:
+        want = 8.0
+    elif want > 36.0:
+        want = 36.0
+    g_font_pts_x10()[] = Int(want * 10.0)
+    build_type()
+
+
+def _drop_retained(addr: Int):
+    if addr != 0:
+        _ = external_call["objc_release", P](ObjCObject(addr).ptr())
+
+
+def build_type():
+    """The font at the current size, and every dictionary derived from it.
+
+    Separated from make_grid_view so ⌘+ and ⌘− can re-run it: the size was a
+    literal 13.0 buried in view construction, which is why the editor had no
+    zoom at all. Old dictionaries are released; the previous font goes with
+    them, since they were its only owners.
+    """
+    with autoreleasepool():
+        let NSFont = ObjCClass.lookup["NSFont"]()
+        let font = msg_send[
+            ObjCObject,
+            "NSFont",
+            "monospacedSystemFontOfSize:weight:",
+            is_class=True,
+        ](NSFont.as_object(), font_size(), Float64(0.0))
+        _ = external_call["objc_retain", P](font.ptr())
+        _drop_retained(g_font()[])
+        g_font()[] = font.addr()
+
+        let NSMutableDictionary = ObjCClass.lookup["NSMutableDictionary"]()
+        var attrs = msg_send[
+            ObjCObject, "NSMutableDictionary", "dictionary", is_class=True
+        ](NSMutableDictionary.as_object())
+        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
+            attrs, font.ptr(), extern_object["NSFontAttributeName"]().ptr()
+        )
+        let NSColor = ObjCClass.lookup["NSColor"]()
+        let fg = msg_send[ObjCObject, "NSColor", "textColor", is_class=True](
+            NSColor.as_object()
+        )
+        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
+            attrs,
+            fg.ptr(),
+            extern_object["NSForegroundColorAttributeName"]().ptr(),
+        )
+        _ = external_call["objc_retain", P](attrs.ptr())
+        _drop_retained(g_attrs()[])
+        g_attrs()[] = attrs.addr()
+
+        # The gutter, dimmer.
+        var gattrs = msg_send[
+            ObjCObject, "NSMutableDictionary", "dictionary", is_class=True
+        ](NSMutableDictionary.as_object())
+        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
+            gattrs, font.ptr(), extern_object["NSFontAttributeName"]().ptr()
+        )
+        let dim = msg_send[
+            ObjCObject, "NSColor", "tertiaryLabelColor", is_class=True
+        ](NSColor.as_object())
+        _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
+            gattrs,
+            dim.ptr(),
+            extern_object["NSForegroundColorAttributeName"]().ptr(),
+        )
+        _ = external_call["objc_retain", P](gattrs.ptr())
+        _drop_retained(g_gutter_attrs()[])
+        g_gutter_attrs()[] = gattrs.addr()
+
+        # Syntax colours. System colours rather than chosen ones, so the
+        # editor follows the appearance the rest of the machine is using.
+        let comment_c = msg_send[
+            ObjCObject, "NSColor", "systemGreenColor", is_class=True
+        ](NSColor.as_object())
+        let string_c = msg_send[
+            ObjCObject, "NSColor", "systemRedColor", is_class=True
+        ](NSColor.as_object())
+        let keyword_c = msg_send[
+            ObjCObject, "NSColor", "systemPurpleColor", is_class=True
+        ](NSColor.as_object())
+        let number_c = msg_send[
+            ObjCObject, "NSColor", "systemBlueColor", is_class=True
+        ](NSColor.as_object())
+        _drop_retained(g_attr_comment()[])
+        _drop_retained(g_attr_string()[])
+        _drop_retained(g_attr_keyword()[])
+        _drop_retained(g_attr_number()[])
+        g_attr_comment()[] = _make_attrs(comment_c)
+        g_attr_string()[] = _make_attrs(string_c)
+        g_attr_keyword()[] = _make_attrs(keyword_c)
+        g_attr_number()[] = _make_attrs(number_c)
+
+        # Advance: the width of one character in a face where they are all
+        # the same width. Measured, not assumed.
+        let probe = nsstring(String("0000000000"))
+        let probe_size = msg_send[CGSize, "NSString", "sizeWithAttributes:"](
+            probe, attrs.ptr()
+        )
+        g_advance_x1000()[] = Int(probe_size.width / 10.0 * 1000.0)
+
+        # Line height from the font's own metrics, so descenders are not
+        # clipped.
+        let ascender = msg_send[Float64, "NSFont", "ascender"](font)
+        let descender = msg_send[Float64, "NSFont", "descender"](font)
+        let leading = msg_send[Float64, "NSFont", "leading"](font)
+        g_line_h_x1000()[] = Int((ascender - descender + leading + 2.0) * 1000.0)
+
+
 def make_grid_view(frame: CGRect) -> ObjCObject:
     """Register the view class, measure the font, and return an instance."""
-    # A monospaced face, and its advance measured once. Everything downstream
-    # is multiplication.
-    let NSFont = ObjCClass.lookup["NSFont"]()
-    let font = msg_send[
-        ObjCObject,
-        "NSFont",
-        "monospacedSystemFontOfSize:weight:",
-        is_class=True,
-    ](NSFont.as_object(), Float64(13.0), Float64(0.0))
-    g_font()[] = font.addr()
-
-    let NSMutableDictionary = ObjCClass.lookup["NSMutableDictionary"]()
-    var attrs = msg_send[
-        ObjCObject, "NSMutableDictionary", "dictionary", is_class=True
-    ](NSMutableDictionary.as_object())
-    _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
-        attrs, font.ptr(), extern_object["NSFontAttributeName"]().ptr()
-    )
-    let NSColor = ObjCClass.lookup["NSColor"]()
-    let fg = msg_send[ObjCObject, "NSColor", "textColor", is_class=True](
-        NSColor.as_object()
-    )
-    _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
-        attrs, fg.ptr(), extern_object["NSForegroundColorAttributeName"]().ptr()
-    )
-    _ = external_call["objc_retain", P](attrs.ptr())
-    g_attrs()[] = attrs.addr()
-
-    # The gutter, dimmer.
-    var gattrs = msg_send[
-        ObjCObject, "NSMutableDictionary", "dictionary", is_class=True
-    ](NSMutableDictionary.as_object())
-    _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
-        gattrs, font.ptr(), extern_object["NSFontAttributeName"]().ptr()
-    )
-    let dim = msg_send[
-        ObjCObject, "NSColor", "tertiaryLabelColor", is_class=True
-    ](NSColor.as_object())
-    _ = msg_send[ObjCObject, "NSMutableDictionary", "setObject:forKey:"](
-        gattrs, dim.ptr(), extern_object["NSForegroundColorAttributeName"]().ptr()
-    )
-    _ = external_call["objc_retain", P](gattrs.ptr())
-    g_gutter_attrs()[] = gattrs.addr()
-
-    # Syntax colours. System colours rather than chosen ones, so the editor
-    # follows the appearance the rest of the machine is using.
-    let comment_c = msg_send[
-        ObjCObject, "NSColor", "systemGreenColor", is_class=True
-    ](NSColor.as_object())
-    let string_c = msg_send[
-        ObjCObject, "NSColor", "systemRedColor", is_class=True
-    ](NSColor.as_object())
-    let keyword_c = msg_send[
-        ObjCObject, "NSColor", "systemPurpleColor", is_class=True
-    ](NSColor.as_object())
-    let number_c = msg_send[
-        ObjCObject, "NSColor", "systemBlueColor", is_class=True
-    ](NSColor.as_object())
-    g_attr_comment()[] = _make_attrs(comment_c)
-    g_attr_string()[] = _make_attrs(string_c)
-    g_attr_keyword()[] = _make_attrs(keyword_c)
-    g_attr_number()[] = _make_attrs(number_c)
-
-    # Advance: the width of one character in a face where they are all the
-    # same width. Measured, not assumed.
-    let probe = nsstring(String("0000000000"))
-    let probe_size = msg_send[CGSize, "NSString", "sizeWithAttributes:"](
-        probe, attrs.ptr()
-    )
-    g_advance_x1000()[] = Int(probe_size.width / 10.0 * 1000.0)
-
-    # Line height from the font's own metrics, so descenders are not clipped.
-    let ascender = msg_send[Float64, "NSFont", "ascender"](font)
-    let descender = msg_send[Float64, "NSFont", "descender"](font)
-    let leading = msg_send[Float64, "NSFont", "leading"](font)
-    g_line_h_x1000()[] = Int((ascender - descender + leading + 2.0) * 1000.0)
+    build_type()
 
     # Instantiating the class registers it -- methods, protocol and all. The
     # conformance report the smoke test asserts stays: it now checks what the

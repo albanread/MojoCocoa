@@ -166,7 +166,7 @@ else
 fi
 check "split view"  "split panes: 2"        "sidebar + editor area"
 check "editor panes" "editor panes: 2"      "editor above the console"
-check "menu bar"    "menu bar items: 6"     "app, File, Edit, Build, Examples, Window"
+check "menu bar"    "menu bar items: 7"     "app, File, Edit, View, Build, Examples, Window"
 # Installing a toolbar changes the content view's height, so a layout computed
 # from the height read before it existed leaves a band above the tab strip.
 # Zero here means flush.

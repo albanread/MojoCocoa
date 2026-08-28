@@ -408,6 +408,7 @@ def main() raises:
     )
 
     print("edit: clipboard")
+    from gridview import set_font_size, font_size, advance
     # NSPasteboard needs AppKit but no window and no run loop, so this stays a
     # windowless test. The general pasteboard is shared machine state; the
     # round trip writes before it reads, so a busy clipboard cannot fail it.
@@ -447,6 +448,21 @@ def main() raises:
         failures += check("cut copies", clipboard_read(), String("cd"))
         _ = undo()
         failures += check("undo after cut", buffer_text(), String("abcdef"))
+
+        # Zoom: the advance is measured from the real font, so growing the
+        # type must grow it. Reset afterwards so nothing downstream inherits
+        # a 20-point world.
+        set_font_size(13.0)
+        let a13 = advance()
+        set_font_size(20.0)
+        if advance() > a13:
+            print("  OK   zoom grows the advance")
+        else:
+            print("  FAIL zoom grows the advance --", a13, "→", advance())
+            failures += 1
+        set_font_size(1.0)
+        failures += check_int("zoom clamps at the floor", Int(font_size()), 8)
+        set_font_size(13.0)
 
         # UTF-8 through the clipboard, byte-exact.
         _ = clipboard_write(String("café 日本"))

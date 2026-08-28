@@ -50,6 +50,8 @@ from gridview import (
     hide_popup,
     popup_open,
     byte_to_utf16,
+    font_size,
+    set_font_size,
 )
 import lsp
 import document
@@ -731,6 +733,18 @@ class RoastActions:
         except:
             pass
 
+    def roastZoomIn_(self, sender: ObjCObject):
+        try:
+            zoom_font(1.0)
+        except:
+            pass
+
+    def roastZoomOut_(self, sender: ObjCObject):
+        try:
+            zoom_font(-1.0)
+        except:
+            pass
+
     def roastFind_(self, sender: ObjCObject):
         """Put the cursor in the toolbar's search field."""
         try:
@@ -1061,6 +1075,23 @@ def announce_open_documents():
         i += 1
     lsp.set_shown_uri(document.current_uri())
     print("roast: announced", told, "documents to the server")
+
+
+def zoom_font(delta: Float64):
+    """⌘+ and ⌘−. Every metric downstream is arithmetic on two numbers, so a
+    zoom is: new font, resize the document to the new line height, redraw."""
+    set_font_size(font_size() + delta)
+    if g_grid()[] != 0:
+        with autoreleasepool():
+            let grid = ObjCObject(g_grid()[])
+            let frame = msg_send[CGRect, "NSView", "frame"](grid)
+            _ = msg_send[ObjCObject, "NSView", "setFrameSize:"](
+                grid, document_size(frame.size.width)
+            )
+            _ = msg_send[ObjCObject, "NSView", "setNeedsDisplay:"](grid, True)
+    scroll_to_caret()
+    var shown = String(Int(font_size()))
+    set_status(String("Type: ") + shown + String(" pt"))
 
 
 def refresh_grid():
@@ -2390,6 +2421,15 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         prev_item, Int(0x20000 | 0x100000)
     )
     _ = add_item(edit, String("Hide Find"), String("roastHideFind:"), String("\u001b"), actions)
+
+    # View.
+    let view_menu = add_submenu(bar, String("View"))
+    _ = add_item(
+        view_menu, String("Zoom In"), String("roastZoomIn:"), String("="), actions
+    )
+    _ = add_item(
+        view_menu, String("Zoom Out"), String("roastZoomOut:"), String("-"), actions
+    )
 
     # Build.
     let build_menu = add_submenu(bar, String("Build"))
