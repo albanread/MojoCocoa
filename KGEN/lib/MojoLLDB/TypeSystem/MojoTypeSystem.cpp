@@ -147,8 +147,21 @@ struct MojoTypeSystem::Impl {
         /*tuneCpu=*/"",
         /*targetAccelerator=*/compilationOptions.targetAccelerator,
         compilationOptions.relocModel);
-    if (succeeded(targetInfoOr))
+    if (succeeded(targetInfoOr)) {
       targetInfo = *targetInfoOr;
+    } else {
+      // Say so. This used to fail SILENTLY, leaving `targetInfo` a null
+      // attribute that the first GetPointerByteSize() dereferenced -- which
+      // presents as lldb crashing at `breakpoint set`, three frames away
+      // from the cause, with nothing anywhere naming the triple that could
+      // not be resolved.
+      llvm::errs() << "MojoTypeSystem: no target info for triple '"
+                   << compilationOptions.targetTriple << "' (cpu '"
+                   << compilationOptions.targetCpu
+                   << "'): " << targetInfoOr.getError()
+                   << "\nType byte sizes will fall back to the "
+                      "architecture's pointer size.\n";
+    }
 
     dataLayoutContext =
         std::make_unique<MojoTypeDataLayoutContext>(*parserContext, targetInfo);
@@ -501,6 +514,15 @@ MojoTypeSystem::GetCanonicalType(lldb::opaque_compiler_type_t type) {
 }
 
 uint32_t MojoTypeSystem::GetPointerByteSize() {
+  // `targetInfo` is null when target-info resolution failed at construction
+  // (diagnosed there). A debugger must degrade rather than crash: the
+  // ArchSpec knows the address size for every target LLDB can attach to,
+  // and 8 is right for every platform this fork ships on.
+  if (!impl->targetInfo) {
+    if (uint32_t bytes = impl->archSpec.GetAddressByteSize())
+      return bytes;
+    return 8;
+  }
   return impl->targetInfo.getDataLayout().getPointerSize();
 }
 

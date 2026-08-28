@@ -202,6 +202,60 @@ one, because it decides whether the IDE's debugger stays at v1 permanently.
    smaller. The distribution is 921 MB and the disk image 162 MB; this
    number decides whether the app ships it or fetches it.
 
+## Findings (2026-08-28): the spike PASSED
+
+Run end to end in an afternoon. The answer to the question the brief opens
+with: the debugger's second half is **days, not a month** — it already works.
+
+    (lldb) frame variable
+    (__mlir_type.`!kgen.scalar<index>`) a = 0
+    (__mlir_type.`!kgen.scalar<index>`) b = 0
+    (__mlir_type.`!kgen.scalar<index>`) sum = 0
+
+And over DAP — the IDE's actual path, `initCommands: ["plugin load ..."]`,
+then `setBreakpoints` → verified, `stopped`, `stackTrace` naming
+`main::add(...)`, `scopes`/`variables` with names and values, `disconnect`
+clean. The backtrace demangles the whole Mojo stack down to
+`__wrap_and_execute_main`, with arguments (`add(a=0, b=0)`).
+
+Per step, with the surprises:
+
+- **Step 0.** Exports patch reached the build: liblldb exports
+  `lldb_private::`. But `libMojoLLDB` links **no shared libLLVM** — Bazel
+  statically absorbed LLVM/MLIR/KGEN into it (98.6 MB), and liblldb
+  (139.6 MB) embeds its own static LLVM too. The stipulation about linking
+  the shared libLLVM did not happen and turned out **not to be required**.
+- **Steps 1–3.** Everything built first try — 1987 actions, no source
+  changes. `plugin load` resolved and initialized. The predicted
+  duplicate-`ManagedStatic` abort never fired: two static LLVM copies
+  coexist under macOS two-level namespace…
+- **…except for one symbol, and it was the crash.** The TargetRegistry's
+  list head unifies across the images, so lldb's own target initialization
+  and the plugin's `InitializeAllTargets` both append to ONE registry, and
+  the next lookup dies with `Cannot choose between targets "aarch64" and
+  "aarch64"`. That surfaced as a null `TargetInfoAttr` silently kept by
+  `MojoTypeSystem::Impl` and a segfault in `GetPointerByteSize` at
+  `breakpoint set` — three frames from the cause, nothing naming it. Two
+  fixes, both in tree now: the silent failure is loud
+  (`MojoTypeSystem.cpp`), and target registration is idempotent — ask the
+  registry before initializing (`Plugin.cpp`), which is right in both
+  worlds: inside lldb the registry is already populated and the block must
+  not run; embedded standalone (MojoJupyter) it is empty and it must.
+- **Step 4.** Passes, CLI and DAP. One extra artefact: `run` shells out to
+  **`lldb-argdumper`**, which must be built and shipped beside the binaries
+  (`@llvm-project//lldb:lldb-argdumper`); DAP launches do not need it, but
+  the CLI does.
+- **Step 5.** The increment as-built is **~240 MB** (liblldb 139.6 +
+  plugin 98.6 + lldb-dap 1.2 + driver and argdumper), on a 921 MB
+  distribution. Bigger than the brief hoped, because the shared-libLLVM
+  diet never happened. Re-pointing both at `libLLVM.dylib`/
+  `libMojoCompiler.dylib` is now an optimization, not a blocker.
+
+What v2 polish looks like, seen in the output: types print as
+`__mlir_type.`!kgen.scalar<index>`` rather than `Int`, and DAP value
+strings carry raw hex beside the decimal. Both are formatter-layer work in
+`Language/Formatters/`, on a debugger that now runs.
+
 ## The risk worth watching
 
 `MojoLLDB` deps include `//AsyncRT:RuntimeGlobals` and, under
