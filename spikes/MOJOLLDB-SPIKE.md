@@ -289,6 +289,57 @@ wrapped expressions produce no result over DAP** (the CLI's fix-it turns
 `1 + 1` into `_ = 1 + 1`, which runs and answers nothing). Those two are
 the debugger's next plugin features, in that order.
 
+### Frame locals: the state, and the contract that has to exist first
+
+On `frame-locals-spike`, off by default behind `MOJO_LLDB_FRAME_LOCALS=1`.
+Collection works — the frame's variables reach the REPL wrapper as arguments,
+which nothing had ever wired up: the wrapper could always take variables (a
+notebook's `a` between cells), but the only source connected to it was the
+persistent-variable state, and a debugger stopped in someone else's function
+has nothing in that.
+
+The frontier moved twice while proving it. `total + 41` first failed at name
+resolution; with collection on it fails at TYPE CHECKING —
+`'!kgen.scalar<index>' does not implement '__add__'` — so the name binds and
+a type flows, but the wrapper receives the DWARF's scalar type rather than
+Mojo's `Int`.
+
+**Why this is a correctness boundary rather than finishing work: the JIT
+resolves a name it cannot safely read.** Two independently ordered lists are
+pretending to be one contract.
+
+    persistent variable:  context -> reference cell -> T     (two derefs)
+    frame local:          context -> T                       (one deref)
+
+`AddVariable` puts ONE pointer-sized slot in the context holding the
+variable's address; a persistent variable has an extra allocated cell. A
+`(name, type)` pair cannot carry that difference. And the ordering: wrapper
+fields are emitted persistent-first, materializer entities are registered
+frame-first (during parsing) then persistent (in `prepareForExecution`), and
+the offset `AddVariable` returns is discarded rather than checked. Once both
+kinds coexist the offsets simply will not line up.
+
+The fix is one ordered binding list carrying the capture kind —
+`{name, type, PersistentIndirect | FrameAddress, VariableSP}` — used to
+generate the field and its dereference depth, to register entities in exactly
+that order after compilation, and to assert each returned offset equals the
+field it belongs to. Extend the persistent path; do not change notebook
+behaviour underneath it.
+
+Two more things the code now says out loud rather than getting wrong
+silently. `Materializer::AddVariable` **validates nothing** — it inserts an
+entity and never touches the `Status` — so its success is not proof a value
+is readable; `GetValueObjectForFrameVariable(..., eNoDynamicValues)` and its
+error is the honest preflight. And shadowing currently resolves the wrong
+way: persistent variables seed the seen-set first, so they win, where the
+frame should.
+
+The gate stays until `total + 41` answers **42** — not until it compiles, not
+until it executes. Result materialization is part of the feature. Before
+that: reads of locals and arguments, nested shadowing, frame-versus-
+persistent name collisions, unavailable locals failing with words, repeated
+evaluations and fix-it retries, and both scalar and nontrivial values.
+
 ## The risk worth watching
 
 `MojoLLDB` deps include `//AsyncRT:RuntimeGlobals` and, under
