@@ -1431,17 +1431,69 @@ class RoastTabBar(NSView):
             pass
 
 
+def ask_save_close(name: String) -> Int:
+    """The standard question about unsaved work: 1 save, 0 close anyway,
+    -1 cancel. Buttons in Cocoa's own order, so the dialog reads like every
+    other editor's."""
+    with autoreleasepool():
+        let NSAlert = ObjCClass.lookup["NSAlert"]()
+        var alert = msg_send[ObjCObject, "NSAlert", "alloc", is_class=True](
+            NSAlert.as_object()
+        )
+        alert = msg_send[ObjCObject, "NSObject", "init"](alert)
+        _ = msg_send[ObjCObject, "NSAlert", "setMessageText:"](
+            alert,
+            nsstring(
+                String("Do you want to save the changes made to ")
+                + name
+                + String("?")
+            ).ptr(),
+        )
+        _ = msg_send[ObjCObject, "NSAlert", "setInformativeText:"](
+            alert,
+            nsstring(
+                String("Your changes will be lost if you don't save them.")
+            ).ptr(),
+        )
+        _ = msg_send[ObjCObject, "NSAlert", "addButtonWithTitle:"](
+            alert, nsstring(String("Save")).ptr()
+        )
+        _ = msg_send[ObjCObject, "NSAlert", "addButtonWithTitle:"](
+            alert, nsstring(String("Cancel")).ptr()
+        )
+        _ = msg_send[ObjCObject, "NSAlert", "addButtonWithTitle:"](
+            alert, nsstring(String("Don't Save")).ptr()
+        )
+        let answer = msg_send[Int, "NSAlert", "runModal"](alert)
+        if answer == 1000:  # NSAlertFirstButtonReturn: Save
+            return 1
+        if answer == 1002:  # third button: Don't Save
+            return 0
+        return -1
+
+
 def close_tab_at(index: Int):
-    """Close one tab, refusing to lose unsaved work silently.
+    """Close one tab, asking about unsaved work rather than losing it.
 
     The same rule the menu command uses, in one place so the × and ⌘W cannot
-    drift apart.
+    drift apart. This used to refuse a dirty close with a status line, which
+    meant a buffer could never be deliberately abandoned -- the standard
+    Save / Don't Save / Cancel question is what every document app asks.
     """
     if document.dirty_at(index):
+        # The question is about a document; show the document it is about.
         if switch_document(index):
             after_switch()
-        set_status(String("Unsaved — save it first (⌘S)"))
-        return
+        if g_autoclose()[] != 0:
+            # Unattended: a modal alert with nobody at the keyboard is a hang.
+            # The old refusal is the right behaviour when no one can answer.
+            set_status(String("Unsaved — save it first (⌘S)"))
+            return
+        let answer = ask_save_close(document.name_at(index))
+        if answer < 0:
+            return
+        if answer == 1 and not save_current():
+            return  # the save panel was cancelled; so is the close
     if document.close_at(index):
         after_switch()
     else:
@@ -1874,11 +1926,16 @@ def open_example_project(folder: String, entry: String) -> Int:
     # Now that the new project has tabs of its own, the old ones can go --
     # backwards, so an index is never invalidated under the loop, and via
     # close_at, which keeps the last tab and has nothing left to refuse.
+    #
+    # Still dirty means the save above did not happen -- the panel was
+    # cancelled, or the write failed. Closing it anyway would discard exactly
+    # the text the person just declined to write down, so it stays open
+    # alongside the new project instead.
     var prefix = folder
     prefix += "/"
     var j = document.count() - 1
     while j >= 0:
-        if not document.path_at(j).startswith(prefix):
+        if not document.path_at(j).startswith(prefix) and not document.dirty_at(j):
             _ = document.close_at(j)
         j -= 1
     return opened
