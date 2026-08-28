@@ -493,6 +493,50 @@ to that point made ONE instance. `field_init_test` makes a second and checks
 that the first one's mutation did not follow it, and that is the only reason
 this was found before it reached the IDE.
 
+### Inheriting from another Mojo class
+
+The grammar promised it in the first draft -- "the first base names the
+superclass: an ObjC class the database knows, **or another Mojo `class`**" --
+and the compiler answered "the Objective-C runtime has no class 'Base' to
+inherit from". It works now, and it needed no new runtime concept, which is
+not luck: **ivar offsets are per class**, so an instance of `B` carries A's
+box at A's offset and B's at B's, and A's methods find A's box in a B exactly
+as they would in an A. Three things had to be true.
+
+**Order.** A does not exist in the runtime until something instantiates it,
+because registration is lazy. A B made before any A ever was would resolve its
+superclass to nil and `objc_allocateClassPair` against nil, which does not
+fail -- it builds a ROOT class that answers nothing, silently. The registrar
+now takes a four-argument form whose last argument is a compiler-synthesized
+`fn () -> None` that constructs one A, and calls it only when the runtime
+says the class is missing. One base instance per PROCESS, not per subclass
+instantiation.
+
+**Ancestor boxes.** Nothing else will ever construct A's box inside a B: A's
+own `__init__` runs when an A is made. B's constructor walks the Mojo chain
+and constructs every ancestor's box, with that ancestor's own field
+initializers.
+
+**Per-class ivars.** The box ivar is named for its class -- `__mojo_box_Base`,
+not `__mojo_box`. One shared name is ambiguous the moment this exists, because
+`class_getInstanceVariable` walks the chain and answers with the nearest: A's
+dealloc, looking up the shared name on an instance of B, would find B's box,
+destroy it a second time, and never touch its own.
+
+And the thing that actually crashed, which is worth stating because it is the
+oldest trap in Objective-C: **`objc_super`'s second word is the class to start
+looking ABOVE, not the class to send to.** `_box_dealloc_imp` originally asked
+the instance for its class, which is right for one level and fatal for two: on
+an instance of `Leaf`, the dealloc defined on `Middle` looked above `Leaf`,
+found `Middle` -- itself -- and recursed until the stack was gone. Everything
+in that IMP now keys off the class it was REGISTERED on, which `add_dealloc`
+leaves in a global named for the type parameter, since a plain function
+pointer closes over nothing.
+
+With that, the chain falls out: each dealloc empties its own box and passes
+`[super dealloc]` up. `inherit_test` checks two levels, a leaf with no box of
+its own, `isKindOfClass:`, and exactly one destruction per box.
+
 ### Autorelease pools
 
 We do not create, drain, or otherwise interact with a pool. `dealloc` is

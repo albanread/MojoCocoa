@@ -157,3 +157,22 @@ class Boxed(NSObject):
 # CHECK-DAG: lit.struct.decl @PlainStruct({{.*}}) attributes {sourceName
 struct PlainStruct:
     var x: Int
+
+
+# Inheriting from another Mojo `class`, which the grammar has promised since
+# the first draft. The superclass is not in the database and does not need to
+# be: it is resolved in scope, and the SDK ancestor -- the nearest real
+# Objective-C class, which is what every encoding lookup keys on -- is
+# inherited down the chain.
+class Derived(Boxed):
+    var own: Int = 3
+
+    def isProxy(self) -> Bool:
+        return self.own == 3
+
+
+# The registrar gets a thunk that puts the superclass in the runtime, because
+# registration is lazy and a subclass registered first would allocate its pair
+# against nil -- a root class that answers nothing, silently.
+# CHECK-DAG: __objc_ensure_super
+# CHECK-DAG: lit.struct.field own

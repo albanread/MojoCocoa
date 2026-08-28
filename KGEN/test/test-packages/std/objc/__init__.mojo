@@ -51,6 +51,17 @@ struct ObjCClassRegistrar:
         self._ok = False
         self._existing = False
 
+    def __init__(
+        out self,
+        name: StringSlice,
+        superclass: StringSlice,
+        frameworks: StringSlice,
+        ensure_super: fn () -> None,
+    ):
+        self._cls = 0
+        self._ok = False
+        self._existing = False
+
     def add_method[
         F: AnyType
     ](mut self, selector: StringSlice, encoding: StringSlice, imp: F) -> Bool:
@@ -59,7 +70,9 @@ struct ObjCClassRegistrar:
     def add_protocol(mut self, name: StringSlice) -> Bool:
         return False
 
-    def add_box(mut self, size: __mlir_type.index) -> Bool:
+    def add_box(
+        mut self, size: __mlir_type.index, class_name: StringSlice
+    ) -> Bool:
         return False
 
     # `witness` is never read: it exists so the box's type reaches a
@@ -67,13 +80,15 @@ struct ObjCClassRegistrar:
     def add_dealloc[T: Deinitable](mut self, ref witness: T) -> Bool:
         return False
 
-    def box_offset_of(mut self) -> Int:
+    def box_offset_of(mut self, class_name: StringSlice) -> Int:
         return 0
 
     # The compiler reaches through the result for `_mlir_value` -- it needs an
     # address it can offset and bitcast -- so the stub has to be pointer
     # SHAPED, not merely pointer named. std.memory is not importable here.
-    def box_of(mut self, id: Int, size: __mlir_type.index) -> _StubPointer:
+    def box_of(
+        mut self, id: Int, size: __mlir_type.index, class_name: StringSlice
+    ) -> _StubPointer:
         return _StubPointer()
 
     def register(mut self) -> ObjCClass:

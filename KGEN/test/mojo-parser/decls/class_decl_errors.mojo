@@ -206,3 +206,10 @@ struct PlainStruct:
 struct StructWithInit(Copyable, Movable):
     # expected-error @+1 {{a struct field cannot have an initializer here; set it in '__init__'}}
     var x: Int = 3
+
+
+# A base that is neither a runtime class nor a `class` in scope. The message
+# says both, because a typo could be either.
+# expected-error @+1 {{the Objective-C runtime has no class 'NoSuchBase' to inherit from, and no 'class' of that name is in scope}}
+class Orphan(NoSuchBase):
+    pass
