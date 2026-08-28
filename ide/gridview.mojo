@@ -367,6 +367,7 @@ class RoastGridView(NSView, NSTextInputClient):
                         ln += 1
 
                 var i = first
+                var widest = 0
                 while i < last:
                     let y = Float64(i) * lh
                     # Line number, right-aligned in the gutter.
@@ -424,7 +425,20 @@ class RoastGridView(NSView, NSTextInputClient):
                                 ),
                                 _attrs_for(run_kind).ptr(),
                             )
+                        if col > widest:
+                            widest = col
                     i += 1
+
+                # A longer line than any seen before means the document is
+                # wider than the view thought. Growing the frame here, from
+                # the draw, is safe because it only ever grows.
+                if note_line_cols(widest):
+                    let frame = msg_send[CGRect, "NSView", "frame"](view)
+                    let want = document_size(frame.size.width)
+                    if want.width > frame.size.width:
+                        _ = msg_send[ObjCObject, "NSView", "setFrameSize:"](
+                            view, want
+                        )
 
                 # Diagnostics from the language server. Drawn after the text so
                 # the underline sits under the glyphs it is about, and before the
@@ -1007,12 +1021,41 @@ def make_grid_view(frame: CGRect) -> ObjCObject:
     return view
 
 
+# The widest line the draw loop has seen in the current document, in columns.
+# Grow-only, reset when the document changes: measuring every line of a big
+# file up front would cost a full scan on open, and the width only matters
+# once a long line has actually been on screen. Until then there is nothing
+# past the right edge to scroll to.
+comptime g_max_cols = named_global["roast.max.cols", Int]
+
+
+def note_line_cols(cols: Int) -> Bool:
+    """Remember the widest line drawn so far; True when the record moved."""
+    if cols > g_max_cols()[]:
+        g_max_cols()[] = cols
+        return True
+    return False
+
+
+def reset_line_cols():
+    g_max_cols()[] = 0
+
+
 def document_size(width: Float64) -> CGSize:
-    """How tall the view must be for the scroll view to scroll it."""
+    """How big the view must be for the scroll view to scroll it.
+
+    The height is exact -- lines times line height. The width used to be
+    pinned to the viewport, which meant NO horizontal scrolling: any line
+    wider than the window was clipped at the edge with no way to reach it.
+    It now covers the widest line the draw loop has seen.
+    """
     if not has_rope():
         return CGSize(width, 1.0)
     let h = Float64(g_buffer()[][0].line_count()) * line_height()
-    return CGSize(max(width, GUTTER_W + 400.0), max(h, 1.0))
+    let widest = (
+        GUTTER_W + TEXT_PAD * 2.0 + Float64(g_max_cols()[]) * advance()
+    )
+    return CGSize(max(max(width, GUTTER_W + 400.0), widest), max(h, 1.0))
 
 
 # ── Text input ───────────────────────────────────────────────────────────────

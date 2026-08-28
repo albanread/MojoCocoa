@@ -343,6 +343,41 @@ def main() raises:
     failures += check_int("shift-page-up caret", g_caret()[], 11)
     failures += check_int("shift-page-up anchor", g_anchor()[], 17)
 
+    print("edit: document width follows the widest line")
+    # The draw loop feeds note_line_cols; here it is fed directly, with a
+    # pretend 7-point advance since no font is measured without a window.
+    from gridview import (
+        note_line_cols,
+        reset_line_cols,
+        document_size,
+        g_advance_x1000,
+        g_line_h_x1000,
+    )
+    g_advance_x1000()[] = 7000
+    g_line_h_x1000()[] = 17000
+    set_rope(Rope(String("short")))
+    reset_line_cols()
+    failures += check_int(
+        "viewport wins while lines are short",
+        Int(document_size(600.0).width),
+        600,
+    )
+    failures += check_int(
+        "a wide line moves the record", 1 if note_line_cols(200) else 0, 1
+    )
+    if document_size(600.0).width > 600.0:
+        print("  OK   width grows past the viewport")
+    else:
+        print("  FAIL width grows past the viewport --", document_size(600.0).width)
+        failures += 1
+    failures += check_int(
+        "narrower lines do not shrink it", 1 if note_line_cols(50) else 0, 0
+    )
+    reset_line_cols()
+    failures += check_int(
+        "a document switch resets it", Int(document_size(600.0).width), 600
+    )
+
     print("edit: clipboard")
     # NSPasteboard needs AppKit but no window and no run loop, so this stays a
     # windowless test. The general pasteboard is shared machine state; the

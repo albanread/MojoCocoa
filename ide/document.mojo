@@ -28,6 +28,7 @@ from gridview import (
     g_marked_at,
     g_marked_len,
     set_rope,
+    reset_line_cols,
 )
 from std.objc import named_global
 from std.memory import Pointer
@@ -189,6 +190,8 @@ def _load(index: Int):
     g_marked_at()[] = 0
     g_marked_len()[] = 0
     g_coalesce_at()[] = -1
+    # The widest-line record belongs to the outgoing document.
+    reset_line_cols()
     _clear_ropes(g_undo())
     _clear_ints(g_undo_caret())
     _clear_ropes(g_redo())
