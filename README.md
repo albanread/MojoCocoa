@@ -338,7 +338,7 @@ changing the compiler or using it.
 
 ```bash
 ./tools/release.sh                                    # builds the toolchain, once
-dist/CocoaMojo/bin/cocoamojo --run   spikes/mandelbrot/mandelbrot.mojo
+dist/CocoaMojo/bin/cocoamojo --run   examples/mandelbrot/main.mojo
 dist/CocoaMojo/bin/cocoamojo --build spikes/life/life.mojo    # -> ./life
 ```
 

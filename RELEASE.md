@@ -4,7 +4,7 @@ This describes how `dist/CocoaMojo` is produced: a self-contained toolchain that
 compiles and runs Mojo for Cocoa on Apple silicon, with no bazel daemon standing
 between you and your program.
 
-    dist/CocoaMojo/bin/cocoamojo --run   spikes/mandelbrot/mandelbrot.mojo
+    dist/CocoaMojo/bin/cocoamojo --run   examples/mandelbrot/main.mojo
     dist/CocoaMojo/bin/cocoamojo --build spikes/life/life.mojo      # -> ./life
 
 ## The whole thing, from a clean checkout

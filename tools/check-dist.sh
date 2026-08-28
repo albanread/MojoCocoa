@@ -149,7 +149,7 @@ else
   bad "embedded parser" "$(grep -m1 -E 'error|fatal|Undefined' "$TMP/syntax_probe.log" || echo 'build failed')"
 fi
 
-for src in spikes/mandelbrot/mandelbrot.mojo spikes/mandelbrot/window_smoke.mojo \
+for src in spikes/mandelbrot/window_smoke.mojo \
            spikes/playground/playground.mojo spikes/playground/p0_window.mojo \
            spikes/life/life.mojo; do
   name=$(basename "$src" .mojo)
@@ -165,21 +165,29 @@ for src in spikes/mandelbrot/mandelbrot.mojo spikes/mandelbrot/window_smoke.mojo
       out=$("$TMP/$name" 2>&1 | tail -1)
       [[ "$out" == *PASS* ]] && ok "$name" "$out" || bad "$name" "$out"
       ;;
-    mandelbrot)
-      # Renders until its window closes; sample the timings and stop it.
-      "$TMP/$name" >"$TMP/$name.run" 2>&1 &
-      pid=$!; sleep 12; kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
-      gpu=$(grep -m1 'GPU:.*ms' "$TMP/$name.run" | sed 's/^ *//')
-      fps=$(grep -m1 'fps'       "$TMP/$name.run" | sed 's/^ *//')
-      [ -n "$gpu" ] && ok "$name" "$gpu ${fps:+| $fps}" \
-                    || bad "$name" "no GPU timing -- runtime did not come up"
-      ;;
     *)
       # Windowed apps that wait on a run loop: building them is the check.
       ok "$name" "built"
       ;;
   esac
 done
+
+# The windowed mandelbrot, now living with the examples. MANDEL_FRAMES renders
+# a fixed number of frames and exits -- deterministic, and as an Accessory it
+# never takes the screen -- so the check is a real run rather than a kill.
+if ! "$CM" --build examples/mandelbrot/main.mojo -o "$TMP/mandel" \
+     >"$TMP/mandel.log" 2>&1; then
+  bad "mandelbrot" "$(grep -m1 'error' "$TMP/mandel.log" || echo 'build failed')"
+else
+  mrun=$(cd "$TMP" && MANDEL_FRAMES=150 timeout 120 "$TMP/mandel" 2>&1)
+  gpu=$(echo "$mrun" | grep -m1 'GPU:.*ms' | sed 's/^ *//')
+  fps=$(echo "$mrun" | grep -m1 'fps' | sed 's/^ *//')
+  if [ -n "$gpu" ] && echo "$mrun" | grep -q 'Rendered 150 frames'; then
+    ok "mandelbrot" "$gpu | $fps"
+  else
+    bad "mandelbrot" "${gpu:-no GPU timing -- runtime did not come up}"
+  fi
+fi
 
 # The shipped examples, built out of the distribution the way someone opening
 # them in Roast would. Sources only -- a distribution carrying a build/ from

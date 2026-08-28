@@ -11,7 +11,8 @@ which opens itself when a build starts and toggles with ⌘0.
     life/         Conway's Life: a real app -- mouse, keyboard, a Metal
                   layer, and three `class` declarations Cocoa calls into
     fluid/        Stable Fluids on the GPU, every kernel written in Mojo
-    mandelbrot/   the GPU, via Metal, checked against the CPU
+    mandelbrot/   a live-zooming fractal at 60fps, every pixel computed
+                  and coloured by one Mojo kernel on the Apple GPU
 
 ## What a project is
 
@@ -61,10 +62,13 @@ Adler-32, and deflate's stored mode, which is about eighty lines and compresses
 nothing — the file comes out around 2 MB for 720×960. Swapping in real
 compression is a self-contained exercise if anyone wants it.
 
-`mandelbrot/` needs a GPU, and checks the Metal result against the same
-arithmetic on the CPU rather than trusting it.
+`mandelbrot/` needs a GPU. It times the same fractal on one CPU core and on
+the GPU before opening the window — on an M4 Max the difference is a couple
+of hundred times — then zooms into the seahorse valley until you click
+somewhere better. The cross-checking of GPU against CPU arithmetic lives on
+as `spikes/mandelbrot/compute_smoke.mojo`.
 
-`life/` and `fluid/` are the two that look like applications. Both declare
+`life/`, `fluid/` and `mandelbrot/` are the three that look like applications. Both declare
 Objective-C classes with `class` — the view whose mouse and key handlers Cocoa
 calls, the app delegate, the timer target, the Apple Event handler — so there
 is no `ObjCClassBuilder`, no hand-written type encoding, and no `cmd` slot

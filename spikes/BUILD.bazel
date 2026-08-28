@@ -43,7 +43,6 @@ _COCOA_LINKOPTS = [
         deps = _MOJO_DEPS,
     )
     for name, src in [
-        ("mandelbrot", "mandelbrot/mandelbrot.mojo"),
         ("compute_smoke", "mandelbrot/compute_smoke.mojo"),
         ("window_smoke", "mandelbrot/window_smoke.mojo"),
         ("life", "life/life.mojo"),

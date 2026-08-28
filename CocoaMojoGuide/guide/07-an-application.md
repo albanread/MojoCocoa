@@ -166,9 +166,12 @@ simulation.
 `spikes/playground/playground.mojo` is a Mojo editor and runner written in
 Mojo — a thousand lines, a split view, syntax highlighting, and a child process.
 
-`spikes/mandelbrot/mandelbrot.mojo` draws through a `CAMetalLayer`. It is the
-one example that depends on the GPU stack, which on Apple Silicon is not
-finished; treat it as a reading example rather than a running one.
+`examples/mandelbrot/main.mojo` draws through a `CAMetalLayer`, with every
+pixel computed and coloured by a Mojo kernel on the Apple GPU. The GPU stack
+this once waited for works now: it times one CPU core against the GPU (a
+couple of hundred times apart on an M4 Max), then holds 60fps while it zooms.
+`examples/fluid/` is the deeper GPU example — Stable Fluids, about 35
+dependent dispatches a frame, no shader anywhere.
 
 ## Debugging, honestly
 

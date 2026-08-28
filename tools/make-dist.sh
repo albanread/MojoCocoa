@@ -8,7 +8,7 @@
 # on `cocoamojo --build` and `--run` are the whole interface.
 #
 #   ./tools/make-dist.sh
-#   dist/CocoaMojo/bin/cocoamojo --run spikes/mandelbrot/mandelbrot.mojo
+#   dist/CocoaMojo/bin/cocoamojo --run examples/mandelbrot/main.mojo
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
@@ -186,4 +186,4 @@ else echo "   WARNING: no cocoa.sqlite at $KB -- set COCOAKB=..."; fi
 
 echo
 echo "dist/CocoaMojo ready ($(du -sh "$D" | cut -f1))"
-echo "  dist/CocoaMojo/bin/cocoamojo --run spikes/mandelbrot/mandelbrot.mojo"
+echo "  dist/CocoaMojo/bin/cocoamojo --run examples/mandelbrot/main.mojo"
