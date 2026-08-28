@@ -18,6 +18,15 @@ which opens itself when a build starts and toggles with ⌘0.
     fernwind/     the same meadow swaying in the wind: every fern redrawn
                   from scratch each frame by 24,576 GPU chaos-game streams
 
+    From Modular's own example collection, running here unmodified:
+
+    operators/    a Complex struct wearing the full operator set — Mojo's
+                  object model, with a std.testing suite beside it
+    process/      child processes from std.os — spawn, wait, poll, kill
+    vector-add/   the canonical first GPU kernel, TileTensor and all
+    grayscale/    a 2D image kernel on the GPU
+    tiled-matmul/ shared-memory tiles and barriers, with a validation pass
+
 ## What a project is
 
 A folder. There is no project file and nothing to generate.
@@ -88,7 +97,15 @@ tips whip. `mandelbrot/`, `fluid/` and `fernwind/` compute on the GPU;
 `life/` and `ferns/` compute on the CPU and use Metal only to present.
 
 `life/`, `fluid/`, `mandelbrot/`, `ferns/` and `fernwind/` are the ones that
-look like applications. Both declare
+look like applications.
+
+The last five are Modular's, copied from `mojo/examples/` and `max/examples/`
+in this same tree with nothing changed but the filename — including
+`DeviceContext()` with no arguments, which resolves to the Apple GPU here.
+That is the point of carrying them: upstream's own teaching examples, warp
+primitives aside, build and run through this fork's AIR backend as written.
+`tiled-matmul/` is the strongest proof in the set — shared-memory tiles and
+barrier synchronisation, finishing with its own validation pass. Both declare
 Objective-C classes with `class` — the view whose mouse and key handlers Cocoa
 calls, the app delegate, the timer target, the Apple Event handler — so there
 is no `ObjCClassBuilder`, no hand-written type encoding, and no `cmd` slot
