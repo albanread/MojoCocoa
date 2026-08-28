@@ -155,7 +155,7 @@ class Handler(NSView):
 
 
 class TakesAClass(NSView):
-    # expected-error @+1 {{takes argument 1 as the Objective-C class 'Handler', but the runtime sends an 'id'}}
+    # expected-error @+1 {{takes argument 1 as the Objective-C class 'Handler', but the runtime sends an 'id', which may be nil}}
     def mouseDown_(self, other: Handler):
         pass
 

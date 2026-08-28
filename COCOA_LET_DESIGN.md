@@ -197,13 +197,49 @@ runtime `__getattr__` (the PythonObject pattern) building the selector string
 at run time, object-and-scalar signatures only, struct returns rejected with a
 clear error. Exists to keep exploration fluid, not to be the product.
 
-**Optional compiler enhancement, phase 3:** a comptime-parameter
-`__getattr__[name: StaticString]` hook (and comptime access to keyword-argument
-names) would eliminate even the one-line declarations: any selector the
-database knows would be callable, fully typed, with nothing written by hand.
-The database makes this *safe* — every synthesized call is still verified —
-but the hook is the one speculative compiler change here. Propose, don't
-assume. PythonObject would use it too.
+**Phase 3 — and it is already there.** The plan above ended with "a
+comptime-parameter `__getattr__[name: StaticString]` hook ... the one
+speculative compiler change here. Propose, don't assume."
+
+Checked: **`__getattr_param__` has been in the parser all along**, and it does
+exactly this. `ExprNodes.cpp` resolves an attribute reference against
+`__getattr_param__` before falling back to `__getattr__`, by the same
+mechanism as `__getitem_param__` — which `Tuple` already uses for static
+indices. The name arrives as a PARAMETER, so the selector is known at compile
+time and everything the database knows about it is available before the
+program runs.
+
+The distinction matters and cost an experiment to find. A plain `__getattr__`
+takes the name as a runtime `String` (the PythonObject shape), and a runtime
+string cannot feed a parameter list — `cocoakb_selector_encoding[name]()`
+against it is "cannot use a dynamic value in a parameter list". So the
+library route looked closed when the wrong hook was tried, and is wide open
+with the right one.
+
+`call_direction_test.mojo` proves the shape end to end:
+`Obj["NSString"](...).length()` resolves the selector at compile time, reads
+its encoding from the SDK, and sends a real message.
+
+**So the call direction needs no compiler work.** It is library design, which
+is where this document always wanted it.
+
+**The constraint that IS real: return types are not recoverable.** The
+database cannot say what class a method returns. The runtime's encodings give
+a bare `@` for an object result -- only 48 of 522,170 methods carry a typed
+`@"NSString"` -- and BridgeSupport records only the unusual cases, with no
+object retvals at all among its 5,250. So `tv.textStorage()` cannot know it
+answers an `NSTextStorage`, and a chained call has to name the class again:
+
+```mojo
+var upper = Obj["NSString"](s.uppercaseString.object().addr())
+```
+
+This is not a defect in the plan, it is the ground truth being thinner than
+the plan assumed, and it decides two things. The receiver's class is
+DECLARED, never inferred. And tier 1's one-line declarations earn their keep
+after all: the return type is the part a human has to supply, because the
+only place it exists is the SDK headers. Parsing those with clang is the
+upgrade path, and it is a database change rather than a compiler one.
 
 ### The same trick covers POSIX
 
