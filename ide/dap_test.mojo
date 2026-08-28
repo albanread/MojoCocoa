@@ -30,7 +30,7 @@ from dap import (
     resume,
 )
 from std.os import getenv
-from std.time import perf_counter_ns
+from std.time import perf_counter_ns, sleep
 
 
 def check(name: String, got: String, want: String) -> Int:
@@ -49,13 +49,20 @@ def check_int(name: String, got: Int, want: Int) -> Int:
     return 1
 
 
+# There is no run loop here, so these are the timer. The sleep is not
+# politeness: a tight poll loop spins a core, and the thing it starves is the
+# adapter it is waiting for. Without it this passed on a quiet machine and
+# timed out inside the full suite, which is the worst way for a check to
+# fail -- it looks like the code and it is the harness.
+comptime TICK = 0.01
+
+
 def pump(seconds: Float64) -> Int:
-    """Drain the adapter for a while. There is no run loop here, so this is
-    the timer: poll, and give the adapter air between polls."""
     let until = perf_counter_ns() + Int(seconds * 1e9)
     var handled = 0
     while perf_counter_ns() < until:
         handled += poll()
+        sleep(TICK)
     return handled
 
 
@@ -65,6 +72,7 @@ def pump_until_stopped(seconds: Float64) -> Bool:
         _ = poll()
         if is_stopped() or exited():
             return is_stopped()
+        sleep(TICK)
     return False
 
 
@@ -100,7 +108,7 @@ def main() raises:
     print("dap: a breakpoint binds, and the program stops on it")
     _ = toggle_breakpoint(src, 9)
     failures += check_int("start", 1 if start(adapter, program, ".") else 0, 1)
-    let stopped = pump_until_stopped(40.0)
+    let stopped = pump_until_stopped(120.0)
     failures += check_int("stopped", 1 if stopped else 0, 1)
     if stopped:
         failures += check("reason", stop_reason(), String("breakpoint"))

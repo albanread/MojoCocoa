@@ -14,6 +14,17 @@
 # composite on every keystroke, plus a JS heap and its collector. This pays a
 # rope edit (measured: 2.4 us) and one line redrawn.
 from rope import Rope
+from dap import (
+    breakpoint_at as dap_breakpoint_at,
+    verified_line as dap_verified_line,
+    is_verified as dap_is_verified,
+    breakpoint_count as dap_breakpoint_count,
+    breakpoint_file as dap_breakpoint_file,
+    toggle_breakpoint as dap_toggle_breakpoint,
+    is_stopped as dap_is_stopped,
+    stop_line as dap_stop_line,
+    stop_file as dap_stop_file,
+)
 from lsp import (
     diag_visible,
     completion_count,
@@ -80,6 +91,40 @@ comptime g_line_h_x1000 = named_global["roast.lineh", Int]
 
 comptime GUTTER_W = 62.0
 comptime TEXT_PAD = 8.0
+
+# Which file the view is showing, as a plain path. The breakpoint list is
+# keyed by path and the view draws one document at a time, so it has to know
+# which markers are its own -- and lsp's shown_uri is a uri, which is the
+# same fact wearing a scheme.
+comptime g_shown_path = named_global["roast.shown.path", List[String]]
+
+
+def shown_path() -> String:
+    let slot = g_shown_path()
+    return slot[][0] if len(slot[]) > 0 else String()
+
+
+def set_shown_path(var path: String):
+    let slot = g_shown_path()
+    if len(slot[]) == 0:
+        slot[].append(path^)
+    else:
+        slot[][0] = path^
+
+
+def gutter_line_at(y: Float64) -> Int:
+    """Which line a click in the gutter is on, zero-based."""
+    let lh = line_height()
+    if lh <= 0.0:
+        return -1
+    return Int(y / lh)
+
+
+def in_gutter(x: Float64) -> Bool:
+    """A click left of the text is a gutter click. The line numbers are
+    right-aligned against TEXT_PAD, so the whole strip is fair game -- there
+    is nothing else there to hit."""
+    return x < GUTTER_W
 
 
 def advance() -> Float64:
@@ -386,10 +431,65 @@ class RoastGridView(NSView, NSTextInputClient):
                         )
                         ln += 1
 
+                # The stopped line, painted before the text so the glyphs sit
+                # on it rather than under it. Only for the file being shown:
+                # a program stops in ONE place, and highlighting that line
+                # number in every open file would be a lie in all but one.
+                let here = shown_path()
+                if dap_is_stopped() and here != "" and dap_stop_file() == here:
+                    let sl = dap_stop_line() - 1  # DAP counts from one
+                    if sl >= first and sl < last:
+                        let NSColorS = ObjCClass.lookup["NSColor"]()
+                        let band = Obj["NSColor"](
+                            msg_send[
+                                ObjCObject, "NSColor", "systemYellowColor",
+                                is_class=True,
+                            ](NSColorS.as_object()).addr()
+                        ).colorWithAlphaComponent(Float64(0.22))
+                        _ = msg_send[ObjCObject, "NSColor", "setFill"](band)
+                        _ = external_call["NSRectFill", NoneType](
+                            rect(0.0, Float64(sl) * lh, vis.size.width
+                                 + vis.origin.x, lh)
+                        )
+
                 var i = first
                 var widest = 0
                 while i < last:
                     let y = Float64(i) * lh
+                    # A breakpoint marker, if this line has one. Drawn at the
+                    # line it BOUND to rather than the line that was clicked:
+                    # the adapter slides a breakpoint to the next line with
+                    # code, and a dot on a line the program never reaches is
+                    # a promise nobody keeps.
+                    if here != "":
+                        var bp = 0
+                        while bp < dap_breakpoint_count():
+                            if (
+                                dap_breakpoint_file(bp) == here
+                                and dap_verified_line(bp) == i + 1
+                            ):
+                                let NSColorB = ObjCClass.lookup["NSColor"]()
+                                # Solid once the adapter has confirmed it,
+                                # hollow while it is only an intention -- the
+                                # difference between "the debugger knows" and
+                                # "you have asked".
+                                let ink = msg_send[
+                                    ObjCObject, "NSColor", "systemRedColor",
+                                    is_class=True,
+                                ](NSColorB.as_object())
+                                let shade = ink if dap_is_verified(bp) else (
+                                    Obj["NSColor"](ink.addr())
+                                    .colorWithAlphaComponent(Float64(0.35))
+                                )
+                                _ = msg_send[ObjCObject, "NSColor", "setFill"](
+                                    shade
+                                )
+                                let d = lh * 0.55
+                                _ = external_call["NSRectFill", NoneType](
+                                    rect(6.0, y + (lh - d) * 0.5, d, d)
+                                )
+                                break
+                            bp += 1
                     # Line number, right-aligned in the gutter.
                     let num = String(i + 1)
                     let num_w = Float64(num.byte_length()) * advance()
@@ -514,6 +614,16 @@ class RoastGridView(NSView, NSTextInputClient):
                 let local = Obj["NSView"](view.addr()).convertPoint_fromView(
                     win_pt, ObjCObject(0).ptr()
                 )
+                if in_gutter(local.x):
+                    # The gutter is the debugger's margin, not the text's:
+                    # a click here toggles a breakpoint and leaves the caret
+                    # where it was.
+                    let line = gutter_line_at(local.y)
+                    let path = shown_path()
+                    if line >= 0 and path != "":
+                        _ = dap_toggle_breakpoint(path, line + 1)
+                        _refresh(P(unsafe_from_address=self.__objc_id))
+                    return
                 let at = offset_at_point(local.x, local.y)
                 set_caret(at)
                 g_coalesce_at()[] = -1

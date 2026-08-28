@@ -72,8 +72,19 @@ fi
 # is not installed -- lldb-dap comes from Xcode, and its absence is a fact
 # about this machine and not about the code.
 DAPBIN="$(xcrun -f lldb-dap 2>/dev/null || true)"
+# Developer mode gates every debugger attach behind an authorization prompt.
+# With it off, lldb does not fail -- it HANGS on `run`, waiting for a dialog
+# no headless check can answer, and the timeout that follows looks exactly
+# like a broken debugger. It cost an afternoon to find, so the state is read
+# here and named.
+DEVMODE="$(DevToolsSecurity -status 2>/dev/null || true)"
 if [ -z "$DAPBIN" ]; then
   echo "  --   dap                lldb-dap not found (no Xcode); skipped"
+  DAPBIN=""
+elif [[ "$DEVMODE" != *enabled* ]]; then
+  echo "  --   dap                developer mode is off; skipped"
+  echo "                          run: sudo DevToolsSecurity -enable"
+  DAPBIN=""
 elif ! "$CM" --build ide/dap_test.mojo -o "$TMP/dap_test" >"$TMP/dap_build.log" 2>&1; then
   bad "dap" "$(grep -m1 'error' "$TMP/dap_build.log" || echo 'build failed')"
 else
@@ -239,7 +250,7 @@ else
 fi
 check "split view"  "split panes: 2"        "sidebar + editor area"
 check "editor panes" "editor panes: 2"      "editor above the console"
-check "menu bar"    "menu bar items: 7"     "app, File, Edit, View, Build, Examples, Window"
+check "menu bar"    "menu bar items: 8"     "app, File, Edit, Debug, View, Build, Examples, Window"
 # Installing a toolbar changes the content view's height, so a layout computed
 # from the height read before it existed leaves a band above the tab strip.
 # Zero here means flush.
@@ -309,6 +320,35 @@ elif echo "$sout" | grep -q 'roast: restored 3 tabs from the last session, showi
   ok "session restore" "three tabs and the project come back, main.mojo showing"
 else
   bad "session restore" "$(echo "$sout" | grep -m1 'restored' || echo 'nothing restored')"
+fi
+
+# Debugging, driven the way someone does it: put a breakpoint on a line and
+# press Debug. The whole path runs -- build with debug info, launch the
+# adapter, bind, stop, follow the program to where it stopped -- and the line
+# asserted is the BOUND one, 10, not the clicked one, 9. Skipped without
+# Xcode, like the dap suite.
+if [ -n "$DAPBIN" ]; then
+  mkdir -p "$TMP/dbgproj"
+  cat > "$TMP/dbgproj/main.mojo" <<'DBGPROJ'
+def add(a: Int, b: Int) -> Int:
+    var sum = a + b
+    return sum
+
+
+def main():
+    var total = 0
+    for i in range(5):
+        total = add(total, i)
+    print("total:", total)
+DBGPROJ
+  dbgout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_DAP="$DAPBIN" \
+           ROAST_PROJECT="$TMP/dbgproj" ROAST_DEBUG_LINE=9 \
+           ROAST_AUTOCLOSE_TICKS=400 timeout 300 "$TMP/roast" 2>&1)
+  if echo "$dbgout" | grep -q 'roast: debug stopped at main.mojo:10 reason breakpoint'; then
+    ok "debugger" "breakpoint on line 9 bound to 10, and the program stopped there"
+  else
+    bad "debugger" "$(echo "$dbgout" | grep -m1 -E 'debug stopped|debugging|debug:' || echo 'never stopped')"
+  fi
 fi
 
 # Documents from the Finder. Two halves, because they fail apart: whether

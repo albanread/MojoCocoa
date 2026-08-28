@@ -52,6 +52,7 @@ from std.objc import (
 )
 from std.memory import OpaquePointer, Pointer
 from std.ffi import external_call, c_char
+from std.os import getenv
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -87,6 +88,15 @@ comptime g_bp_dirty = named_global["dap.bp.dirty", Int]
 # The program's own output, which arrives as `output` events rather than on a
 # pipe: the adapter owns the inferior's stdout.
 comptime g_output = named_global["dap.output", List[String]]
+
+# ROAST_DAP_TRACE prints every message that is not a `module` event. Read
+# once at start rather than per message: the adapter sends several hundred
+# events before a program runs, and a getenv on each is a real cost for a
+# switch that cannot change while a session is up.
+comptime g_trace = named_global["dap.trace", Int]
+# Set when the adapter answers `disconnect`, so shutdown waits for the thing
+# it asked for rather than for a fixed number of milliseconds.
+comptime g_disconnected = named_global["dap.disconnected", Int]
 
 
 def _slot(list_ptr: Pointer[List[String], MutUntrackedOrigin]) -> String:
@@ -334,6 +344,8 @@ def start(adapter: String, program: String, cwd: String) -> Bool:
         g_read_fd()[] = fd
         _ = msg_send[ObjCObject, "NSTask", "launch"](task)
 
+    g_trace()[] = 1 if getenv("ROAST_DAP_TRACE") != "" else 0
+    g_disconnected()[] = 0
     g_phase()[] = 1
     g_exited()[] = 0
     g_stop_line()[] = 0
@@ -357,7 +369,19 @@ def start(adapter: String, program: String, cwd: String) -> Bool:
 
 
 def stop():
-    """Terminate the adapter and forget where the program was.
+    """End the session: kill the PROGRAM, then the adapter.
+
+    Terminating the adapter alone leaves the debuggee behind, stopped at
+    whatever breakpoint it was sitting on, forever -- there is nobody left to
+    resume it. That is a leak with teeth: every Stop strands a frozen process,
+    they accumulate, and eventually new launches fail for reasons that look
+    like anything but this. It showed up as two debugger checks that passed
+    alone and failed in the suite, with an orphan from an earlier run still
+    on the process list.
+
+    `disconnect` with terminateDebuggee is the protocol's own answer. The
+    adapter is given a moment to act on it before being terminated, because
+    a disconnect that is never read is the same as not sending one.
 
     The bound lines go with it: they were facts about a process that no
     longer exists, and a marker still sitting on the line the LAST run bound
@@ -365,6 +389,17 @@ def stop():
     """
     if not is_running():
         return
+    var args = JSON.object()
+    args.set(String("terminateDebuggee"), JSON(True))
+    _ = request(String("disconnect"), args^)
+    # Drained rather than slept through: the adapter answers, and reading the
+    # answer is how we know it got as far as killing the inferior.
+    var spins = 0
+    while spins < 200:
+        _ = poll()
+        if g_disconnected()[] != 0:
+            break
+        spins += 1
     with autoreleasepool():
         _ = msg_send[ObjCObject, "NSTask", "terminate"](ObjCObject(g_task()[]))
     g_task()[] = 0
@@ -481,15 +516,33 @@ def _handle(var msg: JSON):
     if kind == "event":
         _event(msg.get("event")[].as_string(), msg.get("body")[])
         return
+    if kind == "request" and g_trace()[] != 0:
+        # A reverse request -- the adapter asking US for something, which
+        # this client does not answer. Traced rather than ignored silently,
+        # because an adapter waiting on a reply looks exactly like a hung
+        # debugger and there is nothing else that would say so.
+        print("  dap REVERSE request:", msg.get("command")[].as_string())
     if kind == "response":
         let command = msg.get("command")[].as_string()
-        if command == "setBreakpoints":
+        if g_trace()[] != 0:
+            print(
+                "  dap response:", command,
+                "success", msg.get("success")[].as_bool(),
+                repr(msg.get("message")[].as_string()),
+            )
+        if command == "disconnect":
+            g_disconnected()[] = 1
+        elif command == "setBreakpoints":
             _take_breakpoints(msg.get("body")[])
         elif command == "stackTrace":
             _take_stack(msg.get("body")[])
 
 
 def _event(name: String, body: JSON):
+    # `module` is excluded by hand: it is most of the traffic and none of the
+    # information, and a trace that scrolls it away is not a trace.
+    if g_trace()[] != 0 and name != "module":
+        print("  dap event:", name)
     if name == "initialized":
         # Not the initialize RESPONSE: this event is the adapter saying it is
         # ready to be configured, and nothing may be configured before it.

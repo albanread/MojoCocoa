@@ -60,7 +60,9 @@ import lsp
 import document
 import build
 import session
+import dap
 from json import JSON, parse
+from gridview import set_shown_path
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -259,6 +261,7 @@ class RoastAppDelegate:
         # The body may raise; the boundary catches. Hence no `try` around a
         # call that can only fail by the server having already gone.
         save_session()
+        dap.stop()
         lsp.stop()
         print("roast: applicationWillTerminate")
 
@@ -460,6 +463,182 @@ def _start_build(then_run: Bool):
         set_status(String("Could not start the compiler"))
 
 
+# ── Debugging ───────────────────────────────────────────────────────────────
+# Roast does not debug Mojo; lldb-dap does, and dap.mojo talks to it. What is
+# here is the part an editor owns: where the adapter lives, building with
+# debug info before launching it, and moving the caret to wherever the
+# program stopped.
+comptime g_dap_seen = named_global["roast.dap.seen", Int]
+
+
+def dap_adapter() -> String:
+    """The debug adapter. A setting first, so someone with their own lldb can
+    say so and have it remembered; then Xcode's, which is where it is on a
+    machine that can build this fork at all."""
+    let chosen = session.setting(String("debug.adapter"))
+    if chosen != "" and file_exists(chosen):
+        return chosen^
+    let env = getenv("ROAST_DAP")
+    if env != "":
+        return env^
+    let xcode = String(
+        "/Applications/Xcode.app/Contents/Developer/usr/bin/lldb-dap"
+    )
+    return xcode if file_exists(xcode) else String()
+
+
+def _start_debug():
+    """Build with debug info, then hand the binary to the adapter.
+
+    A separate path from Build rather than a flag on it, because the two want
+    different compilers: an optimised build is what you ship and a
+    debug-level-full build is what you can step through. Sharing one output
+    would mean the last thing you pressed decides what the other one does.
+    """
+    if dap.is_running():
+        set_status(String("Already debugging — Stop first (⌘.)"))
+        return
+    let adapter = dap_adapter()
+    if adapter == "":
+        set_status(String("No debug adapter: install Xcode, or set debug.adapter"))
+        return
+    let driver = _driver()
+    if driver == "":
+        set_status(String("No compiler: set COCOAMOJO_ROOT"))
+        return
+    let saved = _save_dirty()
+    let entry = build.entry_point(
+        project_root(), document.path_at(document.current_index())
+    )
+    if entry == "":
+        set_status(String("Nothing to debug — open a file or a folder"))
+        return
+    let binary = build.binary_for(entry) + String("-debug")
+    _ = build.ensure_dir(_dir_of(binary))
+    build.clear_output()
+    dap.clear_output()
+    var head = String("cocoamojo --build ") + entry
+    head += String(" --debug-level full -o ") + binary + String("\n")
+    if saved > 0:
+        head = String("saved ") + String(saved) + String(" file(s)\n") + head
+    build.append_output(head^)
+
+    var args = List[String]()
+    args.append(String("--build"))
+    args.append(entry)
+    args.append(String("--debug-level"))
+    args.append(String("full"))
+    args.append(String("-o"))
+    args.append(binary)
+    # The adapter is started by _build_finished when this exits zero, the
+    # same way Run is queued behind Build -- one place decides whether a
+    # compile succeeded, and it is not here.
+    build.set_then(String(""), _dir_of(entry))
+    g_debug_pending()[] = 1
+    _put_debug_binary(binary)
+    show_console(True)
+    console_sync()
+    if build.start(driver, args, _dir_of(entry), String("Building")):
+        set_status(String("Building ") + _basename(entry) + String(" to debug…"))
+    else:
+        g_debug_pending()[] = 0
+        console_sync()
+        set_status(String("Could not start the compiler"))
+
+
+comptime g_debug_pending = named_global["roast.debug.pending", Int]
+comptime g_debug_binary = named_global["roast.debug.binary", List[String]]
+
+
+def _put_debug_binary(var path: String):
+    let slot = g_debug_binary()
+    if len(slot[]) == 0:
+        slot[].append(path^)
+    else:
+        slot[][0] = path^
+
+
+def _debug_binary() -> String:
+    let slot = g_debug_binary()
+    return slot[][0] if len(slot[]) > 0 else String()
+
+
+def _launch_debugger():
+    """The compile succeeded; start the adapter on what it produced."""
+    g_debug_pending()[] = 0
+    let binary = _debug_binary()
+    if binary == "":
+        return
+    let cwd = _dir_of(binary)
+    let started = dap.start(dap_adapter(), binary, cwd)
+    print(
+        "roast: debugging", _basename(binary),
+        "with", dap.breakpoint_count(), "breakpoint(s)",
+    )
+    if started:
+        g_dap_seen()[] = dap.serial()
+        build.append_output(
+            String("\n─── debugging ") + _basename(binary) + String(" ───\n")
+        )
+        console_sync()
+        set_status(
+            String("Debugging — ")
+            + String(dap.breakpoint_count())
+            + String(" breakpoint(s)")
+        )
+    else:
+        set_status(String("Could not start the debug adapter"))
+
+
+def _debug_changed():
+    """The program stopped, resumed or exited. Follow it."""
+    if dap.exited():
+        set_status(String("Program exited"))
+        refresh_grid()
+        return
+    if not dap.is_stopped():
+        refresh_grid()
+        return
+    # Show the file it stopped in, which may not be the one on screen -- a
+    # breakpoint in an imported file is the common case, exactly as with a
+    # build error.
+    let where = dap.stop_file()
+    if where != "":
+        let uri = String("file://") + where
+        let tab = document.index_of(uri)
+        if tab >= 0:
+            _ = switch_document(tab)
+            after_switch()
+        elif file_exists(where):
+            if load_file(where):
+                after_switch()
+    let line = dap.stop_line()
+    if line > 0 and len(g_buffer()[]) > 0:
+        let rope = g_buffer()[][0]
+        var target = line - 1
+        if target < 0:
+            target = 0
+        if target >= rope.line_count():
+            target = rope.line_count() - 1
+        set_caret(rope.line_start(target))
+        scroll_to_caret()
+    set_status(
+        String("Stopped: ")
+        + dap.stop_reason()
+        + String("  ·  ")
+        + _basename(where)
+        + String(":")
+        + String(line)
+    )
+    print(
+        "roast: debug stopped at",
+        _basename(where) + String(":") + String(line),
+        "reason",
+        dap.stop_reason(),
+    )
+    refresh_grid()
+
+
 def _jump_to(path: String, line: Int, col: Int):
     """Put the caret on a diagnostic, opening the file if it is not open."""
     if path == "":
@@ -518,6 +697,10 @@ def _build_finished():
         print("--- end ---")
 
     if status == 0:
+        if g_debug_pending()[] != 0:
+            build.clear_then()
+            _launch_debugger()
+            return
         let next_exe = build.then_exe()
         if next_exe != "":
             var cwd = build.then_cwd()
@@ -541,6 +724,7 @@ def _build_finished():
 
     # Failed. Whatever queued behind this does not happen.
     build.clear_then()
+    g_debug_pending()[] = 0
     let log = build.output()
     let issue = build.first_error(log)
     if issue.line > 0:
@@ -792,6 +976,78 @@ class RoastActions:
         except:
             pass
 
+    def roastDebug_(self, sender: ObjCObject):
+        try:
+            _start_debug()
+        except:
+            set_status(String("Debug failed to start"))
+
+    def roastDebugStop_(self, sender: ObjCObject):
+        try:
+            if not dap.is_running():
+                set_status(String("Not debugging"))
+                return
+            dap.stop()
+            g_debug_pending()[] = 0
+            set_status(String("Debugging stopped"))
+            refresh_grid()
+        except:
+            pass
+
+    def roastContinue_(self, sender: ObjCObject):
+        try:
+            if dap.is_stopped():
+                dap.resume()
+                set_status(String("Running…"))
+                refresh_grid()
+        except:
+            pass
+
+    def roastStepOver_(self, sender: ObjCObject):
+        try:
+            dap.step_over()
+        except:
+            pass
+
+    def roastStepIn_(self, sender: ObjCObject):
+        try:
+            dap.step_in()
+        except:
+            pass
+
+    def roastStepOut_(self, sender: ObjCObject):
+        try:
+            dap.step_out()
+        except:
+            pass
+
+    def roastToggleBreakpoint_(self, sender: ObjCObject):
+        """The keyboard's way to the gutter's click."""
+        try:
+            let path = document.path_at(document.current_index())
+            if path == "":
+                set_status(String("Save the file first"))
+                return
+            if len(g_buffer()[]) == 0:
+                return
+            let line = g_buffer()[][0].line_of_offset(g_caret()[]) + 1
+            let on = dap.toggle_breakpoint(path, line)
+            set_status(
+                (String("Breakpoint at line ") if on else
+                 String("Cleared breakpoint at line ")) + String(line)
+            )
+            refresh_grid()
+        except:
+            pass
+
+    def roastClearBreakpoints_(self, sender: ObjCObject):
+        try:
+            dap.clear_breakpoints()
+            set_status(String("Breakpoints cleared"))
+            refresh_grid()
+        except:
+            pass
+
     def roastZoomIn_(self, sender: ObjCObject):
         try:
             zoom_font(1.0)
@@ -937,6 +1193,27 @@ class RoastActions:
                     _start_build(auto == "run")
                 except:
                     pass
+
+        # The debug adapter, on the same terms as the compiler and the
+        # language server: drained without blocking, and noticed by a serial
+        # rather than a flag anyone has to remember to clear.
+        try:
+            if dap.is_running():
+                if dap.poll() > 0:
+                    if dap.output() != "":
+                        build.append_output(dap.output())
+                        dap.clear_output()
+                        console_sync()
+                    if dap.serial() != g_dap_seen()[]:
+                        g_dap_seen()[] = dap.serial()
+                        _debug_changed()
+                # A breakpoint toggled while the program is up has to reach
+                # the adapter; the tick is where that happens, so no caller
+                # has to remember.
+                if dap.g_bp_dirty()[] != 0 and dap.is_configured():
+                    dap.send_breakpoints()
+        except:
+            pass
 
         try:
             if build.is_running():
@@ -1201,6 +1478,7 @@ def load_file(path: String) -> Bool:
         mark_clean()
         refresh_tabs()
         lsp.set_shown_uri(uri)
+        set_shown_path(path)
         # The strip scrolls now, so a tab opened past its right edge would be
         # current and invisible at the same time.
         reveal_tab(document.current_index())
@@ -1853,6 +2131,8 @@ def after_switch():
     # The server holds diagnostics for every open tab; tell it which one is
     # being looked at so the right set is drawn.
     lsp.set_shown_uri(document.current_uri())
+    # The gutter draws breakpoints for one file; tell it which.
+    set_shown_path(document.path_at(document.current_index()))
     reveal_tab(document.current_index())
     refresh_tabs()
     _show_dirty()
@@ -2591,6 +2871,54 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     )
     _ = add_item(edit, String("Hide Find"), String("roastHideFind:"), String("\u001b"), actions)
 
+    # Debug. Xcode's key equivalents, because the muscle memory of anyone
+    # who debugs on a Mac already has them: F6 step over, F7 in, F8 out.
+    let debug_menu = add_submenu(bar, String("Debug"))
+    _ = add_item(
+        debug_menu, String("Start Debugging"), String("roastDebug:"),
+        String("y"), actions,
+    )
+    _ = add_item(
+        debug_menu, String("Stop Debugging"), String("roastDebugStop:"),
+        String("Y"), actions,
+    )
+    _ = msg_send[ObjCObject, "NSMenu", "addItem:"](
+        debug_menu,
+        msg_send[ObjCObject, "NSMenuItem", "separatorItem", is_class=True](
+            ObjCClass.lookup["NSMenuItem"]().as_object()
+        ).ptr(),
+    )
+    _ = add_item(
+        debug_menu, String("Continue"), String("roastContinue:"),
+        String("\u001b[1;2A"), actions,
+    )
+    _ = add_item(
+        debug_menu, String("Step Over"), String("roastStepOver:"),
+        String("\uf709"), actions,
+    )
+    _ = add_item(
+        debug_menu, String("Step Into"), String("roastStepIn:"),
+        String("\uf70a"), actions,
+    )
+    _ = add_item(
+        debug_menu, String("Step Out"), String("roastStepOut:"),
+        String("\uf70b"), actions,
+    )
+    _ = msg_send[ObjCObject, "NSMenu", "addItem:"](
+        debug_menu,
+        msg_send[ObjCObject, "NSMenuItem", "separatorItem", is_class=True](
+            ObjCClass.lookup["NSMenuItem"]().as_object()
+        ).ptr(),
+    )
+    _ = add_item(
+        debug_menu, String("Toggle Breakpoint"),
+        String("roastToggleBreakpoint:"), String("\\"), actions,
+    )
+    _ = add_item(
+        debug_menu, String("Clear All Breakpoints"),
+        String("roastClearBreakpoints:"), String("|"), actions,
+    )
+
     # View.
     let view_menu = add_submenu(bar, String("View"))
     _ = add_item(
@@ -2983,6 +3311,24 @@ def main() raises:
                 set_status(
                     String("Restored ") + String(back) + String(" files")
                 )
+
+        # Debugging, reachable without a mouse: set a breakpoint at
+        # ROAST_DEBUG_LINE in the project's entry point and press Debug. The
+        # whole path runs -- build with debug info, launch the adapter, bind,
+        # stop, follow -- so the check covers what someone actually does
+        # rather than the pieces separately.
+        let dbg_line = getenv("ROAST_DEBUG_LINE")
+        if dbg_line != "":
+            let entry = build.entry_point(project_root(), String())
+            if entry != "":
+                _ = dap.toggle_breakpoint(entry, Int(dbg_line))
+                print(
+                    "roast: debug breakpoint at",
+                    _basename(entry) + String(":") + dbg_line,
+                )
+                _start_debug()
+            else:
+                print("roast: debug: no entry point")
 
         # What the Finder does when a .mojo is double-clicked, reachable
         # without one: the delegate method itself, not a reimplementation of
