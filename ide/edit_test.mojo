@@ -13,7 +13,9 @@ from gridview import (
     clipboard_read,
     redo,
     g_undo,
+    g_undo_caret,
     g_redo,
+    g_redo_caret,
     g_coalesce_at,
     display_column,
     offset_at_point,
@@ -144,8 +146,10 @@ def main() raises:
     # Start each undo case from a clean stack.
     while len(g_undo()[]) > 0:
         _ = g_undo()[].pop()
+        _ = g_undo_caret()[].pop()
     while len(g_redo()[]) > 0:
         _ = g_redo()[].pop()
+        _ = g_redo_caret()[].pop()
 
     set_rope(Rope(String("start")))
     set_caret(5)
@@ -165,6 +169,7 @@ def main() raises:
     g_coalesce_at()[] = -1
     while len(g_undo()[]) > 0:
         _ = g_undo()[].pop()
+        _ = g_undo_caret()[].pop()
     for ch in [String("a"), String("b"), String("c")]:
         replace_selection(ch)
     failures += check("typed", buffer_text(), String("abc"))
@@ -178,8 +183,10 @@ def main() raises:
     g_coalesce_at()[] = -1
     while len(g_undo()[]) > 0:
         _ = g_undo()[].pop()
+        _ = g_undo_caret()[].pop()
     while len(g_redo()[]) > 0:
         _ = g_redo()[].pop()
+        _ = g_redo_caret()[].pop()
     replace_selection(String("y"))
     _ = undo()
     failures += check_int("redo pending", len(g_redo()[]), 1)
@@ -191,6 +198,7 @@ def main() raises:
     print("edit: undo on an empty stack is a no-op")
     while len(g_undo()[]) > 0:
         _ = g_undo()[].pop()
+        _ = g_undo_caret()[].pop()
     let before = buffer_text()
     failures += check_int("undo refuses", Int(undo()), 0)
     failures += check("buffer unchanged", buffer_text(), before)
@@ -350,6 +358,19 @@ def main() raises:
     apply_command(String("pageUpAndModifySelection:"), page_lines=2)
     failures += check_int("shift-page-up caret", g_caret()[], 11)
     failures += check_int("shift-page-up anchor", g_anchor()[], 17)
+
+    print("edit: undo history is bounded")
+    from gridview import push_undo, UNDO_CAP
+    set_rope(Rope(String("x")))
+    g_coalesce_at()[] = -1
+    for i in range(UNDO_CAP + 25):
+        set_caret(0)
+        push_undo()
+    failures += check_int("capped", len(g_undo()[]), UNDO_CAP)
+    failures += check_int(
+        "caret stack keeps step", len(g_undo()[]), len(g_undo_caret()[])
+    )
+    failures += check_int("undo still works", 1 if undo() else 0, 1)
 
     print("edit: document width follows the widest line")
     # The draw loop feeds note_line_cols; here it is fed directly, with a

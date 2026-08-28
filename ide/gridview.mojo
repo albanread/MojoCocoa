@@ -1373,6 +1373,12 @@ def utf16_to_byte(u16: Int) -> Int:
     return g_buffer()[][0].utf16_to_byte(u16)
 
 
+# Undo entries kept. An entry is a rope root -- pointer-cheap -- but each
+# root pins every leaf it references, so an unbounded stack turns a long
+# session's memory into a museum of every state the buffer has ever had.
+comptime UNDO_CAP = 1000
+
+
 def push_undo(coalescing: Bool = False):
     """Record the current buffer so an edit can be taken back.
 
@@ -1385,6 +1391,10 @@ def push_undo(coalescing: Bool = False):
         return  # continues the run already recorded
     g_undo()[].append(g_buffer()[][0].copy())
     g_undo_caret()[].append(g_caret()[])
+    # The oldest history goes first, which is the end nobody misses.
+    while len(g_undo()[]) > UNDO_CAP:
+        _ = g_undo()[].pop(0)
+        _ = g_undo_caret()[].pop(0)
     # Any new edit invalidates the redo branch, as it must.
     while len(g_redo()[]) > 0:
         _ = g_redo()[].pop()
