@@ -292,6 +292,49 @@ is the same bargain this document proposed. Parsing the SDK headers with
 clang would recover the classes and make even that unnecessary; it is a
 database change rather than a compiler one, and it is the only route to it.
 
+### Built: `std.objc.typed`
+
+```mojo
+var view = Obj["NSView"](id)
+view.setFrameSize(size)          # setFrameSize:
+var w = view.window()            # Obj["NSWindow"], from the SDK
+var r = view.frame()             # CGRect, from the encoding
+var f = view.isFlipped()         # Bool, not an Int that happens to be 0 or 1
+```
+
+Tier 2 as described was "runtime `__getattr__` building the selector at run
+time, object-and-scalar signatures only, exists to keep exploration fluid,
+not to be the product". What is here is better than that and cost less: it is
+tier 2's reach -- every selector the database knows, nothing declared by hand
+-- with tier 1's checking. There are no generated files and nothing to
+regenerate when the SDK moves, because `Obj["NSView"]` is a parameter.
+
+Three things are settled at compile time. **The selector exists**: a
+misspelling is an error naming the class and the name, not a runtime
+`doesNotRecognizeSelector:`. **The name maps like `class`'s, backwards**:
+underscores become colons and the argument count supplies the last one, so
+`insertText_replacementRange(t, r)` is `insertText:replacementRange:` -- one
+rule, both directions. **The result is typed by the SDK**, including the
+class of a returned object where the property metadata records it, and
+`Obj["NSObject"]` where it does not, which is true of every object.
+
+The name mapping happens in SQL, and that is not an implementation detail:
+string surgery does not fold during parameter evaluation, so a Mojo-side
+`replace('_', ':')` would leave the result type symbolic and the whole scheme
+would collapse into unevaluated conditionals. SQLite has no such problem, and
+the query is keyed on (class, mojo name, is_class, argument count) rather than
+on a selector for exactly that reason.
+
+Two smaller pieces of the same lesson. The kind query answers 0 for a name
+the class does not have, rather than failing, so the error can be a sentence
+instead of a wall of unevaluated type. And the class query answers `NSObject`
+rather than failing, so a caller can ask unconditionally and use the answer
+only when the kind says object.
+
+What is left for tier 1's declared wrappers is what only a human can supply:
+the ~45% of object results whose class is not in the SDK metadata at all, and
+argument names worth reading. Neither blocks anything now.
+
 ### The same trick covers POSIX
 
 `cocoakb_posix_sig` / `cocoakb_posix_arg_classes` mean `external_call` FFI

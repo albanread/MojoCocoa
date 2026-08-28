@@ -477,3 +477,72 @@ StringLiteral[cocoakb_p_ret_class_str[...]]]` -- which is how a call's result
 gets the class the SDK says it has, without anyone writing it down. A
 `StaticString` is a value and cannot.
 """
+
+
+# The call direction's three queries, keyed on the MOJO-side name and the
+# argument count rather than on a selector. The name mapping -- underscores to
+# colons, with the argument count supplying the last one -- happens in SQL,
+# because string surgery does not fold during parameter evaluation and a type
+# conditioned on the result would stay symbolic.
+
+
+comptime cocoakb_p_selector_for[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    nargs: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "selector_for_name" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, nargs.value,
+        `> : !kgen.string`,
+    ]
+)
+"""The selector `cls.name(...)` means, verified to exist on `cls` or above it.
+
+A name the class does not answer is a compile error rather than a runtime
+`doesNotRecognizeSelector:` -- which is the entire reason the database is
+consulted at compile time.
+"""
+
+
+comptime cocoakb_p_ret_kind_for[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    nargs: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "ret_kind_for_name" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, nargs.value,
+        `> : index`,
+    ]
+)
+"""The result KIND's code point -- see `method_ret_kind`. An integer, because
+that is what a conditional type can branch on."""
+
+
+comptime cocoakb_p_ret_class_for[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    nargs: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "ret_class_for_name" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, nargs.value,
+        `> : !kgen.string`,
+    ]
+)
+"""WHICH object comes back, or `NSObject` when the SDK does not record it --
+true of every object, and the honest upper bound. Always answers, so a caller
+can ask unconditionally and use it only when the kind says object."""
+
+
+comptime cocoakb_p_ret_class_for_str[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    nargs: StringLiteral,
+] = __mlir_attr[
+    `#kgen.param.expr<cocoakb_query, "ret_class_for_name" : !kgen.string, `,
+    cls.value, `, `, name.value, `, `, is_class.value, `, `, nargs.value,
+    `> : !kgen.string`,
+]
+"""`cocoakb_p_ret_class_for` as a raw `!kgen.string`.
+
+`StringLiteral`'s own parameter is a `!kgen.string`, so only this form can
+parameterise a type through it -- `Obj[StringLiteral[...]()]`, which is how a
+call's result gets the class the SDK says it has."""

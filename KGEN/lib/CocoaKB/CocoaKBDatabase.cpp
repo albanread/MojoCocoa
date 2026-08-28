@@ -155,6 +155,77 @@ constexpr StringRef kMethodRetObjCClassSQL = COCOAKB_METHOD_CTE(
 // delegate, ...) the concrete class is unknown at compile time, but a selector
 // carries the same ABI wherever it is implemented. Take the majority reading
 // across implementing classes so one odd class can't skew it.
+// The CALL direction's name mapping, done in SQL so that it FOLDS.
+//
+// `view.setFrameSize(sz)` has to become `setFrameSize:`, and
+// `tv.insertText_replacementRange(t, r)` has to become
+// `insertText:replacementRange:` -- the same underscore rule the declare
+// direction uses, read backwards, with the argument count supplying the last
+// colon. Doing that in Mojo would mean comptime string surgery, and string
+// operations do not fold during parameter evaluation, so a type conditioned
+// on the result would stay symbolic. SQLite's `replace` has no such problem.
+//
+// ?1 class, ?2 the Mojo-side name, ?3 is_class, ?4 the argument count. The
+// answer is the selector itself, which then keys every other query -- and
+// because it comes back as a folded constant, it can.
+#define COCOAKB_NAME_CTE(expr, table)                                          \
+  "WITH RECURSIVE chain(c, depth) AS ("                                        \
+  "  SELECT ?1, 0"                                                             \
+  "  UNION ALL"                                                                \
+  "  SELECT rc.superclass, chain.depth + 1 FROM rt_classes rc, chain"          \
+  "    WHERE rc.name = chain.c AND rc.superclass IS NOT NULL)"                 \
+  " SELECT " expr " FROM chain JOIN " table " m"                               \
+  "   ON m.class = chain.c"                                                    \
+  "  AND m.selector = CASE WHEN CAST(?4 AS INTEGER) = 0"                       \
+  "                       THEN replace(?2, '_', ':')"                          \
+  "                       ELSE replace(?2, '_', ':') || ':' END"               \
+  "  AND m.is_class = CAST(?3 AS INTEGER)"                                     \
+  " ORDER BY chain.depth LIMIT 1"
+
+constexpr StringRef kSelectorForNameSQL =
+    COCOAKB_NAME_CTE("m.selector", "rt_methods");
+// Answers 0 rather than nothing for a name the class does not have. A
+// missing row would make the query fail to fold, the result type would stay
+// symbolic, and the author would see a wall of unevaluated conditional
+// instead of "NSString has no lenght". The caller turns 0 into that sentence.
+constexpr StringRef kRetKindForNameSQL =
+    "WITH RECURSIVE chain(c, depth) AS ("
+    "  SELECT ?1, 0"
+    "  UNION ALL"
+    "  SELECT rc.superclass, chain.depth + 1 FROM rt_classes rc, chain"
+    "    WHERE rc.name = chain.c AND rc.superclass IS NOT NULL)"
+    " SELECT COALESCE(("
+    "   SELECT unicode(m.kind) FROM chain JOIN method_ret_kind m"
+    "     ON m.class = chain.c"
+    "    AND m.selector = CASE WHEN CAST(?4 AS INTEGER) = 0"
+    "                        THEN replace(?2, '_', ':')"
+    "                        ELSE replace(?2, '_', ':') || ':' END"
+    "    AND m.is_class = CAST(?3 AS INTEGER)"
+    "  ORDER BY chain.depth LIMIT 1), 0)";
+// An object whose class is not recorded is answered as NSObject, which is
+// true of every object and is the honest upper bound: precise where the SDK
+// knows, sound where it does not. Always returns a row, so a caller can ask
+// unconditionally and use the answer only when the kind says object.
+// COALESCE has to wrap the whole lookup, not the selected column: a JOIN
+// that matches nothing returns NO ROWS, and a default inside the projection
+// never runs. Written out rather than macro-generated for that reason.
+constexpr StringRef kRetClassForNameSQL =
+    "WITH RECURSIVE chain(c, depth) AS ("
+    "  SELECT ?1, 0"
+    "  UNION ALL"
+    "  SELECT rc.superclass, chain.depth + 1 FROM rt_classes rc, chain"
+    "    WHERE rc.name = chain.c AND rc.superclass IS NOT NULL)"
+    " SELECT COALESCE(("
+    "   SELECT CASE WHEN m.ret_class = '@self' THEN ?1 ELSE m.ret_class END"
+    "     FROM chain JOIN method_ret_class m"
+    "       ON m.class = chain.c"
+    "      AND m.selector = CASE WHEN CAST(?4 AS INTEGER) = 0"
+    "                          THEN replace(?2, '_', ':')"
+    "                          ELSE replace(?2, '_', ':') || ':' END"
+    "      AND m.is_class = CAST(?3 AS INTEGER)"
+    "    ORDER BY chain.depth LIMIT 1), 'NSObject')";
+#undef COCOAKB_NAME_CTE
+
 constexpr StringRef kSelectorVariantSQL =
     "SELECT CASE WHEN ret_class = '?' OR arg_classes LIKE '%?%' THEN '?' "
     "ELSE 'objc_msgSend' END FROM method_abi WHERE selector = ?1 "
@@ -199,6 +270,10 @@ const CocoaKBQueryDef kCocoaQueries[] = {
     // class (g/f/h4/...). This one is the Objective-C class of the
     // object that comes back.
     {"method_ret_objc_class", 3, kMethodRetObjCClassSQL},
+    // The call direction: keyed on the MOJO-side name and argument count.
+    {"selector_for_name", 4, kSelectorForNameSQL},
+    {"ret_kind_for_name", 4, kRetKindForNameSQL},
+    {"ret_class_for_name", 4, kRetClassForNameSQL},
     {"selector_variant", 1, kSelectorVariantSQL},
     {"selector_arg_classes", 1, kSelectorArgClassesSQL},
     {"selector_ret_class", 1, kSelectorRetClassSQL},

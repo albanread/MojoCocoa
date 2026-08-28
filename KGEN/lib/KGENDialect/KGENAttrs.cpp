@@ -2547,11 +2547,12 @@ LogicalResult ParamOperatorAttr::verify(
     break;
   case POC::CocoaKBQuery:
     // (query, argument...) -- the first operand names the query, the rest are
-    // its arguments. Three is enough: a method lookup takes (class, selector,
-    // kind); everything else takes fewer.
-    if (operands.size() < 1 || operands.size() > 4)
+    // its arguments. Four: a method lookup takes (class, selector, kind), and
+    // the call direction's name-keyed lookups take (class, name, kind, arity)
+    // because the Mojo-side name becomes a selector inside the SQL.
+    if (operands.size() < 1 || operands.size() > 5)
       return emitError() << "'cocoakb_query' expects a query name and up to "
-                            "three arguments";
+                            "four arguments";
     for (auto operand : operands)
       if (!::isa<StringType>(operand.getType()))
         return emitError() << "'cocoakb_query' operands must all be strings";
