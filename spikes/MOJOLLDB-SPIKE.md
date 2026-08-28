@@ -722,6 +722,56 @@ collisions -- including nested shadowing, generics, closures and forced
 inlining. If the tuple collides there, the post-link join needs more than
 names before any of this is worth building.
 
+### The collision test: does the natural tuple discriminate?
+
+Run before designing the sidecar format, because if the post-link join cannot
+tell two variables apart there is no point serialising anything for it.
+`spikes/dwarf-identity-collisions.py` enumerates every local and formal die in
+a dSYM, canonicalises `DW_AT_abstract_origin`, computes the tuple
+`(linkage name, local name, decl file, decl line)`, and reports where it fails.
+The fixture exercises nested shadowing, sibling scopes reusing a name,
+generics instantiated at several types, a closure shadowing its capture, and a
+`@always_inline` helper called twice.
+
+                                      -O0      -g (optimized)
+    variable/formal dies             3513      1020
+    scopes with no linkage name         0         0
+    distinct tuples                   638       253
+    unambiguous (one declaration)     477       188
+    MULTIPLICITY (one entity, N dies) 159        65
+    AMBIGUITY (different entities)      2         0
+
+Two failure modes, and only one is fatal. **Multiplicity is a quarter of all
+tuples**: one source entity described by many dies, because the same function
+is emitted into many compile units. That is not an error, but it is a hard
+requirement on the map -- it must be **one semantic record to many die
+offsets**. Build the obvious 1:1 table and you silently drop ~25% of the dies,
+and the debugger fails to resolve a type depending on which compile unit it
+happens to stop in. That is exactly the kind of bug that looks like
+flakiness.
+
+**Ambiguity is nearly zero but not zero.** Both cases at `-O0`:
+
+    name="ptr" line=1497   type='!kgen.string *'   and   type='index *'
+    in std::builtin::variadics::VariadicPack::consume_elements[...]
+
+A variadic pack expanded once per element type. Every instantiation shares one
+linkage name and one source line, and the declarations differ only in their
+type. So the tuple is ~99.7% sufficient and fails precisely where the user
+predicted: generic and compiler-generated expansion. Adding the type name to
+the tuple separates these two, but that is luck rather than a guarantee --
+two instantiations at the *same* type would still collide, and the honest fix
+is for the linkage name to carry the substitution.
+
+Note the direction of the numbers: the optimized build has **fewer** dies and
+**no** ambiguity, because variables have been optimized away rather than
+disambiguated. `-O0` is the demanding case here, not the easy one.
+
+Three conclusions for the format. The join must be one-to-many. It must not
+be attempted on names alone. And it must run post-link, where these numbers
+were measured -- the same test on the object file would have reported the
+multiplicity as ambiguity and sent the design somewhere expensive and wrong.
+
 ## The risk worth watching
 
 `MojoLLDB` deps include `//AsyncRT:RuntimeGlobals` and, under
