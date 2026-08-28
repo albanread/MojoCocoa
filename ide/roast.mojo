@@ -59,6 +59,8 @@ from gridview import (
 import lsp
 import document
 import build
+import session
+from json import JSON, parse
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -256,6 +258,7 @@ class RoastAppDelegate:
     def applicationWillTerminate_(self, note: ObjCObject):
         # The body may raise; the boundary catches. Hence no `try` around a
         # call that can only fail by the server having already gone.
+        save_session()
         lsp.stop()
         print("roast: applicationWillTerminate")
 
@@ -948,6 +951,11 @@ class RoastActions:
         let limit = g_autoclose()[]
         if limit != 0 and g_ticks()[] >= limit:
             print("roast: autoclose after", g_ticks()[], "ticks")
+            # An unattended run closes its window rather than terminating, so
+            # applicationWillTerminate: may not arrive before the process
+            # goes. Save here too: writing the same document twice is free,
+            # and a check that cannot observe a save cannot check one.
+            save_session()
             with autoreleasepool():
                 if g_window()[] != 0:
                     Obj["NSWindow"](ObjCObject(g_window()[]).addr()).close()
@@ -1256,6 +1264,193 @@ def bring_to_front():
                 )
     except:
         pass
+
+
+# ── Session ─────────────────────────────────────────────────────────────────
+# What the editor remembers between launches. `capture` reads the live state
+# into a document, `apply` puts a document back; session.mojo does the file.
+#
+# Both are refused for an unattended run. A check that restored the last
+# session would depend on whatever ran before it, and one that SAVED would
+# quietly replace whatever the person at this machine had open with three
+# tabs of fern -- the second is the one that would have hurt.
+def session_enabled() -> Bool:
+    return g_autoclose()[] == 0 or getenv("ROAST_SESSION") != ""
+
+
+def capture_session() -> JSON:
+    """The live state as a document."""
+    var doc = JSON.object()
+    doc.set(String("version"), JSON(1))
+    if project_root() != "":
+        doc.set(String("project"), JSON(project_root()))
+
+    # Paths, so an untitled buffer is simply not remembered: it has nothing
+    # to reopen from, and inventing a file for it at quit is worse than
+    # forgetting it.
+    var tabs = JSON.array()
+    var current = 0
+    var i = 0
+    while i < document.count():
+        let path = document.path_at(i)
+        if path != "":
+            if i == document.current_index():
+                current = tabs.count()
+            tabs.push(JSON(path))
+        i += 1
+    doc.set(String("tabs"), tabs^)
+    doc.set(String("current"), JSON(current))
+
+    if g_window()[] != 0:
+        with autoreleasepool():
+            let f = msg_send[CGRect, "NSWindow", "frame"](
+                ObjCObject(g_window()[])
+            )
+            var frame = JSON.array()
+            frame.push(JSON(Int(f.origin.x)))
+            frame.push(JSON(Int(f.origin.y)))
+            frame.push(JSON(Int(f.size.width)))
+            frame.push(JSON(Int(f.size.height)))
+            doc.set(String("frame"), frame^)
+    doc.set(String("font"), JSON(Int(font_size())))
+
+    # Settings are not derived from anything live -- they are whatever was
+    # read at launch plus whatever has been set since -- so they are carried
+    # across rather than rebuilt.
+    let held = session.document()
+    if held.has("settings"):
+        doc.set(String("settings"), parse(held.get("settings")[].serialize()))
+    return doc^
+
+
+def apply_window_frame(doc: JSON):
+    """Put the window back where it was, if there is still a screen there.
+
+    A frame is saved against the screens of the moment. Restore it blindly
+    and a window that was on a second monitor comes back on a machine that
+    no longer has one -- off the edge of everything, with no way to drag it
+    since the title bar is off screen too. setFrame:display: does not check;
+    NSScreen does.
+    """
+    if g_window()[] == 0 or not doc.has("frame"):
+        return
+    let f = doc.get("frame")[]
+    if f.count() != 4:
+        return
+    let w = Float64(f.at(2)[].as_int())
+    let h = Float64(f.at(3)[].as_int())
+    if w < 400.0 or h < 300.0:
+        return
+    let want = rect(
+        Float64(f.at(0)[].as_int()), Float64(f.at(1)[].as_int()), w, h
+    )
+    with autoreleasepool():
+        let NSScreen = ObjCClass.lookup["NSScreen"]()
+        let screens = msg_send[
+            ObjCObject, "NSScreen", "screens", is_class=True
+        ](NSScreen.as_object())
+        let n = msg_send[Int, "NSArray", "count"](screens)
+        var visible = False
+        var i = 0
+        while i < n:
+            let sf = msg_send[CGRect, "NSScreen", "frame"](
+                msg_send[ObjCObject, "NSArray", "objectAtIndex:"](screens, i)
+            )
+            # The title bar has to be reachable: a generous overlap of the
+            # window's top edge with some screen is the whole test.
+            let top = want.origin.y + want.size.height
+            if (
+                want.origin.x + want.size.width > sf.origin.x + 60.0
+                and want.origin.x < sf.origin.x + sf.size.width - 60.0
+                and top > sf.origin.y + 60.0
+                and top < sf.origin.y + sf.size.height + 1.0
+            ):
+                visible = True
+                break
+            i += 1
+        if not visible:
+            print("roast: saved window frame is off screen, ignoring it")
+            return
+        _ = msg_send[ObjCObject, "NSWindow", "setFrame:display:"](
+            ObjCObject(g_window()[]), want, True
+        )
+
+
+def restore_session() -> Int:
+    """Reopen what was open. Returns how many tabs came back.
+
+    The project first, so the sidebar and the language server are rooted
+    before any file arrives; then the files, skipping any that have been
+    deleted or moved since -- a session is a memory, not a claim about what
+    still exists.
+    """
+    let doc = session.document()
+    if doc.has("font"):
+        let pts = doc.get("font")[].as_int()
+        if pts >= 8 and pts <= 36:
+            set_font_size(Float64(pts))
+    apply_window_frame(doc)
+
+    if doc.has("project"):
+        let proj = doc.get("project")[].as_string()
+        if proj != "" and is_directory(proj):
+            open_folder(proj)
+
+    if not doc.has("tabs"):
+        return 0
+    let tabs = doc.get("tabs")[]
+    let want = doc.get("current")[].as_int() if doc.has("current") else 0
+    var opened = 0
+    var current_uri = String()
+    var i = 0
+    while i < tabs.count():
+        let path = tabs.at(i)[].as_string()
+        if path != "" and file_exists(path):
+            if load_file(path):
+                if opened == want:
+                    current_uri = String("file://") + path
+                opened += 1
+        i += 1
+    # The empty scratch buffer the editor starts with is the DEFAULT state,
+    # not something anyone had open, so a restore replaces it rather than
+    # sitting beside it. Only if it is genuinely untouched: a buffer someone
+    # typed into between launch and restore is theirs.
+    if opened > 0:
+        var j = document.count() - 1
+        while j >= 0:
+            if (
+                document.path_at(j) == ""
+                and not document.dirty_at(j)
+                and document.count() > 1
+            ):
+                _ = document.close_at(j)
+            j -= 1
+
+    # By uri rather than by index: files that have gone missing shift every
+    # index after them, and restoring to the wrong tab is the sort of small
+    # wrongness that makes a feature feel broken.
+    if current_uri != "":
+        let at = document.index_of(current_uri)
+        if at >= 0:
+            _ = switch_document(at)
+    if opened > 0:
+        after_switch()
+    return opened
+
+
+def session_path_or_none() -> String:
+    """For the startup report: where the session is kept, or why it is not."""
+    if not session_enabled():
+        return String("(disabled for this run)")
+    let p = session.session_path()
+    return p if p != "" else String("(no application support directory)")
+
+
+def save_session():
+    if not session_enabled():
+        return
+    session.replace(capture_session())
+    _ = session.flush()
 
 
 # ── Tab bar ─────────────────────────────────────────────────────────────────
@@ -2762,6 +2957,33 @@ def main() raises:
                 ),
             )
 
+        # Last session, if nothing more specific was asked for. Anything
+        # named on the way in -- a project, an example, a file -- is a
+        # statement about what to look at NOW, and beats a memory of what was
+        # open before; so this runs only when none of them said anything.
+        # ROAST_OPEN is checked too, though it is handled far above: it puts
+        # its file in the first tab before the window exists.
+        session.load()
+        if (
+            session_enabled()
+            and getenv("ROAST_PROJECT") == ""
+            and getenv("ROAST_EXAMPLE") == ""
+            and getenv("ROAST_EXAMPLE_MENU") == ""
+            and getenv("ROAST_OPEN_FILE") == ""
+            and getenv("ROAST_OPEN") == ""
+        ):
+            let back = restore_session()
+            if back > 0:
+                print(
+                    "roast: restored",
+                    back,
+                    "tabs from the last session, showing",
+                    document.name_at(document.current_index()),
+                )
+                set_status(
+                    String("Restored ") + String(back) + String(" files")
+                )
+
         # What the Finder does when a .mojo is double-clicked, reachable
         # without one: the delegate method itself, not a reimplementation of
         # it, so the check covers the path AppKit actually takes.
@@ -2880,6 +3102,7 @@ def main() raises:
         print("roast: menu bar items:", n_menus)
         let tc = toolchain_root()
         print("roast: toolchain:", tc if tc != "" else String("(none found)"))
+        print("roast: session:", session_path_or_none())
         let gframe = Obj["NSView"](grid.addr()).frame()
         print(
             "roast: document:",

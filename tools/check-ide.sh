@@ -53,6 +53,19 @@ else
   bad "json" "$(grep -m1 'error' "$TMP/json_build.log" || echo 'build failed')"
 fi
 
+# The session file, without a window. ROAST_SESSION keeps every one of these
+# off whatever the person at this machine had open.
+if "$CM" --build ide/session_test.mojo -o "$TMP/session_test" >"$TMP/sess_build.log" 2>&1; then
+  sess_out=$(ROAST_SESSION="$TMP/session.json" timeout 120 "$TMP/session_test" 2>&1)
+  if echo "$sess_out" | grep -q '^session OK'; then
+    ok "session" "$(echo "$sess_out" | grep -c '  OK ') checks — round trip, damaged files, settings"
+  else
+    bad "session" "$(echo "$sess_out" | grep -m1 FAIL || echo 'tests failed')"
+  fi
+else
+  bad "session" "$(grep -m1 'error' "$TMP/sess_build.log" || echo 'build failed')"
+fi
+
 # Editing behaviour, also without a window: the text input client's risk is
 # the arithmetic, not the Objective-C plumbing.
 if "$CM" --build ide/edit_test.mojo -o "$TMP/edit_test" >"$TMP/edit_build.log" 2>&1; then
@@ -239,6 +252,24 @@ elif echo "$exout" | grep -q 'roast: announced 3 documents to the server'; then
 else
   bad "server told" "$(echo "$exout" | grep -m1 'announced' || echo 'no announce before autoclose')"
 fi
+# Restoring what was open, which needs two launches: the first opens fern and
+# saves on the way out, the second is told nothing at all and has to come back
+# with the same three files and the same one showing.
+SESS="$TMP/live-session.json"
+rm -f "$SESS"
+_=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_SESSION="$SESS" \
+    ROAST_EXAMPLE="$PWD/examples/fern" ROAST_AUTOCLOSE_TICKS=40 \
+    timeout 120 "$TMP/roast" 2>&1)
+sout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_SESSION="$SESS" \
+       ROAST_AUTOCLOSE_TICKS=40 timeout 120 "$TMP/roast" 2>&1)
+if ! [ -s "$SESS" ]; then
+  bad "session restore" "nothing was written on the way out"
+elif echo "$sout" | grep -q 'roast: restored 3 tabs from the last session, showing main.mojo'; then
+  ok "session restore" "three tabs and the project come back, main.mojo showing"
+else
+  bad "session restore" "$(echo "$sout" | grep -m1 'restored' || echo 'nothing restored')"
+fi
+
 # Documents from the Finder. Two halves, because they fail apart: whether
 # AppKit can FIND the handler is selector derivation, and whether it works is
 # open_path. A file becomes a tab, a folder becomes the project.
