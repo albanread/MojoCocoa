@@ -223,23 +223,52 @@ its encoding from the SDK, and sends a real message.
 **So the call direction needs no compiler work.** It is library design, which
 is where this document always wanted it.
 
-**The constraint that IS real: return types are not recoverable.** The
-database cannot say what class a method returns. The runtime's encodings give
-a bare `@` for an object result -- only 48 of 522,170 methods carry a typed
-`@"NSString"` -- and BridgeSupport records only the unusual cases, with no
-object retvals at all among its 5,250. So `tv.textStorage()` cannot know it
-answers an `NSTextStorage`, and a chained call has to name the class again:
+**Return types: what is recoverable is the KIND, not the CLASS.** An earlier
+draft of this note said "return types are not recoverable", which was too
+strong, and MacModula2 is the reason to correct it — it has shipped this and
+its README claims "return types inferred from a 5,500-plus-selector database
+so `[arr count]` is a `CARDINAL` and `[view frame]` is an `NSRect`, no casts."
+
+Reading how: `library/macrtdef/cocoa-selectors.json`, 5,587 selectors over 40
+classes, each `{"ret": "..."}`. And `uppercaseString` is `"@"`. `textStorage`
+is `"@"`. Its generator's `m2_type` maps `"@" => "ObjC.Id"`, full stop, and
+its own documentation says an unbound selector "just defaults to an `id`
+result". So **MacModula2 does not recover the class of a returned object
+either** — nobody does, because the only place that information exists is the
+SDK headers.
+
+What it recovers, and what makes the "no casts" claim true, is the result's
+KIND, taken from the same `@encode` string we already hold: `q/l/i/s` →
+INTEGER, `Q/L/I/S` → CARDINAL, `d/f` → REAL, `B/c/C` → BOOLEAN, `v` → void,
+and a struct matched by name to `NSRect`/`NSPoint`/`NSSize`/`NSRange` with
+anything else synthesized as a flat record. That is a lot of typing for free,
+and we have every byte of the input for it.
+
+**One thing stands between us and the same result, and it is a compiler
+task.** A conditional type folds when its condition is a comptime constant --
 
 ```mojo
-var upper = Obj["NSString"](s.uppercaseString.object().addr())
+comptime T: AnyType = Bool if 16 == 16 else Int      # folds
+comptime T: AnyType = Bool if cocoakb_struct_size["CGSize"]() == 16 else Int
+                                                     # does NOT fold
 ```
 
-This is not a defect in the plan, it is the ground truth being thinner than
-the plan assumed, and it decides two things. The receiver's class is
-DECLARED, never inferred. And tier 1's one-line declarations earn their keep
-after all: the return type is the part a human has to supply, because the
-only place it exists is the SDK headers. Parsing those with clang is the
-upgrade path, and it is a database change rather than a compiler one.
+-- and does not when the condition is a `cocoakb_query`. The query is a
+`#kgen.param.expr` and `ParametricIREvaluator` knows how to evaluate it, but
+not early enough to select a type during type checking; the expression stays
+symbolic and the error prints the whole unevaluated conditional as the type.
+Exposing the queries as aliases rather than `def`s does not help, so it is the
+folding and not the wrapper. Until that is fixed, a result's Mojo type has to
+be written at the call, which is what `msg_send[Int, "NSString", "length"]`
+already does.
+
+So the plan stands, with its two tiers vindicated by a compiler that shipped
+them. The receiver's class is DECLARED, never inferred. Object results are
+`id` until something says otherwise, and the something is tier 1's typed
+surface -- MacModula2 hand-covers 40 classes and lets the rest be `id`, which
+is the same bargain this document proposed. Parsing the SDK headers with
+clang would recover the classes and make even that unnecessary; it is a
+database change rather than a compiler one, and it is the only route to it.
 
 ### The same trick covers POSIX
 
