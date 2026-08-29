@@ -677,6 +677,8 @@ comptime g_ref_seen = named_global["roast.ref.seen", Int]
 comptime g_sig_seen = named_global["roast.sig.seen", Int]
 # Where the cycle through references has got to.
 comptime g_ref_at = named_global["roast.ref.at", Int]
+# ROAST_DEBUG_STEPS: which button gets pressed at the next stop.
+comptime g_dbg_step_i = named_global["roast.dbg.step.i", Int]
 comptime g_ren_seen = named_global["roast.ren.seen", Int]
 
 
@@ -856,6 +858,83 @@ def _launch_debugger():
         set_status(String("Could not start the debug adapter"))
 
 
+def _nth_csv(s: String, want: Int) -> String:
+    """The want-th comma-separated field of s, or empty past the end."""
+    var rest = s
+    var i = 0
+    while True:
+        let cut = rest.find(",")
+        if cut < 0:
+            if i == want:
+                return rest
+            return String()
+        if i == want:
+            return String(rest[byte=:cut])
+        let tail = String(rest[byte = cut + 1 : rest.byte_length()])
+        rest = tail
+        i += 1
+
+
+def _press_debug_button(name: String) -> Bool:
+    """Press one of the debugger's toolbar buttons the way a click does.
+
+    The item is looked up in the LIVE toolbar by identifier and its action is
+    sent to its own target through NSApp -- not a direct call to the handler.
+    A button missing from the bar, wired to the wrong selector, or aimed at a
+    dead target all fail here exactly as they would under the pointer, which
+    is the point: ROAST_DEBUG_LINE proves the debug session, this proves the
+    buttons.
+    """
+    var ident = String()
+    if name == "continue":
+        ident = String(TB_CONTINUE)
+    elif name == "over":
+        ident = String(TB_STEP_OVER)
+    elif name == "in":
+        ident = String(TB_STEP_IN)
+    elif name == "out":
+        ident = String(TB_STEP_OUT)
+    else:
+        return False
+    with autoreleasepool():
+        if g_window()[] == 0:
+            return False
+        let win = ObjCObject(g_window()[])
+        let tb = Obj["NSWindow"](win.addr()).toolbar()
+        if tb.addr() == 0:
+            return False
+        let items = Obj["NSToolbar"](tb.addr()).items()
+        let n = Obj["NSArray"](items.addr()).count()
+        let app = Cls["NSApplication"]().sharedApplication()
+        var i = 0
+        while i < n:
+            let item = Obj["NSArray"](items.addr()).objectAtIndex(i)
+            let iid = Obj["NSToolbarItem"](item.addr()).itemIdentifier()
+            if Obj["NSString"](iid.addr()).isEqualToString(
+                nsstring(ident).ptr()
+            ):
+                let target = Obj["NSToolbarItem"](item.addr()).target()
+                if name == "continue":
+                    _ = Obj["NSApplication"](app.addr()).sendAction_to_from(
+                        sel["roastContinue:"]().ptr(), target.ptr(), item.ptr()
+                    )
+                elif name == "over":
+                    _ = Obj["NSApplication"](app.addr()).sendAction_to_from(
+                        sel["roastStepOver:"]().ptr(), target.ptr(), item.ptr()
+                    )
+                elif name == "in":
+                    _ = Obj["NSApplication"](app.addr()).sendAction_to_from(
+                        sel["roastStepIn:"]().ptr(), target.ptr(), item.ptr()
+                    )
+                else:
+                    _ = Obj["NSApplication"](app.addr()).sendAction_to_from(
+                        sel["roastStepOut:"]().ptr(), target.ptr(), item.ptr()
+                    )
+                return True
+            i += 1
+        return False
+
+
 def _debug_changed():
     """The program stopped, resumed or exited. Follow it."""
     if dap.exited():
@@ -905,6 +984,21 @@ def _debug_changed():
     _show_variables()
     _show_eval()
     refresh_grid()
+
+    # Unattended stepping: one toolbar press per stop, from the list in
+    # ROAST_DEBUG_STEPS ("in,over,out,continue"). The press is logged before
+    # the next stop is, so the output reads press -> stop -> press -> stop
+    # and a check can follow the whole walk.
+    let steps = getenv("ROAST_DEBUG_STEPS")
+    if steps != "":
+        let idx = g_dbg_step_i()[]
+        let name = _nth_csv(steps, idx)
+        if name != "":
+            g_dbg_step_i()[] = idx + 1
+            if _press_debug_button(name):
+                print("roast: debug pressed", name, "(toolbar) at line", line)
+            else:
+                print("roast: debug press FAILED for", name)
 
 
 def _show_eval():

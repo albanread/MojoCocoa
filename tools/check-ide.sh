@@ -392,6 +392,39 @@ DBGPROJ
   else
     bad "debugger" "$(echo "$dbgout" | grep -m1 -E 'debug stopped|debugging|debug:' || echo 'never stopped')"
   fi
+
+  # The debugger's BUTTONS. ROAST_DEBUG_STEPS presses one toolbar item per
+  # stop -- looked up in the live bar by identifier, its action sent to its
+  # own target through NSApp, the dispatch a click takes -- so a button
+  # missing from the bar, wired to the wrong selector, or aimed at a dead
+  # target fails here, not under the pointer. The fixture's shape makes the
+  # three steps distinguishable: INTO lands inside middle(), OVER crosses a
+  # helper() call without entering, OUT climbs back to main. The line
+  # numbers are exact because the debug build is unoptimised; if this walk
+  # ever drifts, stepping has changed underneath the buttons.
+  mkdir -p "$TMP/stepproj"
+  cat > "$TMP/stepproj/main.mojo" <<'EOF'
+fn helper(x: Int) -> Int:
+    var h = x + 1
+    return h
+
+fn middle(x: Int) -> Int:
+    var a = helper(x)
+    var b = helper(a)
+    return b
+
+fn main():
+    var r = middle(4)
+    print(r)
+EOF
+  stepout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_DAP="$DAPBIN"             ROAST_PROJECT="$TMP/stepproj" ROAST_SESSION="$TMP/stepsession.json"             ROAST_DEBUG_LINE=11 ROAST_DEBUG_STEPS="in,over,out,continue"             ROAST_AUTOCLOSE_TICKS=1200 timeout 400 "$TMP/roast" 2>&1)
+  walk=$(echo "$stepout" | grep -oE 'debug (stopped at main\.mojo:[0-9]+|pressed [a-z]+)'          | sed -E 's/debug stopped at main\.mojo:/@/; s/debug pressed /!/' | tr '\n' ' ')
+  want="@11 !in @6 !over @7 !out @11 !continue "
+  if [ "$walk" = "$want" ]; then
+    ok "debug buttons" "in -> 6, over -> 7, out -> 11, continue -> exit; all via the toolbar"
+  else
+    bad "debug buttons" "walk was: ${walk:-empty}$(echo "$stepout" | grep -m1 'press FAILED' || true)"
+  fi
 fi
 
 # Go to definition, against the real server. The caret goes onto the CALL of
