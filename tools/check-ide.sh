@@ -436,6 +436,25 @@ else
   bad "screenshot" "$(echo "$shotout" | grep -m1 'agent >' || echo 'no file written')"
 fi
 
+  # The same walk, driven over APPLE EVENTS rather than by a direct call:
+  # each verb is posted to the app's own process, unpacked by the handler,
+  # and dispatched to the live toolbar item. That is the whole agent path
+  # against a real debug session -- what an external agent does, minus only
+  # the cross-process hop TCC gates. Asserted on the line walk, so a
+  # transport that replied without moving the debugger would fail.
+  agentwalk=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_DAP="$DAPBIN" \
+              ROAST_PROJECT="$TMP/stepproj" ROAST_SESSION="$TMP/awalk.json" \
+              ROAST_DEBUG_LINE=11 \
+              ROAST_AGENT_STEPS="step-in,step-over,step-out,continue" \
+              ROAST_AUTOCLOSE_TICKS=1200 timeout 400 "$TMP/roast" 2>&1)
+  awalk=$(echo "$agentwalk" | grep -oE 'debug (stopped at main\.mojo:[0-9]+|pressed [a-z]+)|agent step [a-z-]+' \
+          | sed -E 's/debug stopped at main\.mojo:/@/; s/agent step /!/' | tr '\n' ' ')
+  if [ "$awalk" = "@11 !step-in @6 !step-over @7 !step-out @11 !continue " ]; then
+    ok "agent debugger" "in -> 6, over -> 7, out -> 11, continue; over Apple Events"
+  else
+    bad "agent debugger" "walk was: ${awalk:-empty}"
+  fi
+
   # The debugger's BUTTONS. ROAST_DEBUG_STEPS presses one toolbar item per
   # stop -- looked up in the live bar by identifier, its action sent to its
   # own target through NSApp, the dispatch a click takes -- so a button

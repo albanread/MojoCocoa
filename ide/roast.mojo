@@ -27,6 +27,7 @@ from std.objc import (
 )
 from std.memory import OpaquePointer
 from std.os import getenv
+from std.time import sleep
 from std.ffi import external_call
 from std.objc import ns_to_string, SEL
 from gridview import (
@@ -700,6 +701,12 @@ comptime g_sig_seen = named_global["roast.sig.seen", Int]
 comptime g_ref_at = named_global["roast.ref.at", Int]
 # ROAST_DEBUG_STEPS: which button gets pressed at the next stop.
 comptime g_dbg_step_i = named_global["roast.dbg.step.i", Int]
+comptime g_shot_i = named_global["roast.dbg.shot.i", Int]
+# Bumped each time a fresh locals block is rendered; the agent walk keys on it
+# so it acts when the locals are ON SCREEN, not merely when the stop event
+# arrived -- variables come from the adapter a tick or two later.
+comptime g_vars_serial = named_global["roast.dbg.vars.serial", Int]
+comptime g_vars_acted = named_global["roast.dbg.vars.acted", Int]
 comptime g_ren_seen = named_global["roast.ren.seen", Int]
 
 
@@ -896,6 +903,21 @@ def _nth_csv(s: String, want: Int) -> String:
         i += 1
 
 
+def _trace_debug_action(name: String):
+    """A rule in the console for each transport action, so the trace reads
+    action -> where it landed -> locals, the way a person replays a session.
+    Only while stopped: a marker for a press that did nothing is noise."""
+    try:
+        if not dap.is_stopped():
+            return
+        build.append_output(
+            String("==== debug: ") + name + String(" ====\n")
+        )
+        console_sync()
+    except:
+        pass
+
+
 def _press_debug_button(name: String) -> Bool:
     """Press one of the debugger's toolbar buttons the way a click does.
 
@@ -961,6 +983,14 @@ def _debug_changed():
     if dap.exited():
         set_status(String("Program exited"))
         refresh_grid()
+        let shots_on_exit = getenv("ROAST_AGENT_SHOTS")
+        if shots_on_exit != "":
+            # The proof the trace SURVIVES the session: photographed after
+            # exit, not during a stop. Nothing clears the console here; only
+            # the next build or debug does.
+            print("roast: agent shot ->", agent_send_self(
+                String("screenshot ") + shots_on_exit
+                + String("/after-exit.png")))
         return
     if not dap.is_stopped():
         refresh_grid()
@@ -978,6 +1008,14 @@ def _debug_changed():
         elif file_exists(where):
             if load_file(where):
                 after_switch()
+    # The pane holding the session's trace opens if anything closed it --
+    # the window builds with it shut, and an early layout pass can stomp the
+    # divider after _start_debug opened it. A stopped debugger whose locals
+    # sit in a zero-height pane reads as a debugger doing nothing, which is
+    # exactly how it read.
+    if g_console_open()[] == 0:
+        show_console(True)
+
     let line = dap.stop_line()
     if line > 0 and len(g_buffer()[]) > 0:
         let rope = g_buffer()[][0]
@@ -1010,6 +1048,50 @@ def _debug_changed():
     # ROAST_DEBUG_STEPS ("in,over,out,continue"). The press is logged before
     # the next stop is, so the output reads press -> stop -> press -> stop
     # and a check can follow the whole walk.
+    # The same walk, driven over Apple Events instead of by a direct call:
+    # each verb is posted to this process and dispatched by the handler, so
+    # the whole agent path -- event, unpack, dispatch, toolbar item, target --
+    # is exercised against a live debug session.
+    # Gate the probe on the locals having RENDERED for this stop: act once
+    # per landing, photograph what a person would actually see, and only then
+    # press the next button.
+    let probing = getenv("ROAST_AGENT_SHOTS") != "" \
+        or getenv("ROAST_AGENT_STEPS") != ""
+    if probing and g_vars_serial()[] == g_vars_acted()[]:
+        return
+    g_vars_acted()[] = g_vars_serial()[]
+
+    let shots_at_stop = getenv("ROAST_AGENT_SHOTS")
+    if shots_at_stop != "":
+        # Its own counter: the step index is consumed by the walk, and two
+        # stops writing one filename loses every picture but the last.
+        g_shot_i()[] = g_shot_i()[] + 1
+        print("roast: agent shot ->", agent_send_self(
+            String("screenshot ") + shots_at_stop + String("/stop-")
+            + String(g_shot_i()[]) + String("-line") + String(line)
+            + String(".png")))
+
+    let agent_steps = getenv("ROAST_AGENT_STEPS")
+    if agent_steps != "":
+        let aidx = g_dbg_step_i()[]
+        let averb = _nth_csv(agent_steps, aidx)
+        if averb != "":
+            g_dbg_step_i()[] = aidx + 1
+            # A person's cadence, not a machine's: the earlier walk finished
+            # in well under a second and nobody could SEE the highlight move.
+            sleep(0.25)
+            # Ask the debugger where it is and what it holds -- over an
+            # event, before stepping. Line numbers alone would not show the
+            # transport carrying anything: these values come out of the live
+            # debuggee, through the adapter, through the handler, and back in
+            # a reply descriptor.
+            print("roast: agent ask stopped ->", agent_send_self(String("stopped")))
+            print("roast: agent ask vars ->", agent_send_self(String("variables")))
+            print(
+                "roast: agent step", averb, "at line", line,
+                "->", agent_send_self(averb),
+            )
+
     let steps = getenv("ROAST_DEBUG_STEPS")
     if steps != "":
         let idx = g_dbg_step_i()[]
@@ -1064,6 +1146,7 @@ def _show_variables():
     let n = dap.variable_count()
     if n == 0:
         return
+    g_vars_serial()[] = g_vars_serial()[] + 1
     var block = String("── locals · ") + _basename(dap.stop_file())
     block += String(":") + String(dap.stop_line()) + String(" ──\n")
     for i in range(n):
@@ -2121,6 +2204,7 @@ class RoastActions:
             pass
 
     def roastContinue_(self, sender: ObjCObject):
+        _trace_debug_action(String("continue"))
         try:
             if dap.is_stopped():
                 dap.resume()
@@ -2130,18 +2214,21 @@ class RoastActions:
             pass
 
     def roastStepOver_(self, sender: ObjCObject):
+        _trace_debug_action(String("step over"))
         try:
             dap.step_over()
         except:
             pass
 
     def roastStepIn_(self, sender: ObjCObject):
+        _trace_debug_action(String("step into"))
         try:
             dap.step_in()
         except:
             pass
 
     def roastStepOut_(self, sender: ObjCObject):
+        _trace_debug_action(String("step out"))
         try:
             dap.step_out()
         except:
@@ -2375,8 +2462,21 @@ class RoastActions:
                 _ = agent_self_test()
             let script = getenv("ROAST_AGENT")
             if script != "":
-                print("roast: agent <", script)
-                print("roast: agent >", agent_command(script))
+                # Several commands, ';'-separated, so a check can walk a
+                # sequence the way a person does: set a breakpoint, then
+                # press Debug.
+                var rest = script
+                while True:
+                    let cut = rest.find(";")
+                    var one = rest
+                    if cut >= 0:
+                        one = String(rest[byte=:cut])
+                    print("roast: agent <", one)
+                    print("roast: agent >", agent_command(String(one)))
+                    if cut < 0:
+                        break
+                    let tail2 = String(rest[byte = cut + 1 : rest.byte_length()])
+                    rest = tail2
 
         if g_ticks()[] == 3:
             let auto = getenv("ROAST_AUTOBUILD")
@@ -4297,8 +4397,11 @@ comptime g_agent_obj = named_global["roast.agent.obj", Int]
 comptime g_agent_count = named_global["roast.agent.count", Int]
 
 comptime AGENT_HELP = (
-    "commands: help · status · console · screenshot [path]"
-    "   (build/run/debug/step land in later sprints)"
+    "commands: help · status · console · show-console · hide-console"
+    " · screenshot [path]"
+    " · debug · break <line> · continue · step-over · step-in · step-out"
+    " · stopped · variables · eval <expr> · eval?"
+    "   (open/goto/save/build/run land in sprint 4)"
 )
 
 
@@ -4344,12 +4447,139 @@ def agent_command(text: String) -> String:
             pass
         return out
 
+    # ── the debugger ────────────────────────────────────────────────────
+    # The step verbs go through the REAL toolbar items -- looked up in the
+    # live bar, action sent to the item's own target -- so an agent run is
+    # also a UI test. A button missing from the bar, wired to the wrong
+    # selector, or aimed at a dead target fails here exactly as it would
+    # under a pointer.
+    if cmd == "debug":
+        try:
+            _start_debug()
+            return String("debug: requested")
+        except:
+            return String("error: could not start debugging")
+
+    if cmd == "continue" or cmd == "step-over" or cmd == "step-in" \
+            or cmd == "step-out":
+        # The presser names buttons, not commands. Spelled out rather than
+        # sliced: it is four cases and reads as the mapping it is.
+        var which = String("continue")
+        if cmd == "step-over":
+            which = String("over")
+        elif cmd == "step-in":
+            which = String("in")
+        elif cmd == "step-out":
+            which = String("out")
+        try:
+            if not dap.is_stopped():
+                return String("error: not stopped; nothing to ") + cmd
+            if _press_debug_button(which):
+                return cmd + String(": pressed")
+            return String("error: no toolbar item for ") + cmd
+        except:
+            return String("error: ") + cmd + String(" raised")
+
+    if cmd == "stopped":
+        try:
+            if not dap.is_running():
+                return String("no")
+            if not dap.is_stopped():
+                return String("running")
+            return (
+                String("yes ")
+                + _basename(dap.stop_file())
+                + String(":")
+                + String(dap.stop_line())
+                + String(" (")
+                + dap.stop_reason()
+                + String(")")
+            )
+        except:
+            return String("error: could not read debugger state")
+
+    if cmd == "variables":
+        try:
+            if not dap.is_stopped():
+                return String("error: not stopped")
+            let n = dap.variable_count()
+            if n == 0:
+                return String("(no locals)")
+            var out = String()
+            for i in range(n):
+                if i > 0:
+                    out += String(" · ")
+                out += dap.variable_name(i)
+                let t = _pretty_type(dap.variable_type(i))
+                if t != "":
+                    out += String(": ") + t
+                out += String(" = ") + dap.variable_value(i)
+            return out
+        except:
+            return String("error: could not read locals")
+
+    if cmd.startswith("break"):
+        let arg = String(cmd[byte=5 : cmd.byte_length()])
+        let where = String(arg.strip())
+        if where == "":
+            return String("usage: break <line>")
+        try:
+            let entry = build.entry_point(project_root(), String())
+            if entry == "":
+                return String("error: no entry point in this project")
+            let on = dap.toggle_breakpoint(entry, Int(where))
+            return (
+                (String("set") if on else String("cleared"))
+                + String(" ")
+                + _basename(entry)
+                + String(":")
+                + where
+            )
+        except:
+            return String("error: could not toggle a breakpoint at ") + where
+
+    if cmd.startswith("eval"):
+        let expr_raw = String(cmd[byte=4 : cmd.byte_length()])
+        let expr = String(expr_raw.strip())
+        if expr == "":
+            return String("usage: eval <expression>")
+        try:
+            if not dap.is_stopped():
+                return String("error: not stopped; eval needs a frame")
+            if not dap.evaluate(expr):
+                return String("error: evaluate refused")
+            # The answer arrives on a later tick, through the same serial the
+            # UI watches. An agent reads it back rather than blocking a
+            # handler on a runloop it is itself running.
+            return String("eval: requested; read it with `eval?`")
+        except:
+            return String("error: eval raised")
+
+    if cmd == "eval?":
+        try:
+            if dap.eval_expr() == "":
+                return String("(nothing evaluated yet)")
+            var out = dap.eval_expr() + String(" = ") + dap.eval_result()
+            if not dap.eval_ok():
+                out = dap.eval_expr() + String(" ! ") + dap.eval_result()
+            return out
+        except:
+            return String("error: could not read the last evaluation")
+
     if cmd.startswith("screenshot"):
         let tail = String(cmd[byte=10 : cmd.byte_length()])
         var where = String(tail.strip())
         if where == "":
             where = String("/tmp/roast.png")
         return screenshot(where)
+
+    if cmd == "show-console":
+        show_console(True)
+        return String("console shown")
+
+    if cmd == "hide-console":
+        show_console(False)
+        return String("console hidden")
 
     if cmd == "console":
         # Read back from the text view, not from the buffer it was built
@@ -4492,6 +4722,51 @@ def register_agent_events():
             print("roast: agent events registered (Rost/cmnd)")
     except:
         print("roast: agent events FAILED to register")
+
+
+def agent_send_self(command: String) -> String:
+    """Post `command` to this process as a Rost/cmnd event and return the
+    reply. The transport an external agent uses, minus only the cross-process
+    hop that TCC gates -- registration, unpack, dispatch and reply are the
+    same code either way."""
+    try:
+        with autoreleasepool():
+            let me = Cls[
+                "NSAppleEventDescriptor"
+            ]().descriptorWithProcessIdentifier(
+                Int32(external_call["getpid", Int32]())
+            )
+            let ev = Cls[
+                "NSAppleEventDescriptor"
+            ]().appleEventWithEventClass_eventID_targetDescriptor_returnID_transactionID(
+                UInt32(AE_CLASS), UInt32(AE_CMD), me.ptr(), Int16(-1), Int32(0)
+            )
+            let arg = Cls["NSAppleEventDescriptor"]().descriptorWithString(
+                nsstring(command).ptr()
+            )
+            Obj["NSAppleEventDescriptor"](
+                ev.addr()
+            ).setParamDescriptor_forKeyword(arg.ptr(), UInt32(AE_DIRECT))
+            var err = ObjCObject(0)
+            let reply = Obj["NSAppleEventDescriptor"](
+                ev.addr()
+            ).sendEventWithOptions_timeout_error(
+                UInt64(0x00000003),
+                Float64(5.0),
+                Pointer(to=err).unsafe_bitcast[P]()[],
+            )
+            if reply.addr() == 0:
+                return String("error: no reply")
+            let back = Obj["NSAppleEventDescriptor"](
+                reply.addr()
+            ).paramDescriptorForKeyword(UInt32(AE_DIRECT))
+            if back.addr() == 0:
+                return String("error: reply had no parameter")
+            return ns_to_string(
+                Obj["NSAppleEventDescriptor"](back.addr()).stringValue()
+            )
+    except:
+        return String("error: send raised")
 
 
 def agent_self_test() -> Bool:
