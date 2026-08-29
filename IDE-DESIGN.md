@@ -436,13 +436,24 @@ already exists and is the one piece of this that needs no design.
 
 ### The shape
 
-    /Library/Developer/CocoaMojo/<version>/     the toolchain, versioned
-      bin/        cocoamojo, mojo-lsp-server, lldb, lldb-dap
-      lib/        the dylibs, and mojo/{stdlib,max,kernels}
-      share/      examples, ide-source, cocoa.sqlite
-      Python/     the relocatable CPython
-    /Library/Developer/CocoaMojo/current   ->   a symlink, as Xcode and
-                                                the Swift toolchains do it
+    /Applications/Roast/                        the Roast folder
+      Roast.app                                 thin: the editor only
+      CocoaMojo/<version>/                      the toolchain, versioned
+        bin/      cocoamojo, mojo-lsp-server, lldb, lldb-dap
+        lib/      the dylibs, and mojo/{stdlib,max,kernels}
+        share/    examples, ide-source, cocoa.sqlite
+        Python/   the relocatable CPython
+      CocoaMojo/current  ->  <version>          one symlink says which
+
+`/Applications/Roast`, not `/Library/Developer`: an admin user can write
+it without a password prompt, it is where a person already looks for what
+they installed, and the versioned layout with a `current` symlink lives
+INSIDE it -- the Xcode convention's benefits without its privileges. The
+lookup order everywhere becomes: `COCOAMOJO_ROOT` (a harness pointing
+somewhere deliberate), then `/Applications/Roast/CocoaMojo/current`, then
+beside-the-binary (a development tree). Three generations of path-guessing
+become one list, checked with `_is_toolchain` -- a root counts only if
+`bin/cocoamojo` is really there.
 
     org.mojococoa.lsp.<version>       launchd-managed, LSP over XPC or a pipe
     org.mojococoa.compiler.<version>  the new interface: warm context, build
@@ -472,23 +483,76 @@ together, and a person may now edit their own copy of the standard library
 while another client compiles against the pristine one. A shared service
 has to arbitrate what a bundle made impossible.
 
-### What moves first
+### The installer
 
-**The installer**, because it is the decision above and everything else
-waits behind it. Concretely: `make-dist` already assembles exactly this
-payload, so the work is a versioned destination, a `current` symlink, a
-pkg or a script that puts it there, and one lookup function in Roast that
-replaces three generations of path-guessing. `make-app.sh` then builds a
-small application instead of a large one, and `migrate_user_space` copies
-from the installation rather than from `Contents/Resources`.
+The DMG stops being a drag target and becomes an installer. It carries two
+things: **Roast Installer.app** and the payload (the versioned toolchain
+tree plus the thin Roast.app). The installer is written in cocoa-mojo --
+the toolchain installing itself is the toolchain's own best demo -- and
+carries the three runtime dylibs a cocoa-mojo binary needs in its own
+Frameworks, so it runs before anything is installed.
 
-Then the **LSP as a launchd service**: already a protocol on a pipe,
-already where the crashes were, and it proves the lifecycle benefit
-without touching the compile path.
+One window, three buttons, and for the sake of humanity all three are
+there from the first release:
 
-The **compiler service** last. It is the biggest win -- a warm context
-instead of a cold start on every build -- and the only piece needing an
-interface designed from nothing.
+    Install            copy the payload to /Applications/Roast, point
+                       `current` at it, register Roast.app. Re-running
+                       with a newer payload is Update: the new version
+                       lands beside the old and `current` moves.
+
+    Reset Installation re-copy the CURRENT version's payload over itself.
+                       Repairs a damaged or experimented-on toolchain.
+                       Never touches Application Support: the user's
+                       edited stdlib, examples, IDE source, projects and
+                       Python environments all survive, exactly as
+                       File > Reset in Roast already behaves.
+
+    Uninstall All      remove /Applications/Roast entirely -- every
+                       version, the app, the symlink -- after a confirm
+                       that states precisely what goes. One checkbox,
+                       off by default: "Also remove my user data
+                       (edited stdlib, examples, Python environments)",
+                       which removes Application Support/Roast too.
+                       Leaving a machine the way you found it is a
+                       feature, not an afterthought.
+
+Every button also exists as a flag -- `--install`, `--reset`,
+`--uninstall [--user-data]`, `--root <dir>` for tests -- because this
+project tests what a person does, and a person cannot click unattended.
+
+### What moves, in order
+
+1. **The layout and the lookup.** make-dist emits (or an assembly step
+   arranges) the versioned tree; Roast and the cocoamojo wrapper resolve
+   `/Applications/Roast/CocoaMojo/current`, env override first, checked
+   not trusted. *Acceptance:* a hand-copied installation; a bare `roast`
+   launched with no environment finds it; check-ide green against it.
+2. **The installer app**, with Install working and the window honest
+   about progress. *Acceptance:* driven by its own CLI flags against a
+   scratch `--root`, the tree and app appear, `current` points right, and
+   the installed Roast passes the agent smoke (`status`, `screenshot`).
+3. **Reset and Uninstall All.** *Acceptance:* sabotage the installed
+   stdlib, Reset heals it (a build that failed now passes) while a marker
+   file in Application Support survives; Uninstall leaves nothing under
+   the root, and with the checkbox also nothing under Application
+   Support; without it, user data intact.
+4. **The thin app.** make-app stops folding the toolchain into
+   Resources; migrate_user_space copies from the installation instead.
+   *Acceptance:* Roast.app under 50 MB, full check-ide green with the
+   thin app + installed toolchain, first launch still populates user
+   space.
+5. **The DMG.** make-dmg assembles installer + payload, replacing
+   make-app's drag image. *Acceptance:* mount, install from it on a
+   clean user-space, everything above still green.
+6. **Versions coexist.** Install a second version beside the first,
+   `current` moves, the old stays runnable by explicit path; Uninstall
+   can name one version. *Acceptance:* two versions on disk, a build
+   through `current` and a build pinned to the old both pass.
+
+Then the **LSP as a launchd service** -- already a protocol on a pipe,
+already where the crashes were -- and the **compiler service** last: the
+biggest win, a warm context instead of a cold start, and the only piece
+needing an interface designed from nothing.
 
 ## What the stdlib must grow
 
