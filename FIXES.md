@@ -134,7 +134,13 @@ commit that fixes it when one does.
     relocatable CPython, a per-project venv system and a Python menu, all
     invisible until someone has a use in hand. Upstream sources exist to
     adapt: `mojo/examples/python-interop/` (hello_mojo, person_module,
-    mandelbrot_mojo). Ship one or two as example projects -- a minimal
+    mandelbrot_mojo) -- and best of all `mojo/examples/life/lifev1.mojo`
+    and `lifev2.mojo`: Conway rendered through PYGAME via
+    `Python.import_module("pygame")`. Life-via-pygame beside the native
+    `life` the app already ships makes the comparison the demo -- same
+    program, Python windowing vs Cocoa -- and it exercises the whole venv
+    flow, since pygame must pip-install into the project environment
+    first. Ship it, plus one or two of the smaller ones, -- a minimal
     "call into Python, print what came back", and one that pip-installs
     a small package into the project venv and uses it, since the venv
     flow is the part nothing else demonstrates. Must run via cmd-R with
