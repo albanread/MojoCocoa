@@ -42,3 +42,13 @@ commit that fixes it when one does.
    roots the build gets (and `ROAST_IMPORTS` should take a list). Check
    whether the server takes multiple roots in its settings; the wrapper's
    INC array is the single source of truth to mirror.
+
+4. **Deprecated pointer arithmetic in a shipped example.**
+   `fernwind/main.mojo:292` warns:
+
+       warning: '__add__' is deprecated, use 'unsafe_offset' instead
+           _ = Atomic.fetch_add(bacc + pat, cb)
+
+   Same rule as entry 2 -- shipped examples build silently -- and same
+   sweep should catch both: build every example and fix every warning,
+   not just the two that testing happened to surface.
