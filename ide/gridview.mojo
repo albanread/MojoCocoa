@@ -58,6 +58,7 @@ from std.objc import (
     NSRange,
 )
 from std.memory import OpaquePointer
+from std.os import getenv
 from std.ffi import external_call, c_char
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
@@ -452,6 +453,17 @@ class RoastGridView(NSView, NSTextInputClient):
                                  + vis.origin.x, lh)
                         )
 
+                # Whether line `first` begins inside a docstring: replay
+                # the lines above it through the state scanner once per
+                # draw. A byte walk over the prefix, and honest: the same
+                # rule the per-line colouring itself uses.
+                var in_triple = False
+                var pre = 0
+                while pre < first:
+                    in_triple = triple_state_after(
+                        buf[][0].line(pre), in_triple
+                    )
+                    pre += 1
                 var i = first
                 var widest = 0
                 while i < last:
@@ -503,8 +515,14 @@ class RoastGridView(NSView, NSTextInputClient):
                     # The runs come straight from the lexer; each is one slice
                     # of the line, not a character-by-character rebuild.
                     let text = buf[][0].line(i)
+                    # Colour with the state the line STARTS in; advance the
+                    # state after. Not a `let` snapshot of the flag: in this
+                    # dialect `let` binds by reference (see popup_accept
+                    # above, which learned the same lesson), so a "copy"
+                    # taken before the update would read the updated value
+                    # and hand every docstring opener its own closing state.
                     if text.byte_length() > 0:
-                        let runs = highlight_runs(text)
+                        let runs = highlight_runs(text, in_triple)
                         for r in runs:
                             Obj["NSString"](nsstring(
                                     String(
@@ -523,6 +541,9 @@ class RoastGridView(NSView, NSTextInputClient):
                             let lastr = runs[len(runs) - 1]
                             if lastr.col + lastr.cols > widest:
                                 widest = lastr.col + lastr.cols
+                    # Advance the docstring state AFTER colouring -- and for
+                    # every line, including empty ones inside a docstring.
+                    in_triple = triple_state_after(text, in_triple)
                     i += 1
 
                 # A longer line than any seen before means the document is
@@ -1414,7 +1435,64 @@ def _char_width(b: Int) -> Int:
     return 1
 
 
-def highlight_runs(line: String) -> List[Run]:
+def triple_state_after(line: String, start_inside: Bool) -> Bool:
+    """Whether the NEXT line starts inside a triple-quoted string.
+
+    The lexer is per-line by design; this is the one bit of state a
+    docstring needs carried across lines. Both quote styles count, and a
+    backslash escapes inside a string the way the lexer already honours.
+    """
+    let bytes = line.as_bytes()
+    let n = len(bytes)
+    var inside = start_inside
+    var quote = 0x22  # the delimiter of the string we are inside
+    var i = 0
+    while i < n:
+        let b = Int(bytes[i])
+        if inside:
+            if b == 0x5C:
+                i += 2
+                continue
+            if (
+                b == quote
+                and i + 2 < n
+                and Int(bytes[i + 1]) == quote
+                and Int(bytes[i + 2]) == quote
+            ):
+                inside = False
+                i += 3
+                continue
+            i += 1
+            continue
+        if (b == 0x22 or b == 0x27) and i + 2 < n:
+            if Int(bytes[i + 1]) == b and Int(bytes[i + 2]) == b:
+                inside = True
+                quote = b
+                i += 3
+                continue
+        if b == 0x22 or b == 0x27:
+            # An ordinary string: skip it whole so its contents cannot fake
+            # a triple delimiter.
+            let q = b
+            var esc = False
+            i += 1
+            while i < n:
+                let c = Int(bytes[i])
+                i += 1
+                if esc:
+                    esc = False
+                elif c == 0x5C:
+                    esc = True
+                elif c == q:
+                    break
+            continue
+        if b == 0x23:
+            return inside  # comment: nothing after it counts
+        i += 1
+    return inside
+
+
+def highlight_runs(line: String, in_triple: Bool = False) -> List[Run]:
     """The line as same-coloured runs.
 
     A lexer rather than a parser, and deliberately: this is on the draw path
@@ -1430,6 +1508,51 @@ def highlight_runs(line: String) -> List[Run]:
     let n = len(bytes)
     var i = 0
     var col = 0
+    # A line that STARTS inside a docstring is string-coloured up to the
+    # closing delimiter, or wholly, and the lexer resumes after it. This is
+    # the fix for continuation lines rendering as code: the lexer was
+    # per-line and nothing told it the line began mid-string.
+    if in_triple:
+        var j = 0
+        var cols = 0
+        var closed = False
+        while j < n:
+            let c = Int(bytes[j])
+            if c == 0x5C:
+                var w = 1
+                if j + 1 < n:
+                    w = 2
+                var k = j
+                while k < j + w:
+                    if (Int(bytes[k]) & 0xC0) != 0x80:
+                        cols += 1
+                    k += 1
+                j += w
+                continue
+            if (
+                c == 0x22
+                and j + 2 < n
+                and Int(bytes[j + 1]) == 0x22
+                and Int(bytes[j + 2]) == 0x22
+            ):
+                cols += 3
+                j += 3
+                closed = True
+                break
+            if (Int(bytes[j]) & 0xC0) != 0x80:
+                cols += 1
+            j += 1
+        if not closed and j >= n and n >= 3:
+            # The delimiter may sit at the very end of the line.
+            if (
+                Int(bytes[n - 3]) == 0x22
+                and Int(bytes[n - 2]) == 0x22
+                and Int(bytes[n - 1]) == 0x22
+            ):
+                closed = True
+        _push_run(runs, col, 0, j, cols, KIND_STRING)
+        col += cols
+        i = j
     while i < n:
         let b = Int(bytes[i])
         if b == 0x23:  # '#' -- comment to end of line, nothing else after
@@ -1441,6 +1564,43 @@ def highlight_runs(line: String) -> List[Run]:
                 j += 1
             _push_run(runs, col, i, n - i, cols, KIND_COMMENT)
             break
+        if (
+            (b == 0x22 or b == 0x27)
+            and i + 2 < n
+            and Int(bytes[i + 1]) == b
+            and Int(bytes[i + 2]) == b
+        ):
+            # A triple-quoted string opening here. Colour to its close on
+            # this line, or to the end -- the carried state (threaded by the
+            # draw loop through triple_state_after) covers the lines after.
+            let q3 = b
+            var j = i + 3
+            var cols = 3
+            while j < n:
+                let c = Int(bytes[j])
+                if c == 0x5C and j + 1 < n:
+                    if (Int(bytes[j]) & 0xC0) != 0x80:
+                        cols += 1
+                    if (Int(bytes[j + 1]) & 0xC0) != 0x80:
+                        cols += 1
+                    j += 2
+                    continue
+                if (
+                    c == q3
+                    and j + 2 < n
+                    and Int(bytes[j + 1]) == q3
+                    and Int(bytes[j + 2]) == q3
+                ):
+                    cols += 3
+                    j += 3
+                    break
+                if (c & 0xC0) != 0x80:
+                    cols += 1
+                j += 1
+            _push_run(runs, col, i, j - i, cols, KIND_STRING)
+            col += cols
+            i = j
+            continue
         if b == 0x22 or b == 0x27:  # a string, escapes included
             let quote = b
             var j = i + 1

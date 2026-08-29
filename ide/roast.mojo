@@ -2484,6 +2484,21 @@ class RoastActions:
         # in, once the window is really up, with nobody at the keyboard.
         # ROAST_AGENT runs one command from inside a real window, so CI can
         # grep a reply that came through the same dispatcher an event does.
+        # Deferred agent commands come due.
+        try:
+            var di = 0
+            while di < len(g_agent_at()[]):
+                if g_agent_at()[][di] <= g_ticks()[]:
+                    var due = g_agent_later()[][di]
+                    _ = g_agent_at()[].pop(di)
+                    _ = g_agent_later()[].pop(di)
+                    print("roast: agent (deferred) <", due)
+                    print("roast: agent (deferred) >", agent_command(due))
+                else:
+                    di += 1
+        except:
+            pass
+
         if g_ticks()[] == 4:
             if getenv("ROAST_AGENT_SELFTEST") != "":
                 _ = agent_self_test()
@@ -3721,13 +3736,26 @@ def lsp_server_path() -> String:
 
 
 def lsp_import_path() -> String:
+    """The server's import roots -- ALL of them, comma-joined.
+
+    The compiler gets three -I flags from bin/cocoamojo (stdlib, max,
+    kernels); the server used to get one, and the difference was every
+    false "unable to locate module 'max'" squiggle over an import the
+    build accepted. Configuration.cpp splits this value on commas, so the
+    wrapper's INC list and this string must name the same three roots.
+    ROAST_IMPORTS overrides with its own comma list.
+    """
     let explicit = getenv("ROAST_IMPORTS")
     if explicit != "":
         return explicit^
     let here = toolchain_root()
     if here == "":
         return String()
-    return here + String("/lib/mojo/stdlib")
+    return (
+        here + String("/lib/mojo/stdlib,")
+        + here + String("/lib/mojo/max,")
+        + here + String("/lib/mojo/kernels")
+    )
 
 
 def lsp_root() -> String:
@@ -3759,11 +3787,21 @@ def start_lsp() -> Bool:
     if lsp.is_running() and len(g_lsp_root()[]) > 0 and g_lsp_root()[][0] == root:
         return True  # already rooted here; a restart would buy nothing
     lsp.stop()
+    # The server elaborates `class` declarations, and elaboration reads the
+    # Cocoa database. bin/cocoamojo exports this before every build; a
+    # Finder-launched app inherits no shell environment at all, so without
+    # this line the server marks the fork's own `class` keyword as an error
+    # while cmd-B builds it fine.
+    var env = python_env.variables(root, toolchain_root())
+    let kb = toolchain_root() + String("/share/cocoa.sqlite")
+    if getenv("MODULAR_MOJO_MAX_COCOAKB_PATH") == "" and file_exists(kb):
+        var kb2 = kb
+        env.set(String("MODULAR_MOJO_MAX_COCOAKB_PATH"), JSON(kb2^))
     if not lsp.start_with_environment(
         server,
         String("file://") + root,
         lsp_import_path(),
-        python_env.variables(root, toolchain_root()),
+        env^,
     ):
         return False
     lsp.set_shown_uri(document.current_uri())
@@ -4429,6 +4467,10 @@ comptime AE_DIRECT = 0x2D2D2D2D   # '----', keyDirectObject
 
 comptime g_agent_obj = named_global["roast.agent.obj", Int]
 comptime g_agent_count = named_global["roast.agent.count", Int]
+# `after N cmd`: commands scheduled for a later tick. Two parallel lists,
+# drained by the tick -- the idiom every other deferred thing here uses.
+comptime g_agent_at = named_global["roast.agent.at", List[Int]]
+comptime g_agent_later = named_global["roast.agent.later", List[String]]
 
 comptime AGENT_HELP = (
     "commands: help · status · console · show-console · hide-console"
@@ -4900,6 +4942,24 @@ def agent_command(text: String) -> String:
         let val0 = String(spec2[byte = sp + 1 : spec2.byte_length()])
         session.set_setting(String(key), String(val0.strip()))
         return String("set ") + key
+
+    if cmd.startswith("after "):
+        # after 120 screenshot /tmp/x.png -- run a command that many ticks
+        # from now. What makes asynchronous effects testable: invoke, wait,
+        # look. In a Run Script file it reads as a pause.
+        let a0 = String(cmd[byte=6 : cmd.byte_length()])
+        let spec3 = String(a0.strip())
+        let sp3 = spec3.find(" ")
+        if sp3 < 0:
+            return String("usage: after <ticks> <command>")
+        try:
+            let dt = Int(String(spec3[byte=:sp3]))
+            let later = String(spec3[byte = sp3 + 1 : spec3.byte_length()])
+            g_agent_at()[].append(g_ticks()[] + dt)
+            g_agent_later()[].append(later)
+            return String("scheduled in ") + String(dt) + String(" tick(s)")
+        except:
+            return String("usage: after <ticks> <command>")
 
     if cmd.startswith("run-script "):
         let rs0 = String(cmd[byte=11 : cmd.byte_length()])
