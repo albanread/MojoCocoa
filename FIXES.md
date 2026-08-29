@@ -98,3 +98,15 @@ commit that fixes it when one does.
    the new line, and add one level when the previous line ends with `:`
    -- the two rules that cover nearly all Mojo typing. Shift-Return can
    keep the bare newline for when the copied indent is unwanted.
+
+9. **No autocomplete in the app.** The menu advertises Complete on
+   control-space (mask 0x40000 = Control; if it renders like shift-space
+   in the menu, that rendering is its own small bug to check). Three
+   suspects, in order: (a) the same starved server as entries 3/7 -- a
+   Finder-launched app gives the LSP no KB and one import root, so
+   completion queries return nothing and an empty popup never shows;
+   (b) macOS itself owns control-space ("select previous input source")
+   when more than one input source is enabled, and swallows it before the
+   app sees it; (c) the popup path. Fix 3/7 first, then retest before
+   touching completion code; if control-space stays dead on machines with
+   two input sources, move or duplicate the binding.
