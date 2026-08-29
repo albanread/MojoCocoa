@@ -161,34 +161,13 @@ def runtime_home(toolchain_root: String) -> String:
         resources
         + String("/Python/Python.framework/Versions/Current")
     )
-    if _exists(bundled + String("/bin/python3")):
-        return bundled^
-    # The bundled interpreter is OPTIONAL at install time, so its absence is
-    # a normal state rather than a broken one. Look for a framework Python
-    # already on the machine before giving up.
-    return _discovered_home()
-
-
-def _discovered_home() -> String:
-    """A framework Python already installed on this Mac, or empty.
-
-    Only a FRAMEWORK build qualifies. Roast embeds the interpreter in its
-    own process, which needs the `Python` dylib, not just a `bin/python3`
-    -- and `/usr/bin/python3` is a Command Line Tools shim with no
-    framework to load. Half a Python is worse than none: it would pass
-    `runtime_available` and then fail at the point of use.
-    """
-    for base in [
-        # Homebrew on Apple silicon, then Intel, then python.org's installer.
-        String("/opt/homebrew/Frameworks/Python.framework/Versions/Current"),
-        String("/usr/local/Frameworks/Python.framework/Versions/Current"),
-        String("/Library/Frameworks/Python.framework/Versions/Current"),
-    ]:
-        if _exists(base + String("/bin/python3")) and _exists(
-            base + String("/Python")
-        ):
-            return base
-    return String()
+    # The bundled interpreter, or nothing. Roast does NOT go looking for a
+    # Python on the machine: the interop links against a specific libpython
+    # ABI, and a version that merely happens to be installed is how you get
+    # a crash at the first `import` rather than an honest refusal here.
+    # Installing it is the person's choice, and declining is answered by
+    # turning the feature off -- not by substituting something else.
+    return bundled^ if _exists(bundled + String("/bin/python3")) else String()
 
 
 def runtime_origin(toolchain_root: String) -> String:
@@ -204,7 +183,7 @@ def runtime_origin(toolchain_root: String) -> String:
         return String("ROAST_PYTHON_HOME")
     if session.setting(String("python.home")) == home:
         return String("chosen in settings")
-    return String("found on this Mac")
+    return String("unknown")
 
 
 def runtime_python(toolchain_root: String) -> String:

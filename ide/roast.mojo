@@ -528,7 +528,10 @@ def _start_python_environment(after: Int = 0, spec: String = String()) -> Bool:
     let root = toolchain_root()
     let python = python_env.runtime_python(root)
     if python == "" or python_env.runtime_library(root) == "":
-        set_status(String("No bundled Python runtime"))
+        set_status(
+            String("Python was not installed — run the installer")
+            + String(" again and tick Include Python")
+        )
         return False
     let destination = python_env.environment_dir(project, root)
     if destination == "":
@@ -1945,8 +1948,8 @@ class RoastActions:
             let home = python_env.runtime_home(root)
             if home == "":
                 set_status(
-                    String("No Python runtime found — install one, or set")
-                    + String(" python.home in settings")
+                    String("Python was not installed — run the installer")
+                    + String(" again and tick Include Python")
                 )
                 return
             let which = String(" [") + origin + String(": ") + home + String("]")
