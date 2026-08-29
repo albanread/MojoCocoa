@@ -15,7 +15,7 @@
 #     "project": "/path/to/folder",
 #     "tabs": ["/path/a.mojo", "/path/b.mojo"], "current": 1,
 #     "frame": [x, y, w, h], "font": 13,
-#     "settings": { "python.library": "..." } }
+#     "settings": { "python.home": "...", "python.library": "..." } }
 #
 # Everything is optional and everything is checked on the way in. A session
 # file is not a contract with a program that wrote it -- it is a file on a

@@ -456,6 +456,24 @@ def start(
     init_command: String = String(""),
     pre_run_command: String = String(""),
 ) -> Bool:
+    return start_with_environment(
+        adapter,
+        program,
+        cwd,
+        init_command,
+        pre_run_command,
+        JSON.object(),
+    )
+
+
+def start_with_environment(
+    adapter: String,
+    program: String,
+    cwd: String,
+    init_command: String,
+    pre_run_command: String,
+    environment: JSON,
+) -> Bool:
     """Spawn the adapter and ask it to launch the program.
 
     `stopOnEntry` is false: someone who pressed Debug with no breakpoints
@@ -516,6 +534,10 @@ def start(
     launch_args.set(String("program"), JSON(program))
     launch_args.set(String("cwd"), JSON(cwd))
     launch_args.set(String("stopOnEntry"), JSON(False))
+    if environment.count() > 0:
+        # lldb-dap applies this dictionary to the inferior, not the adapter.
+        # That is the process which embeds CPython through std.python.
+        launch_args.set(String("env"), parse(environment.serialize()))
     # `initCommands` run before the target exists (where `plugin load`
     # belongs -- the type system must be registered before the first module
     # is parsed); `preRunCommands` run with a target, before launch (where a
@@ -731,7 +753,15 @@ def _event(name: String, body: JSON):
     # `module` is excluded by hand: it is most of the traffic and none of the
     # information, and a trace that scrolls it away is not a trace.
     if g_trace()[] != 0 and name != "module":
-        print("  dap event:", name)
+        if name == "output":
+            print(
+                "  dap event: output",
+                repr(body.get("output")[].as_string()),
+            )
+        elif name == "breakpoint" or name == "process":
+            print("  dap event:", name, body.serialize())
+        else:
+            print("  dap event:", name)
     if name == "initialized":
         # Not the initialize RESPONSE: this event is the adapter saying it is
         # ready to be configured, and nothing may be configured before it.
@@ -740,6 +770,13 @@ def _event(name: String, body: JSON):
         var empty = JSON.object()
         _ = request(String("configurationDone"), empty^)
         g_phase()[] = 3
+        return
+    if name == "breakpoint":
+        # lldb-dap can answer setBreakpoints while the location is still
+        # pending, then announce the resolved location in one or more
+        # standard DAP breakpoint events. Ignoring those leaves the gutter
+        # permanently "unverified" even when the program stops on it.
+        _take_breakpoint_event(body)
         return
     if name == "stopped":
         g_stop_thread()[] = body.get("threadId")[].as_int()
@@ -798,6 +835,36 @@ def _take_breakpoints(body: JSON):
             nth += 1
         i += 1
     g_serial()[] += 1
+
+
+def _take_breakpoint_event(body: JSON):
+    """Apply a DAP breakpoint changed/new event to the matching local row."""
+    let b = body.get("breakpoint")[]
+    let path = b.get("source")[].get("path")[].as_string()
+    let line = b.get("line")[].as_int()
+    var i = 0
+    while i < breakpoint_count():
+        let ours = g_bp_file()[][i]
+        let same_file = (
+            (path == "" and breakpoint_count() == 1)
+            or path == ours
+            or path.endswith(String("/") + ours)
+            or ours.endswith(String("/") + path)
+        )
+        let same_line = (
+            (line == 0 and breakpoint_count() == 1)
+            or line == g_bp_line()[][i]
+            or line == g_bp_bound()[][i]
+        )
+        if same_file and same_line:
+            if line > 0:
+                g_bp_bound()[][i] = line
+            g_bp_verified()[][i] = (
+                1 if b.get("verified")[].as_bool() else 0
+            )
+            g_serial()[] += 1
+            return
+        i += 1
 
 
 def _take_stack(body: JSON):

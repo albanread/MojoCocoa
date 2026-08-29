@@ -66,6 +66,23 @@ else
   bad "session" "$(grep -m1 'error' "$TMP/sess_build.log" || echo 'build failed')"
 fi
 
+# Project Python paths and pip argv are deterministic policy, separate from
+# the expensive integration check below. The override proves no test touches
+# the user's real Application Support environment.
+if "$CM" --build ide/python_env_test.mojo -o "$TMP/python_env_test" \
+     >"$TMP/python_env_build.log" 2>&1; then
+  pyenv_out=$(ROAST_PYTHON_ENV_ROOT="$TMP/python-envs" \
+              ROAST_PYTHON_VERSION="3.14" \
+              timeout 120 "$TMP/python_env_test" 2>&1)
+  if echo "$pyenv_out" | grep -q '^python environment OK'; then
+    ok "python env policy" "$(echo "$pyenv_out" | grep -c '  OK ') checks — Application Support keying, pip argv"
+  else
+    bad "python env policy" "$(echo "$pyenv_out" | grep -m1 FAIL || echo 'tests failed')"
+  fi
+else
+  bad "python env policy" "$(grep -m1 'error' "$TMP/python_env_build.log" || echo 'build failed')"
+fi
+
 # The debug adapter, against a real lldb-dap and a real program: compile a
 # tiny thing WITH debug info, set a breakpoint on it, and require the stop to
 # land where the adapter said it bound. Skipped rather than failed when Xcode
@@ -268,7 +285,7 @@ else
 fi
 check "split view"  "split panes: 2"        "sidebar + editor area"
 check "editor panes" "editor panes: 2"      "editor above the console"
-check "menu bar"    "menu bar items: 9"     "app, File, Edit, Navigate, Debug, View, Build, Examples, Window"
+check "menu bar"    "menu bar items: 10"    "app, File, Edit, Navigate, Debug, View, Build, Python, Examples, Window"
 # Installing a toolbar changes the content view's height, so a layout computed
 # from the height read before it existed leaves a band above the tab strip.
 # Zero here means flush.

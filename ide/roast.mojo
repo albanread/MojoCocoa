@@ -62,6 +62,7 @@ import document
 import build
 import session
 import dap
+import python_env
 from json import JSON, parse
 from gridview import set_shown_path, push_undo
 
@@ -118,6 +119,10 @@ comptime g_console_open = named_global["roast.console.open", Int]
 # pump appends the delta instead of re-setting the whole transcript.
 comptime g_console_shown = named_global["roast.console.shown", Int]
 comptime g_build_seen = named_global["roast.build.seen", Int]
+# A venv creation may be the first half of Run, Debug, or pip. Its mode lives
+# in build.label (the task state which is already proven to cross timer ticks);
+# only pip's arbitrary requirement needs a separate owned string.
+comptime g_python_spec = named_global["roast.python.spec", List[String]]
 # The editor's share of the height when the console is showing.
 comptime EDITOR_SHARE = 0.68
 comptime TAB_H = 28.0
@@ -409,6 +414,160 @@ def _driver() -> String:
     return root + String("/bin/cocoamojo")
 
 
+# ── Project Python ─────────────────────────────────────────────────────────
+# A venv task records its continuation in build.label: Run, Debug, one pip
+# requirement, or the project's requirements.txt/pyproject.toml.
+def _python_project() -> String:
+    return python_env.project_location(
+        project_root(), document.path_at(document.current_index())
+    )
+
+
+def _put_python_spec(var spec: String):
+    let slot = g_python_spec()
+    if len(slot[]) == 0:
+        slot[].append(spec^)
+    else:
+        slot[][0] = spec^
+
+
+def _python_spec() -> String:
+    let slot = g_python_spec()
+    return slot[][0] if len(slot[]) > 0 else String()
+
+
+def _python_variables() -> JSON:
+    return python_env.variables(_python_project(), toolchain_root())
+
+
+def _start_python_environment(after: Int = 0, spec: String = String()) -> Bool:
+    """Create or repair this project's venv without blocking AppKit."""
+    if build.is_running():
+        set_status(String("Already running — press Stop first"))
+        return False
+    let project = _python_project()
+    if project == "":
+        set_status(String("Open a project or save the current file first"))
+        return False
+    let root = toolchain_root()
+    let python = python_env.runtime_python(root)
+    if python == "" or python_env.runtime_library(root) == "":
+        set_status(String("No bundled Python runtime"))
+        return False
+    let destination = python_env.environment_dir(project, root)
+    if destination == "":
+        set_status(String("Could not create the Python Application Support folder"))
+        return False
+
+    var args = List[String]()
+    args.append(String("-m"))
+    args.append(String("venv"))
+    if python_env.environment_ready(project, root):
+        # Refresh links and configuration after an application/runtime update;
+        # installed project packages remain in place.
+        args.append(String("--upgrade"))
+    args.append(destination)
+
+    _put_python_spec(spec)
+    var label = String("Creating Python")
+    if after == 1:
+        label = String("Creating Python for Run")
+    elif after == 2:
+        label = String("Creating Python for Debug")
+    elif after == 3:
+        label = String("Creating Python for Package")
+    elif after == 4:
+        label = String("Creating Python for Project")
+    build.clear_then()
+    build.clear_output()
+    build.append_output(
+        String("Python environment: ") + destination + String("\n")
+    )
+    show_console(True)
+    console_sync()
+    if build.start_with_environment(
+        python,
+        args,
+        project,
+        label^,
+        python_env.bootstrap_variables(root),
+    ):
+        set_status(String("Creating Python environment…"))
+        return True
+    _put_python_spec(String())
+    set_status(String("Could not start the bundled Python runtime"))
+    return False
+
+
+def _ensure_python(after: Int, spec: String = String()) -> Bool:
+    """True when this action can proceed now; otherwise queue it after venv."""
+    let project = _python_project()
+    let root = toolchain_root()
+    if project == "" or not python_env.runtime_available(root):
+        # Ordinary Mojo projects remain buildable if a development checkout
+        # has not been packaged with Python yet. Explicit Python commands use
+        # _start_python_environment and report that absence instead.
+        return True
+    if python_env.environment_ready(project, root):
+        return True
+    _ = _start_python_environment(after, spec)
+    return False
+
+
+def _start_pip(var args: List[String]) -> Bool:
+    let project = _python_project()
+    let root = toolchain_root()
+    if not python_env.environment_ready(project, root):
+        set_status(String("Create the project Python environment first"))
+        return False
+    let python = python_env.environment_python(project, root)
+    build.clear_then()
+    build.clear_output()
+    var command = String("pip")
+    for arg in args:
+        command += String(" ") + arg
+    build.append_output(
+        String("Python environment: ")
+        + python_env.environment_dir(project, root)
+        + String("\n")
+        + command
+        + String("\n")
+    )
+    show_console(True)
+    console_sync()
+    if build.start_with_environment(
+        python,
+        args,
+        project,
+        String("Installing Python"),
+        python_env.pip_variables(project, root),
+    ):
+        set_status(String("Installing Python packages…"))
+        return True
+    set_status(String("Could not start pip"))
+    return False
+
+
+def _install_python_requirement(var spec: String):
+    if spec.strip() == "":
+        return
+    if not _ensure_python(3, spec):
+        return
+    var args = python_env.package_arguments(spec^, _python_project())
+    if len(args) > 3:
+        _ = _start_pip(args^)
+
+
+def _install_project_dependencies():
+    if not _ensure_python(4):
+        return
+    var args = python_env.project_dependency_arguments(_python_project())
+    if len(args) == 0:
+        set_status(String("No requirements.txt or pyproject.toml in this project"))
+        return
+    _ = _start_pip(args^)
+
+
 def _save_dirty() -> Int:
     """The compiler reads the disk, so what is on the disk had better be what
     is on the screen. Building without this compiles the last save, which
@@ -434,6 +593,8 @@ def _save_dirty() -> Int:
 def _start_build(then_run: Bool):
     if build.is_running():
         set_status(String("Already running — press Stop first"))
+        return
+    if then_run and not _ensure_python(1):
         return
     let driver = _driver()
     if driver == "":
@@ -472,7 +633,13 @@ def _start_build(then_run: Bool):
 
     show_console(True)
     console_sync()
-    if build.start(driver, args, _dir_of(entry), String("Building")):
+    if build.start_with_environment(
+        driver,
+        args,
+        _dir_of(entry),
+        String("Building"),
+        _python_variables(),
+    ):
         set_status(String("Building ") + _basename(entry) + String("…"))
     else:
         console_sync()
@@ -564,6 +731,8 @@ def _start_debug():
     if dap.is_running():
         set_status(String("Already debugging — Stop first (⌘.)"))
         return
+    if not _ensure_python(2):
+        return
     let adapter = dap_adapter()
     if adapter == "":
         set_status(String("No debug adapter: install Xcode, or set debug.adapter"))
@@ -612,7 +781,13 @@ def _start_debug():
     _put_debug_binary(binary)
     show_console(True)
     console_sync()
-    if build.start(driver, args, _dir_of(entry), String("Building")):
+    if build.start_with_environment(
+        driver,
+        args,
+        _dir_of(entry),
+        String("Building"),
+        _python_variables(),
+    ):
         set_status(String("Building ") + _basename(entry) + String(" to debug…"))
     else:
         g_debug_pending()[] = 0
@@ -654,7 +829,14 @@ def _launch_debugger():
         # than where it lands. preRun rather than init, because it needs a
         # target to set its resolver on.
         pre_run = String("mojo break-on-raise")
-    let started = dap.start(dap_adapter(), binary, cwd, init_cmd, pre_run)
+    let started = dap.start_with_environment(
+        dap_adapter(),
+        binary,
+        cwd,
+        init_cmd,
+        pre_run,
+        _python_variables(),
+    )
     print(
         "roast: debugging", _basename(binary),
         "with", dap.breakpoint_count(), "breakpoint(s)",
@@ -1186,6 +1368,57 @@ def ask_new_name(old: String) -> String:
         )
 
 
+def ask_python_requirement() -> String:
+    """Ask for one pip requirement without involving a shell.
+
+    The text becomes one argv element, so version constraints and PEP 508
+    markers are not reinterpreted. `-r path` is the one supported two-part
+    form; the Python manager resolves a relative path against the project.
+    """
+    with autoreleasepool():
+        let NSAlert = ObjCClass.lookup["NSAlert"]()
+        var alert = msg_send[ObjCObject, "NSAlert", "alloc", is_class=True](
+            NSAlert.as_object()
+        )
+        alert = msg_send[ObjCObject, "NSObject", "init"](alert)
+        _ = msg_send[ObjCObject, "NSAlert", "setMessageText:"](
+            alert, nsstring(String("Install Python package")).ptr()
+        )
+        _ = msg_send[ObjCObject, "NSAlert", "setInformativeText:"](
+            alert,
+            nsstring(
+                String(
+                    "Enter one package requirement, for example numpy==2.3, "
+                    "or -r requirements-dev.txt. pip installs it into this "
+                    "project's managed environment."
+                )
+            ).ptr(),
+        )
+        _ = msg_send[ObjCObject, "NSAlert", "addButtonWithTitle:"](
+            alert, nsstring(String("Install")).ptr()
+        )
+        _ = msg_send[ObjCObject, "NSAlert", "addButtonWithTitle:"](
+            alert, nsstring(String("Cancel")).ptr()
+        )
+        let NSTextField = ObjCClass.lookup["NSTextField"]()
+        var field = msg_send[
+            ObjCObject, "NSTextField", "alloc", is_class=True
+        ](NSTextField.as_object())
+        field = msg_send[ObjCObject, "NSView", "initWithFrame:"](
+            field, rect(0.0, 0.0, 360.0, 24.0)
+        )
+        _ = msg_send[ObjCObject, "NSAlert", "setAccessoryView:"](
+            alert, field.ptr()
+        )
+        let win = msg_send[ObjCObject, "NSAlert", "window"](alert)
+        _ = msg_send[Bool, "NSWindow", "makeFirstResponder:"](win, field.ptr())
+        if msg_send[Int, "NSAlert", "runModal"](alert) != 1000:
+            return String()
+        return ns_to_string(
+            msg_send[ObjCObject, "NSControl", "stringValue"](field)
+        )
+
+
 def word_under_caret() -> String:
     """The identifier the caret is in, for the prompt's initial value."""
     if len(g_buffer()[]) == 0:
@@ -1305,6 +1538,47 @@ def _build_finished():
         print(shown)
         print("--- end ---")
 
+    if what.startswith("Creating Python"):
+        var after = 0
+        if what == "Creating Python for Run":
+            after = 1
+        elif what == "Creating Python for Debug":
+            after = 2
+        elif what == "Creating Python for Package":
+            after = 3
+        elif what == "Creating Python for Project":
+            after = 4
+        # Own this before clearing the global slot. A borrowed String would
+        # otherwise observe the empty value and silently drop a queued pip
+        # install after successful venv creation.
+        var spec = String(_python_spec())
+        _put_python_spec(String())
+        if status != 0:
+            set_status(String("Python environment creation failed"))
+            return
+        set_status(
+            String("Python environment ready: ")
+            + python_env.environment_dir(_python_project(), toolchain_root())
+        )
+        restart_lsp_for_python()
+        if after == 1:
+            _start_build(True)
+        elif after == 2:
+            _start_debug()
+        elif after == 3:
+            _install_python_requirement(spec^)
+        elif after == 4:
+            _install_project_dependencies()
+        return
+
+    if what == "Installing Python":
+        if status == 0:
+            set_status(String("Python packages installed"))
+            restart_lsp_for_python()
+        else:
+            set_status(String("pip failed (") + String(status) + String(")"))
+        return
+
     if status == 0:
         if g_debug_pending()[] != 0:
             build.clear_then()
@@ -1319,7 +1593,13 @@ def _build_finished():
             )
             console_sync()
             var none = List[String]()
-            if build.start(next_exe, none, cwd, String("Running")):
+            if build.start_with_environment(
+                next_exe,
+                none,
+                cwd,
+                String("Running"),
+                _python_variables(),
+            ):
                 set_status(String("Running ") + _basename(next_exe) + String("…"))
                 return
             console_sync()
@@ -1377,6 +1657,41 @@ class RoastActions:
             _start_build(True)
         except:
             set_status(String("Run failed to start"))
+
+    def roastPythonEnvironment_(self, sender: ObjCObject):
+        try:
+            _ = _start_python_environment()
+        except:
+            set_status(String("Python environment creation failed to start"))
+
+    def roastPythonInstall_(self, sender: ObjCObject):
+        try:
+            let requirement = ask_python_requirement()
+            if requirement != "":
+                _install_python_requirement(requirement^)
+        except:
+            set_status(String("Python package installation failed to start"))
+
+    def roastPythonInstallProject_(self, sender: ObjCObject):
+        try:
+            _install_project_dependencies()
+        except:
+            set_status(String("Project dependency installation failed to start"))
+
+    def roastPythonShowEnvironment_(self, sender: ObjCObject):
+        try:
+            let project = _python_project()
+            if project == "":
+                set_status(String("Open a project or save the current file first"))
+                return
+            let root = toolchain_root()
+            let path = python_env.environment_dir(project, root)
+            if python_env.environment_ready(project, root):
+                set_status(String("Python: ") + path)
+            else:
+                set_status(String("Python environment not created: ") + path)
+        except:
+            pass
 
     def roastStop_(self, sender: ObjCObject):
         try:
@@ -3188,7 +3503,12 @@ def start_lsp() -> Bool:
     if lsp.is_running() and len(g_lsp_root()[]) > 0 and g_lsp_root()[][0] == root:
         return True  # already rooted here; a restart would buy nothing
     lsp.stop()
-    if not lsp.start(server, String("file://") + root, lsp_import_path()):
+    if not lsp.start_with_environment(
+        server,
+        String("file://") + root,
+        lsp_import_path(),
+        python_env.variables(root, toolchain_root()),
+    ):
         return False
     lsp.set_shown_uri(document.current_uri())
     # No didOpen here: the protocol says nothing goes out before the server
@@ -3201,6 +3521,17 @@ def start_lsp() -> Bool:
     else:
         slot[][0] = root
     return True
+
+
+def restart_lsp_for_python():
+    """A newly created or changed site-packages belongs to future analysis."""
+    lsp.stop()
+    let slot = g_lsp_root()
+    if len(slot[]) == 0:
+        slot[].append(String())
+    else:
+        slot[][0] = String()
+    _ = start_lsp()
 
 
 def _lsp_root_now() -> String:
@@ -3757,6 +4088,41 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         actions,
     )
 
+    # Python. CPython runs inside the Mojo program; these commands only own
+    # the project venv and pip's mutations before that program is launched.
+    let python_menu = add_submenu(bar, String("Python"))
+    _ = add_item(
+        python_menu,
+        String("Create or Repair Environment"),
+        String("roastPythonEnvironment:"),
+        String(""),
+        actions,
+    )
+    _ = add_item(
+        python_menu,
+        String("Install Project Dependencies"),
+        String("roastPythonInstallProject:"),
+        String(""),
+        actions,
+    )
+    _ = add_item(
+        python_menu,
+        String("Install Package…"),
+        String("roastPythonInstall:"),
+        String(""),
+        actions,
+    )
+    Obj["NSMenu"](python_menu.addr()).addItem(
+        Cls["NSMenuItem"]().separatorItem().ptr()
+    )
+    _ = add_item(
+        python_menu,
+        String("Show Environment Path"),
+        String("roastPythonShowEnvironment:"),
+        String(""),
+        actions,
+    )
+
     # Examples — built from what shipped, so the menu and the distribution
     # cannot disagree about which examples exist.
     build_examples_menu(bar, actions)
@@ -4085,6 +4451,17 @@ def main() raises:
         let project = getenv("ROAST_PROJECT")
         if project != "":
             open_folder(project)
+
+        # Headless doors for the two state-changing Python paths. They drive
+        # the same functions as the menu: package checks can prove venv -> pip
+        # sequencing without attempting to automate a modal NSAlert.
+        let python_install = getenv("ROAST_PYTHON_INSTALL")
+        if python_install != "":
+            print("roast: Python install asked:", python_install)
+            _install_python_requirement(python_install^)
+        elif getenv("ROAST_PYTHON_CREATE") != "":
+            print("roast: Python environment asked for", _python_project())
+            _ = _start_python_environment()
 
         # The same thing the Examples menu does, reachable without a click.
         # This shipped opening one file of three because nothing could test

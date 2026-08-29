@@ -38,6 +38,8 @@ from std.memory import OpaquePointer
 from std.ffi import external_call, c_char
 
 from lsp import readable, posix_read
+from json import JSON
+from process_env import apply as apply_environment
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -259,6 +261,17 @@ def ensure_dir(path: String) -> Bool:
 def start(
     exe: String, args: List[String], cwd: String, var what: String
 ) -> Bool:
+    """Launch with the editor's inherited environment unchanged."""
+    return start_with_environment(exe, args, cwd, what^, JSON.object())
+
+
+def start_with_environment(
+    exe: String,
+    args: List[String],
+    cwd: String,
+    var what: String,
+    environment: JSON,
+) -> Bool:
     """Launch a process with stdout and stderr on one pipe. Not waited for."""
     if is_running():
         return False
@@ -299,9 +312,11 @@ def start(
                 task, nsstring(c).ptr()
             )
 
-        # The environment is inherited untouched: cocoamojo is a driver that
-        # sets its own COCOAKB and library paths, and second-guessing it here
-        # is how the editor and the terminal start disagreeing.
+        # Merge only the settings the caller owns.  Python uses this to select
+        # a project venv without losing the driver, loader, proxy, or temporary
+        # directory settings inherited by Roast.
+        apply_environment(task, environment)
+
         let NSPipe = ObjCClass.lookup["NSPipe"]()
         let pipe = msg_send[ObjCObject, "NSPipe", "pipe", is_class=True](
             NSPipe.as_object()

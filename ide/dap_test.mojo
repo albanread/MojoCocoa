@@ -137,6 +137,11 @@ def main() raises:
     let stopped = pump_until_stopped(120.0)
     failures += check_int("stopped", 1 if stopped else 0, 1)
     if stopped:
+        # A stop event and the setBreakpoints response can be in the same pipe
+        # read but become observable on adjacent polls. Drain that tail before
+        # asserting verification or waiting on the scopes request; otherwise
+        # a busy full-suite run mistakes message ordering for a debugger bug.
+        _ = pump(1.0)
         failures += check("reason", stop_reason(), String("breakpoint"))
         # The bound line is the claim. Line 9 is a `for` body that gets
         # inlined, so the adapter slides the breakpoint to the next line that

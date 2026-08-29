@@ -173,6 +173,52 @@ evicted from tabs). Fix later: in our fork, because we own it.
   system.
 - ⌘B build, ⌘R build-and-run, matching the playground's habit.
 
+### Python is embedded; environments are not
+
+`std.python` loads CPython into the running Mojo program. Roast does not put a
+Python worker between Mojo and `PythonObject`: Run is still one AOT Mojo
+binary, and that process calls `dlopen` on the Python library and
+`Py_Initialize` itself.
+
+The application carries one pinned, relocatable `Python.framework`. Mutable
+packages cannot live in a signed application, so each project gets a venv at:
+
+```text
+~/Library/Application Support/Roast/Python/Environments/<project-hash>/py-<minor>
+```
+
+The actual base comes from `NSSearchPathForDirectoriesInDomains`, not from
+concatenating `$HOME`; a future sandbox therefore redirects it into the app's
+container without changing this design. A stable FNV-1a hash keeps source
+paths and punctuation out of directory names while preventing projects with
+the same basename from sharing packages. The Python-minor component makes a
+runtime upgrade create a compatible environment instead of pointing a new
+CPython at the previous version's `site-packages`.
+
+Before Build, Run, Debug, or LSP launch, Roast overlays four values on the
+inherited process environment:
+
+| value | role |
+|---|---|
+| `MOJO_PYTHON_LIBRARY` | bundled library loaded into the Mojo process |
+| `MOJO_PYTHON` | selected venv interpreter; KGEN turns this into `PYTHONEXECUTABLE` |
+| `PYTHONHOME` | relocated bundled standard library, overriding the framework's build prefix |
+| `VIRTUAL_ENV` | project environment identity for child tools and packages |
+
+`PYTHONNOUSERSITE=1` prevents a successful import from secretly depending on
+the user's global packages. Run and Debug create a missing venv asynchronously
+before continuing. The Python menu can create/repair it, install the project's
+`requirements.txt` or editable `pyproject.toml`, or pass one requirement to
+`pip`. pip is invoked as `venv/bin/python -m pip` in the console; it is never
+imported into an already initialized CPython process, and no shell parses the
+package requirement.
+
+Packaging closes over the framework's non-system dylibs and rejects absolute
+dependencies left on the packaging machine. Its smoke test then creates a
+real venv and has a compiled Mojo program import a marker module from that
+venv. That is the minimum test which proves both halves—the relocated CPython
+runtime and Mojo's in-process selection—at once.
+
 ## Scriptable, the Mac way
 
 (The request said AppleTalk; the scripting technology is AppleScript, via a

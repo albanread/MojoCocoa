@@ -19,6 +19,10 @@
 # minus one part: include/ is 172 MB of LLVM headers for building out-of-tree
 # C++ against the compiler, which no application does.
 #
+# Mojo's Python interop loads CPython into the Mojo program. The app therefore
+# also carries a relocatable Python.framework; project venvs stay in the
+# user's Application Support directory, outside this signed bundle.
+#
 # HOW THE APP FINDS IT
 #
 # Two mechanisms, one for the loader and one for the program.
@@ -65,6 +69,12 @@ rsync -a --delete --delete-excluded \
       "$D/" "$C/Resources/CocoaMojo/"
 echo "   $(du -sh "$C/Resources/CocoaMojo" | cut -f1) (include/ left out)"
 
+# ── in-process Python ──────────────────────────────────────────────────────
+# bundle-python copies the framework used to package Roast, closes over its
+# non-system dylibs, relocates them, and proves venv + pip before returning.
+echo "== python =="
+"$ROOT/tools/bundle-python.sh" "$C/Resources/Python"
+
 # ── the executable ─────────────────────────────────────────────────────────
 # Built here rather than copied from bin/, so the app always carries the IDE
 # at the current source rather than whatever the distribution last assembled.
@@ -82,7 +92,55 @@ rm -f "$OUT/.roast-app.log"
 install_name_tool -add_rpath "@executable_path/../Resources/CocoaMojo/lib" \
     "$C/MacOS/Roast" 2>/dev/null || true
 install_name_tool -delete_rpath "$D/lib" "$C/MacOS/Roast" 2>/dev/null || true
+# The compiler also contributes `/lib` as a fallback when its runtime path is
+# reduced to a directory. It is not a useful location on macOS, and leaving an
+# absolute rpath in a supposedly relocatable bundle makes a local success less
+# meaningful than it should be.
+install_name_tool -delete_rpath "/lib" "$C/MacOS/Roast" 2>/dev/null || true
+
+rpaths="$(otool -l "$C/MacOS/Roast" | awk '
+  /cmd LC_RPATH/ { want_path = 1; next }
+  want_path && /path / { print $2; want_path = 0 }
+')"
+if printf '%s\n' "$rpaths" | grep -q '^/'; then
+  echo "   FAILED -- absolute rpath remains in Roast:"
+  printf '     %s\n' "$rpaths"
+  exit 1
+fi
 echo "   $(stat -f%z "$C/MacOS/Roast" | awk '{printf "%.0f KB", $1/1024}'), rpath relocated"
+
+# The Python packager proved its interpreter can make a venv. This proves the
+# other half: a Mojo process dlopens the bundled library and imports a module
+# from that venv, which is the execution model Roast is shipping.
+echo "== mojo + python =="
+PYHOME="$C/Resources/Python/Python.framework/Versions/Current"
+PYSMOKE="$(mktemp -d)"
+PYENV="$PYSMOKE/env"
+PYTHONHOME="$PYHOME" "$PYHOME/bin/python3" -m venv "$PYENV"
+PYSITE="$(PYTHONHOME="$PYHOME" "$PYENV/bin/python" -c 'import site; print(site.getsitepackages()[0])')"
+printf 'VALUE = "managed-venv-ok"\n' > "$PYSITE/roast_managed_test.py"
+COCOAMOJO_ROOT="$D" "$D/bin/cocoamojo" --build \
+  "$ROOT/ide/python_embed_test.mojo" -o "$PYSMOKE/probe" \
+  >"$PYSMOKE/build.log" 2>&1 || {
+    echo "   FAILED -- Mojo/Python probe did not build"
+    grep -m1 'error' "$PYSMOKE/build.log" || true
+    rm -rf "$PYSMOKE"
+    exit 1
+  }
+PYOUT="$(
+  PYTHONHOME="$PYHOME" \
+  MOJO_PYTHON="$PYENV/bin/python" \
+  MOJO_PYTHON_LIBRARY="$PYHOME/Python" \
+  "$PYSMOKE/probe" 2>&1
+)"
+if ! printf '%s\n' "$PYOUT" | grep -q 'marker: managed-venv-ok'; then
+  echo "   FAILED -- Mojo did not import from the managed venv"
+  printf '%s\n' "$PYOUT"
+  rm -rf "$PYSMOKE"
+  exit 1
+fi
+echo "   in-process import from managed venv OK"
+rm -rf "$PYSMOKE"
 
 # ── the bundle's paperwork ─────────────────────────────────────────────────
 # LSMinimumSystemVersion matches what the toolchain needs; NSHighResolution
@@ -190,8 +248,10 @@ Roast $VER ($GITREV)
 An IDE for cocoa-mojo, written in cocoa-mojo. Drag Roast to Applications.
 
 It carries its own toolchain -- compiler, language server, standard library
-and the Cocoa database -- so cmd-B builds and cmd-R runs with nothing else
-installed. The Examples menu opens the projects it ships with.
+and the Cocoa database -- plus CPython for Mojo's in-process Python interop --
+so cmd-B builds and cmd-R runs with nothing else installed. The Python menu
+creates one environment per project under Application Support and runs pip
+inside it. The Examples menu opens the projects it ships with.
 
 First launch: macOS will refuse an app it has not seen before. Right-click
 Roast and choose Open, or allow it in System Settings > Privacy & Security.

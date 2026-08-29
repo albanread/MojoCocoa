@@ -25,6 +25,7 @@ from std.objc import (
 from std.memory import OpaquePointer, Pointer
 from std.ffi import external_call, c_char
 from std.collections.string.string_span import _get_kgen_string
+from process_env import apply as apply_environment
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -790,6 +791,17 @@ def notify(var method: String, var params: JSON):
 
 # ── Lifecycle ───────────────────────────────────────────────────────────────
 def start(server: String, root_uri: String, import_path: String = String()) -> Bool:
+    return start_with_environment(
+        server, root_uri, import_path, JSON.object()
+    )
+
+
+def start_with_environment(
+    server: String,
+    root_uri: String,
+    import_path: String,
+    var environment: JSON,
+) -> Bool:
     """Spawn the server and send initialize.
 
     The server is the one beside us in the distribution, which matters: an
@@ -815,19 +827,11 @@ def start(server: String, root_uri: String, import_path: String = String()) -> B
         # as an environment variable; the compiler's own -I paths reach the
         # server the same way.
         if import_path != "":
-            let NSProcessInfo = ObjCClass.lookup["NSProcessInfo"]()
-            let info = Cls["NSProcessInfo"]().processInfo()
-            let inherited = Obj["NSProcessInfo"](info.addr()).environment()
-            let NSMutableDictionary = ObjCClass.lookup["NSMutableDictionary"]()
-            var env = Cls["NSMutableDictionary"]().dictionaryWithDictionary(
-                inherited.ptr()
-            )
             var ip = import_path
-            Obj["NSMutableDictionary"](env.addr()).setObject_forKey(
-                nsstring(ip).ptr(),
-                nsstring(String("MODULAR_MOJO_MAX_IMPORT_PATH")).ptr(),
+            environment.set(
+                String("MODULAR_MOJO_MAX_IMPORT_PATH"), JSON(ip^)
             )
-            Obj["NSTask"](task.addr()).setEnvironment(env.ptr())
+        apply_environment(task, environment)
 
         let NSPipe = ObjCClass.lookup["NSPipe"]()
         let inp = Cls["NSPipe"]().pipe()
