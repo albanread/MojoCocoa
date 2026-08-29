@@ -110,3 +110,12 @@ commit that fixes it when one does.
    bar if the server were down entirely; silence means it asked and got
    nothing back.) Fix 3/7 first, retest, and only then suspect the popup
    path.
+
+10. **Feature: right-click context menu over the selection.** Nothing
+    handles `rightMouseDown_`/`menuForEvent:` today, so a right click
+    does nothing. The natural contents already exist as actions -- Cut,
+    Copy, Paste, then Go to Definition, Find References, Rename, and
+    Evaluate Selection when the debugger is stopped -- so the menu is
+    wiring, not new features. If the click lands outside the current
+    selection, select the word under the pointer first (entry 6's word
+    machinery), the way every Mac editor does.
