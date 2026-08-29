@@ -4297,8 +4297,8 @@ comptime g_agent_obj = named_global["roast.agent.obj", Int]
 comptime g_agent_count = named_global["roast.agent.count", Int]
 
 comptime AGENT_HELP = (
-    "commands: help · status · console"
-    "   (build/run/debug/step/screenshot land in later sprints)"
+    "commands: help · status · console · screenshot [path]"
+    "   (build/run/debug/step land in later sprints)"
 )
 
 
@@ -4344,6 +4344,13 @@ def agent_command(text: String) -> String:
             pass
         return out
 
+    if cmd.startswith("screenshot"):
+        let tail = String(cmd[byte=10 : cmd.byte_length()])
+        var where = String(tail.strip())
+        if where == "":
+            where = String("/tmp/roast.png")
+        return screenshot(where)
+
     if cmd == "console":
         # Read back from the text view, not from the buffer it was built
         # from, so this answers what is actually on screen.
@@ -4353,6 +4360,67 @@ def agent_command(text: String) -> String:
         return text_out
 
     return String("unknown command: ") + cmd + String("; try: help")
+
+
+def screenshot(path: String) -> String:
+    """Photograph the window into a PNG at `path`. Returns a reply line.
+
+    The app draws ITSELF: `cacheDisplayInRect:toBitmapImageRep:` renders a
+    view hierarchy into a bitmap. That is view drawing, not screen capture --
+    no CGWindowList, no display stream -- so it needs no Screen Recording
+    grant, which is the point. `screencapture` was refused by TCC on this
+    machine while the toolbar was being built, and that grant cannot be given
+    headlessly, by design.
+
+    The view rendered is contentView's SUPERVIEW, the window's frame view, so
+    the picture includes the titlebar and the toolbar. Photographing
+    contentView alone would leave out the buttons this was written to look at.
+    """
+    with autoreleasepool():
+        if g_window()[] == 0:
+            return String("error: no window")
+        let win = ObjCObject(g_window()[])
+        let content = Obj["NSWindow"](win.addr()).contentView()
+        if content.addr() == 0:
+            return String("error: no content view")
+        # The frame view, when there is one: titlebar and toolbar live there.
+        # Carried as an address rather than an object: Obj is a typed handle
+        # and not copyable, so the choice is made on the addr and rewrapped.
+        var view_addr = content.addr()
+        let above = Obj["NSView"](content.addr()).superview()
+        if above.addr() != 0:
+            view_addr = above.addr()
+
+        let b = Obj["NSView"](view_addr).bounds()
+        if b.size.width < 1.0 or b.size.height < 1.0:
+            return String("error: view has no size")
+        let r = rect(0.0, 0.0, b.size.width, b.size.height)
+
+        let rep = Obj["NSView"](view_addr).bitmapImageRepForCachingDisplayInRect(r)
+        if rep.addr() == 0:
+            return String("error: could not make a bitmap")
+        Obj["NSView"](view_addr).cacheDisplayInRect_toBitmapImageRep(r, rep.ptr())
+
+        # 4 is NSBitmapImageFileTypePNG. An empty properties dictionary rather
+        # than nil: the parameter is typed as a dictionary and nil is the sort
+        # of thing that works until a release where it does not.
+        let props = Cls["NSMutableDictionary"]().dictionary()
+        let data = Obj["NSBitmapImageRep"](rep.addr()).representationUsingType_properties(
+            UInt64(4), props.ptr()
+        )
+        if data.addr() == 0:
+            return String("error: PNG encoding failed")
+        let wrote = Obj["NSData"](data.addr()).writeToFile_atomically(
+            nsstring(path).ptr(), True
+        )
+        if not wrote:
+            return String("error: could not write ") + path
+        let w = Obj["NSBitmapImageRep"](rep.addr()).pixelsWide()
+        let h = Obj["NSBitmapImageRep"](rep.addr()).pixelsHigh()
+        return (
+            path + String(" (") + String(w) + String("x") + String(h)
+            + String(" px)")
+        )
 
 
 fn _agent_ae_handler(obj: P, cmd: P, event: P, reply: P, /) -> None:

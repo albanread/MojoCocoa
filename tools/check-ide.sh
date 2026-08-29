@@ -413,6 +413,29 @@ else
   bad "agent events" "$(echo "$agentout" | grep -m1 'agent self-test' || echo 'no round trip')"
 fi
 
+# The screenshot: the app drawing ITSELF into a PNG. This is view drawing --
+# cacheDisplayInRect:toBitmapImageRep: -- not screen capture, so it needs no
+# Screen Recording grant and works headlessly, which is the whole reason it
+# exists. The view photographed is contentView's superview, the frame view,
+# so the picture includes the titlebar and toolbar; a check that only proved
+# a file appeared would pass on a picture of the editor with no buttons in
+# it, so the pixel size is asserted against the window's own reported frame.
+shotout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_SESSION="$TMP/shot.json" \
+          ROAST_AGENT="screenshot $TMP/shot.png" \
+          ROAST_AUTOCLOSE_TICKS=60 timeout 240 "$TMP/roast" 2>&1)
+if [ -f "$TMP/shot.png" ]; then
+  magic=$(head -c8 "$TMP/shot.png" | xxd -p)
+  bytes=$(stat -f%z "$TMP/shot.png")
+  dims=$(echo "$shotout" | grep -m1 'agent >' | grep -oE '[0-9]+x[0-9]+ px')
+  if [ "$magic" = "89504e470d0a1a0a" ] && [ "$bytes" -gt 2000 ]; then
+    ok "screenshot" "${dims:-?}, $bytes bytes, PNG magic"
+  else
+    bad "screenshot" "wrote $bytes bytes, magic $magic"
+  fi
+else
+  bad "screenshot" "$(echo "$shotout" | grep -m1 'agent >' || echo 'no file written')"
+fi
+
   # The debugger's BUTTONS. ROAST_DEBUG_STEPS presses one toolbar item per
   # stop -- looked up in the live bar by identifier, its action sent to its
   # own target through NSApp, the dispatch a click takes -- so a button

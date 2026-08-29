@@ -240,10 +240,14 @@ Automation for their agent's host process, per sender, once.
 
 **Three layers.**
 
-1. **Transport: raw Apple Event handlers.** Event class `Rost`, two events:
-   `cmnd` (do command: text in, text out) and `shot` (screenshot: path in,
-   path out), registered with `NSAppleEventManager` at launch. No KVC object
-   graph. This works identically in the bare `bin/roast` and in `Roast.app`.
+1. **Transport: one raw Apple Event handler.** Event class `Rost`, event
+   `cmnd` -- text in, text out -- registered with `NSAppleEventManager` at
+   launch. No KVC object graph. Works identically in the bare `bin/roast` and
+   in `Roast.app`. (Sprints 1-2 folded the planned second event, `shot`, into
+   this one: a screenshot's argument is a path and its answer is a path, so
+   `cmnd` already carried it, and a second unpack path bought nothing. If the
+   sdef in sprint 5 wants `screenshot at "..."` as its own verb, terminology
+   can map it onto `cmnd` without a second event.)
 
 2. **Terminology: an sdef, on top, later.** `Roast.sdef` gives AppleScript
    the words -- `tell application "Roast" to do command "step-over"` -- and
@@ -308,14 +312,22 @@ confirmed present in the Cocoa KB, including the two load-bearing ones
 
 **Sprints, each landing on main, each with its acceptance line.**
 
-1. **Transport and first light.** Handlers registered; `status`, `console`,
-   `help`; the self-post test.
-   *Acceptance:* `OK agent events` in check-ide, reply text asserted.
-   *Discovers:* whether self-send on the main thread re-enters the runloop
-   cleanly; fallback is dispatching into the handler directly.
-2. **The screenshot.** `shot` + `screenshot <path>`; occlusion behavior
-   pinned down. *Acceptance:* PNG magic + size from an unattended run; a
-   human confirms the ladybug once.
+1. **Transport and first light.** DONE. Handler registered; `status`,
+   `console`, `help`; the self-post test. *Acceptance met:* `OK agent events
+   Rost/cmnd round trip`. *Discovery, answered:* a self-post dispatches
+   INLINE -- no runloop reentry, no deadlock, and it works in a process with
+   no NSApplication at all. So the whole handler path is CI-testable with no
+   second process and no TCC grant, which is what makes the rest of this
+   cheap. One thing the sprint found: `handleEvent:withReplyEvent:` is a
+   selector no SDK class declares, so it cannot be a `class` method -- the
+   compiler takes encodings from the SDK. It is an `ObjCClassBuilder` with
+   `encoding="v@:@@"` given explicitly.
+2. **The screenshot.** DONE. `screenshot [path]`, rendering the frame view so
+   the titlebar and toolbar are in the picture. *Acceptance met:* `OK
+   screenshot  1417x969 px, 39180 bytes, PNG magic` from an unattended run.
+   The ladybug question is answered and needed no human: the app photographed
+   itself and every SF Symbol resolves -- hammer, play, stop, ladybug, the
+   double-chevron continue, and the three circled step arrows.
 3. **Drive the debugger.** `debug`, the four transport verbs through the
    live toolbar, `break`, `eval`, `stopped`, `variables`; the button walk
    re-run over Apple Events (env probes stay -- launch-time CI keeps them).
@@ -328,8 +340,8 @@ confirmed present in the Cocoa KB, including the two load-bearing ones
    *Acceptance:* `tell application "Roast" to do command "status"` from
    Script Editor on a granted machine; recorded as the manual step.
 
-**Open questions, named now so they are cheap later.** Self-send runloop
-reentry (sprint 1 discovers). Whether AppleScript resolves the bare binary by
+**Open questions, named now so they are cheap later.** ~~Self-send runloop
+reentry~~ (answered: inline, no reentry). Whether AppleScript resolves the bare binary by
 running-process name or only the bundle (sprint 1, manually). Async `eval`
 ergonomics -- `requested` + poll reads fine for an agent, worth revisiting if
 it grates. Multi-window, when there is more than one window.
