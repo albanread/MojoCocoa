@@ -4656,8 +4656,15 @@ def build_menu_bar(app: ObjCObject, actions: Int):
             ObjCClass.lookup["NSMenuItem"]().as_object()
         ).ptr(),
     )
-    _ = add_item(
-        nav, String("Rename…"), String("roastRename:"), String("r"), actions,
+    # Control-Command-E, which is Xcode's rename, NOT Command-R. Build > Run
+    # asks for Command-R too, and AppKit resolves a duplicate key equivalent
+    # by menu order: Navigate precedes Build, so this item silently took the
+    # shortcut and Run had none. Rename is occasional; Run is constant.
+    let rename_item = add_item(
+        nav, String("Rename…"), String("roastRename:"), String("e"), actions,
+    )
+    Obj["NSMenuItem"](rename_item.addr()).setKeyEquivalentModifierMask(
+        Int(0x40000 | 0x100000)
     )
 
     # Debug. Xcode's key equivalents, because the muscle memory of anyone
@@ -4689,7 +4696,10 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     )
     _ = add_item(
         debug_menu, String("Continue"), String("roastContinue:"),
-        String("\u001b[1;2A"), actions,
+        # F5, completing the row its neighbours already occupy. What was
+        # here -- "\u001b[1;2A" -- is the ANSI sequence a terminal sends for
+        # shift-up; NSMenuItem wants a key, so nothing was ever bound.
+        String("\uf708"), actions,
     )
     _ = add_item(
         debug_menu, String("Step Over"), String("roastStepOver:"),

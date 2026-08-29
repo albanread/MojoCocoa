@@ -147,9 +147,10 @@ what every other editor uses for *what goes here*.
 | Find All References | ⇧⌘F | `roastFindReferences:` |
 | Next Reference | ⌘E | `roastNextReference:` |
 | Signature Help | ⌘K | `roastSignature:` |
-| Rename… | ⌘R † | `roastRename:` |
+| Rename… | ⌃⌘E | `roastRename:` |
 
-All six are language-server round trips. † see *Known defects*.
+All six are language-server round trips. Rename is ⌃⌘E, Xcode's, because
+⌘R belongs to Build ▸ Run.
 
 ### Debug
 
@@ -159,15 +160,15 @@ All six are language-server round trips. † see *Known defects*.
 | Stop Debugging | ⇧⌘Y | `roastDebugStop:` |
 | Break on Raise | — (checkmark) | `roastBreakOnRaise:` |
 | Evaluate Selection | ⇧⌘E | `roastEvaluate:` |
-| Continue | *(none)* † | `roastContinue:` |
+| Continue | **F5** | `roastContinue:` |
 | Step Over | **F6** | `roastStepOver:` |
 | Step Into | **F7** | `roastStepIn:` |
 | Step Out | **F8** | `roastStepOut:` |
 | Toggle Breakpoint | ⌘\ | `roastToggleBreakpoint:` |
 | Clear All Breakpoints | ⇧⌘\ | `roastClearBreakpoints:` |
 
-F6 / F7 / F8 are Xcode's, because the muscle memory of anyone who debugs on
-a Mac already has them. *Break on Raise* carries a checkmark reflecting the
+F5–F8 run in a row, and F6 / F7 / F8 are Xcode's, because the muscle memory
+of anyone who debugs on a Mac already has them. *Break on Raise* carries a checkmark reflecting the
 `debug.break_on_raise` setting.
 
 ### View
@@ -182,7 +183,7 @@ a Mac already has them. *Break on Raise* carries a checkmark reflecting the
 | Item | Key | Selector |
 |---|---|---|
 | Build | ⌘B | `roastBuild:` |
-| Run | ⌘R † | `roastRun:` |
+| Run | ⌘R | `roastRun:` |
 | Stop | ⌘. | `roastStop:` |
 | Console | ⌘0 | `roastConsole:` |
 
@@ -301,19 +302,23 @@ toolbar.
 
 ---
 
-## Known defects
+## Two defects this document found
 
-Two found while writing this document, both in `ide/roast.mojo`:
+Writing it out is what exposed them; both are fixed, and recorded here
+because the reasoning outlives the fix.
 
-1. **`⌘R` is claimed twice.** *Navigate ▸ Rename…* and *Build ▸ Run* both
-   register a plain `r` key equivalent with no distinguishing modifier
-   mask. AppKit resolves a duplicate by menu order, and Navigate precedes
-   Build — so ⌘R renames, and there is no working shortcut for Run.
+1. **`⌘R` was claimed twice.** *Navigate ▸ Rename…* and *Build ▸ Run* both
+   registered a plain `r` with no distinguishing modifier mask. AppKit
+   resolves a duplicate by menu order, and Navigate precedes Build — so
+   ⌘R renamed, and Run had no working shortcut at all. Rename moved to
+   ⌃⌘E, Xcode's: rename is occasional, Run is constant.
 
-2. **`Debug ▸ Continue` has no usable key equivalent.** It registers the
-   string `"\u001b[1;2A"` — an ANSI terminal escape sequence, not a key.
-   The three items beside it use `\uf709`, `\uf70a`, `\uf70b` (F6, F7, F8), so
-   the intended value is almost certainly `\uf708` (F5).
+2. **`Debug ▸ Continue` had no usable key equivalent.** It registered
+   `"\u001b[1;2A"` — the ANSI sequence a terminal sends for shift-up, not
+   a key. `NSMenuItem` wants a key, so nothing was ever bound. It is now
+   `\uf708`, F5, completing the row its three neighbours already occupied.
 
-Neither affects the toolbar buttons or the agent verbs, which reach the
-same actions by another door.
+The pattern in both: a key equivalent that does nothing fails silently.
+AppKit does not warn about a duplicate, and it does not reject a string
+that cannot be a key — the menu simply draws and the shortcut never fires.
+Reading the menu table back out of the source is what made them visible.
