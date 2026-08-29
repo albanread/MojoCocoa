@@ -1,0 +1,17 @@
+# Copy to tools/signing.local.sh and fill in. That file is gitignored: a
+# Developer ID names a real person and a notarytool profile is tied to an
+# Apple ID, and neither belongs in a public repository.
+#
+#   cp tools/signing.local.sh.example tools/signing.local.sh
+#
+# SIGN_ID is the certificate's full common name. To see what you have:
+#   security find-identity -v -p codesigning
+#
+# NOTARY_PROFILE is a keychain profile you created once with:
+#   xcrun notarytool store-credentials <profile-name> \
+#     --apple-id <your-apple-id> --team-id <TEAMID> --password <app-specific>
+# The Apple ID used for the developer account is not always the one you
+# sign in to iCloud with; notarytool will reject the wrong one.
+
+SIGN_ID="Developer ID Application: YOUR NAME (TEAMID)"
+NOTARY_PROFILE="your-profile-name"

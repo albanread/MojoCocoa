@@ -4,7 +4,7 @@
 #
 #   ./tools/make-release.sh                 the whole thing
 #   ./tools/make-release.sh --no-notarize   everything but the round trip
-#   SIGN_ID="…" NOTARY_PROFILE=[redacted] ./tools/make-release.sh
+#   SIGN_ID="…" NOTARY_PROFILE=… ./tools/make-release.sh
 #
 # The order is the only order that works, and each step is here because
 # doing it later breaks the one before:
@@ -25,8 +25,13 @@ ROOT="$PWD"
 
 NOTARIZE=1
 [ "${1:-}" = "--no-notarize" ] && NOTARIZE=0
-IDENT="${SIGN_ID:-Developer ID Application: [redacted] ([redacted])}"
-PROFILE="${NOTARY_PROFILE:-[redacted]}"
+# Signing identity and notary profile are personal: a Developer ID names a
+# real person and a notarytool profile is tied to an Apple ID, so they live
+# in tools/signing.local.sh, which is gitignored. The environment still
+# wins, for CI or a one-off.
+[ -f "$ROOT/tools/signing.local.sh" ] && . "$ROOT/tools/signing.local.sh"
+IDENT="${SIGN_ID:-}"
+PROFILE="${NOTARY_PROFILE:-}"
 VER="${VERSION:-$(date +%Y.%m.%d)}"
 OUT="$ROOT/dist"
 STAGE="$OUT/release-stage"

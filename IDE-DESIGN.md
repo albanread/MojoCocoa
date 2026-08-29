@@ -600,12 +600,11 @@ Two entitlements, both weakening the hardened runtime, both justified:
 `stapler` staples the DMG and the app bundles, never the bare binaries
 inside: they carry signatures, the container carries the ticket.
 
-Identity and profile are here and already used, so they are arguments with
-these as defaults rather than constants:
-
-    Developer ID Application: [redacted] ([redacted])
-    notarytool keychain profile: [redacted]
-    (the developer Apple ID is [redacted], not the googlemail one)
+Identity and profile are personal -- a Developer ID names a person and a
+notarytool profile is tied to an Apple ID -- so they are read from
+`tools/signing.local.sh`, which is gitignored, or from the environment.
+`tools/signing.local.sh.example` shows the shape and the commands that
+produce each value. Nothing identifying is committed.
 
 #### Verifying a framework is not verifying a Mach-O
 

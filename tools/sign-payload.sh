@@ -26,7 +26,12 @@ ADHOC=0
 [ "${1:-}" = "--adhoc" ] && { ADHOC=1; shift; }
 PAYLOAD="${1:-$ROOT/dist/payload}"
 ENTITLEMENTS="$ROOT/tools/entitlements/toolchain.plist"
-IDENT="${SIGN_ID:-Developer ID Application: [redacted] ([redacted])}"
+# Signing identity and notary profile are personal: a Developer ID names a
+# real person and a notarytool profile is tied to an Apple ID, so they live
+# in tools/signing.local.sh, which is gitignored. The environment still
+# wins, for CI or a one-off.
+[ -f "$ROOT/tools/signing.local.sh" ] && . "$ROOT/tools/signing.local.sh"
+IDENT="${SIGN_ID:-}"
 [ "$ADHOC" = 1 ] && IDENT="-"
 
 [ -d "$PAYLOAD" ] || { echo "no payload at $PAYLOAD -- run make-payload.sh"; exit 1; }
@@ -171,4 +176,4 @@ if [ "$ADHOC" = 0 ]; then
 fi
 echo
 echo "payload signed. Next: build the DMG and notarize with profile"
-echo "\${NOTARY_PROFILE:-[redacted]}."
+echo "\$NOTARY_PROFILE."

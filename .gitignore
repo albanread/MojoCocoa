@@ -194,3 +194,6 @@ mojo/docs/releases/nightly.md
 .derived/
 # downloaded .whl files (~280MB), refetchable from PyPI
 wheels/
+
+# personal signing identity and notary profile (see .example)
+tools/signing.local.sh
