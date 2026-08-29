@@ -536,7 +536,7 @@ So the artifact is the shape already known to work here:
       payload/                   the versioned toolchain + thin Roast.app
       Read Me.rtf
 
-`tools/make-release.sh` follows MACVM's `make-macapp.sh`, which is proven:
+The release pipeline follows MACVM's `make-macapp.sh`, which is proven:
 build -> sign -> dmg -> notarize -> staple -> verify, driven by `SIGN_ID`
 and `NOTARY_PROFILE`. Nothing is invented; the payload is bigger and the
 inventory longer, and that is the whole difference.
@@ -575,6 +575,14 @@ Unattended testing drives the same code the buttons call, through
 `--install`, `--reset`, `--uninstall [--user-data]` and `--root` for a
 scratch directory. A notarized binary may parse argv; this costs one
 function and keeps the checks honest.
+
+
+The installer builder -- the installer itself, the payload assembly, the
+signing walk, the entitlements and the release pipeline -- lives in a
+separate private repository, because it is the only part of this project
+that touches a Developer ID and an Apple ID. Those belong in one private
+place rather than scattered through a public tree. This document describes
+what it does and why; it does not carry the identities it does it with.
 
 ### What signing costs
 
@@ -654,7 +662,7 @@ name suggests.
    bare `roast` launched with no environment at all finds it; `check-ide`
    green against it. No signing yet, no package yet.
 
-2. **Signing, over the whole inventory.** `tools/sign-payload.sh` walks
+2. **Signing, over the whole inventory.** The signing walk goes
    every Mach-O -- inside out, dylibs before the binaries that load them,
    Python's relocated libraries after `bundle-python.sh` has moved them --
    applies the hardened runtime and the two entitlements, and then
@@ -672,7 +680,7 @@ name suggests.
    Application Support survives untouched. `--uninstall` leaves nothing
    under the root and keeps user data; `--user-data` removes that too.
 
-4. **Notarize it.** `make-release.sh` end to end: sign the inventory, build
+4. **Notarize it.** The release pipeline end to end: sign the inventory, build
    the DMG, submit, staple, verify. *Acceptance:* `spctl -a -vv` on the DMG
    reports "accepted, source=Notarized Developer ID".
 
