@@ -162,6 +162,14 @@ cat > "$C/Info.plist" <<PLIST
   <key>CFBundlePackageType</key>       <string>APPL</string>
   <key>CFBundleSignature</key>         <string>????</string>
   <key>LSMinimumSystemVersion</key>    <string>15.0</string>
+  <!-- Scriptable: the sdef gives Script Editor the words; the events work
+       by raw code either way. sdef(1) resolves this only for a BUNDLE -
+       measured: the same file embedded in a __TEXT,__sdef section of the
+       bare binary reads back byte-identical with segedit yet sdef(1)
+       refuses it with error -192 - so the app bundle is the terminology
+       carrier, and this is where the keys live. -->
+  <key>NSAppleScriptEnabled</key>      <true/>
+  <key>OSAScriptingDefinition</key>    <string>Roast.sdef</string>
   <key>NSHighResolutionCapable</key>   <true/>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
   <key>MojoCocoaSourceRevision</key>   <string>$GITREV</string>
@@ -201,6 +209,15 @@ cat > "$C/Info.plist" <<PLIST
 </plist>
 PLIST
 printf 'APPL????' > "$C/PkgInfo"
+
+# The scripting dictionary, beside the plist that names it.
+cp -f "$ROOT/ide/Roast.sdef" "$C/Resources/Roast.sdef"
+if sdef "$APP" 2>/dev/null | grep -q 'do command'; then
+  echo "   sdef: terminology resolves (do command)"
+else
+  echo "   FAILED -- sdef(1) cannot read the dictionary from the bundle"
+  exit 1
+fi
 
 # An icon if one has been drawn; the generic app icon otherwise. Named rather
 # than assumed, so adding tools/roast.icns is all it takes.

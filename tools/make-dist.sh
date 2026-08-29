@@ -232,7 +232,12 @@ if [ "${NO_IDE:-0}" = 1 ]; then
   echo "   skipped (NO_IDE=1)"
   rm -f "$D/bin/roast"
 elif COCOAMOJO_ROOT="$D" "$D/bin/cocoamojo" --build "$ROOT/ide/roast.mojo" \
-     -o "$D/bin/roast" >"$D/bin/.roast.log" 2>&1; then
+     -o "$D/bin/roast" \
+     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
+     -Xlinker "$ROOT/tools/roast-info.plist" \
+     -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __sdef \
+     -Xlinker "$ROOT/ide/Roast.sdef" \
+     >"$D/bin/.roast.log" 2>&1; then
   rm -f "$D/bin/.roast.log"
   echo "   roast ($(stat -f%z "$D/bin/roast" | awk '{printf "%.0f KB", $1/1024}'))"
 else

@@ -481,6 +481,33 @@ fi
     bad "agent editor" "$edfail"
   fi
 
+  # Run Script: a file of agent commands replayed against the session, and
+  # an AppleScript run in-process by NSAppleScript -- one function behind
+  # both the File menu item and the run-script verb. Asserted on effects: the
+  # scripted edit must be IN the saved file, the setting must round-trip, and
+  # the AppleScript's result must reach the console.
+  mkdir -p "$TMP/scproj"
+  printf 'fn main():\n    print(42)\n' > "$TMP/scproj/main.mojo"
+  printf 'goto 2:1\ntype X\nsave\nsetting script.gate ok\nsetting script.gate\n' \
+    > "$TMP/session.roast"
+  printf 'return "osa-alive"\n' > "$TMP/hello.applescript"
+  scout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_PROJECT="$TMP/scproj" \
+          ROAST_SESSION="$TMP/sc.json" \
+          ROAST_AGENT="open $TMP/scproj/main.mojo;run-script $TMP/session.roast;run-script $TMP/hello.applescript" \
+          ROAST_AUTOCLOSE_TICKS=80 timeout 240 "$TMP/roast" 2>&1)
+  scfail=""
+  grep -q '^Xprint(42)$\|^X    print(42)$' "$TMP/scproj/main.mojo" 2>/dev/null \
+    || scfail="scripted edit not in saved file"
+  echo "$scout" | grep -q 'script ok: 5 command(s), 0 error(s)' \
+    || scfail="${scfail:-agent script did not run clean}"
+  echo "$scout" | grep -q 'applescript ok: osa-alive' \
+    || scfail="${scfail:-NSAppleScript path failed}"
+  if [ -z "$scfail" ]; then
+    ok "run-script" "agent lines edit the file; AppleScript answers in-process"
+  else
+    bad "run-script" "$scfail"
+  fi
+
   # The debugger's BUTTONS. ROAST_DEBUG_STEPS presses one toolbar item per
   # stop -- looked up in the live bar by identifier, its action sent to its
   # own target through NSApp, the dispatch a click takes -- so a button

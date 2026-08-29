@@ -2000,6 +2000,30 @@ class RoastActions:
         except:
             pass
 
+    def roastRunScript_(self, sender: ObjCObject):
+        """Pick a script and run it against this session. The panel is
+        Cocoa's; the execution is run_agent_script's, the same function the
+        agent's `run-script` verb uses -- one path, two ways in."""
+        try:
+            with autoreleasepool():
+                let NSOpenPanel = ObjCClass.lookup["NSOpenPanel"]()
+                let panel = Cls["NSOpenPanel"]().openPanel()
+                Obj["NSOpenPanel"](panel.addr()).setCanChooseFiles(True)
+                Obj["NSOpenPanel"](panel.addr()).setCanChooseDirectories(
+                    False
+                )
+                Obj["NSOpenPanel"](panel.addr()).setAllowsMultipleSelection(
+                    False
+                )
+                if Obj["NSSavePanel"](panel.addr()).runModal() != 1:
+                    return
+                let url = Obj["NSSavePanel"](panel.addr()).URL()
+                let p = ns_to_string(Obj["NSURL"](url.addr()).path())
+                show_console(True)
+                set_status(run_agent_script(p))
+        except:
+            pass
+
     def roastOpenFolder_(self, sender: ObjCObject):
         try:
             with autoreleasepool():
@@ -4168,6 +4192,13 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     let save_all = add_item(
         file, String("Save All"), String("roastSaveAll:"), String("S"), actions
     )
+    # A script against this session: agent-command lines or an AppleScript,
+    # picked in a panel, echoed into the console. The agent's `run-script`
+    # verb is the same function without the panel.
+    _ = add_item(
+        file, String("Run Script…"), String("roastRunScript:"), String(""),
+        actions,
+    )
     Obj["NSMenuItem"](save_all.addr()).setKeyEquivalentModifierMask(
         Int(0x20000 | 0x100000)
     )
@@ -4406,6 +4437,7 @@ comptime AGENT_HELP = (
     " · open <path> · save · goto <line>[:col] · caret · file"
     " · tabs · tab <n> · type <text> · find <text>"
     " · views · sidebar <pt> · console-size <pct> · setting <key> [value]"
+    " · run-script <path>"
     " · debug · break <line> · continue · step-over · step-in · step-out"
     " · stopped · variables · eval <expr> · eval?"
 )
@@ -4869,6 +4901,10 @@ def agent_command(text: String) -> String:
         session.set_setting(String(key), String(val0.strip()))
         return String("set ") + key
 
+    if cmd.startswith("run-script "):
+        let rs0 = String(cmd[byte=11 : cmd.byte_length()])
+        return run_agent_script(String(rs0.strip()))
+
     if cmd == "show-console":
         show_console(True)
         return String("console shown")
@@ -4947,6 +4983,91 @@ def screenshot(path: String) -> String:
             path + String(" (") + String(w) + String("x") + String(h)
             + String(" px)")
         )
+
+
+def run_agent_script(path: String) -> String:
+    """Run a script file against this session, echoing into the console.
+
+    Two languages, told apart by extension. `.applescript` and `.scpt` run
+    through NSAppleScript IN this process -- events an app sends itself need
+    no Automation grant, so a user's script drives Roast with no dialog. And
+    with the sdef shipped, `tell application "Roast" to do command "..."`
+    reads like it should. Anything else is agent-command lines: one command
+    per line, `#` comments, the exact language `help` describes -- so a
+    session someone drove by hand can be saved and replayed.
+    """
+    if not file_exists(path):
+        return String("error: no script at ") + path
+    build.append_output(
+        String("\n─── script ") + _basename(path) + String(" ───\n")
+    )
+    var lower = String(path)
+    let is_osa = lower.endswith(".applescript") or lower.endswith(".scpt")
+    var failures = 0
+    var ran = 0
+    if is_osa:
+        with autoreleasepool():
+            let url = Cls["NSURL"]().fileURLWithPath(nsstring(path).ptr())
+            var err = ObjCObject(0)
+            var script = Cls["NSAppleScript"]().alloc()
+            script = Obj["NSAppleScript"](
+                script.addr()
+            ).initWithContentsOfURL_error(
+                url.ptr(), Pointer(to=err).unsafe_bitcast[P]()[]
+            )
+            if script.addr() == 0:
+                build.append_output(String("could not load the script\n"))
+                console_sync()
+                return String("error: could not load ") + path
+            var err2 = ObjCObject(0)
+            let result = Obj["NSAppleScript"](
+                script.addr()
+            ).executeAndReturnError(
+                Pointer(to=err2).unsafe_bitcast[P]()[]
+            )
+            if result.addr() == 0:
+                build.append_output(String("script error (see Script Editor")
+                    + String(" for details)\n"))
+                console_sync()
+                return String("error: script failed")
+            var out = String("(no result)")
+            let sv = Obj["NSAppleEventDescriptor"](result.addr()).stringValue()
+            if sv.addr() != 0:
+                out = ns_to_string(sv)
+            build.append_output(out + String("\n"))
+            console_sync()
+            return String("applescript ok: ") + out
+    # Agent-command lines.
+    try:
+        var text: String
+        with open(path, "r") as f:
+            text = f.read()
+        var rest = text
+        while rest != "":
+            var line_text = rest
+            let nl = rest.find("\n")
+            if nl >= 0:
+                line_text = String(rest[byte=:nl])
+                let t2 = String(rest[byte = nl + 1 : rest.byte_length()])
+                rest = t2
+            else:
+                rest = String("")
+            let one = String(line_text.strip())
+            if one == "" or one.startswith("#"):
+                continue
+            ran += 1
+            build.append_output(String("> ") + one + String("\n"))
+            let reply = agent_command(one)
+            build.append_output(String("  ") + reply + String("\n"))
+            if reply.startswith("error"):
+                failures += 1
+        console_sync()
+    except:
+        return String("error: could not read ") + path
+    return (
+        String("script ok: ") + String(ran) + String(" command(s), ")
+        + String(failures) + String(" error(s)")
+    )
 
 
 fn _agent_ae_handler(obj: P, cmd: P, event: P, reply: P, /) -> None:

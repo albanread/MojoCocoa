@@ -347,13 +347,32 @@ confirmed present in the Cocoa KB, including the two load-bearing ones
    -- in the screenshot. One naming subtlety recorded: a top-level menu
    item's own title is often empty; the NAME lives on the submenu it
    carries.
-5. **Terminology.** `Roast.sdef`; make-app.sh wires plist and Resources;
-   the `-sectcreate` experiment for the bare binary.
-   *Acceptance:* `tell application "Roast" to do command "status"` from
-   Script Editor on a granted machine; recorded as the manual step.
+5. **Terminology.** DONE. `ide/Roast.sdef` -- one command, `do command`,
+   because the whole surface IS the command language and `do command "help"`
+   lists it. make-app.sh wires `NSAppleScriptEnabled` +
+   `OSAScriptingDefinition` and copies the sdef into Resources, then FAILS
+   the bundle if `sdef(1)` cannot read the terminology back. The
+   `-sectcreate` experiment, concluded: the bare binary embeds
+   `__TEXT,__sdef` and `__TEXT,__info_plist` cleanly (segedit reads the XML
+   back byte-identical, and the identity sections ship in `bin/roast`), but
+   `sdef(1)` refuses a bare executable with error -192 -- so raw event codes
+   work everywhere, and the BUNDLE is the terminology carrier. The Script
+   Editor sentence on a granted machine stays the one manual step.
+
+   And on top of the surface: **File > Run Script…** -- a script run against
+   the live session, one function behind the menu item and the agent's
+   `run-script <path>` verb. Two languages by extension: agent-command lines
+   (the language `help` describes, `#` comments, echoed `> cmd` / reply into
+   the console, so a hand-driven session can be saved and replayed) and
+   `.applescript`/`.scpt`, run in-process by NSAppleScript -- an app sending
+   events to itself needs no Automation grant, so a user's script drives
+   Roast with no dialog.
 
 **Open questions, named now so they are cheap later.** ~~Self-send runloop
-reentry~~ (answered: inline, no reentry). Whether AppleScript resolves the bare binary by
+reentry~~ (answered: inline, no reentry). ~~Whether the sdef can ride the
+bare binary~~ (answered: the sections embed and ship, but sdef(1) resolves
+terminology only from a bundle -- error -192 on a bare executable).
+Whether AppleScript resolves the bare binary by
 running-process name or only the bundle (sprint 1, manually). Async `eval`
 ergonomics -- `requested` + poll reads fine for an agent, worth revisiting if
 it grates. Multi-window, when there is more than one window.
