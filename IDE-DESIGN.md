@@ -483,76 +483,174 @@ together, and a person may now edit their own copy of the standard library
 while another client compiles against the pristine one. A shared service
 has to arbitrate what a bundle made impossible.
 
-### The installer
+### The installer is a signed, notarized package
 
-The DMG stops being a drag target and becomes an installer. It carries two
-things: **Roast Installer.app** and the payload (the versioned toolchain
-tree plus the thin Roast.app). The installer is written in cocoa-mojo --
-the toolchain installing itself is the toolchain's own best demo -- and
-carries the three runtime dylibs a cocoa-mojo binary needs in its own
-Frameworks, so it runs before anything is installed.
+Not a bespoke installer app. A **`.pkg`, signed with a Developer ID
+Installer certificate and notarized**, inside a signed and notarized DMG.
+This is the shape Apple documents for putting a toolchain on a machine,
+and every reason is one we would otherwise have to build badly ourselves:
 
-One window, three buttons, and for the sake of humanity all three are
-there from the first release:
+- **Authorization.** Writing `/Applications/Roast` needs rights this
+  process does not have. `installer` asks for them the way the system
+  asks for everything else. A custom app would need `SMJobBless` or the
+  deprecated `AuthorizationExecuteWithPrivileges` -- a privilege-escalation
+  surface written by us, reviewed by nobody.
+- **Gatekeeper.** A notarized, stapled package installs with no scary
+  dialog and no right-click-Open folklore. An unsigned installer app on a
+  machine that has never seen us is exactly the friction this is meant to
+  remove.
+- **Receipts.** `pkgutil` knows what was installed and where, so uninstall
+  can be truthful rather than a guess.
+- **The UI is Apple's** -- familiar, localized, accessible, and not our
+  bug.
 
-    Install            copy the payload to /Applications/Roast, point
-                       `current` at it, register Roast.app. Re-running
-                       with a newer payload is Update: the new version
-                       lands beside the old and `current` moves.
+**And so the CLI face disappears, which was the right instinct.** It is not
+that a notarized binary may not parse argv; it is that with a `.pkg` there
+is no installer app to give a CLI to. Unattended testing uses the system's
+own tools -- `installer -pkg … -target`, `pkgutil --files`,
+`pkgutil --forget` -- which is better than a private flag, because the
+test drives exactly the path a person's click drives.
 
-    Reset Installation re-copy the CURRENT version's payload over itself.
-                       Repairs a damaged or experimented-on toolchain.
-                       Never touches Application Support: the user's
-                       edited stdlib, examples, IDE source, projects and
-                       Python environments all survive, exactly as
-                       File > Reset in Roast already behaves.
+    Roast-<version>.dmg           signed, notarized, stapled
+      Install CocoaMojo.pkg       signed (Developer ID Installer),
+                                  notarized, stapled
+      Read Me.rtf
 
-    Uninstall All      remove /Applications/Roast entirely -- every
-                       version, the app, the symlink -- after a confirm
-                       that states precisely what goes. One checkbox,
-                       off by default: "Also remove my user data
-                       (edited stdlib, examples, Python environments)",
-                       which removes Application Support/Roast too.
-                       Leaving a machine the way you found it is a
-                       feature, not an afterthought.
+The package installs `/Applications/Roast/CocoaMojo/<version>/`, the thin
+`Roast.app`, and a small `CocoaMojo Utility.app`; a postinstall script
+points `current` at the new version and registers the app.
 
-Every button also exists as a flag -- `--install`, `--reset`,
-`--uninstall [--user-data]`, `--root <dir>` for tests -- because this
-project tests what a person does, and a person cannot click unattended.
+### Reset and Uninstall
+
+Still there from the first release -- leaving a machine the way you found
+it is a feature, not an afterthought -- but they live where they can be
+signed and notarized like everything else:
+
+    CocoaMojo Utility.app     installed beside Roast, reachable from
+                              Roast's Help menu, and the thing a person
+                              finds when they go looking in the folder.
+
+    Reset Installation        re-lay the current version's files from the
+                              package receipt. Repairs a toolchain that
+                              was experimented on. NEVER touches
+                              Application Support: edited standard
+                              library, examples, IDE source, projects and
+                              Python environments all survive, the same
+                              contract File > Reset already keeps.
+
+    Uninstall All             remove /Applications/Roast entirely -- every
+                              version, both apps, the symlink -- after a
+                              confirm stating precisely what goes, then
+                              `pkgutil --forget` so the receipts go too.
+                              One checkbox, OFF by default: "Also remove
+                              my user data (edited standard library,
+                              examples, Python environments)".
+
+The utility is a separate app so that Uninstall is not asking Roast to
+delete the Roast that is running it. It is written in Swift -- the
+installer path must work on a machine where nothing is installed, and the
+platform's own language is the honest bootstrap. Dogfooding belongs in the
+product, not in the ladder up to it.
+
+### What signing actually costs us
+
+Notarization refuses a package containing one unsigned Mach-O, and this
+payload has **fifteen** before Python: `bin/cocoamojo-compiler`,
+`mojo-lsp-server`, `lldb`, `lldb-dap`, `lldb-argdumper`, `roast`, and nine
+dylibs including `libLLVM` (78 MB), `libMLIR` (159 MB), `liblldb`,
+`libMojoLLDB` and `libMojoCompiler`. The relocatable CPython adds its own,
+and `bundle-python.sh` already relocates its dylibs -- every one needs a
+signature after that surgery. So signing is a build step over an
+inventory, not a flourish at the end, and the count is the reason it must
+be automated from the first sprint rather than retrofitted.
+
+Two entitlements the toolchain genuinely needs, both of which weaken the
+hardened runtime and must therefore be justified in one place and reviewed:
+
+    com.apple.security.cs.allow-jit                 the compiler JITs;
+                                                    `cocoamojo --run` is
+                                                    the JIT path
+    com.apple.security.cs.disable-library-validation
+                                                    lldb loads
+                                                    libMojoLLDB.dylib at
+                                                    run time, and a
+                                                    hardened process
+                                                    refuses a plugin it
+                                                    did not ship with
+
+Programs a person compiles are unsigned, and that is fine: they are not
+distributed, and Gatekeeper judges what arrives from outside, not what a
+compiler makes locally. The debugger attaching to them is the ordinary
+developer case -- and the reason the machine asks its two questions the
+first time, which we already know about.
 
 ### What moves, in order
 
-1. **The layout and the lookup.** make-dist emits (or an assembly step
-   arranges) the versioned tree; Roast and the cocoamojo wrapper resolve
-   `/Applications/Roast/CocoaMojo/current`, env override first, checked
-   not trusted. *Acceptance:* a hand-copied installation; a bare `roast`
-   launched with no environment finds it; check-ide green against it.
-2. **The installer app**, with Install working and the window honest
-   about progress. *Acceptance:* driven by its own CLI flags against a
-   scratch `--root`, the tree and app appear, `current` points right, and
-   the installed Roast passes the agent smoke (`status`, `screenshot`).
-3. **Reset and Uninstall All.** *Acceptance:* sabotage the installed
-   stdlib, Reset heals it (a build that failed now passes) while a marker
-   file in Application Support survives; Uninstall leaves nothing under
-   the root, and with the checkbox also nothing under Application
-   Support; without it, user data intact.
-4. **The thin app.** make-app stops folding the toolchain into
-   Resources; migrate_user_space copies from the installation instead.
-   *Acceptance:* Roast.app under 50 MB, full check-ide green with the
-   thin app + installed toolchain, first launch still populates user
-   space.
-5. **The DMG.** make-dmg assembles installer + payload, replacing
-   make-app's drag image. *Acceptance:* mount, install from it on a
-   clean user-space, everything above still green.
-6. **Versions coexist.** Install a second version beside the first,
-   `current` moves, the old stays runnable by explicit path; Uninstall
-   can name one version. *Acceptance:* two versions on disk, a build
-   through `current` and a build pinned to the old both pass.
+1. **The layout and the lookup.** An assembly step arranges the versioned
+   tree; Roast and the `cocoamojo` wrapper resolve
+   `/Applications/Roast/CocoaMojo/current` -- env override first, then the
+   installation, then beside-the-binary -- every candidate CHECKED for
+   `bin/cocoamojo` rather than trusted. Three generations of path-guessing
+   collapse into one list. *Acceptance:* a hand-copied installation; a
+   bare `roast` launched with no environment at all finds it; `check-ide`
+   green against it. No signing yet, no package yet.
+
+2. **Signing, over the whole inventory.** `tools/sign-payload.sh` walks
+   every Mach-O -- inside out, dylibs before the binaries that load them,
+   Python's relocated libraries after `bundle-python.sh` has moved them --
+   applies the hardened runtime and the two entitlements, and then
+   VERIFIES: `codesign --verify --deep --strict` plus
+   `spctl --assess`. Second, because sprint 1's tree is what it signs, and
+   before the package, because a package of unsigned parts cannot be
+   notarized. *Acceptance:* the script reports the count it signed, that
+   count equals the count found, and verification passes on every one.
+
+3. **The package.** `pkgbuild` over the signed tree, `productbuild` with a
+   distribution and a licence, `productsign` with the Developer ID
+   Installer certificate, `notarytool submit --wait`, `stapler staple`.
+   The postinstall script points `current` and registers the app.
+   *Acceptance:* `installer -pkg … -target CurrentUserHomeDirectory` into
+   a scratch root lays the tree down; `pkgutil --files` lists what it
+   claims; `spctl --assess --type install` accepts it; and on a machine
+   that has never seen it, double-click installs with no Gatekeeper
+   dialog.
+
+4. **CocoaMojo Utility.app** -- Reset Installation and Uninstall All,
+   signed and notarized with the rest, reachable from Roast's Help menu.
+   *Acceptance:* sabotage the installed standard library and watch a build
+   fail, Reset heals it and the build passes, while a marker file in
+   Application Support survives untouched; Uninstall leaves nothing under
+   the root and nothing in `pkgutil` receipts, keeps user data by default,
+   and removes it when the checkbox is ticked.
+
+5. **The thin app.** `make-app` stops folding the toolchain into
+   `Contents/Resources`; `migrate_user_space` copies from the installation
+   instead of from the bundle. *Acceptance:* `Roast.app` under 50 MB, the
+   full gate green against thin-app-plus-installed-toolchain, and first
+   launch still populating user space exactly as it does today.
+
+6. **The DMG**, replacing `make-app`'s drag image: package, read-me,
+   signed, notarized, stapled. *Acceptance:* mount it on a clean machine
+   state, install, and every acceptance above still holds.
+
+7. **Versions coexist.** A second version installs beside the first,
+   `current` moves, the old stays runnable by explicit path, and Uninstall
+   can name one version rather than all. *Acceptance:* two versions on
+   disk; a build through `current` and a build pinned to the older one
+   both pass.
 
 Then the **LSP as a launchd service** -- already a protocol on a pipe,
 already where the crashes were -- and the **compiler service** last: the
 biggest win, a warm context instead of a cold start, and the only piece
 needing an interface designed from nothing.
+
+**What this needs that we do not have.** A Developer ID Application
+certificate and a Developer ID Installer certificate, an Apple Developer
+Program membership, and an app-specific password or API key for
+`notarytool`. Sprints 1 and 2 can be built and tested without any of them
+-- ad-hoc signing proves the walk, `--verify` proves the inventory -- but
+sprint 3 cannot be finished without a real identity, and that is a
+purchasing decision rather than an engineering one.
 
 ## What the stdlib must grow
 
