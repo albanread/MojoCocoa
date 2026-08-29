@@ -398,22 +398,28 @@ def show_console(want: Bool):
 
 
 # ── Where the toolchain is ──────────────────────────────────────────────────
-def toolchain_root() -> String:
-    """The CocoaMojo the editor compiles, completes and runs with.
+comptime INSTALL_ROOT = "/Applications/Roast/CocoaMojo/current"
 
-    COCOAMOJO_ROOT first: `cocoamojo` exports it, so a Roast launched by the
-    driver finds the toolchain that built it, and a harness can point
-    somewhere else. Otherwise the app asks itself where it is -- a Roast
-    double-clicked in the Finder inherits no environment at all, and an
-    application that cannot find its own compiler is not an application.
 
-    NSBundle answers `Contents/Resources` inside a bundle and the executable's
-    own directory outside one, so the same two lines serve a shipped app and a
-    bare binary sitting beside a distribution.
+def is_toolchain(root: String) -> Bool:
+    """A directory is a toolchain only if it can actually compile.
+
+    Nothing here may assume a path exists because it was computed. The
+    unchecked version of this handed NSTask a path that was not there, and
+    NSTask raises rather than returning -- which ends the process.
     """
-    let env = getenv("COCOAMOJO_ROOT")
-    if env != "":
-        return env^
+    if root == "":
+        return False
+    return file_exists(root + String("/bin/cocoamojo"))
+
+
+def _bundle_toolchain() -> String:
+    """Where the running binary would keep a toolchain of its own.
+
+    NSBundle answers `Contents/Resources` inside an app and the
+    executable's own directory outside one, so this covers a shipped
+    bundle and a bare `roast` sitting beside a distribution alike.
+    """
     try:
         with autoreleasepool():
             let NSBundle = ObjCClass.lookup["NSBundle"]()
@@ -430,7 +436,41 @@ def toolchain_root() -> String:
         return String()
 
 
-# ── Build and run ───────────────────────────────────────────────────────────
+def toolchain_root() -> String:
+    """The CocoaMojo this editor compiles, completes and runs with.
+
+    One ordered list, every entry CHECKED rather than trusted:
+
+      1. COCOAMOJO_ROOT      a harness, or the `cocoamojo` driver that
+                             launched us, pointing somewhere deliberate
+      2. beside the binary   an app carrying its own toolchain, or a bare
+                             `roast` inside a distribution
+      3. the installation    /Applications/Roast/CocoaMojo/current
+      4. ~/Applications/...  the same, installed for one user
+
+    The order serves both eras without a flag: while Roast still carries a
+    toolchain, 2 answers; once it is thin, 2 does not exist and 3 does.
+    And a child Roast -- built by this editor from the IDE source, running
+    from a build directory with no environment and nothing beside it --
+    reaches 3 and finds a real toolchain instead of a path that merely
+    looked like one.
+    """
+    let env = getenv("COCOAMOJO_ROOT")
+    if is_toolchain(env):
+        return env^
+    let beside = _bundle_toolchain()
+    if is_toolchain(beside):
+        return beside^
+    if is_toolchain(String(INSTALL_ROOT)):
+        return String(INSTALL_ROOT)
+    let home = getenv("HOME")
+    if home != "":
+        let mine = home + String(INSTALL_ROOT)
+        if is_toolchain(mine):
+            return mine^
+    return String()
+
+
 def _driver() -> String:
     """The cocoamojo beside us. An editor built by this toolchain should
     compile with this toolchain, not with whatever is on PATH."""
