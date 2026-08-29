@@ -128,3 +128,15 @@ commit that fixes it when one does.
     ("Building... 14s") costs one line more and answers the actual
     question, which is "is it still going". Applies to Build, Run's build
     half, and the debug build.
+
+12. **Feature: Python examples in the Examples menu.** Thirteen shipped
+    examples, none touching Python -- yet the app carries a whole
+    relocatable CPython, a per-project venv system and a Python menu, all
+    invisible until someone has a use in hand. Upstream sources exist to
+    adapt: `mojo/examples/python-interop/` (hello_mojo, person_module,
+    mandelbrot_mojo). Ship one or two as example projects -- a minimal
+    "call into Python, print what came back", and one that pip-installs
+    a small package into the project venv and uses it, since the venv
+    flow is the part nothing else demonstrates. Must run via cmd-R with
+    the bundled CPython on a machine with no Python installed, which is
+    the whole point of carrying one.
