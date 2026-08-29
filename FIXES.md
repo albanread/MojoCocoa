@@ -43,6 +43,12 @@ commit that fixes it when one does.
    whether the server takes multiple roots in its settings; the wrapper's
    INC array is the single source of truth to mirror.
 
+   More of the same, seen later in testing: the STATUS BAR reports
+   "unable to locate module 'max'" while the build runs fine -- the
+   server's resolution failure surfaced as if it were the truth about the
+   program. Worth checking, when fixing: whether the status line should
+   ever relay a diagnostic class the build demonstrably contradicts.
+
 4. **Deprecated pointer arithmetic in a shipped example.**
    `fernwind/main.mojo:292` warns:
 
