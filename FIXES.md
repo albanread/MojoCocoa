@@ -119,3 +119,12 @@ commit that fixes it when one does.
     wiring, not new features. If the click lands outside the current
     selection, select the word under the pointer first (entry 6's word
     machinery), the way every Mac editor does.
+
+11. **Feature: visible progress while the compiler runs.** Mojo compiles
+    are long enough that a static "Building..." reads as a hang. Put a
+    spinner (NSProgressIndicator, small, indeterminate) beside the status
+    text, shown while build.is_running() and hidden on finish -- the tick
+    already knows both moments. Elapsed seconds appended to the status
+    ("Building... 14s") costs one line more and answers the actual
+    question, which is "is it still going". Applies to Build, Run's build
+    half, and the debug build.
