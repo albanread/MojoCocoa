@@ -8,9 +8,10 @@ demo: same program, two windowing worlds.
 
 ## First run
 
-pygame lives in the project's own Python environment, so once:
+pygame lives in the project's own Python environment, and the project
+ships a `requirements.txt` naming it — so once:
 
-1. Python menu → **Create Environment for Project**
-2. Python menu → **Install Package…** → `pygame`
+1. Python menu → **Create or Repair Environment**
+2. Python menu → **Install Project Dependencies**
 
 Then ⌘R. Quit the pygame window to stop.
