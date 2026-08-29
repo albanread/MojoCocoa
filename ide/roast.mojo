@@ -31,6 +31,7 @@ from std.time import sleep, perf_counter_ns
 from std.ffi import external_call
 from std.objc import ns_to_string, SEL
 from gridview import (
+    set_lncol_field,
     g_caret,
     selected_text,
     g_grid,
@@ -3399,6 +3400,15 @@ class RoastTabBar(NSView):
                         _ = external_call["NSRectFill", NoneType](
                             rect(x, 0.0, w, TAB_H)
                         )
+                        # The accent underline. Background alone separates
+                        # active from inactive by a shade of grey nobody can
+                        # name; two points of the user's own accent colour
+                        # is the affordance every browser trained.
+                        let mark = Cls["NSColor"]().controlAccentColor()
+                        Obj["NSColor"](mark.addr()).setFill()
+                        _ = external_call["NSRectFill", NoneType](
+                            rect(x, TAB_H - 2.0, w, 2.0)
+                        )
                     # A separator, so tabs read as tabs and not as a run of words.
                     let line = Cls["NSColor"]().separatorColor()
                     Obj["NSColor"](line.addr()).setFill()
@@ -3416,6 +3426,24 @@ class RoastTabBar(NSView):
                     # this only decides where to put an ellipsis.
                     let room = w - TAB_CLOSE - 20.0
                     var label = document.name_at(i)
+                    # Two files named main.mojo make two identical tabs, and
+                    # identical tabs are a coin toss. When any other open
+                    # tab shares this basename, the parent folder joins the
+                    # label -- presentation only, nothing renames.
+                    var j = 0
+                    while j < document.count():
+                        if j != i and document.name_at(j) == label:
+                            let uri = document.uri_at(i)
+                            let path = (
+                                String(uri[byte = 7 : uri.byte_length()])
+                                if uri.startswith(String("file://"))
+                                else uri
+                            )
+                            let dir = _basename(_dirname(path))
+                            if dir != "":
+                                label = dir + String("/") + label
+                            break
+                        j += 1
                     var glyphs = 0
                     for _ in label.codepoints():
                         glyphs += 1
@@ -3756,6 +3784,14 @@ def _hex_value(b: Int) -> Int:
     if b >= 0x61 and b <= 0x66:
         return b - 0x61 + 10
     return -1
+
+
+def _dirname(path: String) -> String:
+    """The path up to the last slash, or empty."""
+    let cut = path.rfind(String("/"))
+    if cut <= 0:
+        return String()
+    return String(path[byte=:cut])
 
 
 def _basename(path: String) -> String:
@@ -5762,6 +5798,11 @@ def main() raises:
             nsstring(String("roast.toolbar")).ptr()
         )
         Obj["NSToolbar"](toolbar.addr()).setDelegate(actions.ptr())
+        # Icon-only, which is what Xcode, Finder and Safari ship: labels on
+        # eleven items overflow a modest window into the >> chevron -- and
+        # the first thing the chevron swallowed was Find. Tooltips carry
+        # the names.
+        Obj["NSToolbar"](toolbar.addr()).setDisplayMode(Int(2))
         Obj["NSWindow"](win.addr()).setToolbar(toolbar.ptr())
 
         let bounds = Obj["NSView"](content.addr()).bounds()
@@ -5775,12 +5816,45 @@ def main() raises:
             nsstring(String("Ready")).ptr()
         )
         Obj["NSView"](status.addr()).setFrame(
-            rect(10.0, 3.0, w - 20.0, STATUS_H - 6.0)
+            rect(10.0, 3.0, w - 150.0, STATUS_H - 6.0)
         )
-        # Width-resizable, pinned to the bottom.
+        # Width-resizable, pinned to the bottom. Secondary, because the
+        # status line is chrome: it informs, it does not compete with code.
         Obj["NSView"](status.addr()).setAutoresizingMask(Int(2))
+        Obj["NSTextField"](status.addr()).setTextColor(
+            Cls["NSColor"]().secondaryLabelColor().ptr()
+        )
         Obj["NSView"](content.addr()).addSubview(status.ptr())
         g_status()[] = status.addr()
+
+        # The hairline the comment above always promised. Without it the
+        # status text reads as a stray caption floating under the editor.
+        let NSBox = ObjCClass.lookup["NSBox"]()
+        var hairline = Cls["NSBox"]().alloc()
+        hairline = Obj["NSBox"](hairline.addr()).initWithFrame(
+            rect(0.0, STATUS_H, w, 1.0)
+        )
+        Obj["NSBox"](hairline.addr()).setBoxType(Int(2))
+        Obj["NSView"](hairline.addr()).setAutoresizingMask(Int(2))
+        Obj["NSView"](content.addr()).addSubview(hairline.ptr())
+
+        # Ln/Col at the right edge, where every editor keeps it. The grid
+        # owns the caret, so the field is handed over and kept true there.
+        let lncol = Cls["NSTextField"]().labelWithString(
+            nsstring(String("")).ptr()
+        )
+        Obj["NSView"](lncol.addr()).setFrame(
+            rect(w - 130.0, 3.0, 100.0, STATUS_H - 6.0)
+        )
+        # Pinned to the bottom-right corner.
+        Obj["NSView"](lncol.addr()).setAutoresizingMask(Int(1))
+        Obj["NSTextField"](lncol.addr()).setTextColor(
+            Cls["NSColor"]().secondaryLabelColor().ptr()
+        )
+        Obj["NSTextField"](lncol.addr()).setAlignment(Int(2))
+        Obj["NSView"](content.addr()).addSubview(lncol.ptr())
+        _ = external_call["objc_retain", P](lncol.ptr())
+        set_lncol_field(lncol.addr())
 
         # The compiler-is-running spinner, sitting just left of the status
         # text. Small, indeterminate, and hidden whenever it is stopped --

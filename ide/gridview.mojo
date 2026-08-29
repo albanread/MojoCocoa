@@ -363,12 +363,32 @@ class RoastGridView(NSView, NSTextInputClient):
                 Obj["NSColor"](bg.addr()).setFill()
                 _ = external_call["NSRectFill", NoneType](vis)
 
+                # The gutter is a margin, not more page: its own quiet
+                # background and a hairline where it meets the text. Drawn
+                # only when the damage reaches it.
+                if vis.origin.x < GUTTER_W:
+                    let full = Obj["NSView"](view.addr()).bounds()
+                    let margin = Cls["NSColor"]().windowBackgroundColor()
+                    Obj["NSColor"](margin.addr()).setFill()
+                    _ = external_call["NSRectFill", NoneType](
+                        rect(0.0, vis.origin.y, GUTTER_W - 8.0,
+                             vis.size.height)
+                    )
+                    let hair = Cls["NSColor"]().separatorColor()
+                    Obj["NSColor"](hair.addr()).setFill()
+                    _ = external_call["NSRectFill", NoneType](
+                        rect(GUTTER_W - 8.0, vis.origin.y, 1.0,
+                             vis.size.height)
+                    )
+                    _ = full
+
                 let lh = line_height()
                 if lh <= 0.0:
                     return
 
                 if not has_rope():
                     return
+                _update_lncol()
                 let buf = g_buffer()
                 let total = buf[][0].line_count()
 
@@ -1161,7 +1181,12 @@ def build_type():
 
         # Syntax colours. System colours rather than chosen ones, so the
         # editor follows the appearance the rest of the machine is using.
-        let comment_c = Cls["NSColor"]().systemGreenColor()
+        # Comments get secondaryLabel, not a hue: they are the most common
+        # token in a file, and the most common token must recede -- a colour
+        # that shouts turns the whole window that colour. The named colours
+        # carry meaning where it is rare enough to read: keywords, strings,
+        # numbers.
+        let comment_c = Cls["NSColor"]().secondaryLabelColor()
         let string_c = Cls["NSColor"]().systemRedColor()
         let keyword_c = Cls["NSColor"]().systemPurpleColor()
         let number_c = Cls["NSColor"]().systemBlueColor()
@@ -1836,6 +1861,38 @@ def sel_start() -> Int:
 
 def sel_end() -> Int:
     return max(g_caret()[], g_anchor()[])
+
+
+comptime g_lncol_field = named_global["roast.lncol.field", Int]
+comptime g_lncol_last = named_global["roast.lncol.last", Int]
+
+
+def set_lncol_field(addr: Int):
+    """The status bar's Ln/Col label, handed over by the window builder.
+    The caret lives here, so keeping the label true lives here too."""
+    g_lncol_field()[] = addr
+    _update_lncol()
+
+
+def _update_lncol():
+    if g_lncol_field()[] == 0 or not has_rope():
+        return
+    let buf = g_buffer()
+    let caret = g_caret()[]
+    # Free when nothing moved: draw also runs for scrolls and edits.
+    if caret == g_lncol_last()[] - 1:
+        return
+    g_lncol_last()[] = caret + 1
+    let line = buf[][0].line_of_offset(caret)
+    let col = caret - buf[][0].line_start(line)
+    with autoreleasepool():
+        _ = msg_send[ObjCObject, "NSTextField", "setStringValue:"](
+            ObjCObject(g_lncol_field()[]),
+            nsstring(
+                String("Ln ") + String(line + 1)
+                + String(", Col ") + String(col + 1)
+            ).ptr(),
+        )
 
 
 def set_caret(at: Int):
