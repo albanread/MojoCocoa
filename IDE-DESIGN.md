@@ -644,13 +644,42 @@ already where the crashes were -- and the **compiler service** last: the
 biggest win, a warm context instead of a cold start, and the only piece
 needing an interface designed from nothing.
 
-**What this needs that we do not have.** A Developer ID Application
-certificate and a Developer ID Installer certificate, an Apple Developer
-Program membership, and an app-specific password or API key for
-`notarytool`. Sprints 1 and 2 can be built and tested without any of them
--- ad-hoc signing proves the walk, `--verify` proves the inventory -- but
-sprint 3 cannot be finished without a real identity, and that is a
-purchasing decision rather than an engineering one.
+### The release runs on a different machine
+
+Building happens here; **signing, packaging and notarization happen on a
+macOS VM** that holds the identities. That is the right shape -- release
+credentials do not belong on a development machine -- but it is a
+constraint on the scripts, not a detail of who runs them:
+
+- **Every release script takes its identity as an argument** and hard-codes
+  nothing: `--sign-app`, `--sign-installer`, `--notary-profile`. A script
+  that knows one machine's certificate cannot run on the machine that has
+  it.
+- **The unit that travels is self-contained.** `make-release.sh` here emits
+  a `release/` folder -- the payload, the scripts that sign and package it,
+  the entitlements plist, a manifest of every Mach-O the signer must
+  account for. Nothing in it reaches back into the repository, because on
+  the far side there may not be one.
+- **Verification runs on both sides.** The manifest is written here and
+  checked there: if the count the signer signed does not equal the count
+  the build found, the release stops. A payload that gained a dylib in
+  transit is exactly the failure notarization would otherwise report as
+  something inscrutable an hour later.
+- **The staple comes home.** The signed, notarized DMG returns as the
+  artifact; nothing here re-signs it, and `spctl --assess` on this machine
+  is the last check before it is a release.
+
+### What this needs that we do not have
+
+Present on the build machine: a **Developer ID Application** certificate
+(`[redacted] ([redacted])`), which is what sprint 2 signs the
+fifteen Mach-Os with.
+
+Needed on the signing VM, and not verifiable from here: a **Developer ID
+Installer** certificate -- a different certificate type from the
+Application one, and the only thing `productsign` accepts -- and a stored
+`notarytool` credential profile. Sprints 1 and 2 are unblocked either way;
+sprint 3 is where the VM becomes load-bearing.
 
 ## What the stdlib must grow
 
