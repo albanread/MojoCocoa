@@ -289,6 +289,37 @@ else
   "$ROOT/tools/bundle-python.sh" "$D/Python"
 fi
 
+# An interpreter nothing can reach is freight, not a feature. Roast finds it
+# by framework path, and so does the database generator, but a person opening
+# Terminal had no way to run the Python they had just installed -- and the
+# only place the installer ever mentioned Python was the dialog offering to
+# delete it. bin/python3 is the entry point, beside cocoamojo and lldb,
+# where the rest of the toolchain keeps its commands.
+#
+# PYTHONHOME is the relocation contract: a copied framework still carries its
+# build prefix, and without this the interpreter looks for its standard
+# library where it was built rather than where it is.
+cat > "$D/bin/python3" <<'PYWRAP'
+#!/usr/bin/env bash
+# The CocoaMojo Python -- the same interpreter Roast uses for its per-project
+# environments, and the one that builds share/cocoa.sqlite at install time.
+#
+#   python3                     a REPL
+#   python3 -m venv myenv       an environment that stays yours
+#   python3 script.py
+#
+# This does NOT go on your PATH and does not shadow any Python you already
+# have; it is reachable by this path, deliberately and only.
+set -uo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HOME_DIR="$HERE/Python/Python.framework/Versions/Current"
+[ -x "$HOME_DIR/bin/python3" ] || {
+  echo "python3: no interpreter at $HOME_DIR" >&2; exit 1; }
+exec env PYTHONHOME="$HOME_DIR" "$HOME_DIR/bin/python3" "$@"
+PYWRAP
+chmod +x "$D/bin/python3"
+echo "   bin/python3: reachable beside cocoamojo"
+
 echo "== cocoa database generator =="
 # The 343 MB database is no longer shipped: the installer builds it on the
 # machine it installs to, in about fifteen seconds, from that machine's own
