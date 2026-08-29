@@ -63,3 +63,11 @@ commit that fixes it when one does.
    Fix direction: gate the x86 feature queries on the target ARCH first
    (`is_x86()` else False) so the feature-name check never reaches LLVM
    on Apple Silicon; find and note the prelude-path caller while there.
+
+6. **Double-click does not select the word under the mouse.** Confirmed in
+   the code: `mouseDown_` (gridview.mojo:608) never reads the event's
+   `clickCount` -- every click places the caret, so a double (and triple)
+   click is just two carets in a row. Fix: read `clickCount` off the
+   NSEvent; 2 selects the word around `offset_at_point` (the completion
+   code already knows word boundaries), 3 selects the line; drag after a
+   double-click should extend by words, the way every Mac text view does.
