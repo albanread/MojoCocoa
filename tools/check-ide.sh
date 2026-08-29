@@ -390,7 +390,9 @@ DBGPROJ
   # approved once, while every other check keeps exercising the fresh
   # build. If these three fail with empty walks anyway, a human dismissed
   # nothing on a machine where the dist binary changed: run one debug
-  # session by hand and answer the dialog.
+  # session by hand and answer the dialogs -- there are TWO: debugger
+  # access, and removable-volume access (this repo lives on one), and
+  # either can be the entire mystery.
   DBGROAST="$PWD/dist/CocoaMojo/bin/roast"
   [ -x "$DBGROAST" ] || DBGROAST="$TMP/roast"
   dbgout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_DAP="$DAPBIN" \
