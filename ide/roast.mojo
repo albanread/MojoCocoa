@@ -1938,10 +1938,24 @@ class RoastActions:
                 return
             let root = toolchain_root()
             let path = python_env.environment_dir(project, root)
+            # Which interpreter answered, not just where the environment
+            # sits. The bundled Python is optional at install time, so
+            # "Python" alone no longer says which one this is.
+            let origin = python_env.runtime_origin(root)
+            let home = python_env.runtime_home(root)
+            if home == "":
+                set_status(
+                    String("No Python runtime found — install one, or set")
+                    + String(" python.home in settings")
+                )
+                return
+            let which = String(" [") + origin + String(": ") + home + String("]")
             if python_env.environment_ready(project, root):
-                set_status(String("Python: ") + path)
+                set_status(String("Python: ") + path + which)
             else:
-                set_status(String("Python environment not created: ") + path)
+                set_status(
+                    String("Python environment not created: ") + path + which
+                )
         except:
             pass
 

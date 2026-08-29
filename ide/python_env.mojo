@@ -161,7 +161,50 @@ def runtime_home(toolchain_root: String) -> String:
         resources
         + String("/Python/Python.framework/Versions/Current")
     )
-    return bundled^ if _exists(bundled + String("/bin/python3")) else String()
+    if _exists(bundled + String("/bin/python3")):
+        return bundled^
+    # The bundled interpreter is OPTIONAL at install time, so its absence is
+    # a normal state rather than a broken one. Look for a framework Python
+    # already on the machine before giving up.
+    return _discovered_home()
+
+
+def _discovered_home() -> String:
+    """A framework Python already installed on this Mac, or empty.
+
+    Only a FRAMEWORK build qualifies. Roast embeds the interpreter in its
+    own process, which needs the `Python` dylib, not just a `bin/python3`
+    -- and `/usr/bin/python3` is a Command Line Tools shim with no
+    framework to load. Half a Python is worse than none: it would pass
+    `runtime_available` and then fail at the point of use.
+    """
+    for base in [
+        # Homebrew on Apple silicon, then Intel, then python.org's installer.
+        String("/opt/homebrew/Frameworks/Python.framework/Versions/Current"),
+        String("/usr/local/Frameworks/Python.framework/Versions/Current"),
+        String("/Library/Frameworks/Python.framework/Versions/Current"),
+    ]:
+        if _exists(base + String("/bin/python3")) and _exists(
+            base + String("/Python")
+        ):
+            return base
+    return String()
+
+
+def runtime_origin(toolchain_root: String) -> String:
+    """Where the interpreter in use came from, for anything that reports
+    it. A person who declined the bundled Python and got one anyway should
+    be able to find out which one answered."""
+    let home = runtime_home(toolchain_root)
+    if home == "":
+        return String("none")
+    if home.startswith(dirname(toolchain_root) + String("/Python/")):
+        return String("bundled")
+    if getenv("ROAST_PYTHON_HOME") == home:
+        return String("ROAST_PYTHON_HOME")
+    if session.setting(String("python.home")) == home:
+        return String("chosen in settings")
+    return String("found on this Mac")
 
 
 def runtime_python(toolchain_root: String) -> String:
