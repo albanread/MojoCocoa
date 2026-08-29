@@ -377,6 +377,86 @@ running-process name or only the bundle (sprint 1, manually). Async `eval`
 ergonomics -- `requested` + poll reads fine for an agent, worth revisiting if
 it grates. Multi-window, when there is more than one window.
 
+## The toolchain is the product: services, and an installer
+
+The direction this keeps arriving at from different roads. Written down as a
+direction, not a plan: nothing below is built.
+
+**Roast should be one client among several, not the owner.** Today the app
+IS the toolchain with an editor attached -- a gigabyte, because it carries a
+compiler, a language server, a debugger, a standard library, a Cocoa
+database and a CPython. A thin Roast is a few megabytes and finds those
+things rather than containing them.
+
+**Two thirds of "any app can use it" needs no new interface.** LSP and DAP
+are standard protocols; `mojo-lsp-server` and `lldb-dap` can be driven today
+by VS Code, Zed, Neovim, Emacs, anything. What is missing is not an
+architecture, it is **discovery**: a documented, versioned place the
+binaries live and a way to ask which toolchain is current. That is an
+installation story, and the reason it keeps coming up is that we keep
+needing it for other reasons and inventing a worse version each time --
+`COCOAMOJO_ROOT`, NSBundle introspection, and now a candidate list that
+guesses at `/Applications/Roast.app`.
+
+**The compiler is the one piece that wants a real service.** "Compile this"
+is not a standard protocol, and it is where the performance argument lives:
+a resident process holding a parsed standard library and a warm MLIR
+context turns every build into a request rather than a cold start. Mojo
+compiles are slow enough that this session added a spinner and an elapsed
+counter to make the waiting legible; a warm service changes the category of
+the problem rather than the presentation of it.
+
+**launchd should own the lifecycle.** Every process this editor manages, it
+manages by hand: NSTask, terminate, isRunning, a global holding a pid. That
+code crashed twice in one afternoon -- an unlaunched task raising when
+asked to launch, then raising again when asked to stop -- and the fixes are
+guards around an API that raises rather than returns. XPC and launchd give
+crash isolation, restart, and no zombie tasks, which is the reliability
+argument standing entirely on its own.
+
+### The shape
+
+    /Library/Developer/CocoaMojo/<version>/     the toolchain, versioned
+    /Library/Developer/CocoaMojo/current   ->   a symlink, as Xcode and
+                                                the Swift toolchains do it
+
+    org.mojococoa.lsp.<version>       launchd-managed, LSP over XPC or a pipe
+    org.mojococoa.compiler.<version>  the new interface: warm context, build
+                                       requests, diagnostics streamed back
+    lldb-dap                          already out-of-process, already a
+                                       protocol; needs discovery, not design
+
+    clients: Roast.app · cocoamojo(1) · any LSP/DAP editor · CI
+
+Service names carry the version so two toolchains coexist and a client asks
+for the one it wants -- which is the answer to the question the current
+design avoids by construction.
+
+### What it costs, honestly
+
+The drag-to-Applications story. `make-app.sh` exists to make a bundle that
+needs no installation, and a shared toolchain replaces that with an
+installer and a user-facing notion of versions. That is the trade:
+self-contained-and-duplicated, or installed-and-shared. Every serious
+toolchain lands on the second; the first only looked right while Roast was
+the only client.
+
+Version identity is the question the design must answer, not dodge. It is
+already load-bearing: `MojoPrecompiledFile` refuses bytecode from a
+different compiler, the debug-info work assumes compiler and plugin ship
+together, and a person may now edit their own copy of the standard library
+while another client compiles against the pristine one. A shared service
+has to arbitrate what a bundle made impossible.
+
+### What moves first
+
+The **LSP**, alone. It is already a protocol on a pipe, it is where the
+crashes were, and moving it proves the lifecycle benefit without touching
+the compile path. Then the installer and the discovery contract, which
+retire three generations of path-guessing. The compiler service last: it is
+the biggest win and the only one needing an interface designed from
+nothing.
+
 ## What the stdlib must grow
 
 Honest gaps, each small, each reusable beyond the IDE:
@@ -519,6 +599,17 @@ latency claim is testable at milestone 1, which is the point of the ordering.
 - **LSP memory** per open document — capped now, fixable in our fork.
 - **Cocoa scripting's KVC plumbing** is fiddly and poorly documented; routing
   every verb through one controller keeps the surface small.
+- **Managing child processes by hand** is where this has actually broken.
+  NSTask raises rather than returning: launching a missing executable and
+  terminating an unlaunched task each took the editor down, and an
+  Objective-C exception crossing back into Mojo has no handler. Every such
+  call is guarded now, but the guards are the symptom -- the toolchain
+  services above are the treatment.
+- **Path guessing has three generations** and they disagree:
+  `COCOAMOJO_ROOT`, NSBundle introspection, and a candidate list that looks
+  for `/Applications/Roast.app`. Each was added because the previous one
+  failed somewhere new. An installed, versioned toolchain replaces all
+  three with a lookup.
 - **250k-file trees** (the other reading of the requirement): the sidebar is
   lazy `NSOutlineView` children and never stats a directory it hasn't opened;
   project search shells to `ugrep` when present.
