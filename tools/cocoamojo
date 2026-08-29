@@ -36,7 +36,11 @@ export DYLD_LIBRARY_PATH="$LIB:${DYLD_LIBRARY_PATH:-}"
 # the playground uses this to run your buffer with this same compiler.
 export COCOAMOJO_ROOT="$HERE"
 
-INC=(-I "$PKG/stdlib" -I "$PKG/max" -I "$PKG/kernels")
+# The standard library may live in user space (an installed Roast copies it
+# to Application Support so people can edit it); COCOAMOJO_STDLIB points
+# there. max and kernels stay the toolchain's own.
+STD="${COCOAMOJO_STDLIB:-$PKG/stdlib}"
+INC=(-I "$STD" -I "$PKG/max" -I "$PKG/kernels")
 
 # Cocoa is not a library you opt into here -- it is the platform. Every build
 # gets libobjc and the frameworks, and the GPU runtime that makes DeviceContext

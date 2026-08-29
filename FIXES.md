@@ -162,3 +162,27 @@ the record of what testing actually surfaced.
     status bar discriminates on every attempt: "No language server" /
     "No definition found" / silence each point somewhere different.
     Needs the file and symbol from a live failure.
+
+14. **FIXED — Go to Definition silently did nothing.** The language
+    server answers with RFC 3986 URIs, so a path containing a space
+    arrives as `Standard%20Library`. The editor sliced off `file://` and
+    opened the rest verbatim: a file by that name does not exist, so the
+    jump failed with no error anywhere. Any project folder with a space
+    in its name had this; the shipped stdlib copy made it certain. One
+    decoder (`uri_to_path`) now serves all three conversion sites, with
+    unit tests for spaces, several escapes, and paths that are already
+    paths. Find References was unaffected because it lists paths rather
+    than opening them, which is exactly why one worked and the other
+    did not.
+
+15. **DONE — the things a person may edit live in user space.** An
+    installed app's Resources are sealed by its signature, so "edit the
+    stdlib" could not mean "break the seal". First launch now copies the
+    standard library and the examples to Application Support/Roast; the
+    server indexes that copy, builds compile against it (COCOAMOJO_STDLIB,
+    honoured by the cocoamojo wrapper), definition jumps land in it, and
+    the Examples menu opens from it. File > Open Standard Library opens it
+    as an ordinary project. File > Reset Standard Library & Examples...
+    restores the pristine bundle copies after a confirm. A bare-dist Roast
+    is unchanged: it edits its own tree, which is what a toolchain
+    developer wants.

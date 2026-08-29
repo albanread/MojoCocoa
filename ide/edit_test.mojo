@@ -4,6 +4,7 @@
 # risk is not the Objective-C plumbing -- it is the arithmetic underneath.
 # These drive apply_command and replace_selection directly.
 from gridview import select_word_at, select_line_at
+from roast import uri_to_path
 from gridview import (
     set_rope,
     undo,
@@ -138,6 +139,28 @@ def main() raises:
         "return at column 0 clones nothing",
         buffer_text(),
         String("\n    deep"),
+    )
+
+    print("edit: uri decoding")
+    failures += check(
+        "plain path",
+        uri_to_path(String("file:///a/b/main.mojo")),
+        String("/a/b/main.mojo"),
+    )
+    failures += check(
+        "space decoded",
+        uri_to_path(String("file:///a/Standard%20Library/x.mojo")),
+        String("/a/Standard Library/x.mojo"),
+    )
+    failures += check(
+        "several escapes",
+        uri_to_path(String("file:///a/My%20Proj%2Bs/f%231.mojo")),
+        String("/a/My Proj+s/f#1.mojo"),
+    )
+    failures += check(
+        "no scheme is left alone",
+        uri_to_path(String("/already/a/path")),
+        String("/already/a/path"),
     )
 
     print("edit: word and line selection")

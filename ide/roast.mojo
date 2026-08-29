@@ -466,7 +466,13 @@ def _python_spec() -> String:
 
 
 def _python_variables() -> JSON:
-    return python_env.variables(_python_project(), toolchain_root())
+    var env = python_env.variables(_python_project(), toolchain_root())
+    # Builds, runs and debug sessions compile against the SAME stdlib the
+    # server indexes and the person edits: the wrapper honours this.
+    var std = stdlib_root()
+    if std != "":
+        env.set(String("COCOAMOJO_STDLIB"), JSON(std^))
+    return env^
 
 
 def _start_python_environment(after: Int = 0, spec: String = String()) -> Bool:
@@ -1238,7 +1244,7 @@ def _go_to_definition():
     let full = uri
     var path = full
     if full.startswith("file://"):
-        path = String(full[byte=7 : full.byte_length()])
+        path = uri_to_path(full)
     if not file_exists(path):
         set_status(String("Definition is in a file that is not there: ") + path)
         return
@@ -1285,7 +1291,7 @@ def ask_signature() -> Bool:
 def _ref_path(i: Int) -> String:
     let full = lsp.reference_uri(i)
     if full.startswith("file://"):
-        return String(full[byte=7 : full.byte_length()])
+        return uri_to_path(full)
     return full
 
 
@@ -1388,7 +1394,7 @@ def ask_rename(new_name: String) -> Bool:
 def _rename_path(i: Int) -> String:
     let full = lsp.rename_uri(i)
     if full.startswith("file://"):
-        return String(full[byte=7 : full.byte_length()])
+        return uri_to_path(full)
     return full
 
 
@@ -2025,6 +2031,54 @@ class RoastActions:
                 let p = ns_to_string(Obj["NSURL"](url.addr()).path())
                 show_console(True)
                 set_status(run_agent_script(p))
+        except:
+            pass
+
+    def roastOpenStdlib_(self, sender: ObjCObject):
+        """The standard library as a project: the user-space copy."""
+        try:
+            let std = stdlib_root()
+            if std == "":
+                set_status(String("No standard library found"))
+                return
+            open_folder(std)
+        except:
+            pass
+
+    def roastResetUserSpace_(self, sender: ObjCObject):
+        """Fresh copies of stdlib and examples from the bundle, after a
+        confirm -- edits there are the point of the copies, so throwing
+        them away deserves a question."""
+        try:
+            with autoreleasepool():
+                let NSAlert = ObjCClass.lookup["NSAlert"]()
+                var alert = Cls["NSAlert"]().alloc()
+                alert = Obj["NSAlert"](alert.addr()).init()
+                Obj["NSAlert"](alert.addr()).setMessageText(
+                    nsstring(String(
+                        "Reset the standard library and examples?"
+                    )).ptr()
+                )
+                Obj["NSAlert"](alert.addr()).setInformativeText(
+                    nsstring(String(
+                        "Your edited copies in Application Support are"
+                        " replaced with the app's pristine ones. Projects"
+                        " and Python environments are untouched."
+                    )).ptr()
+                )
+                _ = Obj["NSAlert"](alert.addr()).addButtonWithTitle(
+                    nsstring(String("Reset")).ptr()
+                )
+                _ = Obj["NSAlert"](alert.addr()).addButtonWithTitle(
+                    nsstring(String("Cancel")).ptr()
+                )
+                if Obj["NSAlert"](alert.addr()).runModal() != 1000:
+                    return
+            if migrate_user_space(force=True):
+                restart_lsp_for_python()
+                set_status(String("Standard library and examples reset"))
+            else:
+                set_status(String("Nothing to reset — not running from an app"))
         except:
             pass
 
@@ -3600,6 +3654,51 @@ def _show_dirty():
         )
 
 
+def uri_to_path(uri: String) -> String:
+    """`file:///a/My%20Project/x.mojo` -> `/a/My Project/x.mojo`.
+
+    The language server answers with RFC 3986 URIs, so every character a
+    path may legally contain and a URI may not arrives percent-encoded.
+    Slicing off `file://` and using the rest was right until a path held a
+    space -- then Go to Definition silently opened nothing, because the
+    file named `Standard%20Library` does not exist. Any project folder with
+    a space in its name had the same bug; the shipped stdlib copy just made
+    it certain.
+    """
+    var rest = String(uri)
+    if rest.startswith("file://"):
+        let tail = String(rest[byte=7 : rest.byte_length()])
+        rest = tail
+    if rest.find("%") < 0:
+        return rest^
+    let bytes = rest.as_bytes()
+    let n = len(bytes)
+    var out = String()
+    var i = 0
+    while i < n:
+        let b = Int(bytes[i])
+        if b == 0x25 and i + 2 < n:
+            let hi = _hex_value(Int(bytes[i + 1]))
+            let lo = _hex_value(Int(bytes[i + 2]))
+            if hi >= 0 and lo >= 0:
+                out += chr(hi * 16 + lo)
+                i += 3
+                continue
+        out += chr(b)
+        i += 1
+    return out^
+
+
+def _hex_value(b: Int) -> Int:
+    if b >= 0x30 and b <= 0x39:
+        return b - 0x30
+    if b >= 0x41 and b <= 0x46:
+        return b - 0x41 + 10
+    if b >= 0x61 and b <= 0x66:
+        return b - 0x61 + 10
+    return -1
+
+
 def _basename(path: String) -> String:
     let cut = path.rfind(String("/"))
     if cut < 0:
@@ -3798,7 +3897,7 @@ def lsp_import_path() -> String:
     if here == "":
         return String()
     return (
-        here + String("/lib/mojo/stdlib,")
+        stdlib_root() + String(",")
         + here + String("/lib/mojo/max,")
         + here + String("/lib/mojo/kernels")
     )
@@ -4080,6 +4179,110 @@ def add_item(
     return item
 
 
+def user_space_root() -> String:
+    """Where the pieces a person may EDIT live: Application Support/Roast.
+
+    An installed app's Resources are sealed by its signature -- the right
+    answer to "how do I change the stdlib" cannot be "break the seal". So
+    the first launch copies the standard library and the examples out to
+    user space, and everything that reads them -- builds, the language
+    server, the Examples menu, definition jumps -- reads the copy. The
+    bundle keeps the pristine originals, which is what makes Reset a copy
+    and not a download. ROAST_USERSPACE overrides for tests.
+    """
+    let override = getenv("ROAST_USERSPACE")
+    if override != "":
+        return override^
+    return session.support_dir()
+
+
+def user_stdlib_dir() -> String:
+    let root = user_space_root()
+    if root == "":
+        return String()
+    return root + String("/Standard Library/stdlib")
+
+
+def user_examples_dir() -> String:
+    let root = user_space_root()
+    if root == "":
+        return String()
+    return root + String("/Examples")
+
+
+def stdlib_root() -> String:
+    """The stdlib in use: the user-space copy when it exists, the
+    toolchain's otherwise (a bare-dist Roast edits the real tree, which is
+    what a developer of the toolchain wants)."""
+    let mine = user_stdlib_dir()
+    if mine != "" and file_exists(mine + String("/std")):
+        return mine^
+    let tc = toolchain_root()
+    if tc == "":
+        return String()
+    return tc + String("/lib/mojo/stdlib")
+
+
+def _copy_tree(source: String, destination: String) -> Bool:
+    """NSFileManager's copy, whole-tree, refusing to overwrite."""
+    try:
+        with autoreleasepool():
+            let NSFileManager = ObjCClass.lookup["NSFileManager"]()
+            let fm = Cls["NSFileManager"]().defaultManager()
+            var err = ObjCObject(0)
+            return Obj["NSFileManager"](fm.addr()).copyItemAtPath_toPath_error(
+                nsstring(source).ptr(),
+                nsstring(destination).ptr(),
+                Pointer(to=err).unsafe_bitcast[P]()[],
+            )
+    except:
+        return False
+
+
+def _remove_tree(path: String) -> Bool:
+    try:
+        with autoreleasepool():
+            let NSFileManager = ObjCClass.lookup["NSFileManager"]()
+            let fm = Cls["NSFileManager"]().defaultManager()
+            var err = ObjCObject(0)
+            return Obj["NSFileManager"](fm.addr()).removeItemAtPath_error(
+                nsstring(path).ptr(),
+                Pointer(to=err).unsafe_bitcast[P]()[],
+            )
+    except:
+        return False
+
+
+def migrate_user_space(force: Bool = False) -> Bool:
+    """Copy stdlib and examples out of the bundle, once -- or again, when
+    `force` says a person asked for their copies to be reset."""
+    let tc = toolchain_root()
+    if tc == "" or tc.find("/Contents/Resources/") < 0:
+        return False  # a bare dist edits its own tree; nothing to move
+    let root = user_space_root()
+    if root == "":
+        return False
+    var did = False
+    let lib_dst_parent = root + String("/Standard Library")
+    let lib_dst = user_stdlib_dir()
+    if force and file_exists(lib_dst):
+        _ = _remove_tree(lib_dst)
+    if not file_exists(lib_dst + String("/std")):
+        _ = build.ensure_dir(lib_dst_parent)
+        did = _copy_tree(tc + String("/lib/mojo/stdlib"), lib_dst) or did
+    let ex_dst = user_examples_dir()
+    if force and file_exists(ex_dst):
+        _ = _remove_tree(ex_dst)
+    if not file_exists(ex_dst + String("/README.md")):
+        did = _copy_tree(tc + String("/share/examples"), ex_dst) or did
+    if did or force:
+        print(
+            "roast: user space at", root,
+            "(stdlib + examples, yours to edit)",
+        )
+    return True
+
+
 def examples_root() -> String:
     """Where the shipped example projects live.
 
@@ -4093,6 +4296,9 @@ def examples_root() -> String:
     let root = toolchain_root()
     if root == "":
         return String()
+    let mine = user_examples_dir()
+    if mine != "" and file_exists(mine + String("/README.md")):
+        return mine^
     return root + String("/share/examples")
 
 
@@ -4282,6 +4488,17 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     _ = add_item(
         file, String("Run Script…"), String("roastRunScript:"), String(""),
         actions,
+    )
+    # The pieces a person may edit, and the way back. The stdlib opens as an
+    # ordinary project -- searchable, editable, buildable-against -- because
+    # it IS one once it lives in user space.
+    _ = add_item(
+        file, String("Open Standard Library"),
+        String("roastOpenStdlib:"), String(""), actions,
+    )
+    _ = add_item(
+        file, String("Reset Standard Library & Examples…"),
+        String("roastResetUserSpace:"), String(""), actions,
     )
     Obj["NSMenuItem"](save_all.addr()).setKeyEquivalentModifierMask(
         Int(0x20000 | 0x100000)
@@ -5355,6 +5572,13 @@ def main() raises:
     if not load_framework["AppKit"]():
         print("roast: FATAL — could not load AppKit")
         return
+
+    # Before anything else reads a root: the language server, the Examples
+    # menu and the first build all resolve paths at startup, and every one
+    # of them must see the user-space copy or the seams show -- the server
+    # indexing the sealed bundle while builds compile the editable copy is
+    # exactly the split this exists to prevent.
+    _ = migrate_user_space()
 
     let env = getenv("ROAST_AUTOCLOSE_TICKS")
     if env != "":
