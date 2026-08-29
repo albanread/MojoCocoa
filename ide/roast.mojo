@@ -2045,6 +2045,25 @@ class RoastActions:
         except:
             pass
 
+    def roastOpenIDESource_(self, sender: ObjCObject):
+        """Roast's own source, as a project. It is written in the language
+        it edits, so this is both the largest worked example the toolchain
+        ships and the thing to change if you want a different editor."""
+        try:
+            let src = user_ide_source_dir()
+            if src != "" and file_exists(src + String("/roast.mojo")):
+                open_folder(src)
+                return
+            let tc = toolchain_root()
+            if tc != "" and file_exists(
+                tc + String("/share/ide-source/roast.mojo")
+            ):
+                open_folder(tc + String("/share/ide-source"))
+                return
+            set_status(String("No IDE source in this distribution"))
+        except:
+            pass
+
     def roastResetUserSpace_(self, sender: ObjCObject):
         """Fresh copies of stdlib and examples from the bundle, after a
         confirm -- edits there are the point of the copies, so throwing
@@ -2056,7 +2075,7 @@ class RoastActions:
                 alert = Obj["NSAlert"](alert.addr()).init()
                 Obj["NSAlert"](alert.addr()).setMessageText(
                     nsstring(String(
-                        "Reset the standard library and examples?"
+                        "Reset the standard library, examples and IDE source?"
                     )).ptr()
                 )
                 Obj["NSAlert"](alert.addr()).setInformativeText(
@@ -4203,6 +4222,13 @@ def user_stdlib_dir() -> String:
     return root + String("/Standard Library/stdlib")
 
 
+def user_ide_source_dir() -> String:
+    let root = user_space_root()
+    if root == "":
+        return String()
+    return root + String("/IDE Source")
+
+
 def user_examples_dir() -> String:
     let root = user_space_root()
     if root == "":
@@ -4275,6 +4301,11 @@ def migrate_user_space(force: Bool = False) -> Bool:
         _ = _remove_tree(ex_dst)
     if not file_exists(ex_dst + String("/README.md")):
         did = _copy_tree(tc + String("/share/examples"), ex_dst) or did
+    let ide_dst = user_ide_source_dir()
+    if force and file_exists(ide_dst):
+        _ = _remove_tree(ide_dst)
+    if not file_exists(ide_dst + String("/roast.mojo")):
+        did = _copy_tree(tc + String("/share/ide-source"), ide_dst) or did
     if did or force:
         print(
             "roast: user space at", root,
@@ -4495,6 +4526,10 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     _ = add_item(
         file, String("Open Standard Library"),
         String("roastOpenStdlib:"), String(""), actions,
+    )
+    _ = add_item(
+        file, String("Open IDE Source"),
+        String("roastOpenIDESource:"), String(""), actions,
     )
     _ = add_item(
         file, String("Reset Standard Library & Examples…"),

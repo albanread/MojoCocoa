@@ -1,49 +1,57 @@
-# Welcome to the Mojo standard library
+# The standard library
 
-This folder contains the open-source Mojo standard library! 🔥
+Your copy. This tree lives in `Application Support/Roast/Standard Library`
+so that it is *editable* — an installed app's own Resources are sealed by
+its signature, and "read the source" is a poor answer to "change the
+source". Builds compile against this copy, the language server indexes it,
+and Go to Definition lands in it. File ▸ Reset Standard Library & Examples…
+restores the shipped originals if an experiment goes badly.
 
-We're thrilled to have you join our community of developers eager to build a
-vibrant and supportive ecosystem.
+`std/` is the library. Everything below is under it.
 
-## Vision and roadmap
+## Cocoa is here
 
-We have written down the principles that inform our decisions about what
-features we work on and what bugs we prioritize. Before you consider making
-contributions, please see the following docs.
+    std/objc/       the Cocoa layer — the reason this fork exists
 
-- Our [Vision document](https://www.mojolang.org/docs/vision) describes the
-  guiding principles that guide our development efforts.
+Cocoa is not a library you opt into here, it is the platform: every build
+links `libobjc` and the frameworks whether or not a program uses them. So
+it sits in `std`, not in a package of its own.
 
-- Our [Roadmap](https://www.mojolang.org/docs/roadmap/) identifies
-  concrete development goals as we work towards an even more robust and
-  feature-rich standard library.
+    runtime.mojo      ObjCClass, ObjCObject, msg_send — the bottom layer
+    classes.mojo      ObjCClassBuilder and class_addMethod: what the
+                      compiler's `class` keyword lowers onto
+    typed.mojo        Obj["NSWindow"](…) and Cls[…] — the typed call
+                      surface, checked against the Cocoa database
+    error.mojo        NSError out-parameters, bridged to `raises`
+    ownership.mojo    retain, release, autoreleasepool
+    foundation.mojo   nsstring, ns_to_string, extern_object
+    dispatch.mojo     Grand Central Dispatch
+    geometry.mojo     CGRect, CGPoint, CGSize, NSRange
 
-## Contributing
+A `class` declaration in Mojo *is* an Objective-C class: the compiler
+derives each selector from the method name, takes its type encoding from
+the SDK, and registers the lot on first use. `ide/gridview.mojo` in the IDE
+source (File ▸ Open IDE Source) is the largest worked example — twenty-one
+selectors including the whole of NSTextInputClient.
 
-This tree is part of an unofficial fork and **does not accept contributions**.
-See the [repository README](../../README.md) for what this fork is and is not.
+## The rest, roughly by what you reach for
 
-The Mojo standard library is developed at
-[modular/modular](https://github.com/modular/modular), which is where
-contributions to it belong.
+    builtin/        Int, String, SIMD, Bool — no import needed
+    collections/    List, Dict, Set, Optional, String internals
+    memory/         Pointer, UnsafePointer, allocation, span
+    math/ bit/ complex/ random/     numbers
+    io/ os/ pathlib/ tempfile/ stat/ subprocess/    the world outside
+    time/ benchmark/ testing/       measuring and proving
+    sys/            target facts: CompilationTarget, sizeof, env
+    ffi/            C interop, external_call
+    python/         the CPython bridge — Python.import_module
+    gpu/            kernels, DeviceContext lives in `max` rather than here
+    algorithm/ iter/ itertools/ functional pieces
+    format/ hashlib/ base64/ logger/  text and bytes
+    reflection/ traits/ origin/ compile/   the type system's own tools
 
-## Getting started
+## Editing it
 
-Follow our provided documentation to prepare your environment for building the
-standard library, and then test your setup with our automated testing suite.
-For additional information, the FAQ page is your go-to resource.
-
-- [Mojo standard library development](./docs/development.md)
-- [FAQ](./docs/faq.md)
-
-## License
-
-Apache License v2.0 with LLVM Exceptions
-
-See the license file in the repository for more details.
-
-## Support
-
-This fork is unsupported and carries no warranty. Bugs in the Mojo standard
-library itself belong upstream at
-[modular/modular](https://github.com/modular/modular).
+Nothing here is precompiled: the toolchain reads these sources on every
+build, so an edit takes effect the next time you press ⌘B. That also means
+a mistake here breaks every build until it is fixed or reset.

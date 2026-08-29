@@ -218,6 +218,33 @@ rsync -a --delete --delete-excluded \
       "$ROOT/examples/" "$D/share/examples/"
 echo "   $(find "$D/share/examples" -name '*.mojo' | wc -l | tr -d ' ') files in $(ls "$D/share/examples" | grep -vc README) projects"
 
+echo "== the IDE's source =="
+# Roast is written in the language it edits, so its source ships as a
+# project people can open, read and build -- the most complete example the
+# toolchain has, and the answer to "how would I write something like this".
+rsync -a --delete "$ROOT/ide/"*.mojo "$D/share/ide-source/"
+cat > "$D/share/ide-source/README.md" <<'IDEREADME'
+# Roast, in Roast
+
+The source of the editor you are reading it in. Roast is written in
+cocoa-mojo and talks to AppKit directly -- no bridge, no wrapper library --
+so this doubles as the largest worked example of `class`, `msg_send`, the
+Cocoa database and the debugger APIs.
+
+Build it with cmd-B; `roast.mojo` is the entry point. The copy in
+Application Support is yours: edit it freely, and File > Reset Standard
+Library & Examples restores the shipped one.
+
+Files worth opening first:
+
+- `roast.mojo`      the window, menus, toolbar, agent surface
+- `gridview.mojo`   the editor view: NSTextInputClient, drawing, the lexer
+- `rope.mojo`       the text engine, with its own test suite
+- `dap.mojo`        the debug adapter conversation
+- `lsp.mojo`        the language server conversation
+IDEREADME
+echo "   $(ls "$D/share/ide-source"/*.mojo | wc -l | tr -d ' ') files"
+
 echo "== the IDE =="
 # Roast, built with the compiler this distribution just assembled -- the same
 # toolchain someone opening it will compile with. It ships because

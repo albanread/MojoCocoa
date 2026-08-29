@@ -17,6 +17,13 @@ which opens itself when a build starts and toggles with ⌘0.
                   procedural lawn, under a cloudy dusk sky (CPU)
     fernwind/     the same meadow swaying in the wind: every fern redrawn
                   from scratch each frame by 24,576 GPU chaos-game streams
+    life-python/  Conway again, drawn by PYGAME instead of Cocoa: the
+                  same program in two windowing worlds. Needs a Python
+                  environment — see its README
+
+    And the largest example is not in this folder: File ▸ Open IDE Source
+    opens Roast's own source — the editor you are reading this in, written
+    in the language it edits.
 
     From Modular's own example collection, running here unmodified:
 
