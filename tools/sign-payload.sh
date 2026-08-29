@@ -114,10 +114,36 @@ done
 
 echo "== verifying =="
 bad=0
+# A framework is not verified the way a lone Mach-O is. Passing its main
+# executable to --verify --strict makes codesign resolve the enclosing
+# bundle and fail with "No such file or directory" -- Apple's own Tcl, Tk
+# and Ruby frameworks fail the same check, so it is the check that is
+# wrong, not the signature. Frameworks are verified once, as bundles, with
+# --deep (which validates every nested Mach-O) and --strict=symlinks (which
+# enforces the rule that no link may leave the bundle, and unlike plain
+# --strict actually names the offender).
+frameworks="$(mktemp)"
 while IFS= read -r rel; do
+  case "$rel" in
+    *.framework/*)
+      printf '%s\n' "${rel%%.framework/*}.framework" >> "$frameworks"
+      continue ;;
+  esac
   codesign --verify --strict "$PAYLOAD/$rel" 2>/dev/null || {
     echo "   FAIL $rel"; bad=1; }
 done < "$found"
+sort -u "$frameworks" | while IFS= read -r fw; do
+  [ -n "$fw" ] || continue
+  if codesign --verify --deep --strict=symlinks "$PAYLOAD/$fw" 2>/dev/null; then
+    echo "   framework OK $fw"
+  else
+    echo "   FAIL $fw"
+    codesign --verify --deep --strict=symlinks "$PAYLOAD/$fw" 2>&1 | head -3 | sed 's/^/        /'
+    echo fail >> "$frameworks.bad"
+  fi
+done
+[ -f "$frameworks.bad" ] && bad=1
+rm -f "$frameworks" "$frameworks.bad"
 for app in "$PAYLOAD"/*.app "$PAYLOAD"/CocoaMojo/*.app; do
   [ -d "$app" ] || continue
   codesign --verify --deep --strict "$app" 2>/dev/null || {

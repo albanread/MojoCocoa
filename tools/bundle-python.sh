@@ -136,6 +136,22 @@ while IFS= read -r -d '' dylib; do
   install_name_tool -id "@rpath/$(basename "$dylib")" "$dylib" 2>/dev/null
 done < <(find "$LIB" -maxdepth 1 -type f -name '*.dylib' -print0)
 
+# Apple's bundle rules forbid a symlink that leaves the bundle, and
+# codesign --verify --strict rejects the whole framework over it with the
+# unhelpful "No such file or directory" (--strict=symlinks names it). The
+# relocatable build ships
+#   Versions/3.14/lib/python3.14/site-packages -> ../../../../../../lib/...
+# which points at <toolchain>/lib/python3.14/site-packages -- a path that
+# does not exist here and never has. Nothing can depend on a link that has
+# always dangled, so it becomes the real directory it was pretending to be:
+# the framework is then self-contained and pip has somewhere to install.
+SP="$DEST/Python.framework/Versions/Current/lib/python3.14/site-packages"
+if [ -L "$SP" ]; then
+  rm "$SP"
+  mkdir -p "$SP"
+  echo "   site-packages: escaping symlink replaced with a real directory"
+fi
+
 # A copied Homebrew interpreter contains its build prefix. PYTHONHOME is the
 # relocation contract Roast supplies both to venv/pip and to the Mojo program.
 # Sign every Mach-O before sealing the framework. `codesign --deep` discovers
@@ -146,6 +162,20 @@ while IFS= read -r -d '' binary; do
   is_macho "$binary" || continue
   codesign --force --sign - --timestamp=none "$binary" >/dev/null 2>&1
 done < <(macho_files)
+# Bytecode caches must exist before the seal and after the signatures.
+# Relocation rewrites the Mach-O headers, which invalidates the ad-hoc
+# signature the interpreter was built with, and the kernel then SIGKILLs it
+# on exec -- so compileall cannot run until the loop above has re-signed
+# everything. Run here, the caches are covered when the bundle is sealed
+# below: imports are fast and the signature stays valid. Left to itself the
+# interpreter would write them on first import, into a signed framework.
+find "$TARGET" -name '__pycache__' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+PYTHONHOME="$VERSION" "$VERSION/bin/python3" -m compileall -q -f \
+  "$VERSION/lib/python3.14" >/dev/null || {
+  echo "   compileall failed -- the stdlib would be sealed without bytecode" >&2
+  exit 1
+}
+
 codesign --force --deep --sign - --timestamp=none "$TARGET" >/dev/null 2>&1
 
 bad="$(
@@ -161,8 +191,13 @@ bad="$(
   exit 1
 }
 
+# The smoke test runs AFTER the framework is sealed, so it must not write
+# into it. Importing a module writes __pycache__ beside the source by
+# default, which adds files the seal does not cover and makes codesign
+# report the framework as invalid. The interpreter is told not to.
 SMOKE="$(mktemp -d)"
 trap 'rm -rf "$SMOKE"' EXIT
+export PYTHONDONTWRITEBYTECODE=1
 PYTHONHOME="$VERSION" "$VERSION/bin/python3" -c \
   'import ssl, sqlite3, venv; print("python", __import__("sys").version.split()[0], ssl.OPENSSL_VERSION, sqlite3.sqlite_version)'
 PYTHONHOME="$VERSION" "$VERSION/bin/python3" -m venv "$SMOKE/env"

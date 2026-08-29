@@ -36,9 +36,14 @@ printf '%s\n' "$VER" > "$OUT/VERSION"
 # share/cocoa.sqlite is left out on purpose: 343 MB of the payload, and the
 # installer generates a better one -- built from the SDK on the machine it
 # lands on rather than the machine that cut the release.
-rsync -a --delete --delete-excluded --exclude 'include/' \
-      --exclude '.roast.log' --exclude 'share/cocoa.sqlite' \
-      --exclude 'share/cocoakb/cocoa.sqlite' \
+# The exclusion is ANCHORED. An rsync pattern with no leading slash matches
+# at every depth, so a bare 'include/' also took Python.framework's own
+# include/python3.14 -- leaving a dangling Headers symlink and no Python.h,
+# which breaks pip install of anything with a C extension on the machine it
+# lands on. Only the toolchain's own headers are meant to go.
+rsync -a --delete --delete-excluded --exclude '/include/' \
+      --exclude '.roast.log' --exclude '/share/cocoa.sqlite' \
+      --exclude '/share/cocoakb/cocoa.sqlite' \
       "$D/" "$OUT/CocoaMojo/"
 echo "   toolchain $(du -sh "$OUT/CocoaMojo" | cut -f1) (include/ left out)"
 
