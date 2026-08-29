@@ -219,29 +219,120 @@ real venv and has a compiled Mojo program import a marker module from that
 venv. That is the minimum test which proves both halves—the relocated CPython
 runtime and Mojo's in-process selection—at once.
 
-## Scriptable, the Mac way
+## Scriptable, the Mac way: the agent surface
 
-(The request said AppleTalk; the scripting technology is AppleScript, via a
-scripting definition — AppleTalk was the network stack. Designing for
-AppleScript/OSA.)
+The last planned feature surface: full agentic automation of the IDE, and
+screenshots. An agent -- CI, a coding assistant, a colleague's script --
+drives Roast at runtime through Apple Events and sees the result through the
+app photographing itself.
 
-An `.sdef` published by the app, Cocoa scripting's KVC machinery underneath,
-commands routed through one controller class:
+**What tonight's work established, and this design rests on.** The launch-time
+env probes (`ROAST_DEBUG_LINE`, `ROAST_DEBUG_STEPS`) drive the app unattended
+and are how the debugger's buttons got verified -- but they are decided at
+launch and cannot converse. Runtime inspection from outside is walled off by
+TCC: `screencapture` fails without Screen Recording, System Events fails with
+-1743 without Automation, and neither can be granted headlessly, by design.
+The conclusion is not to fight the wall. Make the app scriptable in its own
+right -- receiving Apple Events needs no permission at all -- and give it a
+screenshot verb that renders its OWN view hierarchy to a PNG, which involves
+no screen capture and therefore no TCC. The one grant a human ever makes is
+Automation for their agent's host process, per sender, once.
 
-```xml
-<suite name="Roast" code="Rost">
-  <class name="document">  text · selection · file · modified  </class>
-  <command name="build">   result: list of diagnostics          </command>
-  <command name="run"/>
-  <command name="go to">   line · column                        </command>
-  <command name="find">    string → list of ranges              </command>
-</suite>
-```
+**Three layers.**
 
-The point is not automation for its own sake: **the scripting dictionary is
-the test harness.** `osascript` drives open → edit → build → read diagnostics
-in CI, exactly as `P0_AUTOCLOSE_TICKS` made window_smoke testable. A
-`check-ide.sh` in the house style falls out of it.
+1. **Transport: raw Apple Event handlers.** Event class `Rost`, two events:
+   `cmnd` (do command: text in, text out) and `shot` (screenshot: path in,
+   path out), registered with `NSAppleEventManager` at launch. No KVC object
+   graph. This works identically in the bare `bin/roast` and in `Roast.app`.
+
+2. **Terminology: an sdef, on top, later.** `Roast.sdef` gives AppleScript
+   the words -- `tell application "Roast" to do command "step-over"` -- and
+   is carried by the bundle (`NSAppleScriptEnabled` +
+   `OSAScriptingDefinition` in make-app.sh's Info.plist, file in Resources).
+   The bare binary can embed it too: `__TEXT,__sdef` and `__TEXT,__info_plist`
+   sections via `-sectcreate`, for which the wrapper's `LINK` array is the
+   extension point. Raw-coded events work everywhere regardless, so the sdef
+   is polish, not plumbing.
+
+3. **The command set** -- the agentic surface. One namespace, text replies:
+
+       open <path> · goto <line> · save          the editor
+       build · run · stop                        the compiler
+       debug · continue · step-over · step-in    the debugger,
+         · step-out · break <line> · eval <e>      via the REAL buttons
+       status · console · stopped · variables    read the app's state
+         · caret · file · toolbar · help
+       screenshot <path>                         see the app
+
+**Design rules, each earned this week.**
+
+- **The agent presses the real controls.** Step verbs go through
+  `_press_debug_button` -- the item looked up in the live toolbar, its action
+  sent to its own target -- so every agent run is also a UI test. A button
+  that breaks under the pointer breaks under the agent, and vice versa.
+- **Replies are text; slow operations answer `requested`.** Build, run and
+  eval complete on later ticks and report through serials internally, so the
+  agent confirms by reading state (`status`, `console`, `stopped`), not by
+  blocking a handler on a nested runloop.
+- **One dispatcher.** The AE handlers unwrap the descriptor, call
+  `agent_command(text) -> text`, wrap the reply. Everything else is the same
+  functions the menus call. (v1 of this section sketched a KVC document
+  model; the risk register already called that plumbing fiddly, and the env
+  probes have since proven that a string surface tests beautifully here.
+  Terminology stays; the object model goes.)
+- **No new power.** Commands never touch a shell; `eval` has exactly the
+  debuggee power a human at the keyboard already has; the only write is the
+  screenshot, to the path the sender named.
+- **Receiving is inert.** With no sender, the handlers are dead weight in the
+  registry -- so this ships on main with no gate, in keeping with
+  default-off-until-real elsewhere.
+
+**The screenshot.** `contentView`'s superview is the frame view -- titlebar,
+toolbar and content together. `bitmapImageRepForCachingDisplayInRect:` +
+`cacheDisplayInRect:toBitmapImageRep:` render the hierarchy into a bitmap at
+backing scale, `representationUsingType:properties:` makes a PNG, NSData
+writes it. This is view drawing, not screen capture: no TCC, and it should
+render even occluded or miniaturized (verified in its sprint, not assumed).
+It finally answers "does the ladybug icon render" from inside the process.
+
+**Testing, the check-ide way.** The handler path is provable without a second
+process: build an event with `descriptorWithProcessIdentifier:` (own pid) and
+`sendEventWithOptions:timeout:error:`, assert on the reply -- registration,
+unpack, dispatch and reply all exercised. A `ROAST_AGENT` env var runs a
+command script at a fixed tick for CI greps. Screenshots assert PNG magic and
+a sane byte count. The osascript end-to-end run is a documented MANUAL
+acceptance step, because TCC grants cannot be scripted -- that is the
+security model working, not the test failing. Every API this design names is
+confirmed present in the Cocoa KB, including the two load-bearing ones
+(`sendEventWithOptions:timeout:error:`, `cacheDisplayInRect:toBitmapImageRep:`).
+
+**Sprints, each landing on main, each with its acceptance line.**
+
+1. **Transport and first light.** Handlers registered; `status`, `console`,
+   `help`; the self-post test.
+   *Acceptance:* `OK agent events` in check-ide, reply text asserted.
+   *Discovers:* whether self-send on the main thread re-enters the runloop
+   cleanly; fallback is dispatching into the handler directly.
+2. **The screenshot.** `shot` + `screenshot <path>`; occlusion behavior
+   pinned down. *Acceptance:* PNG magic + size from an unattended run; a
+   human confirms the ladybug once.
+3. **Drive the debugger.** `debug`, the four transport verbs through the
+   live toolbar, `break`, `eval`, `stopped`, `variables`; the button walk
+   re-run over Apple Events (env probes stay -- launch-time CI keeps them).
+   *Acceptance:* the in->6, over->7, out->11 walk, driven externally.
+4. **Editor and build verbs.** `open`, `goto`, `save`, `build`, `run`,
+   `stop`, `caret`, `file`. *Acceptance:* open -> edit -> build -> read
+   diagnostics, all over events.
+5. **Terminology.** `Roast.sdef`; make-app.sh wires plist and Resources;
+   the `-sectcreate` experiment for the bare binary.
+   *Acceptance:* `tell application "Roast" to do command "status"` from
+   Script Editor on a granted machine; recorded as the manual step.
+
+**Open questions, named now so they are cheap later.** Self-send runloop
+reentry (sprint 1 discovers). Whether AppleScript resolves the bare binary by
+running-process name or only the bundle (sprint 1, manually). Async `eval`
+ergonomics -- `requested` + poll reads fine for an agent, worth revisiting if
+it grates. Multi-window, when there is more than one window.
 
 ## What the stdlib must grow
 
