@@ -148,3 +148,17 @@ the record of what testing actually surfaced.
     flow is the part nothing else demonstrates. Must run via cmd-R with
     the bundled CPython on a machine with no Python installed, which is
     the whole point of carrying one.
+
+## Round two
+
+13. **Reported: Go to Definition / Find All References "seems broken".**
+    Not reproduced yet. Probed on the dist binary AND the installed
+    Roast.app (its own bundled toolchain): references answers 3-of-3 with
+    the console list and "Reference 1 of 3" status; definition jumps
+    in-file (helper -> 1:4) and cross-file into the bundle's stdlib
+    (cos -> math.mojo:1743). Untested cases that could be the report:
+    asking for a definition FROM a stdlib file jumped into (server rooted
+    at the project, file outside it), and the untitled scratch tab. The
+    status bar discriminates on every attempt: "No language server" /
+    "No definition found" / silence each point somewhere different.
+    Needs the file and symbol from a live failure.
