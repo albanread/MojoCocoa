@@ -22,6 +22,8 @@ from std.objc import (
     named_global,
     extern_object,
     sel,
+    ObjCClassBuilder,
+    new_instance,
 )
 from std.memory import OpaquePointer
 from std.os import getenv
@@ -85,6 +87,10 @@ from gridview import CGPoint, CGSize, CGRect, NSRange, rect
 # named process global. Each is zero until main() sets it.
 comptime g_window = named_global["roast.window", Int]
 comptime g_status = named_global["roast.status", Int]
+# What was last written to the status line. The field itself is
+# write-only in this code, and an agent asking "what is happening" has
+# to be answered from somewhere.
+comptime g_status_text = named_global["roast.status.text", List[String]]
 comptime g_ticks = named_global["roast.ticks", Int]
 comptime g_autoclose = named_global["roast.autoclose", Int]
 comptime g_actions = named_global["roast.actions", Int]
@@ -155,11 +161,21 @@ def g_buffer_lines() -> Int:
 
 def set_status(text: String):
     """Write the status bar. Safe before the field exists."""
+    _remember_status(text)
     if g_status()[] == 0:
         return
     with autoreleasepool():
         let field = ObjCObject(g_status()[])
         Obj["NSTextField"](field.addr()).setStringValue(nsstring(text).ptr())
+
+
+def _remember_status(text: String):
+    """Keep the last status line where a reader can get at it."""
+    let slot = g_status_text()
+    if len(slot[]) == 0:
+        slot[].append(text)
+    else:
+        slot[][0] = text
 
 
 # ── Toolbar item identifiers ─────────────────────────────────────────────────
@@ -2352,6 +2368,16 @@ class RoastActions:
 
         # CI, and a quick way to see the path work: fire Build or Run a few ticks
         # in, once the window is really up, with nobody at the keyboard.
+        # ROAST_AGENT runs one command from inside a real window, so CI can
+        # grep a reply that came through the same dispatcher an event does.
+        if g_ticks()[] == 4:
+            if getenv("ROAST_AGENT_SELFTEST") != "":
+                _ = agent_self_test()
+            let script = getenv("ROAST_AGENT")
+            if script != "":
+                print("roast: agent <", script)
+                print("roast: agent >", agent_command(script))
+
         if g_ticks()[] == 3:
             let auto = getenv("ROAST_AUTOBUILD")
             if auto != "":
@@ -4252,6 +4278,211 @@ def build_menu_bar(app: ObjCObject, actions: Int):
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
+# ── The agent surface ────────────────────────────────────────────────────────
+# Apple Events in, text out. RECEIVING an event needs no permission -- the
+# grant a human makes is Automation for the SENDER, once, per sender -- which
+# is what makes this reachable where screencapture and System Events are not
+# (both were refused by TCC while building this, and neither can be granted
+# headlessly, by design).
+#
+# The dispatcher is a plain String -> String function, so every command is
+# testable without an event, a window, or a second process. IDE-DESIGN.md
+# carries the full command set; sprint 1 is the transport plus the three
+# read-only verbs.
+comptime AE_CLASS = 0x526F7374    # 'Rost'
+comptime AE_CMD = 0x636D6E64      # 'cmnd'
+comptime AE_DIRECT = 0x2D2D2D2D   # '----', keyDirectObject
+
+comptime g_agent_obj = named_global["roast.agent.obj", Int]
+comptime g_agent_count = named_global["roast.agent.count", Int]
+
+comptime AGENT_HELP = (
+    "commands: help · status · console"
+    "   (build/run/debug/step/screenshot land in later sprints)"
+)
+
+
+def agent_command(text: String) -> String:
+    """One command in, one line of reply out.
+
+    Unknown commands answer rather than failing silently: an agent that
+    mistypes should be told, and `help` should always be reachable.
+    """
+    g_agent_count()[] = g_agent_count()[] + 1
+    var cmd = text.strip()
+    if cmd == "":
+        return String("empty; try: help")
+
+    if cmd == "help":
+        return String(AGENT_HELP)
+
+    if cmd == "status":
+        # What the status line says, plus the facts an agent would otherwise
+        # have to infer: whether a program is under the debugger, and where
+        # it is stopped.
+        var out = String()
+        let slot = g_status_text()
+        if len(slot[]) > 0:
+            out = slot[][0]
+        if out == "":
+            out = String("idle")
+        try:
+            if dap.is_running():
+                if dap.is_stopped():
+                    out += (
+                        String("  |  stopped ")
+                        + _basename(dap.stop_file())
+                        + String(":")
+                        + String(dap.stop_line())
+                        + String(" (")
+                        + dap.stop_reason()
+                        + String(")")
+                    )
+                else:
+                    out += String("  |  debuggee running")
+        except:
+            pass
+        return out
+
+    if cmd == "console":
+        # Read back from the text view, not from the buffer it was built
+        # from, so this answers what is actually on screen.
+        let text_out = console_text()
+        if text_out == "":
+            return String("(console empty)")
+        return text_out
+
+    return String("unknown command: ") + cmd + String("; try: help")
+
+
+fn _agent_ae_handler(obj: P, cmd: P, event: P, reply: P, /) -> None:
+    """`handleEvent:withReplyEvent:` -- unwrap, dispatch, wrap the reply.
+
+    A plain `fn`, because this is an IMP the runtime calls directly: it takes
+    the four raw pointers an Objective-C method really receives. Every failure
+    is swallowed into a reply rather than raised -- an exception crossing back
+    into the runtime would take the process with it, and an agent is better
+    told that something went wrong than left holding a dead connection.
+    """
+    try:
+        with autoreleasepool():
+            var answer = String("error: no direct parameter")
+            let ev = ObjCObject(Int(event))
+            if ev.addr() != 0:
+                let param = Obj["NSAppleEventDescriptor"](
+                    ev.addr()
+                ).paramDescriptorForKeyword(UInt32(AE_DIRECT))
+                if param.addr() != 0:
+                    answer = agent_command(
+                        ns_to_string(
+                            Obj["NSAppleEventDescriptor"](
+                                param.addr()
+                            ).stringValue()
+                        )
+                    )
+            let rep = ObjCObject(Int(reply))
+            if rep.addr() != 0:
+                let d = Cls["NSAppleEventDescriptor"]().descriptorWithString(
+                    nsstring(answer).ptr()
+                )
+                Obj["NSAppleEventDescriptor"](
+                    rep.addr()
+                ).setParamDescriptor_forKeyword(d.ptr(), UInt32(AE_DIRECT))
+    except:
+        pass
+
+
+def register_agent_events():
+    """Register the handler for Rost/cmnd.
+
+    The selector is one no SDK class declares, so its encoding is given here
+    rather than looked up -- `v@:@@`, the shape every Apple Event handler has.
+    That is also why this is an ObjCClassBuilder and not a `class`: the
+    compiler takes encodings from the SDK, and there is nothing there to take.
+
+    With no sender this is inert: a registration nobody posts to costs one
+    object and an entry in the manager's table.
+    """
+    try:
+        with autoreleasepool():
+            var b = ObjCClassBuilder("RoastAgent")
+            b.add_method["handleEvent:withReplyEvent:", encoding="v@:@@"](
+                _agent_ae_handler
+            )
+            let cls = b^.register()
+            let target = new_instance(cls)
+            g_agent_obj()[] = target.addr()
+            let mgr = Cls["NSAppleEventManager"]().sharedAppleEventManager()
+            Obj["NSAppleEventManager"](
+                mgr.addr()
+            ).setEventHandler_andSelector_forEventClass_andEventID(
+                target.ptr(),
+                sel["handleEvent:withReplyEvent:"]().ptr(),
+                UInt32(AE_CLASS),
+                UInt32(AE_CMD),
+            )
+            print("roast: agent events registered (Rost/cmnd)")
+    except:
+        print("roast: agent events FAILED to register")
+
+
+def agent_self_test() -> Bool:
+    """Post a Rost/cmnd event to this very process and check the reply.
+
+    The whole path -- registration, unpack, dispatch, reply -- with no second
+    process and no TCC grant, because a process may always send to itself.
+    The manager dispatches inline, so this returns rather than waiting on a
+    runloop; the timeout is there so a future change that breaks that shows up
+    as a failure and not as a hang.
+    """
+    try:
+        with autoreleasepool():
+            let me = Cls[
+                "NSAppleEventDescriptor"
+            ]().descriptorWithProcessIdentifier(
+                Int32(external_call["getpid", Int32]())
+            )
+            let ev = Cls[
+                "NSAppleEventDescriptor"
+            ]().appleEventWithEventClass_eventID_targetDescriptor_returnID_transactionID(
+                UInt32(AE_CLASS), UInt32(AE_CMD), me.ptr(), Int16(-1), Int32(0)
+            )
+            let arg = Cls["NSAppleEventDescriptor"]().descriptorWithString(
+                nsstring(String("help")).ptr()
+            )
+            Obj["NSAppleEventDescriptor"](
+                ev.addr()
+            ).setParamDescriptor_forKeyword(arg.ptr(), UInt32(AE_DIRECT))
+            var err = ObjCObject(0)
+            let reply = Obj["NSAppleEventDescriptor"](
+                ev.addr()
+            ).sendEventWithOptions_timeout_error(
+                UInt64(0x00000003),
+                Float64(5.0),
+                Pointer(to=err).unsafe_bitcast[P]()[],
+            )
+            if reply.addr() == 0:
+                print("roast: agent self-test FAILED (no reply)")
+                return False
+            let back = Obj["NSAppleEventDescriptor"](
+                reply.addr()
+            ).paramDescriptorForKeyword(UInt32(AE_DIRECT))
+            if back.addr() == 0:
+                print("roast: agent self-test FAILED (reply had no parameter)")
+                return False
+            let got = ns_to_string(
+                Obj["NSAppleEventDescriptor"](back.addr()).stringValue()
+            )
+            if got.find("commands:") < 0:
+                print("roast: agent self-test FAILED (reply was:", got, ")")
+                return False
+            print("roast: agent self-test OK, round trip through Rost/cmnd")
+            return True
+    except:
+        print("roast: agent self-test FAILED (raised)")
+        return False
+
+
 def main() raises:
     # AppKit is not linked into a JIT process; without this NSApplication is nil
     # and the app exits silently having drawn nothing.
@@ -4813,6 +5044,7 @@ def main() raises:
             "lines",
         )
 
+    register_agent_events()
     print("roast: entering [NSApp run]")
     with autoreleasepool():
         let NSApplication2 = ObjCClass.lookup["NSApplication"]()

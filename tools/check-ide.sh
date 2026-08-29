@@ -393,6 +393,26 @@ DBGPROJ
     bad "debugger" "$(echo "$dbgout" | grep -m1 -E 'debug stopped|debugging|debug:' || echo 'never stopped')"
   fi
 
+# The agent surface: Apple Events in, text out. The self-test posts a
+# Rost/cmnd event to the running app's OWN process and checks the reply came
+# back through the reply descriptor -- registration, unpack, dispatch and
+# reply, with no second process and no TCC grant, because a process may always
+# send to itself. (screencapture and System Events are both refused here, by
+# design, and cannot be granted headlessly; this is why the app is scriptable
+# rather than screen-scraped.)
+mkdir -p "$TMP/agentproj"
+agentout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_SESSION="$TMP/agent.json" \
+           ROAST_AGENT_SELFTEST=1 ROAST_AGENT="status" \
+           ROAST_AUTOCLOSE_TICKS=60 timeout 240 "$TMP/roast" 2>&1)
+if echo "$agentout" | grep -q 'roast: agent self-test OK'; then
+  reply=$(echo "$agentout" | grep -m1 'roast: agent >' | sed 's/^roast: agent > //')
+  ok "agent events" "Rost/cmnd round trip; status replied \"${reply:-?}\""
+elif echo "$agentout" | grep -q 'agent events FAILED to register'; then
+  bad "agent events" "handler did not register"
+else
+  bad "agent events" "$(echo "$agentout" | grep -m1 'agent self-test' || echo 'no round trip')"
+fi
+
   # The debugger's BUTTONS. ROAST_DEBUG_STEPS presses one toolbar item per
   # stop -- looked up in the live bar by identifier, its action sent to its
   # own target through NSApp, the dispatch a click takes -- so a button
