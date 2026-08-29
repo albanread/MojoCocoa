@@ -71,3 +71,15 @@ commit that fixes it when one does.
    NSEvent; 2 selects the word around `offset_at_point` (the completion
    code already knows word boundaries), 3 selects the line; drag after a
    double-click should extend by words, the way every Mac text view does.
+
+7. **`class FernwindView(NSView):` gets an error squiggle; builds fine.**
+   Same family as entry 3 -- the server is configured worse than the
+   compiler -- but a different missing piece: the KB. `lsp.mojo`'s
+   `start_with_environment` sets MODULAR_MOJO_MAX_IMPORT_PATH and nothing
+   else, while `bin/cocoamojo` also exports MODULAR_MOJO_MAX_COCOAKB_PATH
+   (share/cocoa.sqlite) before every build. A Finder-launched Roast.app
+   inherits no shell environment at all, so the server elaborates `class`
+   declarations with no Cocoa database, cannot resolve NSView, and marks
+   the fork's own keyword as an error. Fix, together with entry 3: the
+   server gets exactly the environment and import roots the wrapper gives
+   the compiler -- one source of truth, not two configurations drifting.
