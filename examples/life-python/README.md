@@ -9,7 +9,10 @@ demo: same program, two windowing worlds.
 ## First run
 
 pygame lives in the project's own Python environment, and the project
-ships a `requirements.txt` naming it — so once:
+ships a `requirements.txt` naming it — `pygame-ce`, the community build,
+because it publishes wheels for current CPython (classic pygame had none
+for 3.14 and tried to compile itself against an SDL nobody has). It
+installs as the same `pygame` module. So, once:
 
 1. Python menu → **Create or Repair Environment**
 2. Python menu → **Install Project Dependencies**
