@@ -28,3 +28,17 @@ commit that fixes it when one does.
    An example that ships with the toolchain should build silently. Easiest
    fix is a leading word ("Affine map: x' = ..."); worth a sweep of every
    example for other warnings while there.
+
+3. **False error squiggle on `from max.gpu.host import DeviceContext`.**
+   The editor marks it as an error (red gutter, underline) yet the build
+   runs fine. Cause found: the build and the language server disagree
+   about the import roots. `bin/cocoamojo` passes three --
+
+       INC=(-I "$PKG/stdlib" -I "$PKG/max" -I "$PKG/kernels")
+
+   -- while `lsp_import_path()` (roast.mojo:3723) returns ONE,
+   `lib/mojo/stdlib`, so the server cannot resolve `max.*` and diagnoses
+   an import the compiler accepts. Fix: the LSP must get the same three
+   roots the build gets (and `ROAST_IMPORTS` should take a list). Check
+   whether the server takes multiple roots in its settings; the wrapper's
+   INC array is the single source of truth to mirror.
