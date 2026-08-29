@@ -86,6 +86,8 @@ final class Delegate: NSObject, NSApplicationDelegate {
         target: nil, action: nil)
     var busy = false
     var buttons: [NSButton] = []
+    let progress = NSProgressIndicator()
+    let progressLabel = NSTextField(labelWithString: "")
 
     func applicationDidFinishLaunching(_ note: Notification) {
         let layout = Layout.standard()
@@ -137,6 +139,21 @@ final class Delegate: NSObject, NSApplicationDelegate {
             stack.addArrangedSubview(fix)
         }
 
+        // A real bar, driven by the generator's own phases. Hidden until
+        // something is happening, because an idle progress bar is a lie
+        // about what the window is doing.
+        progress.isIndeterminate = false
+        progress.minValue = 0
+        progress.maxValue = 1
+        progress.isHidden = true
+        progress.translatesAutoresizingMaskIntoConstraints = false
+        progress.widthAnchor.constraint(equalToConstant: 484).isActive = true
+        stack.addArrangedSubview(progress)
+        progressLabel.font = .systemFont(ofSize: 11)
+        progressLabel.textColor = .secondaryLabelColor
+        progressLabel.isHidden = true
+        stack.addArrangedSubview(progressLabel)
+
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
@@ -178,11 +195,21 @@ final class Delegate: NSObject, NSApplicationDelegate {
         busy = true
         buttons.forEach { $0.isEnabled = false }
         let ops = Operations(.standard()) { self.write($0) }
+        ops.onProgress = { label, fraction in
+            DispatchQueue.main.async {
+                self.progress.isHidden = false
+                self.progressLabel.isHidden = false
+                self.progress.doubleValue = fraction
+                self.progressLabel.stringValue = label
+            }
+        }
         DispatchQueue.global().async {
             do { try work(ops) } catch { self.write("error: \(error)") }
             DispatchQueue.main.async {
                 self.busy = false
                 self.buttons.forEach { $0.isEnabled = true }
+                self.progress.isHidden = true
+                self.progressLabel.isHidden = true
             }
         }
     }

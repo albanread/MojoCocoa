@@ -142,7 +142,112 @@ final class Operations {
         try? p.run()
     }
 
+    // ── The database, built here rather than carried ───────────────────────
+
+    /// Generate cocoa.sqlite from THIS machine's SDK.
+    ///
+    /// 343 MB of the old payload was a snapshot of whichever Mac cut the
+    /// release. Built here it is smaller to ship, and more correct: it
+    /// describes the frameworks this person actually has. Fifteen seconds
+    /// of pure-stdlib Python against the live Objective-C runtime and
+    /// BridgeSupport.
+    ///
+    /// `progress` is called with a phase name and a fraction; the phases
+    /// come from the generator's own output, so the bar tracks real work
+    /// rather than a timer pretending to.
+    /// A high-water mark that only ever rises. The generator's output is
+    /// read on a background queue, so the mark is guarded.
+    private final class Ratchet {
+        private let lock = NSLock()
+        private var high = 0.0
+        func advance(to fraction: Double) -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            guard fraction > high else { return false }
+            high = fraction
+            return true
+        }
+    }
+
+    func generateDatabase(into toolchain: URL,
+                          progress: @escaping (String, Double) -> Void)
+        throws {
+        let generator = toolchain.appendingPathComponent("share/cocoakb")
+        let build = generator.appendingPathComponent("build.py")
+        guard exists(build) else {
+            throw Failure.reason("No database generator in this payload")
+        }
+        let python = toolchain.appendingPathComponent(
+            "Python/Python.framework/Versions/Current/bin/python3")
+        let interpreter = exists(python)
+            ? python : URL(fileURLWithPath: "/usr/bin/python3")
+
+        let p = Process()
+        p.executableURL = interpreter
+        p.arguments = [build.path]
+        p.currentDirectoryURL = generator
+        // The generator writes cocoa.sqlite beside itself (DB is derived
+        // from its own directory) and takes no output flag, so the file is
+        // moved afterwards rather than pretending a flag exists.
+
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+
+        // Named phases, in the order the generator prints them. A bar that
+        // moves when something happened is worth more than one that moves
+        // smoothly and means nothing.
+        // The generator prints its four phase headers hard against the left
+        // margin and indents every detail line under them, so a prefix match
+        // picks out headers and cannot be fooled by a count that happens to
+        // mention the same word ("... classes -> method_abi").
+        let phases: [(String, String, Double)] = [
+            ("BridgeSupport", "Reading Apple's BridgeSupport files", 0.15),
+            ("Runtime", "Asking the live Objective-C runtime", 0.40),
+            ("POSIX", "Reading the SDK's C headers", 0.65),
+            ("Derive", "Deriving signatures and calling conventions", 0.85),
+        ]
+        // A ratchet, not a search. Several of these words also occur in the
+        // per-table row counts the generator prints at the end, so a plain
+        // match fires the same phase repeatedly and out of order. Reporting
+        // only what beats the high-water mark makes the bar monotonic and
+        // says each phase exactly once.
+        let reached = Ratchet()
+        pipe.fileHandleForReading.readabilityHandler = { handle in
+            guard let text = String(data: handle.availableData,
+                                    encoding: .utf8), !text.isEmpty
+            else { return }
+            for line in text.split(separator: "\n") {
+                for (needle, label, fraction) in phases
+                where line.hasPrefix(needle) && reached.advance(to: fraction) {
+                    progress(label, fraction)
+                }
+            }
+        }
+        progress("Starting", 0.05)
+        try p.run()
+        p.waitUntilExit()
+        pipe.fileHandleForReading.readabilityHandler = nil
+        guard p.terminationStatus == 0 else {
+            throw Failure.reason(
+                "The database generator failed (exit \(p.terminationStatus))")
+        }
+        let produced = generator.appendingPathComponent("cocoa.sqlite")
+        guard exists(produced) else {
+            throw Failure.reason("The generator produced no database")
+        }
+        let db = toolchain.appendingPathComponent("share/cocoa.sqlite")
+        if exists(db) { try fm.removeItem(at: db) }
+        try fm.moveItem(at: produced, to: db)
+        let size = (try? fm.attributesOfItem(atPath: db.path)[.size]
+            as? Int) ?? 0
+        progress("Database ready (\(size / 1_048_576) MB)", 1.0)
+    }
+
     // ── Install ────────────────────────────────────────────────────────────
+
+    /// Set by the window so Install can drive a progress bar; the command
+    /// line leaves it nil and gets lines instead.
+    var onProgress: ((String, Double) -> Void)?
 
     func install() throws {
         guard isToolchain(layout.payloadToolchain) else {
@@ -178,6 +283,20 @@ final class Operations {
             say("  Roast.app installed and registered")
         } else {
             say("  (this payload carries no Roast.app)")
+        }
+        // Last, because it is the only step that needs the machine rather
+        // than the payload, and the only one worth a progress bar.
+        let installed = layout.toolchains.appendingPathComponent(version)
+        if exists(installed.appendingPathComponent("share/cocoakb/build.py")) {
+            say("")
+            say("Building the Cocoa database from this Mac's SDK")
+            say("  (about fifteen seconds -- it is generated here rather than")
+            say("  shipped, so it describes YOUR frameworks, and it is 343 MB")
+            say("  the download did not have to carry)")
+            try generateDatabase(into: installed) { label, fraction in
+                self.onProgress?(label, fraction)
+                self.say("  " + label)
+            }
         }
         say("Done. Everything is under \(layout.root.path);"
             + " `current` says which version answers.")
@@ -289,6 +408,12 @@ final class Operations {
             "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
             + "LaunchServices.framework/Support/lsregister")
         p.arguments = args
+        // Best-effort: lsregister complains to stderr about paths it cannot
+        // scan (an uninstall has already removed the one it is being told to
+        // forget), and that complaint is not the reader's business. The
+        // outcomes that matter are reported by the caller.
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
         try? p.run()
         p.waitUntilExit()
     }

@@ -33,7 +33,12 @@ printf '%s\n' "$VER" > "$OUT/VERSION"
 
 # include/ is 172 MB of LLVM headers for building out-of-tree C++ against
 # the compiler. An installation is for writing Mojo, not for that.
-rsync -a --delete --delete-excluded --exclude 'include/' --exclude '.roast.log' \
+# share/cocoa.sqlite is left out on purpose: 343 MB of the payload, and the
+# installer generates a better one -- built from the SDK on the machine it
+# lands on rather than the machine that cut the release.
+rsync -a --delete --delete-excluded --exclude 'include/' \
+      --exclude '.roast.log' --exclude 'share/cocoa.sqlite' \
+      --exclude 'share/cocoakb/cocoa.sqlite' \
       "$D/" "$OUT/CocoaMojo/"
 echo "   toolchain $(du -sh "$OUT/CocoaMojo" | cut -f1) (include/ left out)"
 

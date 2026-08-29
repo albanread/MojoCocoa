@@ -275,6 +275,40 @@ else
   exit 1
 fi
 
+echo "== python =="
+# CPython belongs to the TOOLCHAIN, not to the editor. Roast has always
+# looked for it at <toolchain>/Python (python_env.runtime_home), and while
+# the app carried a whole toolchain the two happened to coincide. A thin
+# app has no Resources to hide it in, and the database generator needs an
+# interpreter before any editor runs, so it lives here where both can
+# reach it.
+if [ -x "$D/Python/Python.framework/Versions/Current/bin/python3" ] \
+   && [ "${PYTHON_REBUILD:-0}" != 1 ]; then
+  echo "   already present ($(du -sh "$D/Python" | cut -f1)) -- PYTHON_REBUILD=1 to redo"
+else
+  "$ROOT/tools/bundle-python.sh" "$D/Python"
+fi
+
+echo "== cocoa database generator =="
+# The 343 MB database is no longer shipped: the installer builds it on the
+# machine it installs to, in about fifteen seconds, from that machine's own
+# SDK. So what ships is the generator -- 112 KB of stdlib-only Python --
+# and the database it produces describes the frameworks the person actually
+# has, rather than a snapshot of whichever Mac cut the release.
+KBSRC="${COCOAKB_SRC:-$ROOT/../CocoaBaseMCP}"
+if [ -f "$KBSRC/build.py" ]; then
+  mkdir -p "$D/share/cocoakb"
+  # schema.sql is not optional: build.py reads it to create the tables.
+  # --delete would take the generated cocoa.sqlite with it on a rebuild,
+  # so protect it -- regenerating 350 MB to stage 112 KB is a poor trade.
+  rsync -a --delete --filter 'P cocoa.sqlite' \
+        --include '*.py' --include '*.sql' --include '*/' --exclude '*' \
+        "$KBSRC/" "$D/share/cocoakb/"
+  echo "   $(ls "$D/share/cocoakb"/*.py | wc -l | tr -d ' ') modules + schema"
+else
+  echo "   WARNING: no generator at $KBSRC -- the database cannot be built"
+fi
+
 echo "== cocoa database =="
 if [ -f "$KB" ]; then cp -f "$KB" "$D/share/cocoa.sqlite"
 else echo "   WARNING: no cocoa.sqlite at $KB -- set COCOAKB=..."; fi

@@ -84,7 +84,8 @@ fi
 # non-system dylibs, relocates them, and proves venv + pip before returning.
 if [ "$THIN" = 1 ]; then
   echo "== python =="
-  echo "   not bundled: the installation carries CPython"
+  echo "   not bundled: the toolchain carries it at <toolchain>/Python,"
+  echo "   which is where python_env has always looked for it"
 else
   echo "== python =="
   "$ROOT/tools/bundle-python.sh" "$C/Resources/Python"
