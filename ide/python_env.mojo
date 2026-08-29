@@ -142,11 +142,16 @@ def environment_ready(project: String, toolchain_root: String = String()) -> Boo
 
 
 def runtime_home(toolchain_root: String) -> String:
-    """The relocatable CPython prefix inside Roast.app.
+    """The relocatable CPython prefix that belongs to this toolchain.
 
-    ROAST_PYTHON_HOME and python.home make a bare development build testable;
-    the shipped app needs neither because Python is beside CocoaMojo in its
-    Resources directory.
+    ROAST_PYTHON_HOME and python.home make a bare development build
+    testable; a shipped installation needs neither.
+
+    Two layouts, in order. Python lives INSIDE the toolchain now
+    (`<toolchain>/Python`), which is where make-dist puts it and where
+    bin/python3 reaches it. It used to live BESIDE it, when a fat Roast.app
+    carried both in its Resources -- checked second so an old bundle still
+    works.
     """
     let override = getenv("ROAST_PYTHON_HOME")
     if override != "" and _exists(override + String("/bin/python3")):
@@ -154,13 +159,16 @@ def runtime_home(toolchain_root: String) -> String:
     let chosen = session.setting(String("python.home"))
     if chosen != "" and _exists(chosen + String("/bin/python3")):
         return chosen^
-    let resources = dirname(toolchain_root)
-    if resources == "":
+    if toolchain_root == "":
         return String()
-    let bundled = (
-        resources
-        + String("/Python/Python.framework/Versions/Current")
-    )
+    comptime FRAMEWORK = "/Python/Python.framework/Versions/Current"
+    let inside = toolchain_root + String(FRAMEWORK)
+    if _exists(inside + String("/bin/python3")):
+        return inside^
+    let beside = dirname(toolchain_root)
+    if beside == "":
+        return String()
+    let bundled = beside + String(FRAMEWORK)
     # The bundled interpreter, or nothing. Roast does NOT go looking for a
     # Python on the machine: the interop links against a specific libpython
     # ABI, and a version that merely happens to be installed is how you get
@@ -177,7 +185,9 @@ def runtime_origin(toolchain_root: String) -> String:
     let home = runtime_home(toolchain_root)
     if home == "":
         return String("none")
-    if home.startswith(dirname(toolchain_root) + String("/Python/")):
+    if home.startswith(toolchain_root + String("/Python/")) or home.startswith(
+        dirname(toolchain_root) + String("/Python/")
+    ):
         return String("bundled")
     if getenv("ROAST_PYTHON_HOME") == home:
         return String("ROAST_PYTHON_HOME")
