@@ -607,6 +607,43 @@ these as defaults rather than constants:
     notarytool keychain profile: [redacted]
     (the developer Apple ID is [redacted], not the googlemail one)
 
+#### Verifying a framework is not verifying a Mach-O
+
+`codesign --verify --strict` is the right check for a lone Mach-O and the
+wrong one for a framework. Hand it a framework's main executable and it
+resolves the enclosing bundle and reports **"No such file or directory"**,
+naming a file that is plainly there. This is not a signature problem:
+Apple's own `Tcl`, `Tk` and `Ruby` frameworks fail the identical check
+(with "bundle format is ambiguous"), and so does ours before it is ever
+signed with a Developer ID.
+
+The message means a symlink in the bundle points outside it, and
+`--strict=symlinks` says which one. That flag turned a dead end into four
+findings in ten minutes:
+
+  - an unanchored rsync `--exclude 'include/'` had stripped
+    `Python.framework`'s own headers, because a pattern with no leading
+    slash matches at every depth;
+  - the relocatable build ships a `site-packages` symlink that leaves the
+    bundle for a path that has never existed;
+  - the post-build smoke test wrote `__pycache__` into the sealed
+    framework;
+  - and `compileall` could not be moved earlier to fix that, because
+    relocation invalidates the interpreter's own signature and the kernel
+    SIGKILLs it -- so bytecode has exactly one correct moment: after the
+    Mach-Os are re-signed, before the bundle is sealed.
+
+So the payload verifier checks each artifact the way that artifact is
+meant to be checked: lone Mach-Os with `--verify --strict`, frameworks
+once as bundles with `--verify --deep --strict=symlinks`. `--deep` is what
+gives the framework check teeth -- appending a single byte to a nested
+`.so` is caught as "a sealed resource is missing or invalid".
+
+The general lesson is the one worth keeping: when a check fails on
+something known-good, suspect the check. A verification step that cannot
+be passed by Apple's own shipping frameworks is not measuring what its
+name suggests.
+
 ### What moves, in order
 
 1. **The layout and the lookup.** An assembly step arranges the versioned
