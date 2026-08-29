@@ -52,11 +52,23 @@ if [ "$ADHOC" = 1 ]; then
   echo "   identity: ad-hoc (rehearsal -- will NOT notarize)"
 else
   echo "   identity: $IDENT"
-  security find-identity -v -p codesigning | grep -qF "$IDENT" || {
-    echo "   FAILED -- that identity is not in the keychain:"
-    security find-identity -v -p codesigning | sed 's/^/     /'
-    exit 1
-  }
+  # The listing is captured ONCE and both tested and reported. Running
+  # security twice -- testing the first result, printing the second -- can
+  # announce that the identity is missing directly above a listing that
+  # contains it, which is what it did. Piping into `grep -q` was its own
+  # hazard: grep exits at the first match, security takes SIGPIPE, and
+  # under `set -o pipefail` the pipeline reports failure for a search that
+  # succeeded.
+  identities="$(security find-identity -v -p codesigning || true)"
+  case "$identities" in
+    *"$IDENT"*) ;;
+    *)
+      echo "   FAILED -- that identity is not in the keychain:"
+      printf '%s\n' "$identities" | sed 's/^/     /'
+      echo "   (if it IS listed above, the keychain was locked when this"
+      echo "    ran -- unlock it and try again)"
+      exit 1 ;;
+  esac
 fi
 
 # What is here now.
