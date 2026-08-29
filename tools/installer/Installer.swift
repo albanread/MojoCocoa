@@ -27,9 +27,13 @@ struct Layout {
     var payloadToolchain: URL { payload.appendingPathComponent("CocoaMojo") }
     var payloadApp: URL { payload.appendingPathComponent("Roast.app") }
 
-    /// User data lives in Application Support and is NOT ours to remove
-    /// unless someone asks twice: an edited standard library, examples, IDE
-    /// source, and Python environments that took real time to build.
+    /// What Roast keeps in Application Support, and what is NOT ours to
+    /// remove unless someone asks twice: an edited standard library,
+    /// examples, IDE source, and the per-project Python environments Roast
+    /// created there. "Python environments" unqualified reads as the
+    /// machine's Python, which is alarming and wrong -- nothing outside
+    /// this folder is ever touched, and every string a person sees has to
+    /// say so.
     ///
     /// Overridable, and that is not a convenience. `--root` used to redirect
     /// only the installation, so an unattended test of `--user-data` deleted
@@ -166,12 +170,35 @@ final class Operations {
             try replace(layout.payloadApp, with: layout.installedApp)
             say("  Roast.app restored")
         }
-        say("  your work was not touched: the standard library, examples and")
-        say("  IDE source you have edited, your projects, and your Python")
-        say("  environments are all exactly as they were")
+        say("  your work was not touched: the standard library, examples")
+        say("  and IDE source you have edited, your projects, and the")
+        say("  per-project Python environments Roast made, are as they were")
     }
 
     // ── Uninstall ──────────────────────────────────────────────────────────
+
+    /// Preferences AppKit writes on its own: window frames, autosave state,
+    /// the things nobody chose to create. They are settings rather than
+    /// work, so they go with the installation and not with `--user-data`.
+    /// An uninstall that says "the machine is the way you found it" and
+    /// leaves sixteen plists behind is telling a small lie.
+    private func preferenceFiles() -> [URL] {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Preferences")
+        let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names.filter {
+            $0.hasSuffix(".plist")
+                && ($0.hasPrefix("org.mojococoa.") || $0 == "roast.plist")
+        }.map { dir.appendingPathComponent($0) }
+    }
+
+    private func savedStateFolders() -> [URL] {
+        let dir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Saved Application State")
+        let names = (try? fm.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names.filter { $0.hasPrefix("org.mojococoa.") }
+            .map { dir.appendingPathComponent($0) }
+    }
 
     func uninstall(userData: Bool) throws {
         say("Uninstalling from \(layout.root.path)")
@@ -185,6 +212,19 @@ final class Operations {
         } else {
             say("  nothing was installed there")
         }
+        // Launch Services can hold an entry for a path that no longer
+        // exists -- unregistering the app only helps if the app was there
+        // to unregister. Ask it to forget the whole directory as well.
+        launchServices(["-u", layout.root.path])
+
+        var swept = 0
+        for f in preferenceFiles() + savedStateFolders() {
+            if (try? fm.removeItem(at: f)) != nil { swept += 1 }
+        }
+        if swept > 0 {
+            say("  removed \(swept) preference file(s) and saved window state")
+        }
+
         if userData {
             if exists(layout.userData) {
                 try fm.removeItem(at: layout.userData)
@@ -194,9 +234,9 @@ final class Operations {
                 say("  no user data to remove")
             }
         } else {
-            say("  your user data was KEPT at \(layout.userData.path)")
-            say("  (edited standard library, examples, IDE source, projects,")
-            say("  Python environments)")
+            say("  kept: \(layout.userData.path)")
+            say("  (your edited standard library, examples and IDE source,")
+            say("  and the per-project Python environments Roast made there)")
         }
         say("The machine is the way you found it.")
     }

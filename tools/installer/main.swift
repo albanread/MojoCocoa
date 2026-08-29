@@ -75,9 +75,15 @@ final class Delegate: NSObject, NSApplicationDelegate {
         styleMask: [.titled, .closable, .miniaturizable],
         backing: .buffered, defer: false)
     let log = NSTextView()
+    // "Python environments" alone reads as the machine's Python. These are
+    // per-project environments this app created inside its own Application
+    // Support folder; nothing outside it is ever touched, and the wording
+    // has to say so before someone declines out of reasonable alarm.
     let alsoUserData = NSButton(checkboxWithTitle:
-        "Also remove my work: edited standard library, examples, projects,"
-        + " Python environments", target: nil, action: nil)
+        "Also remove my edits and settings in Application Support"
+        + " (edited standard library, examples, IDE source, and the"
+        + " per-project Python environments Roast created there)",
+        target: nil, action: nil)
     var busy = false
     var buttons: [NSButton] = []
 
@@ -176,13 +182,17 @@ final class Delegate: NSObject, NSApplicationDelegate {
         alert.messageText = "Uninstall CocoaMojo and Roast?"
         alert.informativeText = wantsUserData
             ? "Removes /Applications/Roast — every installed version and the"
-              + " app — AND your work in Application Support: the standard"
-              + " library, examples and IDE source you have edited, and your"
-              + " Python environments. This cannot be undone."
+              + " app — AND everything Roast keeps in Application Support:"
+              + " the standard library, examples and IDE source you have"
+              + " edited, and the per-project Python environments Roast"
+              + " created there.\n\nYour own projects, and any Python on"
+              + " this Mac outside Roast, are not touched. This cannot be"
+              + " undone."
             : "Removes /Applications/Roast — every installed version, the"
-              + " app, and the current symlink.\n\nYour work is kept: edited"
-              + " standard library, examples, IDE source, projects and Python"
-              + " environments all stay in Application Support."
+              + " app, and the current symlink.\n\nEverything Roast keeps in"
+              + " Application Support stays: your edited standard library,"
+              + " examples and IDE source, and the per-project Python"
+              + " environments it created there."
         alert.addButton(withTitle: "Uninstall")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }

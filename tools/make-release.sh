@@ -86,9 +86,12 @@ compiler, language server, debugger, standard library, examples and the
 IDE's own source -- in /Applications/Roast, with Roast beside it.
 
 The same window resets a toolchain you have experimented on, and uninstalls
-everything. Uninstall keeps your work unless you tick the box: an edited
-standard library, your projects, and your Python environments live in
-Application Support and are not the installer's to throw away.
+everything. Uninstall keeps your work unless you tick the box: your edited
+standard library, examples and IDE source, and the per-project Python
+environments Roast creates for you, all live in Application Support and are
+not the installer's to throw away. Nothing outside /Applications/Roast and
+that folder is ever touched -- in particular, no Python on your Mac other
+than the one Roast installed for itself.
 
 Keep this disk image: Reset and Uninstall need the payload on it.
 
