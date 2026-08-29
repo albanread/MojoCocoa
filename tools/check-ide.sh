@@ -382,14 +382,20 @@ DBGPROJ
   # eat what used to be the whole budget. It passed alone and failed here,
   # twice, before the number was the number.
   # A debugger check that launches and NEVER STOPS, with no error anywhere,
-  # is almost never the code: macOS gates debugger attachment behind a
-  # per-user dialog, and an unattended run sits behind it until the timeout.
-  # It has burned this project twice. If all three debugger checks fail with
-  # empty walks on a machine where lldb worked yesterday, find the human,
-  # not the bug.
+  # is almost never the code: macOS gates debugging behind a dialog, and the
+  # grant is keyed to the EXACT BINARY -- measured: the dist roast stops at
+  # its breakpoint, a freshly built copy of the same source does not, and
+  # embedding a bundle identity in the fresh copy changes nothing. So the
+  # debugger checks drive dist/CocoaMojo/bin/roast, the binary a human has
+  # approved once, while every other check keeps exercising the fresh
+  # build. If these three fail with empty walks anyway, a human dismissed
+  # nothing on a machine where the dist binary changed: run one debug
+  # session by hand and answer the dialog.
+  DBGROAST="$PWD/dist/CocoaMojo/bin/roast"
+  [ -x "$DBGROAST" ] || DBGROAST="$TMP/roast"
   dbgout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_DAP="$DAPBIN" \
            ROAST_PROJECT="$TMP/dbgproj" ROAST_DEBUG_LINE=9 \
-           ROAST_AUTOCLOSE_TICKS=1200 timeout 400 "$TMP/roast" 2>&1)
+           ROAST_AUTOCLOSE_TICKS=1200 timeout 400 "$DBGROAST" 2>&1)
   # Line 9, the line that was clicked -- not 10. The debug build is
   # unoptimised, so nothing slides; if this ever reports 10 again, the
   # --no-optimization has been lost and locals have gone with it.
@@ -452,7 +458,7 @@ fi
               ROAST_PROJECT="$TMP/stepproj" ROAST_SESSION="$TMP/awalk.json" \
               ROAST_DEBUG_LINE=11 \
               ROAST_AGENT_STEPS="step-in,step-over,step-out,continue" \
-              ROAST_AUTOCLOSE_TICKS=1200 timeout 400 "$TMP/roast" 2>&1)
+              ROAST_AUTOCLOSE_TICKS=1200 timeout 400 "$DBGROAST" 2>&1)
   awalk=$(echo "$agentwalk" | grep -oE 'debug (stopped at main\.mojo:[0-9]+|pressed [a-z]+)|agent step [a-z-]+' \
           | sed -E 's/debug stopped at main\.mojo:/@/; s/agent step /!/' | tr '\n' ' ')
   if [ "$awalk" = "@11 !step-in @6 !step-over @7 !step-out @11 !continue " ]; then
@@ -538,7 +544,10 @@ fn main():
     var r = middle(4)
     print(r)
 EOF
-  stepout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_DAP="$DAPBIN"             ROAST_PROJECT="$TMP/stepproj" ROAST_SESSION="$TMP/stepsession.json"             ROAST_DEBUG_LINE=11 ROAST_DEBUG_STEPS="in,over,out,continue"             ROAST_AUTOCLOSE_TICKS=1200 timeout 400 "$TMP/roast" 2>&1)
+  stepout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_DAP="$DAPBIN" \
+            ROAST_PROJECT="$TMP/stepproj" ROAST_SESSION="$TMP/stepsession.json" \
+            ROAST_DEBUG_LINE=11 ROAST_DEBUG_STEPS="in,over,out,continue" \
+            ROAST_AUTOCLOSE_TICKS=1200 timeout 400 "$DBGROAST" 2>&1)
   walk=$(echo "$stepout" | grep -oE 'debug (stopped at main\.mojo:[0-9]+|pressed [a-z]+)'          | sed -E 's/debug stopped at main\.mojo:/@/; s/debug pressed /!/' | tr '\n' ' ')
   want="@11 !in @6 !over @7 !out @11 !continue "
   if [ "$walk" = "$want" ]; then
