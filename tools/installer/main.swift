@@ -108,7 +108,13 @@ final class Delegate: NSObject, NSApplicationDelegate {
         let blurb = NSTextField(wrappingLabelWithString:
             "Compiler, language server, debugger, standard library, examples"
             + " and the IDE's own source — installed to"
-            + " /Applications/Roast, and fronted by Roast.")
+            + " /Applications/Roast, and fronted by Roast.\n\n"
+            + "Installing also builds the Cocoa database — the description"
+            + " of every Objective-C class and method that Roast completes"
+            + " and the compiler calls. It is generated here, from this"
+            + " Mac's own macOS SDK, so it describes the frameworks you"
+            + " actually have. That takes about fifteen seconds and saves"
+            + " the download 343 MB.")
         blurb.font = .systemFont(ofSize: 11)
         blurb.textColor = .secondaryLabelColor
         blurb.preferredMaxLayoutWidth = 480
@@ -166,6 +172,10 @@ final class Delegate: NSObject, NSApplicationDelegate {
         stack.addArrangedSubview(scroll)
 
         window.contentView = stack
+        // The window was a fixed 520x460, which silently clipped the stack
+        // the moment the blurb grew. Sizing to what the content actually
+        // needs means text can be added without measuring it by hand.
+        window.setContentSize(stack.fittingSize)
         window.center()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
