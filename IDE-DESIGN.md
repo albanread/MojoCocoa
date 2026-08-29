@@ -441,9 +441,38 @@ already exists and is the one piece of this that needs no design.
       CocoaMojo/<version>/                      the toolchain, versioned
         bin/      cocoamojo, mojo-lsp-server, lldb, lldb-dap
         lib/      the dylibs, and mojo/{stdlib,max,kernels}
-        share/    examples, ide-source, cocoa.sqlite
+        share/    examples, ide-source, cocoa.sqlite, cocoakb/
         Python/   the relocatable CPython
       CocoaMojo/current  ->  <version>          one symlink says which
+
+### The database is generated, not shipped
+
+`cocoa.sqlite` is 343 MB: 28,814 Objective-C classes and 522,170 methods,
+with the register class of every argument worked out. It is not data we
+authored -- it is Apple's own SDK described back to itself, derived from
+BridgeSupport, the live Objective-C runtime, and a clang AST over the
+SDK headers.
+
+Shipping it means every download carries a snapshot of whichever Mac cut
+the release, and that snapshot starts drifting the moment someone updates
+Xcode. Generating it costs fifteen seconds on the machine it installs to,
+and what ships instead is `share/cocoakb/` -- 112 KB of stdlib-only
+Python, plus the `schema.sql` it needs to create its tables. The payload
+went from 990 MB to 696 MB, and the database now describes the frameworks
+the person actually has.
+
+This is also why CPython belongs to the TOOLCHAIN rather than the app.
+While Roast carried a whole toolchain in its Resources the two happened
+to coincide; a thin app has nowhere to hide an interpreter, and the
+generator needs one before any editor has run. `python_env.runtime_home`
+had always looked for it at `<toolchain>/Python`, so this is the layout
+catching up with the lookup.
+
+It costs one thing: the generator reads the macOS SDK, so a machine with
+no Command Line Tools cannot build the database. The installer already
+detects that and offers to trigger Apple's own installer -- the same
+requirement the compiler has, surfaced at install time rather than at the
+first confusing build failure.
 
 `/Applications/Roast`, not `/Library/Developer`: an admin user can write
 it without a password prompt, it is where a person already looks for what
