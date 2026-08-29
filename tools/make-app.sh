@@ -47,6 +47,11 @@ C="$APP/Contents"
 
 want_dmg=1
 [ "${1:-}" = "--no-dmg" ] && want_dmg=0
+# THIN=1 builds the app the installer ships: the editor and nothing else.
+# The toolchain it talks to is the INSTALLED one, so folding a second copy
+# into Resources would ship a gigabyte twice and let the two drift.
+THIN="${THIN:-0}"
+INSTALLED_LIB="/Applications/Roast/CocoaMojo/current/lib"
 
 [ -x "$D/bin/cocoamojo" ] || {
   echo "no distribution at dist/CocoaMojo -- run ./tools/release.sh first"
@@ -63,17 +68,27 @@ mkdir -p "$C/MacOS" "$C/Resources"
 # ── the toolchain ──────────────────────────────────────────────────────────
 # --delete-excluded as well as --delete, so an include/ left by an earlier
 # run cannot survive into a bundle that is supposed to be without one.
-echo "== toolchain =="
-rsync -a --delete --delete-excluded \
-      --exclude 'include/' --exclude '.roast.log' \
-      "$D/" "$C/Resources/CocoaMojo/"
-echo "   $(du -sh "$C/Resources/CocoaMojo" | cut -f1) (include/ left out)"
+if [ "$THIN" = 1 ]; then
+  echo "== toolchain =="
+  echo "   not bundled: this app talks to $INSTALLED_LIB"
+else
+  echo "== toolchain =="
+  rsync -a --delete --delete-excluded \
+        --exclude 'include/' --exclude '.roast.log' \
+        "$D/" "$C/Resources/CocoaMojo/"
+  echo "   $(du -sh "$C/Resources/CocoaMojo" | cut -f1) (include/ left out)"
+fi
 
 # ── in-process Python ──────────────────────────────────────────────────────
 # bundle-python copies the framework used to package Roast, closes over its
 # non-system dylibs, relocates them, and proves venv + pip before returning.
-echo "== python =="
-"$ROOT/tools/bundle-python.sh" "$C/Resources/Python"
+if [ "$THIN" = 1 ]; then
+  echo "== python =="
+  echo "   not bundled: the installation carries CPython"
+else
+  echo "== python =="
+  "$ROOT/tools/bundle-python.sh" "$C/Resources/Python"
+fi
 
 # ── the executable ─────────────────────────────────────────────────────────
 # Built here rather than copied from bin/, so the app always carries the IDE
@@ -89,8 +104,16 @@ rm -f "$OUT/.roast-app.log"
 # rpath naming this machine's checkout is deleted rather than left as a
 # fallback: leaving it means the app works here and only here, and does so
 # silently, which is the worst way to find out.
-install_name_tool -add_rpath "@executable_path/../Resources/CocoaMojo/lib" \
-    "$C/MacOS/Roast" 2>/dev/null || true
+if [ "$THIN" = 1 ]; then
+  # An ABSOLUTE rpath, deliberately, and the only one allowed: the dylibs
+  # live in the installation and nowhere else, so a relocatable path would
+  # be a lie. The check below allows exactly this one.
+  install_name_tool -add_rpath "$INSTALLED_LIB" "$C/MacOS/Roast" \
+      2>/dev/null || true
+else
+  install_name_tool -add_rpath "@executable_path/../Resources/CocoaMojo/lib" \
+      "$C/MacOS/Roast" 2>/dev/null || true
+fi
 install_name_tool -delete_rpath "$D/lib" "$C/MacOS/Roast" 2>/dev/null || true
 # The compiler also contributes `/lib` as a fallback when its runtime path is
 # reduced to a directory. It is not a useful location on macOS, and leaving an
@@ -102,9 +125,14 @@ rpaths="$(otool -l "$C/MacOS/Roast" | awk '
   /cmd LC_RPATH/ { want_path = 1; next }
   want_path && /path / { print $2; want_path = 0 }
 ')"
-if printf '%s\n' "$rpaths" | grep -q '^/'; then
+if [ "$THIN" = 1 ]; then
+  stray="$(printf '%s\n' "$rpaths" | grep '^/' | grep -vF "$INSTALLED_LIB" || true)"
+else
+  stray="$(printf '%s\n' "$rpaths" | grep '^/' || true)"
+fi
+if [ -n "$stray" ]; then
   echo "   FAILED -- absolute rpath remains in Roast:"
-  printf '     %s\n' "$rpaths"
+  printf '     %s\n' "$stray"
   exit 1
 fi
 echo "   $(stat -f%z "$C/MacOS/Roast" | awk '{printf "%.0f KB", $1/1024}'), rpath relocated"
@@ -112,6 +140,10 @@ echo "   $(stat -f%z "$C/MacOS/Roast" | awk '{printf "%.0f KB", $1/1024}'), rpat
 # The Python packager proved its interpreter can make a venv. This proves the
 # other half: a Mojo process dlopens the bundled library and imports a module
 # from that venv, which is the execution model Roast is shipping.
+if [ "$THIN" = 1 ]; then
+  echo "== mojo + python =="
+  echo "   skipped: the installation's CPython is proven by its own build"
+else
 echo "== mojo + python =="
 PYHOME="$C/Resources/Python/Python.framework/Versions/Current"
 PYSMOKE="$(mktemp -d)"
@@ -141,6 +173,7 @@ if ! printf '%s\n' "$PYOUT" | grep -q 'marker: managed-venv-ok'; then
 fi
 echo "   in-process import from managed venv OK"
 rm -rf "$PYSMOKE"
+fi
 
 # ── the bundle's paperwork ─────────────────────────────────────────────────
 # LSMinimumSystemVersion matches what the toolchain needs; NSHighResolution

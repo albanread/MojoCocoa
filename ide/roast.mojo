@@ -4320,11 +4320,24 @@ def _remove_tree(path: String) -> Bool:
 
 
 def migrate_user_space(force: Bool = False) -> Bool:
-    """Copy stdlib and examples out of the bundle, once -- or again, when
-    `force` says a person asked for their copies to be reset."""
+    """Copy the stdlib, examples and IDE source somewhere writable, once --
+    or again, when `force` says a person asked for fresh copies.
+
+    The test is whether the toolchain is READ-ONLY to this person, not
+    whether it sits in a bundle: an app's Resources are sealed by its
+    signature, and an installation under /Applications is equally not a
+    place to keep edits. A development tree is neither, and is left alone
+    -- someone working on the toolchain wants to edit it in place.
+    """
     let tc = toolchain_root()
-    if tc == "" or tc.find("/Contents/Resources/") < 0:
-        return False  # a bare dist edits its own tree; nothing to move
+    if tc == "":
+        return False
+    let shipped = (
+        tc.find("/Contents/Resources/") >= 0
+        or tc.find("/Applications/Roast/") >= 0
+    )
+    if not shipped:
+        return False  # a development tree edits itself; nothing to move
     let root = user_space_root()
     if root == "":
         return False

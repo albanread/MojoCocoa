@@ -110,6 +110,38 @@ final class Operations {
         try fm.copyItem(at: source, to: destination)
     }
 
+    // ── The one thing we cannot ship ───────────────────────────────────────
+
+    /// Xcode's Command Line Tools. Every Mojo build links against the SDK's
+    /// framework stubs and finds its linker through `xcrun`, so without them
+    /// the editor opens and nothing compiles. Apple's licence does not let
+    /// anyone redistribute the SDK, so this is detected and reported rather
+    /// than bundled -- and `xcode-select --install` runs Apple's own
+    /// installer, which is the polite way to ask.
+    func commandLineToolsPresent() -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        p.arguments = ["--sdk", "macosx", "--show-sdk-path"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = Pipe()
+        do { try p.run() } catch { return false }
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else { return false }
+        let out = String(
+            data: pipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return !out.isEmpty && fm.fileExists(atPath: out)
+    }
+
+    func offerCommandLineTools() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/xcode-select")
+        p.arguments = ["--install"]
+        try? p.run()
+    }
+
     // ── Install ────────────────────────────────────────────────────────────
 
     func install() throws {
@@ -149,6 +181,16 @@ final class Operations {
         }
         say("Done. Everything is under \(layout.root.path);"
             + " `current` says which version answers.")
+        if !commandLineToolsPresent() {
+            say("")
+            say("  NOTE: Xcode Command Line Tools are not installed.")
+            say("  Every build links against the macOS SDK and finds its")
+            say("  linker through xcrun, so Roast will open but nothing")
+            say("  will compile until they are. Apple does not permit")
+            say("  redistributing the SDK, so this is the one piece the")
+            say("  installer cannot bring with it.")
+            say("  Install them with:  xcode-select --install")
+        }
     }
 
     // ── Reset ──────────────────────────────────────────────────────────────

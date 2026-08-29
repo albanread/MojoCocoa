@@ -119,6 +119,24 @@ final class Delegate: NSObject, NSApplicationDelegate {
             makeButton("Uninstall All…", #selector(uninstall)))
         stack.addArrangedSubview(alsoUserData)
 
+        // Said before anyone presses anything, because it is the difference
+        // between an editor that works and one that only opens.
+        if !Operations(.standard(), say: { _ in }).commandLineToolsPresent() {
+            let warn = NSTextField(wrappingLabelWithString:
+                "⚠︎ Xcode Command Line Tools are not installed. Roast will"
+                + " open, but nothing will compile until they are — every"
+                + " build needs the macOS SDK and Apple does not allow it to"
+                + " be redistributed. Click to install them.")
+            warn.font = .systemFont(ofSize: 11)
+            warn.textColor = .systemOrange
+            warn.preferredMaxLayoutWidth = 480
+            stack.addArrangedSubview(warn)
+            let fix = NSButton(title: "Install Command Line Tools…",
+                               target: self, action: #selector(installCLT))
+            fix.bezelStyle = .rounded
+            stack.addArrangedSubview(fix)
+        }
+
         let scroll = NSScrollView()
         scroll.hasVerticalScroller = true
         scroll.borderType = .bezelBorder
@@ -167,6 +185,12 @@ final class Delegate: NSObject, NSApplicationDelegate {
                 self.buttons.forEach { $0.isEnabled = true }
             }
         }
+    }
+
+    @objc func installCLT() {
+        Operations(.standard(), say: { self.write($0) })
+            .offerCommandLineTools()
+        write("Asked macOS to install the Command Line Tools.")
     }
 
     @objc func install() { perform { try $0.install() } }
