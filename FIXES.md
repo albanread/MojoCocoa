@@ -52,3 +52,14 @@ commit that fixes it when one does.
    Same rule as entry 2 -- shipped examples build silently -- and same
    sweep should catch both: build every example and fix every warning,
    not just the two that testing happened to surface.
+
+5. **Every build warns: `'sse4.1' is not a recognized target feature`.**
+   Emitted with no source location (`<unknown>:0`) on every example -- so
+   it reads as noise from the toolchain itself, which is worse than a
+   warning in one program. Cause located: `CpuId.has_sse4()` in
+   `mojo/stdlib/std/sys/info.mojo:215` asks the target about `"sse4.1"`,
+   an x86 feature name, and on an arm64 target LLVM warns instead of
+   answering false quietly. Something on the always-run path calls it.
+   Fix direction: gate the x86 feature queries on the target ARCH first
+   (`is_x86()` else False) so the feature-name check never reaches LLVM
+   on Apple Silicon; find and note the prelude-path caller while there.
