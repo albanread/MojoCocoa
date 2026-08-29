@@ -414,9 +414,33 @@ guards around an API that raises rather than returns. XPC and launchd give
 crash isolation, restart, and no zombie tasks, which is the reliability
 argument standing entirely on its own.
 
+### Decided: install it
+
+Not a bundle. **The compiler, the language server, the debugger, the
+standard library, the IDE's own source and the examples are installed**,
+and Roast fronts them all. That is the whole payload -- everything the
+1 GB bundle carries today -- moved to one versioned place that anything
+can use, with the editor reduced to a client of it.
+
+Roast fronts them: it is the friendly face on an installed toolchain, not
+a container for one. Open Standard Library, Open IDE Source, the Examples
+menu, Build, Run, Debug and completion all become views onto the
+installation. Nothing about the editor's surface changes; everything about
+where it looks does.
+
+The user-editable copies stay exactly as they are. A system location is
+not user-writable, so first launch still copies the standard library, the
+examples and the IDE source into Application Support -- only the SOURCE of
+that copy changes, from inside a bundle to the installation. That machinery
+already exists and is the one piece of this that needs no design.
+
 ### The shape
 
     /Library/Developer/CocoaMojo/<version>/     the toolchain, versioned
+      bin/        cocoamojo, mojo-lsp-server, lldb, lldb-dap
+      lib/        the dylibs, and mojo/{stdlib,max,kernels}
+      share/      examples, ide-source, cocoa.sqlite
+      Python/     the relocatable CPython
     /Library/Developer/CocoaMojo/current   ->   a symlink, as Xcode and
                                                 the Swift toolchains do it
 
@@ -450,12 +474,21 @@ has to arbitrate what a bundle made impossible.
 
 ### What moves first
 
-The **LSP**, alone. It is already a protocol on a pipe, it is where the
-crashes were, and moving it proves the lifecycle benefit without touching
-the compile path. Then the installer and the discovery contract, which
-retire three generations of path-guessing. The compiler service last: it is
-the biggest win and the only one needing an interface designed from
-nothing.
+**The installer**, because it is the decision above and everything else
+waits behind it. Concretely: `make-dist` already assembles exactly this
+payload, so the work is a versioned destination, a `current` symlink, a
+pkg or a script that puts it there, and one lookup function in Roast that
+replaces three generations of path-guessing. `make-app.sh` then builds a
+small application instead of a large one, and `migrate_user_space` copies
+from the installation rather than from `Contents/Resources`.
+
+Then the **LSP as a launchd service**: already a protocol on a pipe,
+already where the crashes were, and it proves the lifecycle benefit
+without touching the compile path.
+
+The **compiler service** last. It is the biggest win -- a warm context
+instead of a cold start on every build -- and the only piece needing an
+interface designed from nothing.
 
 ## What the stdlib must grow
 
