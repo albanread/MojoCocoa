@@ -455,6 +455,32 @@ fi
     bad "agent debugger" "walk was: ${awalk:-empty}"
   fi
 
+  # The editor over Apple Events: menus walked and INVOKED by their visible
+  # names, files opened, the caret driven, text typed and saved, find run,
+  # both dividers moved. Assertions read state BACK (views, the saved file,
+  # the setting) rather than trusting the mutating reply -- and the menu
+  # invocation is checked by its visible effect: Zoom In moves the status
+  # line to a new point size.
+  mkdir -p "$TMP/edproj"
+  printf 'fn helper(x: Int) -> Int:\n    return x + 1\n\nfn main():\n    var r = helper(41)\n    print(r)\n' \
+    > "$TMP/edproj/main.mojo"
+  edout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_PROJECT="$TMP/edproj" \
+          ROAST_SESSION="$TMP/ed.json" \
+          ROAST_AGENT="menus;open $TMP/edproj/main.mojo;goto 6:1;type X;save;find helper;sidebar 300;console-size 35;views;setting agent.gate ok;setting agent.gate;menu View > Zoom In;status" \
+          ROAST_AUTOCLOSE_TICKS=80 timeout 240 "$TMP/roast" 2>&1)
+  edfail=""
+  echo "$edout" | grep -q 'agent > .*Debug.*View.*Examples' || edfail="menus missing"
+  grep -q '^X    print(r)$' "$TMP/edproj/main.mojo" 2>/dev/null || edfail="${edfail:-typed text not in saved file}"
+  echo "$edout" | grep -q 'agent > 2 match(es)' || edfail="${edfail:-find count wrong}"
+  echo "$edout" | grep -q 'sidebar|editor 300' || edfail="${edfail:-sidebar readback wrong}"
+  echo "$edout" | grep -q 'agent > ok' || edfail="${edfail:-setting round trip failed}"
+  echo "$edout" | grep -q 'agent > invoked View > Zoom In' || edfail="${edfail:-menu invoke failed}"
+  if [ -z "$edfail" ]; then
+    ok "agent editor" "menus, open, goto, type->file, find, dividers, setting, menu invoke"
+  else
+    bad "agent editor" "$edfail"
+  fi
+
   # The debugger's BUTTONS. ROAST_DEBUG_STEPS presses one toolbar item per
   # stop -- looked up in the live bar by identifier, its action sent to its
   # own target through NSApp, the dispatch a click takes -- so a button

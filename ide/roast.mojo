@@ -67,7 +67,7 @@ import session
 import dap
 import python_env
 from json import JSON, parse
-from gridview import set_shown_path, push_undo
+from gridview import set_shown_path, push_undo, replace_selection
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -121,6 +121,9 @@ comptime g_tabbar = named_global["roast.tabbar", Int]
 # The console, and the horizontal split it lives in the bottom of.
 comptime g_console = named_global["roast.console", Int]
 comptime g_vsplit = named_global["roast.vsplit", Int]
+# The outer sidebar|editor split, kept for the same reason as g_vsplit: a
+# divider nobody can address is a divider nobody can move.
+comptime g_hsplit = named_global["roast.hsplit", Int]
 comptime g_console_open = named_global["roast.console.open", Int]
 # How many bytes of build.output() the console pane is already showing, so a
 # pump appends the delta instead of re-setting the whole transcript.
@@ -4399,10 +4402,52 @@ comptime g_agent_count = named_global["roast.agent.count", Int]
 comptime AGENT_HELP = (
     "commands: help · status · console · show-console · hide-console"
     " · screenshot [path]"
+    " · menus · menu <Title> · menu <Title> > <Item>"
+    " · open <path> · save · goto <line>[:col] · caret · file"
+    " · tabs · tab <n> · type <text> · find <text>"
+    " · views · sidebar <pt> · console-size <pct> · setting <key> [value]"
     " · debug · break <line> · continue · step-over · step-in · step-out"
     " · stopped · variables · eval <expr> · eval?"
-    "   (open/goto/save/build/run land in sprint 4)"
 )
+
+
+def _menu_item_name(item_addr: Int) -> String:
+    """What a person calls this item. A top-level item's own title is often
+    empty -- the NAME lives on the submenu it carries -- so prefer that."""
+    with autoreleasepool():
+        if Obj["NSMenuItem"](item_addr).hasSubmenu():
+            let sub = Obj["NSMenuItem"](item_addr).submenu()
+            let t = ns_to_string(Obj["NSMenu"](sub.addr()).title())
+            if t != "":
+                return t
+        return ns_to_string(Obj["NSMenuItem"](item_addr).title())
+
+
+def _menu_named(bar_addr: Int, title: String) -> Int:
+    """The submenu with this title off the given menu, or 0."""
+    with autoreleasepool():
+        let n = Obj["NSMenu"](bar_addr).numberOfItems()
+        for i in range(n):
+            let item = Obj["NSMenu"](bar_addr).itemAtIndex(i)
+            if _menu_item_name(item.addr()) == title:
+                if Obj["NSMenuItem"](item.addr()).hasSubmenu():
+                    return Obj["NSMenuItem"](item.addr()).submenu().addr()
+                return 0
+    return 0
+
+
+def _main_menu() -> Int:
+    with autoreleasepool():
+        let app = Cls["NSApplication"]().sharedApplication()
+        return Obj["NSApplication"](app.addr()).mainMenu().addr()
+
+
+def _current_rope_line() -> Int:
+    """The caret's line, 1-based, or 0 with no buffer."""
+    if len(g_buffer()[]) == 0:
+        return 0
+    let buf = g_buffer()[][0]
+    return buf.line_of_offset(g_caret()[]) + 1
 
 
 def agent_command(text: String) -> String:
@@ -4572,6 +4617,257 @@ def agent_command(text: String) -> String:
         if where == "":
             where = String("/tmp/roast.png")
         return screenshot(where)
+
+    # ── menus: every invocable feature, by its visible name ─────────────
+    if cmd == "menus":
+        var out = String()
+        with autoreleasepool():
+            let bar = _main_menu()
+            if bar == 0:
+                return String("error: no menu bar")
+            let n = Obj["NSMenu"](bar).numberOfItems()
+            for i in range(n):
+                let item = Obj["NSMenu"](bar).itemAtIndex(i)
+                if i > 0:
+                    out += String(" · ")
+                out += _menu_item_name(item.addr())
+        return out
+
+    if cmd.startswith("menu "):
+        let rest0 = String(cmd[byte=5 : cmd.byte_length()])
+        let spec = String(rest0.strip())
+        let gt = spec.find(">")
+        if gt < 0:
+            # List one menu's items, the agent's discovery step.
+            let sub = _menu_named(_main_menu(), spec)
+            if sub == 0:
+                return String("error: no menu called ") + spec
+            var out = String()
+            with autoreleasepool():
+                let n = Obj["NSMenu"](sub).numberOfItems()
+                for i in range(n):
+                    let item = Obj["NSMenu"](sub).itemAtIndex(i)
+                    let t = ns_to_string(
+                        Obj["NSMenuItem"](item.addr()).title()
+                    )
+                    if i > 0:
+                        out += String(" · ")
+                    out += t if t != "" else String("---")
+            return out
+        # Invoke:  menu Debug > Step Over
+        let mt = String(spec[byte=:gt])
+        let it = String(spec[byte = gt + 1 : spec.byte_length()])
+        let menu_title = String(mt.strip())
+        let item_title = String(it.strip())
+        let sub = _menu_named(_main_menu(), menu_title)
+        if sub == 0:
+            return String("error: no menu called ") + menu_title
+        with autoreleasepool():
+            let n = Obj["NSMenu"](sub).numberOfItems()
+            for i in range(n):
+                let item = Obj["NSMenu"](sub).itemAtIndex(i)
+                let t = ns_to_string(Obj["NSMenuItem"](item.addr()).title())
+                if t == item_title:
+                    # The real dispatch: highlight, validation, action --
+                    # everything a click does short of the mouse.
+                    Obj["NSMenu"](sub).performActionForItemAtIndex(i)
+                    return (
+                        String("invoked ") + menu_title + String(" > ")
+                        + item_title
+                    )
+        return (
+            String("error: no item ") + item_title + String(" in ")
+            + menu_title
+        )
+
+    # ── the editor ──────────────────────────────────────────────────────
+    if cmd.startswith("open "):
+        let p0 = String(cmd[byte=5 : cmd.byte_length()])
+        let p = String(p0.strip())
+        if open_path(p):
+            return String("opened ") + p
+        return String("error: could not open ") + p
+
+    if cmd == "save":
+        if save_current():
+            return String("saved ") + document.current_uri()
+        return String("error: nothing saved")
+
+    if cmd.startswith("goto "):
+        let a0 = String(cmd[byte=5 : cmd.byte_length()])
+        let a = String(a0.strip())
+        if len(g_buffer()[]) == 0:
+            return String("error: no buffer")
+        let buf = g_buffer()[][0]
+        var want_line = 0
+        var want_col = 0
+        let colon = a.find(":")
+        try:
+            if colon >= 0:
+                want_line = Int(String(a[byte=:colon]))
+                want_col = Int(String(a[byte = colon + 1 : a.byte_length()]))
+            else:
+                want_line = Int(a)
+        except:
+            return String("usage: goto <line>[:<col>]")
+        if want_line < 1 or want_line > buf.line_count():
+            return (
+                String("error: line out of range 1..")
+                + String(buf.line_count())
+            )
+        var at = buf.line_start(want_line - 1)
+        if want_col > 1:
+            at += want_col - 1
+        set_caret(at)
+        scroll_to_caret()
+        refresh_grid()
+        return String("caret at line ") + String(want_line)
+
+    if cmd == "caret":
+        if len(g_buffer()[]) == 0:
+            return String("error: no buffer")
+        let buf = g_buffer()[][0]
+        let line = buf.line_of_offset(g_caret()[])
+        let col = g_caret()[] - buf.line_start(line)
+        return (
+            String("line ") + String(line + 1) + String(" col ")
+            + String(col + 1) + String(" byte ") + String(g_caret()[])
+        )
+
+    if cmd == "file":
+        let uri = document.current_uri()
+        if uri == "":
+            return String("(untitled)")
+        return uri
+
+    if cmd == "tabs":
+        var out = String()
+        for i in range(document.count()):
+            if i > 0:
+                out += String(" · ")
+            out += String(i) + String(":")
+            let u = document.uri_at(i)
+            out += _basename(u) if u != "" else String("untitled")
+        return out
+
+    if cmd.startswith("tab "):
+        let t0 = String(cmd[byte=4 : cmd.byte_length()])
+        try:
+            let idx = Int(String(t0.strip()))
+            if switch_document(idx):
+                after_switch()
+                return String("tab ") + String(idx)
+            return String("error: no tab ") + String(idx)
+        except:
+            return String("usage: tab <index>")
+
+    if cmd.startswith("type "):
+        # Everything after the single space, verbatim -- an agent may well
+        # want to type leading spaces.
+        let ins = String(cmd[byte=5 : cmd.byte_length()])
+        if len(g_buffer()[]) == 0:
+            return String("error: no buffer")
+        replace_selection(ins)
+        refresh_grid()
+        return (
+            String("typed ") + String(ins.byte_length())
+            + String(" byte(s), caret at line ")
+            + String(_current_rope_line())
+        )
+
+    if cmd.startswith("find "):
+        let q0 = String(cmd[byte=5 : cmd.byte_length()])
+        let q = String(q0.strip())
+        set_query(q)
+        let hit = find_next()
+        scroll_to_caret()
+        refresh_grid()
+        if not hit:
+            return String("0 matches")
+        return (
+            String(match_count()) + String(" match(es), caret at line ")
+            + String(_current_rope_line())
+        )
+
+    # ── views and dividers ──────────────────────────────────────────────
+    if cmd == "views":
+        var out = String()
+        with autoreleasepool():
+            if g_window()[] == 0:
+                return String("error: no window")
+            let wf = Obj["NSWindow"](ObjCObject(g_window()[]).addr()).frame()
+            out += (
+                String("window ") + String(wf.size.width) + String("x")
+                + String(wf.size.height)
+            )
+            if g_hsplit()[] != 0:
+                let subs = Obj["NSView"](g_hsplit()[]).subviews()
+                let n = Obj["NSArray"](subs.addr()).count()
+                out += String(" · sidebar|editor")
+                for i in range(n):
+                    let v = Obj["NSArray"](subs.addr()).objectAtIndex(i)
+                    out += (
+                        String(" ")
+                        + String(Obj["NSView"](v.addr()).frame().size.width)
+                    )
+            if g_vsplit()[] != 0:
+                let subs2 = Obj["NSView"](g_vsplit()[]).subviews()
+                let n2 = Obj["NSArray"](subs2.addr()).count()
+                out += String(" · editor|console")
+                for i in range(n2):
+                    let v2 = Obj["NSArray"](subs2.addr()).objectAtIndex(i)
+                    out += (
+                        String(" ")
+                        + String(Obj["NSView"](v2.addr()).frame().size.height)
+                    )
+        return out
+
+    if cmd.startswith("sidebar "):
+        let w0 = String(cmd[byte=8 : cmd.byte_length()])
+        try:
+            let pts = Int(String(w0.strip()))
+            if g_hsplit()[] == 0:
+                return String("error: no split")
+            with autoreleasepool():
+                Obj["NSSplitView"](g_hsplit()[]).setPosition_ofDividerAtIndex(
+                    Float64(pts), Int(0)
+                )
+            return String("sidebar ") + String(pts) + String(" pt")
+        except:
+            return String("usage: sidebar <points>")
+
+    if cmd.startswith("console-size "):
+        let f0 = String(cmd[byte=13 : cmd.byte_length()])
+        try:
+            let pct = Int(String(f0.strip()))
+            if pct < 0 or pct > 90:
+                return String("usage: console-size <0..90 percent>")
+            if g_vsplit()[] == 0:
+                return String("error: no split")
+            with autoreleasepool():
+                let b = Obj["NSView"](g_vsplit()[]).bounds()
+                Obj["NSSplitView"](g_vsplit()[]).setPosition_ofDividerAtIndex(
+                    b.size.height * Float64(100 - pct) / 100.0, Int(0)
+                )
+            g_console_open()[] = 1 if pct > 0 else 0
+            return String("console ") + String(pct) + String("%")
+        except:
+            return String("usage: console-size <0..90 percent>")
+
+    # ── settings ────────────────────────────────────────────────────────
+    if cmd.startswith("setting "):
+        let s0 = String(cmd[byte=8 : cmd.byte_length()])
+        let spec2 = String(s0.strip())
+        let sp = spec2.find(" ")
+        if sp < 0:
+            let v = session.setting(spec2)
+            if v == "":
+                return String("(unset)")
+            return v
+        let key = String(spec2[byte=:sp])
+        let val0 = String(spec2[byte = sp + 1 : spec2.byte_length()])
+        session.set_setting(String(key), String(val0.strip()))
+        return String("set ") + key
 
     if cmd == "show-console":
         show_console(True)
@@ -5085,6 +5381,8 @@ def main() raises:
         _ = external_call["objc_retain", P](vsplit.ptr())
         g_vsplit()[] = vsplit.addr()
 
+        _ = external_call["objc_retain", P](split.ptr())
+        g_hsplit()[] = split.addr()
         Obj["NSSplitView"](split.addr()).addSubview(vsplit.ptr())
         # Closed until something is built. The editor is what the window is
         # for; an empty console taking a third of it is a worse first sight.

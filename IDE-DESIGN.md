@@ -332,9 +332,21 @@ confirmed present in the Cocoa KB, including the two load-bearing ones
    live toolbar, `break`, `eval`, `stopped`, `variables`; the button walk
    re-run over Apple Events (env probes stay -- launch-time CI keeps them).
    *Acceptance:* the in->6, over->7, out->11 walk, driven externally.
-4. **Editor and build verbs.** `open`, `goto`, `save`, `build`, `run`,
-   `stop`, `caret`, `file`. *Acceptance:* open -> edit -> build -> read
-   diagnostics, all over events.
+4. **Editor and build verbs.** DONE, and wider than planned: `open`, `save`,
+   `goto <line>[:col]`, `caret`, `file`, `tabs`, `tab <n>`, `type <text>`,
+   `find <text>`, `views`, `sidebar <pt>`, `console-size <pct>`,
+   `setting <key> [value]` -- and the master key, **menu invocation by
+   visible name**: `menus`, `menu <Title>`, `menu <Title> > <Item>` through
+   `performActionForItemAtIndex:`, the real dispatch, which puts every
+   menued feature on the agent surface at a stroke. Build/run need no verbs
+   of their own: `menu Build > ...` already reaches them, though direct
+   verbs can be added when an agent wants arguments. *Acceptance met, on the
+   released binary:* typed text read back from the SAVED file, divider
+   moves read back from `views`, a setting round-tripped, and Zoom In
+   invoked by name with its visible effect -- the status line's point size
+   -- in the screenshot. One naming subtlety recorded: a top-level menu
+   item's own title is often empty; the NAME lives on the submenu it
+   carries.
 5. **Terminology.** `Roast.sdef`; make-app.sh wires plist and Resources;
    the `-sectcreate` experiment for the bare binary.
    *Acceptance:* `tell application "Roast" to do command "status"` from
