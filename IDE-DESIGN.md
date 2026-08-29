@@ -644,42 +644,32 @@ already where the crashes were -- and the **compiler service** last: the
 biggest win, a warm context instead of a cold start, and the only piece
 needing an interface designed from nothing.
 
-### The release runs on a different machine
+### Signing, concretely
 
-Building happens here; **signing, packaging and notarization happen on a
-macOS VM** that holds the identities. That is the right shape -- release
-credentials do not belong on a development machine -- but it is a
-constraint on the scripts, not a detail of who runs them:
+Everything happens on this machine. The identity and the notary profile
+are already here and already used:
 
-- **Every release script takes its identity as an argument** and hard-codes
-  nothing: `--sign-app`, `--sign-installer`, `--notary-profile`. A script
-  that knows one machine's certificate cannot run on the machine that has
-  it.
-- **The unit that travels is self-contained.** `make-release.sh` here emits
-  a `release/` folder -- the payload, the scripts that sign and package it,
-  the entitlements plist, a manifest of every Mach-O the signer must
-  account for. Nothing in it reaches back into the repository, because on
-  the far side there may not be one.
-- **Verification runs on both sides.** The manifest is written here and
-  checked there: if the count the signer signed does not equal the count
-  the build found, the release stops. A payload that gained a dylib in
-  transit is exactly the failure notarization would otherwise report as
-  something inscrutable an hour later.
-- **The staple comes home.** The signed, notarized DMG returns as the
-  artifact; nothing here re-signs it, and `spctl --assess` on this machine
-  is the last check before it is a release.
+    Developer ID Application: [redacted] ([redacted])
+    notarytool keychain profile: [redacted]      (history: accepted DMGs)
 
-### What this needs that we do not have
+So the scripts take these as arguments with those as defaults --
+`--sign-app`, `--notary-profile [redacted]` -- hard-coding nothing, because a
+release script that knows one machine's certificate is a release script
+that runs on one machine.
 
-Present on the build machine: a **Developer ID Application** certificate
-(`[redacted] ([redacted])`), which is what sprint 2 signs the
-fifteen Mach-Os with.
+### The one thing missing
 
-Needed on the signing VM, and not verifiable from here: a **Developer ID
-Installer** certificate -- a different certificate type from the
-Application one, and the only thing `productsign` accepts -- and a stored
-`notarytool` credential profile. Sprints 1 and 2 are unblocked either way;
-sprint 3 is where the VM becomes load-bearing.
+A **Developer ID Installer** certificate. It is a different certificate
+type from the Application one -- the keychain holds exactly one identity
+and it is the Application cert -- and `productsign` accepts nothing else.
+Every previous release here was a DMG of an app, which needs only the
+Application certificate; a package is the first thing that needs the other.
+
+It is a few minutes at developer.apple.com (Certificates, `+`, Developer
+ID Installer) or in Xcode's Settings > Accounts > Manage Certificates,
+same team. Sprints 1 and 2 do not touch it. Sprint 3 stops without it, so
+it is worth doing before sprint 2 finishes rather than discovering it as a
+blocked afternoon.
 
 ## What the stdlib must grow
 
