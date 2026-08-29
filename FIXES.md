@@ -1,8 +1,10 @@
 # Fix list
 
-Notes from human testing, to be worked later. Newest at the bottom; each
-entry gets a line of diagnosis when the cause is known, and moves to the
-commit that fixes it when one does.
+Notes from human testing. Round one: all twelve entries below were fixed
+and verified; the loud half (1-5, 7, 9) landed in 9acd80c and the
+interaction half (6, 8, 10, 11, 12) in the commit that updated this line.
+Details live in those commit messages; the entries are kept as filed, for
+the record of what testing actually surfaced.
 
 1. **Highlighter: docstring continuation lines lose their color.** In a
    triple-quoted string, only the line carrying the opening `"""` is

@@ -27,7 +27,7 @@ from std.objc import (
 )
 from std.memory import OpaquePointer
 from std.os import getenv
-from std.time import sleep
+from std.time import sleep, perf_counter_ns
 from std.ffi import external_call
 from std.objc import ns_to_string, SEL
 from gridview import (
@@ -88,6 +88,10 @@ from gridview import CGPoint, CGSize, CGRect, NSRange, rect
 # named process global. Each is zero until main() sets it.
 comptime g_window = named_global["roast.window", Int]
 comptime g_status = named_global["roast.status", Int]
+# The build spinner beside the status text, and when the compile began --
+# a static "Building..." reads as a hang once a compile takes real seconds.
+comptime g_spinner = named_global["roast.spinner", Int]
+comptime g_build_began = named_global["roast.build.began", Int]
 # What was last written to the status line. The field itself is
 # write-only in this code, and an agent asking "what is happening" has
 # to be answered from somewhere.
@@ -2551,8 +2555,50 @@ class RoastActions:
 
         try:
             if build.is_running():
+                # Lazily: the tick is the one place every build passes
+                # through, however it was started, so nobody has to remember
+                # to switch the spinner on.
+                if g_build_began()[] == 0:
+                    g_build_began()[] = Int(perf_counter_ns())
+                    if g_spinner()[] != 0:
+                        with autoreleasepool():
+                            Obj["NSProgressIndicator"](
+                                g_spinner()[]
+                            ).startAnimation(ObjCObject(0).ptr())
+                # The spinner turns and the status counts, so a long compile
+                # reads as a long compile and not as a hang. Start of build
+                # is remembered by _start_build; second granularity is
+                # enough for the question actually being asked.
+                if g_spinner()[] != 0 and g_build_began()[] != 0:
+                    if g_ticks()[] % 30 == 0:
+                        let secs = (
+                            Int(perf_counter_ns() - g_build_began()[])
+                            // 1_000_000_000
+                        )
+                        if secs >= 2:
+                            let slot2 = g_status_text()
+                            var base = String("Working")
+                            if len(slot2[]) > 0:
+                                base = slot2[][0]
+                            # Strip a previous "… Ns" suffix by cutting at
+                            # the marker this code itself appends.
+                            let cut2 = base.find("  ·  ⏱")
+                            if cut2 >= 0:
+                                let trimmed = String(base[byte=:cut2])
+                                base = trimmed
+                            set_status(
+                                base + String("  ·  ⏱ ") + String(secs)
+                                + String("s")
+                            )
                 if build.pump() > 0:
                     console_sync()
+            if not build.is_running() and g_build_began()[] != 0:
+                g_build_began()[] = 0
+                if g_spinner()[] != 0:
+                    with autoreleasepool():
+                        Obj["NSProgressIndicator"](
+                            g_spinner()[]
+                        ).stopAnimation(ObjCObject(0).ptr())
             if build.serial() != g_build_seen()[]:
                 g_build_seen()[] = build.serial()
                 _build_finished()
@@ -5413,6 +5459,24 @@ def main() raises:
         Obj["NSView"](status.addr()).setAutoresizingMask(Int(2))
         Obj["NSView"](content.addr()).addSubview(status.ptr())
         g_status()[] = status.addr()
+
+        # The compiler-is-running spinner, sitting just left of the status
+        # text. Small, indeterminate, and hidden whenever it is stopped --
+        # so idle costs nothing and nobody asks what a frozen spinner means.
+        let NSProgressIndicator = ObjCClass.lookup["NSProgressIndicator"]()
+        var spin = Cls["NSProgressIndicator"]().alloc()
+        spin = Obj["NSProgressIndicator"](spin.addr()).initWithFrame(
+            rect(w - 26.0, 3.0, 16.0, 16.0)
+        )
+        Obj["NSProgressIndicator"](spin.addr()).setStyle(Int(1))
+        Obj["NSProgressIndicator"](spin.addr()).setIndeterminate(True)
+        Obj["NSProgressIndicator"](spin.addr()).setControlSize(Int(1))
+        Obj["NSProgressIndicator"](spin.addr()).setDisplayedWhenStopped(False)
+        # Pinned to the bottom-right corner.
+        Obj["NSView"](spin.addr()).setAutoresizingMask(Int(1))
+        Obj["NSView"](content.addr()).addSubview(spin.ptr())
+        _ = external_call["objc_retain", P](spin.ptr())
+        g_spinner()[] = spin.addr()
 
         # Split view: sidebar on the left, editor area on the right.
         let NSSplitView = ObjCClass.lookup["NSSplitView"]()

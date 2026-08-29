@@ -646,7 +646,13 @@ class RoastGridView(NSView, NSTextInputClient):
                         _refresh(P(unsafe_from_address=self.__objc_id))
                     return
                 let at = offset_at_point(local.x, local.y)
-                set_caret(at)
+                let clicks = Obj["NSEvent"](event.addr()).clickCount()
+                if clicks >= 3:
+                    select_line_at(at)
+                elif clicks == 2:
+                    select_word_at(at)
+                else:
+                    set_caret(at)
                 g_coalesce_at()[] = -1
                 _ = Obj["NSWindow"](Obj["NSView"](view.addr()).window().addr()).makeFirstResponder(
                     view.ptr(),
@@ -654,6 +660,80 @@ class RoastGridView(NSView, NSTextInputClient):
                 _refresh(P(unsafe_from_address=self.__objc_id))
         except:
             pass
+
+    def menuForEvent_(self, event: ObjCObject) -> ObjCObject:
+        """The right-click menu over the selection.
+
+        A click outside the current selection selects the word under the
+        pointer first -- the convention every Mac editor follows -- so the
+        menu always applies to what is highlighted. Items reuse the SAME
+        selectors as the menu bar: nil-targeted, resolved down the responder
+        chain, so enabling and behaviour cannot drift from Edit and
+        Navigate.
+        """
+        try:
+            with autoreleasepool():
+                let view = ObjCObject(self.__objc_id)
+                let win_pt = Obj["NSEvent"](event.addr()).locationInWindow()
+                let local = Obj["NSView"](view.addr()).convertPoint_fromView(
+                    win_pt, ObjCObject(0).ptr()
+                )
+                if not in_gutter(local.x):
+                    let at = offset_at_point(local.x, local.y)
+                    let lo = min(g_anchor()[], g_caret()[])
+                    let hi = max(g_anchor()[], g_caret()[])
+                    if at < lo or at > hi or lo == hi:
+                        select_word_at(at)
+                        _refresh(P(unsafe_from_address=self.__objc_id))
+                var menu = Cls["NSMenu"]().alloc()
+                menu = Obj["NSMenu"](menu.addr()).initWithTitle(
+                    nsstring(String("Edit")).ptr()
+                )
+                _ = Obj["NSMenu"](menu.addr()).addItemWithTitle_action_keyEquivalent(
+                    nsstring(String("Cut")).ptr(),
+                    sel["cut:"]().ptr(),
+                    nsstring(String("")).ptr(),
+                )
+                _ = Obj["NSMenu"](menu.addr()).addItemWithTitle_action_keyEquivalent(
+                    nsstring(String("Copy")).ptr(),
+                    sel["copy:"]().ptr(),
+                    nsstring(String("")).ptr(),
+                )
+                _ = Obj["NSMenu"](menu.addr()).addItemWithTitle_action_keyEquivalent(
+                    nsstring(String("Paste")).ptr(),
+                    sel["paste:"]().ptr(),
+                    nsstring(String("")).ptr(),
+                )
+                Obj["NSMenu"](menu.addr()).addItem(
+                    Cls["NSMenuItem"]().separatorItem().ptr()
+                )
+                _ = Obj["NSMenu"](menu.addr()).addItemWithTitle_action_keyEquivalent(
+                    nsstring(String("Go to Definition")).ptr(),
+                    sel["roastGoToDefinition:"]().ptr(),
+                    nsstring(String("")).ptr(),
+                )
+                _ = Obj["NSMenu"](menu.addr()).addItemWithTitle_action_keyEquivalent(
+                    nsstring(String("Find All References")).ptr(),
+                    sel["roastFindReferences:"]().ptr(),
+                    nsstring(String("")).ptr(),
+                )
+                _ = Obj["NSMenu"](menu.addr()).addItemWithTitle_action_keyEquivalent(
+                    nsstring(String("Rename…")).ptr(),
+                    sel["roastRename:"]().ptr(),
+                    nsstring(String("")).ptr(),
+                )
+                if dap_is_stopped():
+                    Obj["NSMenu"](menu.addr()).addItem(
+                        Cls["NSMenuItem"]().separatorItem().ptr()
+                    )
+                    _ = Obj["NSMenu"](menu.addr()).addItemWithTitle_action_keyEquivalent(
+                        nsstring(String("Evaluate Selection")).ptr(),
+                        sel["roastEvaluate:"]().ptr(),
+                        nsstring(String("")).ptr(),
+                    )
+                return menu
+        except:
+            return ObjCObject(0)
 
     def mouseDragged_(self, event: ObjCObject):
         try:
@@ -2052,6 +2132,64 @@ def _next_codepoint(buf: Rope, at: Int) -> Int:
     return fwd
 
 
+def select_word_at(at: Int):
+    """Select the identifier under `at`, or the single non-word character
+    there -- the double-click rule every Mac text view follows.
+
+    The rope has no whole-buffer byte view; like the ⌥-arrow movement
+    above, this reads a small window around the point, which is also the
+    only part a word can occupy."""
+    if not has_rope():
+        return
+    let buf = g_buffer()[][0]
+    let total = buf.byte_length()
+    var a = at
+    if a > total:
+        a = total
+    let w0 = max(0, a - 512)
+    let w1 = min(total, a + 512)
+    let bytes = buf.slice(w0, w1).as_bytes()
+    let n = len(bytes)
+    var rel = a - w0
+    if rel < n and _is_word_byte(Int(bytes[rel])):
+        var lo = rel
+        while lo > 0 and _is_word_byte(Int(bytes[lo - 1])):
+            lo -= 1
+        var hi = rel
+        while hi < n and _is_word_byte(Int(bytes[hi])):
+            hi += 1
+        g_anchor()[] = w0 + lo
+        g_caret()[] = w0 + hi
+        return
+    # Off a word: behind one? (a click lands between characters)
+    if rel > 0 and _is_word_byte(Int(bytes[rel - 1])):
+        var lo2 = rel - 1
+        while lo2 > 0 and _is_word_byte(Int(bytes[lo2 - 1])):
+            lo2 -= 1
+        var hi2 = rel
+        while hi2 < n and _is_word_byte(Int(bytes[hi2])):
+            hi2 += 1
+        g_anchor()[] = w0 + lo2
+        g_caret()[] = w0 + hi2
+        return
+    if rel < n:
+        g_anchor()[] = w0 + rel
+        g_caret()[] = w0 + rel + 1
+
+
+def select_line_at(at: Int):
+    """Select the whole line under `at`, newline included -- triple-click."""
+    if not has_rope():
+        return
+    let buf = g_buffer()[][0]
+    let ln = buf.line_of_offset(at)
+    g_anchor()[] = buf.line_start(ln)
+    if ln + 1 < buf.line_count():
+        g_caret()[] = buf.line_start(ln + 1)
+    else:
+        g_caret()[] = buf.byte_length()
+
+
 def _is_word_byte(b: Int) -> Bool:
     """What ⌥-arrow jumps over: identifier characters, and any non-ASCII
     byte -- multibyte text is words, not punctuation."""
@@ -2164,7 +2302,33 @@ def apply_command(name: String, page_lines: Int = 40):
             return
 
         if name == "insertNewline:":
-            replace_selection(String("\n"))
+            # Auto-indent: the new line opens where the old one was
+            # indented, one level deeper after a trailing colon. Two rules,
+            # and they cover nearly all Mojo typing.
+            var indent = String("\n")
+            if has_rope():
+                let ln = buf.line_of_offset(sel_start())
+                let cur = buf.line(ln)
+                let cb = cur.as_bytes()
+                var pad = 0
+                while pad < len(cb) and Int(cb[pad]) == 0x20:
+                    pad += 1
+                # Only the indent BEFORE the caret carries: pressing Return
+                # at column 0 of an indented line starts a fresh line, it
+                # does not clone indentation from text the caret sits above.
+                let col_b = sel_start() - buf.line_start(ln)
+                if pad > col_b:
+                    pad = col_b
+                for _ in range(pad):
+                    indent += String(" ")
+                # A colon at the end of what precedes the caret opens a
+                # block. Trailing spaces after it count as after it.
+                var last = col_b - 1
+                while last >= 0 and Int(cb[last]) == 0x20:
+                    last -= 1
+                if last >= 0 and Int(cb[last]) == 0x3A:
+                    indent += String("    ")
+            replace_selection(indent)
             return
         elif name == "insertTab:":
             replace_selection(String("    "))

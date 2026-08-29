@@ -3,6 +3,7 @@
 # The text input client is the piece the design calls highest-risk, and the
 # risk is not the Objective-C plumbing -- it is the arithmetic underneath.
 # These drive apply_command and replace_selection directly.
+from gridview import select_word_at, select_line_at
 from gridview import (
     set_rope,
     undo,
@@ -104,6 +105,60 @@ def main() raises:
     failures += check("split line", buffer_text(), String("a\nb"))
     apply_command(String("insertTab:"))
     failures += check("tab is spaces", buffer_text(), String("a\n    b"))
+
+    print("edit: auto-indent")
+    set_rope(Rope(String("    var x = 1")))
+    set_caret(13)
+    apply_command(String("insertNewline:"))
+    failures += check(
+        "return carries the indent",
+        buffer_text(),
+        String("    var x = 1\n    "),
+    )
+    set_rope(Rope(String("def f():")))
+    set_caret(8)
+    apply_command(String("insertNewline:"))
+    failures += check(
+        "colon opens a block",
+        buffer_text(),
+        String("def f():\n    "),
+    )
+    set_rope(Rope(String("    if x:  ")))
+    set_caret(11)
+    apply_command(String("insertNewline:"))
+    failures += check(
+        "trailing spaces do not hide the colon",
+        buffer_text(),
+        String("    if x:  \n        "),
+    )
+    set_rope(Rope(String("    deep")))
+    set_caret(0)
+    apply_command(String("insertNewline:"))
+    failures += check(
+        "return at column 0 clones nothing",
+        buffer_text(),
+        String("\n    deep"),
+    )
+
+    print("edit: word and line selection")
+    set_rope(Rope(String("var plant_bend = wind")))
+    select_word_at(6)
+    failures += check_int("word anchor", g_anchor()[], 4)
+    failures += check_int("word caret", g_caret()[], 14)
+    select_word_at(15)
+    failures += check(
+        "word under =",
+        String(buffer_text()[
+            byte = min(g_anchor()[], g_caret()[]) : max(
+                g_anchor()[], g_caret()[]
+            )
+        ]),
+        String("="),
+    )
+    set_rope(Rope(String("one\ntwo\nthree")))
+    select_line_at(5)
+    failures += check_int("line anchor", g_anchor()[], 4)
+    failures += check_int("line caret includes newline", g_caret()[], 8)
 
     print("edit: horizontal movement")
     set_rope(Rope(String("hello\nworld")))

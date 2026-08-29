@@ -381,6 +381,12 @@ DBGPROJ
   # under the load of the rest of the suite the unoptimised build alone can
   # eat what used to be the whole budget. It passed alone and failed here,
   # twice, before the number was the number.
+  # A debugger check that launches and NEVER STOPS, with no error anywhere,
+  # is almost never the code: macOS gates debugger attachment behind a
+  # per-user dialog, and an unattended run sits behind it until the timeout.
+  # It has burned this project twice. If all three debugger checks fail with
+  # empty walks on a machine where lldb worked yesterday, find the human,
+  # not the bug.
   dbgout=$(COCOAMOJO_ROOT="$PWD/dist/CocoaMojo" ROAST_DAP="$DAPBIN" \
            ROAST_PROJECT="$TMP/dbgproj" ROAST_DEBUG_LINE=9 \
            ROAST_AUTOCLOSE_TICKS=1200 timeout 400 "$TMP/roast" 2>&1)
