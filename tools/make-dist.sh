@@ -225,13 +225,22 @@ echo "== the IDE =="
 # COCOAMOJO_ROOT, which only points somewhere real for a Roast that lives
 # here. Built rather than copied, because a hand-placed binary is stale the
 # moment the IDE changes, which is exactly what it was.
-if COCOAMOJO_ROOT="$D" "$D/bin/cocoamojo" --build "$ROOT/ide/roast.mojo" \
+# A failure here fails the distribution, the same bargain as the debugger
+# above: a dist that says "ready" without its IDE is a lie that scrolls past
+# in a release log. NO_IDE=1 skips it for compiler-only work.
+if [ "${NO_IDE:-0}" = 1 ]; then
+  echo "   skipped (NO_IDE=1)"
+  rm -f "$D/bin/roast"
+elif COCOAMOJO_ROOT="$D" "$D/bin/cocoamojo" --build "$ROOT/ide/roast.mojo" \
      -o "$D/bin/roast" >"$D/bin/.roast.log" 2>&1; then
   rm -f "$D/bin/.roast.log"
   echo "   roast ($(stat -f%z "$D/bin/roast" | awk '{printf "%.0f KB", $1/1024}'))"
 else
-  echo "   WARNING: roast did not build -- see $D/bin/.roast.log"
+  echo "   FAILED -- roast did not build:"
+  grep -m3 'error' "$D/bin/.roast.log" | sed 's/^/     /'
+  echo "   full log: $D/bin/.roast.log  (NO_IDE=1 to build a dist without the IDE)"
   rm -f "$D/bin/roast"
+  exit 1
 fi
 
 echo "== cocoa database =="

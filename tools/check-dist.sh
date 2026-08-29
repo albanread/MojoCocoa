@@ -210,6 +210,50 @@ else
   bad "examples" "not in the distribution -- rerun make-dist.sh"
 fi
 
+# The IDE. make-dist now refuses to assemble a dist whose IDE will not build,
+# but a distribution is checked as found, not as assembled: an older dist, or
+# one built with NO_IDE=1, should say so here rather than pass.
+[ -x dist/CocoaMojo/bin/roast ] \
+  && ok "roast" "$(stat -f%z dist/CocoaMojo/bin/roast | awk '{printf "%.0f KB", $1/1024}')" \
+  || bad "roast" "not in the distribution"
+
+# The debugger, end to end: the dist's own lldb loads the dist's own plugin,
+# stops a dist-built binary at a breakpoint, and reads a local back. Every
+# link is one we have watched fail silently -- the plugin not shipped, the
+# launch path broken by a misplaced argdumper, locals optimized away -- and a
+# dist where "frame variable" answers nothing still runs programs fine, so
+# nothing else here would notice. `process launch -X 0` rather than `run`:
+# the CLI's `run` shells out to lldb-argdumper, which ships in lib/ for the
+# DAP's benefit, and this check must not depend on that placement.
+if [ -x dist/CocoaMojo/bin/lldb ] && [ -f dist/CocoaMojo/lib/libMojoLLDB.dylib ]; then
+  cat > "$TMP/dbg.mojo" <<'EOF'
+fn main():
+    var answer = 41 + 1
+    print(answer)
+EOF
+  if "$CM" --build "$TMP/dbg.mojo" -o "$TMP/dbg" -g -O0 >"$TMP/dbg.log" 2>&1; then
+    dout=$(timeout 60 dist/CocoaMojo/bin/lldb --batch \
+      -o "plugin load dist/CocoaMojo/lib/libMojoLLDB.dylib" \
+      -o "breakpoint set -f dbg.mojo -l 3" \
+      -o "process launch -X 0" \
+      -o "frame variable answer" \
+      "$TMP/dbg" 2>&1)
+    if echo "$dout" | grep -q 'answer = 42'; then
+      ok "debugger" "breakpoint bound, frame variable answered 42"
+    elif echo "$dout" | grep -q 'no plugin for the language'; then
+      bad "debugger" "libMojoLLDB did not load"
+    elif ! echo "$dout" | grep -q 'stop reason = breakpoint'; then
+      bad "debugger" "breakpoint did not bind or process did not stop"
+    else
+      bad "debugger" "$(echo "$dout" | grep -m1 'error' || echo 'frame variable gave no answer')"
+    fi
+  else
+    bad "debugger" "fixture did not build: $(grep -m1 'error' "$TMP/dbg.log" || echo 'see dbg.log')"
+  fi
+else
+  bad "debugger" "lldb or libMojoLLDB.dylib not in the distribution"
+fi
+
 echo
 [ "$fail" -eq 0 ] && echo "distribution OK" || echo "distribution has failures"
 exit $fail
