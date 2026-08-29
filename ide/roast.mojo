@@ -173,6 +173,7 @@ comptime TB_STOP = "roast.stop"
 # than appearing when a session starts: a toolbar that changes shape while you
 # are reaching for it is worse than one whose items grey out, and NSToolbar
 # already knows how to grey an item out.
+comptime TB_DEBUG = "roast.debug"
 comptime TB_CONTINUE = "roast.continue"
 comptime TB_STEP_OVER = "roast.stepover"
 comptime TB_STEP_IN = "roast.stepin"
@@ -191,6 +192,10 @@ def toolbar_ids() -> ObjCObject:
         # A space, then the debugger's controls in the order you reach for
         # them: continue first, the three steps after it.
         String("NSToolbarSpaceItem"),
+        # Debug starts the session; the four after it drive one. Without this
+        # the step buttons imply a session the bar gives you no way to begin,
+        # and the answer was a menu shortcut you had to know about.
+        String(TB_DEBUG),
         String(TB_CONTINUE),
         String(TB_STEP_OVER),
         String(TB_STEP_IN),
@@ -2503,6 +2508,10 @@ class RoastActions:
                 # action behind it; this only puts them where the hand is.
                 # The symbols read as directions rather than as pictures of a
                 # debugger: along, down into, up out of.
+                elif Obj["NSString"](key.addr()).isEqualToString(nsstring(String(TB_DEBUG)).ptr()):
+                    title = String("Debug")
+                    symbol = String("ladybug.fill")
+                    action = sel["roastDebug:"]()
                 elif Obj["NSString"](key.addr()).isEqualToString(nsstring(String(TB_CONTINUE)).ptr()):
                     title = String("Continue")
                     symbol = String("forward.fill")
