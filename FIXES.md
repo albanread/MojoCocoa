@@ -89,3 +89,12 @@ commit that fixes it when one does.
    the fork's own keyword as an error. Fix, together with entry 3: the
    server gets exactly the environment and import roots the wrapper gives
    the compiler -- one source of truth, not two configurations drifting.
+
+8. **No auto-indent on Return.** A new line starts at column 0 regardless
+   of the previous line's indentation (screenshot: `var l = 1` at col 0
+   inside a nested block -- though the diagnostics caught the resulting
+   indent error nicely). `insertNewline:` (gridview.mojo:2006) inserts a
+   bare newline. Fix: carry the previous line's leading whitespace onto
+   the new line, and add one level when the previous line ends with `:`
+   -- the two rules that cover nearly all Mojo typing. Shift-Return can
+   keep the bare newline for when the copied indent is unwanted.
