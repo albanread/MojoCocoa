@@ -10,7 +10,9 @@
 # Reads are non-blocking and drained from a timer, the same shape the playground
 # uses for compiler output, because a blocking read on the main thread is an
 # editor that stops responding whenever the server thinks.
-from json import JSON, parse
+from json import JSON
+from json import parse
+from pipeutf8 import take_chunk
 from std.objc import (
     Obj,
     Cls,
@@ -86,6 +88,7 @@ def readable(fd: Int) -> Bool:
 # ── State ───────────────────────────────────────────────────────────────────
 comptime g_task = named_global["lsp.task", Int]
 comptime g_in = named_global["lsp.in", Int]      # NSFileHandle we write to
+comptime g_pending = named_global["lsp.inbox.pending", List[UInt8]]
 comptime g_read_fd = named_global["lsp.readfd", Int]
 comptime g_next_id = named_global["lsp.nextid", Int]
 comptime g_ready = named_global["lsp.ready", Int]
@@ -942,7 +945,10 @@ def poll() -> Int:
                 _ = external_call["free", NoneType](buf)
                 break
             var acc = inbox()
-            acc += String(unsafe_from_utf8_ptr=buf.unsafe_bitcast[c_char]())
+            # Whole characters only -- see pipeutf8. The server's JSON is
+            # about to be parsed, so a replacement character would be
+            # corruption; the partial sequence waits for the next read.
+            acc += take_chunk(g_pending()[], buf, n)
             set_inbox(acc^)
             _ = external_call["free", NoneType](buf)
             if n < CAP:

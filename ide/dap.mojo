@@ -39,7 +39,9 @@
 # initialize -- the event, which comes later. Breakpoints asked for before
 # then are held and sent when it does, which is why `set_breakpoints` works
 # before `start` and is the natural way for an editor to use it.
-from json import JSON, parse
+from json import JSON
+from json import parse
+from pipeutf8 import take_chunk
 from lsp import readable, posix_read
 from std.objc import (
     ObjCClass,
@@ -63,6 +65,7 @@ comptime g_read_fd = named_global["dap.readfd", Int]
 comptime g_seq = named_global["dap.seq", Int]
 # 0 not started, 1 spawned, 2 initialized-event seen, 3 configured and running
 comptime g_phase = named_global["dap.phase", Int]
+comptime g_pending = named_global["dap.inbox.pending", List[UInt8]]
 comptime g_inbox = named_global["dap.inbox", List[String]]
 
 # Where the program is stopped, and why. Line 0 means running.
@@ -662,7 +665,10 @@ def poll() -> Int:
                 _ = external_call["free", NoneType](buf)
                 break
             var acc = _slot(g_inbox())
-            acc += String(unsafe_from_utf8_ptr=buf.unsafe_bitcast[c_char]())
+            # Only what forms whole characters. A 64 KB read boundary lands
+            # wherever it lands, and half a codepoint appended here is a
+            # String that crashes whoever iterates it later.
+            acc += take_chunk(g_pending()[], buf, n)
             _put(g_inbox(), acc^)
             _ = external_call["free", NoneType](buf)
             if n < CAP:

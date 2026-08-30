@@ -40,6 +40,7 @@ from std.ffi import external_call, c_char
 from lsp import readable, posix_read
 from json import JSON
 from process_env import apply as apply_environment
+from pipeutf8 import take_chunk
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -53,6 +54,7 @@ comptime NINE: UInt8 = 57
 
 # ── State ───────────────────────────────────────────────────────────────────
 comptime g_task = named_global["build.task", Int]
+comptime g_pending = named_global["build.out.pending", List[UInt8]]
 comptime g_fd = named_global["build.fd", Int]
 comptime g_exit = named_global["build.exit", Int]
 comptime g_serial = named_global["build.serial", Int]
@@ -358,7 +360,9 @@ def _drain() -> Int:
         if n <= 0:
             _ = external_call["free", NoneType](buf)
             break
-        append_output(String(unsafe_from_utf8_ptr=buf.unsafe_bitcast[c_char]()))
+        # Whole characters only. The compiler's diagnostics are full of
+        # arrows and box drawing, so a split boundary here is not exotic.
+        append_output(take_chunk(g_pending()[], buf, n))
         _ = external_call["free", NoneType](buf)
         total += n
         if n < CAP:
