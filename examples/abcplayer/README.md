@@ -4,8 +4,7 @@ Reads ABC notation — the format thousands of folk tunes are already written
 in — and plays it, either through the chip in [`../chip/`](../chip/) or
 through General MIDI. It also writes Standard MIDI Files.
 
-    cocoamojo --build examples/abcplayer/main.mojo \
-        -I examples/abcplayer -I examples/chip -o /tmp/abcplayer
+    cocoamojo --build examples/abcplayer/main.mojo -o /tmp/abcplayer
 
     /tmp/abcplayer tunes/carolan.abc            # chip voices
     /tmp/abcplayer tunes/carolan.abc --midi     # Apple's DLS synthesiser
@@ -116,6 +115,7 @@ in `K:D` now plays in D.
 | [chipplay.mojo](chipplay.mojo) | driving the chip from a schedule |
 | [midi.mojo](midi.mojo) | Standard MIDI File output |
 | [main.mojo](main.mojo) | CoreAudio, both backends, and the window |
+| [chip.mojo](chip.mojo) | the synth engine, vendored from `../chip/` so this opens and runs as one folder |
 
 **Time is an integer everywhere.** Durations are ticks at 480 per quarter
 note — MIDI's own resolution — which divides exactly by everything ABC can
