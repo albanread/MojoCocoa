@@ -87,6 +87,26 @@ transform settings.
 The SRAM run validates the corrected oracle and existing runtime.  It does not
 yet qualify a distribution built from the new compiler commits.
 
+### Example-kernel corpus is 10/11 on Apple
+
+The complete `max/kernels/test/gpu/examples` package was reviewed and run on
+the M4 Max. Ten of eleven examples now compile, create pipelines, execute under
+Metal API and shader validation, and pass a real numerical oracle. Integer
+matmul and double-buffer GEMM had stale Apple exclusions, while scatterND was
+still manual because its source had drifted from current Mojo APIs. All three
+now run in the default Apple set. The only remaining exclusion is the
+NVIDIA-only back-to-back matmul, which reaches its explicit unsupported `mma`
+capability check.
+
+The review also exposed non-monotonic static-storage accounting: both working
+BK=8 variants report exactly twice their declared shared arrays, while the
+original double-buffer BK=16 tile is rejected at its declared 33,280 bytes.
+Apple-specific tile choices restore both kernels today, but explaining that
+discontinuity is the next direct opportunity to regain K-stage depth and
+performance. The exact matrix, fixes, measurements, and recommendations are
+recorded in
+[`max/kernels/test/gpu/examples/APPLE_STATUS.md`](max/kernels/test/gpu/examples/APPLE_STATUS.md).
+
 ### Asynchronous dispatch is now the runtime default
 
 The runtime's already-implemented deferred launch path is now the default
@@ -180,6 +200,12 @@ Metal runtime check.
    source and emitted AIR together. Determine whether the failure is caused by
    vector reconstruction, register pressure, or a specific instruction shape,
    then lower wide per-thread values earlier than final LLVM scalarization.
+8. **Explain static threadgroup storage accounting.**  Two BK=8 tiled matmuls
+   produce a Metal static-storage count exactly twice their declared shared
+   arrays, but the original double-buffer BK=16 tile is rejected at its declared
+   size rather than twice it. Reduce this with retained pre/post AIR, identify
+   the allocation-liveness or metadata discontinuity, and restore deeper Apple
+   K tiles if the emitted footprint can be reduced.
 
 For performance, the immediate next implementation is item 6, precise
 residency. For compiler capability, it is item 7, the width-32 PSO reduction.

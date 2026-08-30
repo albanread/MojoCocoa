@@ -47,6 +47,7 @@ The recommended direction is:
 | Rebuilt `compute_smoke`, with `MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1` | CPU 95.214 ms, GPU 0.849 ms, 112.15x, 100% exact, pass | End-to-end source compilation, metallib creation, reflected binding, dispatch, and a numerical result work under Metal validation. This is a smoke result, not a stable benchmark. |
 | `test_apple_mma_8x8` and `test_tensor_core_apple`, forced uncached at the test-result layer and run under Metal validation | 2 of 2 pass | Mixed Apple MMA signatures no longer trigger the MLIR/LLVM bad-signature assertion. |
 | New `test_air_overload_symbols`, current uncommitted worktree | 1 of 1 pass | A compile-only regression test now covers mixed MMA dtype signatures and declaration reuse in one compile, then repeats the stems in a second kernel compile. |
+| Complete `max/kernels/test/gpu/examples` review on M4 Max | 10 of 11 pass under Metal validation | All generic examples now have executable numerical coverage. The remaining target is NVIDIA-only `mma`; the review also found non-monotonic static-threadgroup-storage accounting in tiled kernels. |
 | Full `max/kernels/test/gpu` census recorded by `48d88ec` | 79 pass, 21 build failure, 17 runtime failure, 623 skip; 740 accounted targets | The reachable surface is substantially larger than the smoke test, but the result is a triage census rather than an acceptance score. Many skipped or failed targets are NVIDIA/AMD-only and are not constrained correctly for Apple. |
 
 The broad census exposed several independent failure classes:
