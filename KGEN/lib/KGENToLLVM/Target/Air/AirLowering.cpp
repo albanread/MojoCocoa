@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "KGEN/POPDialect/POPOps.h"
+#include "Target/Air/AirBuiltinRegistry.h"
 #include "Target/Air/AirTraits.h"
 #include "Target/TargetLowering.h"
 
@@ -57,72 +58,25 @@ namespace {
 // instead of silently computing the wrong reduction.
 std::optional<std::string> airSuffixFor(mlir::Type ty) {
   if (ty.isF32())
-    return std::string(".f32");
+    return Air::payloadTypeSuffix(/*isFloating=*/true, 32);
   if (ty.isF16())
-    return std::string(".f16");
+    return Air::payloadTypeSuffix(/*isFloating=*/true, 16);
   if (auto it = llvm::dyn_cast<mlir::IntegerType>(ty)) {
-    switch (it.getWidth()) {
-    case 8:
-      return std::string(".u.i8");
-    case 16:
-      return std::string(".u.i16");
-    case 32:
-      return std::string(".u.i32");
-      // No 64-bit case: MSL rejects simd-group ops on 64-bit types outright
-      // ("no matching function for call to 'simd_shuffle_xor'"), so no
-      // air.*.u.i64 symbol exists to call. warp.mojo already splits 64-bit
-      // payloads into two 32-bit halves for exactly this reason. Emitting
-      // .u.i64 would name a symbol that does not exist, which does not fail
-      // cleanly -- see the driver-crash note on needsAirTypeSuffix.
-    }
+    // No 64-bit case: MSL rejects simd-group ops on 64-bit types outright
+    // ("no matching function for call to 'simd_shuffle_xor'").
+    return Air::payloadTypeSuffix(/*isFloating=*/false, it.getWidth());
   }
   if (auto vt = llvm::dyn_cast<mlir::VectorType>(ty)) {
-    if (auto inner = airSuffixFor(vt.getElementType())) {
-      std::string s = *inner;
-      size_t lastDot = s.rfind('.');
-      return s.substr(0, lastDot + 1) + "v" +
-             std::to_string(vt.getNumElements()) + s.substr(lastDot + 1);
-    }
+    mlir::Type elem = vt.getElementType();
+    if (elem.isF16() || elem.isF32())
+      return Air::payloadTypeSuffix(/*isFloating=*/true,
+                                    elem.isF16() ? 16 : 32,
+                                    vt.getNumElements());
+    if (auto it = llvm::dyn_cast<mlir::IntegerType>(elem))
+      return Air::payloadTypeSuffix(/*isFloating=*/false, it.getWidth(),
+                                    vt.getNumElements());
   }
   return std::nullopt;
-}
-
-// Families whose AIR runtime symbols carry a type suffix. Kept in sync with
-// the backend's copy in AirBackend.cpp -- which currently omits
-// `air.simd_ballot`; the lists have drifted, and the backend's is the one to
-// correct, since a stem missing there is left bare.
-//
-// Getting a name in this list wrong is expensive to diagnose. An AIR symbol
-// that does not exist, or one called with the wrong signature, is not
-// reported as an error: it survives `metal -x ir -c` and `metallib`, then
-// takes down the driver's compiler service at pipeline creation with
-//
-//   Compilation failed due to an interrupted connection:
-//   XPC_ERROR_CONNECTION_INTERRUPTED
-//
-// (measured on an M4 Max by handing the golden sample a shuffle declared
-// `(float, i32)` instead of AIR's real `(float, i16)`). If you see that
-// message, suspect a symbol name or signature here before anything else.
-bool needsAirTypeSuffix(llvm::StringRef name) {
-  static const llvm::StringRef stems[] = {
-      "air.simd_shuffle_xor", "air.simd_shuffle_down", "air.simd_shuffle_up",
-      "air.simd_shuffle", "air.simd_sum",
-      // Apple's real prefix-sum symbols. There is no `air.simd_prefix_sum`
-      // -- MSL spells these simd_prefix_exclusive_sum /
-      // simd_prefix_inclusive_sum, and the golden probe emits
-      // air.simd_prefix_exclusive_sum.f32.
-      "air.simd_prefix_exclusive_sum", "air.simd_prefix_inclusive_sum",
-      "air.simd_min", "air.simd_max", "air.simd_product", "air.simd_ballot",
-      "air.cos", "air.sin", "air.tan", "air.acos", "air.asin", "air.atan",
-      "air.cosh", "air.sinh", "air.tanh", "air.exp", "air.exp2", "air.exp10",
-      "air.log", "air.log2", "air.log10", "air.sqrt", "air.rsqrt",
-      "air.fabs", "air.floor", "air.ceil", "air.rint", "air.trunc",
-      "air.round", "air.fmin", "air.fmax", "air.fma", "air.pow", "air.powr",
-      "air.fmod", "air.copysign", "air.frac", "air.divide", "air.recip"};
-  for (llvm::StringRef stem : stems)
-    if (name == stem)
-      return true;
-  return false;
 }
 
 class ConvertAirIntrinsicToCall
@@ -191,7 +145,7 @@ public:
     // wrapper, so each flag is an extractvalue with nothing to fold against.
     // AirBackend::mangleAirOps does it on LLVM IR after inlining, where the
     // i1 is a real ConstantInt. The declaration stays bare until then.
-    if (needsAirTypeSuffix(fnName)) {
+    if (Air::builtinNeedsTypeSuffix(fnName)) {
       mlir::Type keyTy = !operands.empty() ? operands[0].getType() : resType;
       // `.s.` vs `.u.` is unrecoverable here and the two differ for min/max
       // (see airSuffixFor). Refuse rather than pick one and be silently
@@ -279,10 +233,7 @@ public:
       // willreturn`; plain math does NOT. Memory effects are deliberately
       // omitted -- `readnone`'s modern spelling is one the AIR reader
       // predates.
-      llvm::StringRef stem = fnName;
-      if (stem == "air.wg.barrier" || stem == "air.simdgroup.barrier" ||
-          stem.starts_with("air.simd_") || stem.starts_with("air.quad_") ||
-          stem.starts_with("air.simdgroup_matrix_")) {
+      if (Air::isConvergentBuiltin(fnName)) {
         fn.setPassthroughAttr(rewriter.getArrayAttr(
             {rewriter.getStringAttr("convergent"),
              rewriter.getStringAttr("nounwind"),

@@ -42,6 +42,7 @@
 #include "KGEN/Compiler/SaveAsmOutput.h"
 #include "KGEN/ToolCommon/CompilationOptions.h"
 #include "AirLegality.h"
+#include "Target/Air/AirBuiltinRegistry.h"
 #include "Target/Air/AirTargetProfile.h"
 #include "LLVM/Bitcode/17/BitcodeWriter17.h"
 #include "LLVM/Transforms/LLVMIRDowngradePass.h"
@@ -800,57 +801,23 @@ llvm::Function *legalizeKernel(llvm::Function &fn,
 // Integers use the unsigned spelling: shuffles move bits, not values.
 std::optional<std::string> airTypeSuffix(llvm::Type *ty) {
   if (ty->isFloatTy())
-    return ".f32";
+    return Air::payloadTypeSuffix(/*isFloating=*/true, 32);
   if (ty->isHalfTy())
-    return ".f16";
+    return Air::payloadTypeSuffix(/*isFloating=*/true, 16);
   if (auto *it = llvm::dyn_cast<llvm::IntegerType>(ty)) {
-    switch (it->getBitWidth()) {
-    case 8:
-      return ".u.i8";
-    case 16:
-      return ".u.i16";
-    case 32:
-      return ".u.i32";
-    case 64:
-      return ".u.i64";
-    }
+    return Air::payloadTypeSuffix(/*isFloating=*/false, it->getBitWidth());
   }
   if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(ty)) {
-    if (auto inner = airTypeSuffix(vt->getElementType())) {
-      std::string s = *inner;
-      // ".f16" -> ".v2f16" style; ".u.i32" -> ".u.v2i32"
-      size_t lastDot = s.rfind('.');
-      return s.substr(0, lastDot + 1) + "v" +
-             std::to_string(vt->getNumElements()) + s.substr(lastDot + 1);
-    }
+    llvm::Type *elem = vt->getElementType();
+    if (elem->isFloatTy() || elem->isHalfTy())
+      return Air::payloadTypeSuffix(/*isFloating=*/true,
+                                    elem->isHalfTy() ? 16 : 32,
+                                    vt->getNumElements());
+    if (auto *it = llvm::dyn_cast<llvm::IntegerType>(elem))
+      return Air::payloadTypeSuffix(/*isFloating=*/false, it->getBitWidth(),
+                                    vt->getNumElements());
   }
   return std::nullopt;
-}
-
-// AIR runtime functions carry a type suffix; the stdlib emits bare stems.
-// The math family additionally has a `fast_` variant selected by fast-math,
-// which we do not enable, so the plain spelling is correct here.
-bool needsAirTypeSuffix(llvm::StringRef name) {
-  static const llvm::StringRef stems[] = {
-      // shuffles / simd-group ops. Kept in sync with AirLowering.cpp's copy,
-      // which carries the golden-sample evidence for these names.
-      // `air.simd_prefix_sum` was wrong in both lists -- AIR spells them
-      // air.simd_prefix_exclusive_sum / air.simd_prefix_inclusive_sum.
-      "air.simd_shuffle_xor", "air.simd_shuffle_down", "air.simd_shuffle_up",
-      "air.simd_shuffle", "air.simd_sum",
-      "air.simd_prefix_exclusive_sum", "air.simd_prefix_inclusive_sum",
-      "air.simd_min", "air.simd_max", "air.simd_product",
-      // math
-      "air.cos", "air.sin", "air.tan", "air.acos", "air.asin", "air.atan",
-      "air.cosh", "air.sinh", "air.tanh", "air.exp", "air.exp2", "air.exp10",
-      "air.log", "air.log2", "air.log10", "air.sqrt", "air.rsqrt",
-      "air.fabs", "air.floor", "air.ceil", "air.rint", "air.trunc",
-      "air.round", "air.fmin", "air.fmax", "air.fma", "air.pow", "air.powr",
-      "air.fmod", "air.copysign", "air.frac", "air.divide", "air.recip"};
-  for (llvm::StringRef stem : stems)
-    if (name == stem)
-      return true;
-  return false;
 }
 
 // LLVM-style overload mangling, which is what AIR uses for the
@@ -1285,9 +1252,7 @@ llvm::Error stripAirSignatureTags(llvm::Module &m) {
 
 
 bool isConvergentAirOp(llvm::StringRef name) {
-  return name == "air.wg.barrier" || name == "air.simdgroup.barrier" ||
-         name.starts_with("air.simd_") || name.starts_with("air.quad_") ||
-         name.starts_with("air.simdgroup_matrix_");
+  return Air::isConvergentBuiltin(name);
 }
 
 
@@ -1393,7 +1358,7 @@ void mangleAirOps(llvm::Module &m) {
       for (llvm::Instruction &inst : bb)
         if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
           if (llvm::Function *callee = call->getCalledFunction())
-            if (needsAirTypeSuffix(airStem(callee->getName())) ||
+            if (Air::builtinNeedsTypeSuffix(airStem(callee->getName())) ||
                 isSimdgroupMatrixMMA(airStem(callee->getName())))
               calls.push_back(call);
   for (llvm::CallInst *call : calls) {
