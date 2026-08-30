@@ -44,6 +44,7 @@ _COCOA_LINKOPTS = [
     )
     for name, src in [
         ("compute_smoke", "mandelbrot/compute_smoke.mojo"),
+        ("air_fma_peak_bench", "air_perf/fma_peak_bench.mojo"),
         ("window_smoke", "mandelbrot/window_smoke.mojo"),
         ("life", "life/life.mojo"),
         ("fluid_smoke", "fluid/fluid_smoke.mojo"),
