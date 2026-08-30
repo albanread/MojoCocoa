@@ -53,6 +53,12 @@ LINK=(
   -Xlinker -framework -Xlinker AppKit
   -Xlinker -framework -Xlinker Metal
   -Xlinker -framework -Xlinker QuartzCore
+  # AudioToolbox, for the same reason as the rest: a program that wants sound
+  # should not have to discover a link flag, and one that does not pays a load
+  # command. The render callback in examples/sid is a plain Mojo `fn` handed
+  # straight to AudioUnitSetProperty, so nothing else is needed to make audio
+  # work -- only this.
+  -Xlinker -framework -Xlinker AudioToolbox
   # libz ships with macOS at /usr/lib/libz.dylib. It is here rather than left
   # to each program because a graphical one usually wants to write a PNG
   # eventually, and a project has no way to ask for a link flag -- the same
