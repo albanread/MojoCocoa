@@ -41,6 +41,29 @@ The policy is intentional: known AIR ABI mistakes must fail before reaching the
 driver, while non-AIR intrinsics should be promoted to failure only after the
 backend has either lowered them or proven them legal at the PSO boundary.
 
+### Divergent workgroup barrier rejection
+
+The final AIR legality gate now treats kernel arguments tagged by
+`!air.kernel` as the authoritative thread-identity sources.  It follows their
+SSA data dependencies into conditional branches and uses dominator plus
+post-dominator analysis to distinguish two cases:
+
+- a lane-dependent branch that reconverges before one shared barrier is legal;
+- a barrier selected, skipped, or iterated by a lane/thread/simdgroup-dependent
+  condition fails under the `divergent-barrier` rule.
+
+Threadgroup position and launch-size arguments remain uniform at workgroup
+scope and do not taint a branch.  The analysis intentionally does not claim to
+recover dependencies hidden through arbitrary memory: the final pipeline
+inlines helpers and promotes ordinary scalar temporaries, but a future lowering
+that spills thread identity through unknown memory will need explicit
+uniformity metadata or a MemorySSA extension.
+
+The rule defaults to `Fail` and can be downgraded independently through
+`APPLEGPU_AIR_RULES`.  Implementing the test exposed and fixed a pre-existing
+configuration parser defect that silently rejected valid rule actions and
+transform settings.
+
 ## Validation performed
 
 - `//KGEN/tools/kgen-llvm-opt:kgen-llvm-opt` builds successfully from the clean
@@ -48,8 +71,13 @@ backend has either lowered them or proven them legal at the PSO boundary.
 - `//KGEN/test/kgen:air-legality/externals.ll.test` passes.  It covers valid and
   invalid builtin names, suffixes, signatures, conversion declarations,
   barriers, ballot, and matrix MMA.
+- `//KGEN/test/kgen:air-legality/barrier-divergence.ll.test` passes.  It covers
+  reconvergence, workgroup-uniform conditions, lane-guarded barriers, and a
+  simdgroup-dependent barrier loop; it also verifies the firewall rule parser.
 - A sweep of the captured `/private/tmp/out_*.air.ll` corpus reports no unknown
   AIR declarations.  Three non-AIR vector-reduction declarations remain logged.
+- A second sweep examined 59 captured AIR modules.  Thirty-six contain a
+  workgroup barrier, and none is rejected by the divergence verifier.
 - The SRAM dimension matrix was run on an M4 Max with the known-good CocoaMojo
   distribution.  All eight aligned/ragged combinations passed after converting
   the mapped output scalar to `Float32` before comparison.  The retained old log
@@ -71,29 +99,26 @@ Metal runtime check.
 
 ## Recommended next slices
 
-1. **Reject divergent workgroup barriers before AIR emission.**  Add a
-   conservative verifier that fails if a barrier is control-dependent on a
-   thread or SIMD position value.  Start in the AIR path to make silent wrong
-   answers impossible without changing the shared optimisers.
-2. **Represent barrier semantics before loop unswitching.**  Once the verifier
-   has fixtures, make convergence and non-duplication explicit in the earliest
-   KGEN/MLIR form that the optimiser sees.  Then run NVPTX and AMDGPU regression
-   tests because this is shared lowering policy, not an Apple-only change.
-3. **Make hardware variation data-driven.**  Introduce an Apple target profile
+1. **Represent barrier semantics before loop unswitching.**  With the final
+   verifier and fixtures in place, make convergence and non-duplication
+   explicit in the earliest KGEN/MLIR form that the optimiser sees.  Then run
+   NVPTX and AMDGPU regression tests because this is shared lowering policy,
+   not an Apple-only change.
+2. **Make hardware variation data-driven.**  Introduce an Apple target profile
    containing AIR/Metal versions, SIMD width, threadgroup limits, supported
    payload domains, and matrix shapes.  Select a profile for M4/M5; do not fork
    builtin generation or optimisation passes by chip name.
-4. **Remove late address-space inference.**  Carry logical storage class and
+3. **Remove late address-space inference.**  Carry logical storage class and
    resource binding through typed IR, then lower it once to AIR address spaces.
    Late pointer-shape inference is too fragile for alias analysis and ABI checks.
-5. **Validate the complete kernel ABI.**  Add structural checks for buffer and
+4. **Validate the complete kernel ABI.**  Add structural checks for buffer and
    constant argument order, sizes, alignment, address spaces, resource metadata,
    and threadgroup allocations before serialization.  Do not infer semantic
    padding from anonymous byte arrays.
-6. **Add a real driver acceptance gate.**  Compile a small representative
+5. **Add a real driver acceptance gate.**  Compile a small representative
    kernel matrix through AIR, metallib, pipeline-state creation, and execution.
    This is where remaining unresolved LLVM intrinsics can be classified safely.
 
-The immediate next implementation should be item 1.  It is narrowly contained,
-turns a potential numerical miscompile into a compiler error, and creates the
-oracle needed before changing shared optimisation semantics in item 2.
+The immediate next implementation should now be item 1: make barrier semantics
+survive the shared optimiser, using the AIR verifier as the fail-closed oracle
+and sweeping the non-Apple GPU targets before enabling the change generally.
