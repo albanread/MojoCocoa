@@ -136,33 +136,68 @@ MLIRLIB="$(find "$B" -name 'libMLIR.dylib' -type f 2>/dev/null | head -1)"
 # output base, not inside it, and the +llvm_configure+ prefix is bzlmod's and can
 # change -- so cut the path at /execroot/ and glob for the repo.
 LLVMSRC="$(echo "${B%%/execroot/*}"/external/*llvm_configure*llvm-project)"
-[ -n "$LLVMLIB" ] || { echo "   no libLLVM.dylib -- build //bazel/llvm-shared:LLVM"; exit 1; }
-cp -f "$LLVMLIB" "$D/lib/"
-nexp=$(nm -gU "$D/lib/libLLVM.dylib" | grep -c '4llvm') || true
-# Under the toolchain's default -fvisibility=hidden this lands near 200 rather
-# than tens of thousands, and the dylib is useless to anything outside. That is
-# a silent failure, so it is checked rather than assumed.
-[ "$nexp" -gt 10000 ] || { echo "   libLLVM.dylib exports only $nexp llvm:: symbols -- visibility regression"; exit 1; }
-echo "   $(du -h "$D/lib/libLLVM.dylib" | cut -f1), $nexp llvm:: symbols exported"
+
+# How many symbols of a given namespace a dylib actually exports. Under the
+# toolchain's default -fvisibility=hidden this lands in the low hundreds rather
+# than the tens of thousands, and the dylib is useless to anything outside --
+# a silent failure, so it is measured rather than assumed.
+lib_symbols() { nm -gU "$1" 2>/dev/null | grep -c "$2" || true; }
+
+# The order is: a bazel output that PASSES its check, then the cache, then
+# fail. Validating before caching is the point -- a stub that exports nothing
+# must never be stored as though it were the real library, or the cache
+# becomes a way to ship the regression forever.
+if [ -n "$LLVMLIB" ] && [ "$(lib_symbols "$LLVMLIB" '4llvm')" -gt 10000 ]; then
+  cp -f "$LLVMLIB" "$D/lib/"
+  components_store llvm "$HEAD_COMMIT" "$LLVMLIB:lib" \
+    || echo "   (could not write the component cache)"
+  echo "   $(du -h "$D/lib/libLLVM.dylib" | cut -f1), $(lib_symbols "$D/lib/libLLVM.dylib" '4llvm') llvm:: symbols exported"
+elif components_have llvm && ! components_stale llvm bazel; then
+  components_restore llvm "$D" || { echo "   component cache unreadable"; exit 1; }
+  echo "   from the component cache ($(components_source llvm), $(components_built llvm))"
+else
+  if [ -n "$LLVMLIB" ]; then
+    echo "   libLLVM.dylib in bazel-out exports only $(lib_symbols "$LLVMLIB" '4llvm') llvm:: symbols"
+    echo "   (a visibility regression, and nothing in the cache to fall back to)"
+  else
+    echo "   no libLLVM.dylib"
+  fi
+  echo "   build --config=build-mojo //bazel/llvm-shared:LLVM"
+  exit 1
+fi
 
 # MLIR, on top of LLVM. The compiler links both; an in-process consumer that
 # wants to build IR rather than shell out needs this one too.
-[ -n "$MLIRLIB" ] || { echo "   no libMLIR.dylib -- build //bazel/mlir-shared:MLIR"; exit 1; }
-cp -f "$MLIRLIB" "$D/lib/"
-mexp=$(nm -gU "$D/lib/libMLIR.dylib" | grep -c '4mlir') || true
-[ "$mexp" -gt 10000 ] || { echo "   libMLIR.dylib exports only $mexp mlir:: symbols -- visibility regression"; exit 1; }
-echo "   $(du -h "$D/lib/libMLIR.dylib" | cut -f1), $mexp mlir:: symbols exported"
+if [ -n "$MLIRLIB" ] && [ "$(lib_symbols "$MLIRLIB" '4mlir')" -gt 10000 ]; then
+  cp -f "$MLIRLIB" "$D/lib/"
+  components_store mlir "$HEAD_COMMIT" "$MLIRLIB:lib" \
+    || echo "   (could not write the component cache)"
+  echo "   $(du -h "$D/lib/libMLIR.dylib" | cut -f1), $(lib_symbols "$D/lib/libMLIR.dylib" '4mlir') mlir:: symbols exported"
+elif components_have mlir && ! components_stale mlir bazel; then
+  components_restore mlir "$D" || { echo "   component cache unreadable"; exit 1; }
+  echo "   from the component cache ($(components_source mlir), $(components_built mlir))"
+else
+  echo "   no usable libMLIR.dylib -- build --config=build-mojo //bazel/mlir-shared:MLIR"
+  exit 1
+fi
 
 # The Mojo front end. Without this the distribution shipped the parser's headers
 # and no parser -- it was statically linked inside the binaries and nothing
 # out-of-tree could call it.
 echo "== Mojo front end =="
 FE="$B/KGEN/libMojoCompiler.dylib"
-[ -f "$FE" ] || { echo "   no libMojoCompiler.dylib -- build //KGEN:MojoCompilerShared"; exit 1; }
-cp -f "$FE" "$D/lib/"
-fexp=$(nm -gU "$D/lib/libMojoCompiler.dylib" | grep -c 'MojoParserContext') || true
-[ "$fexp" -gt 10 ] || { echo "   exports only $fexp MojoParserContext symbols -- visibility regression"; exit 1; }
-echo "   $(du -h "$D/lib/libMojoCompiler.dylib" | cut -f1), parser API exported"
+if [ -f "$FE" ] && [ "$(lib_symbols "$FE" 'MojoParserContext')" -gt 10 ]; then
+  cp -f "$FE" "$D/lib/"
+  components_store mojocompiler "$HEAD_COMMIT" "$FE:lib" \
+    || echo "   (could not write the component cache)"
+  echo "   $(du -h "$D/lib/libMojoCompiler.dylib" | cut -f1), parser API exported"
+elif components_have mojocompiler && ! components_stale mojocompiler KGEN bazel; then
+  components_restore mojocompiler "$D" || { echo "   component cache unreadable"; exit 1; }
+  echo "   from the component cache ($(components_source mojocompiler), $(components_built mojocompiler))"
+else
+  echo "   no usable libMojoCompiler.dylib -- build //KGEN:MojoCompilerShared"
+  exit 1
+fi
 
 # LLVM headers, so the dylib is something another project can actually compile
 # against. Two trees have to be merged, and the order matters:

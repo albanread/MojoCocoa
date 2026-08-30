@@ -57,6 +57,7 @@ components_store() {
       printf 'component %s\n' "$group"
       printf 'commit    %s\n' "$commit"
       printf 'built     %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+      printf 'source    %s\n' "${COMPONENT_SOURCE:-bazel-out}"
       printf 'host      %s\n' "$(sw_vers -productVersion 2>/dev/null || echo unknown)"
     } > "$dir/$stamp/PROVENANCE"
   fi
@@ -72,6 +73,10 @@ components_commit() {
 
 components_built() {
   sed -n 's/^built *//p' "$(_c_dir "$1")/latest/PROVENANCE" 2>/dev/null
+}
+
+components_source() {
+  sed -n 's/^source *//p' "$(_c_dir "$1")/latest/PROVENANCE" 2>/dev/null
 }
 
 # components_stale <group> <path>...
