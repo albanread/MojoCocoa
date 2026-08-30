@@ -4433,6 +4433,52 @@ def stdlib_root() -> String:
     return tc + String("/lib/mojo/stdlib")
 
 
+def _dir_entries(path: String) -> List[String]:
+    """The immediate entries of a directory, minus dotfiles. Empty on error."""
+    var out = List[String]()
+    try:
+        with autoreleasepool():
+            let NSFileManager = ObjCClass.lookup["NSFileManager"]()
+            let fm = Cls["NSFileManager"]().defaultManager()
+            var local = path
+            let names = Obj["NSFileManager"](fm.addr()).contentsOfDirectoryAtPath_error(
+                nsstring(local).ptr(), ObjCObject(0).ptr()
+            )
+            if names.addr() == 0:
+                return out^
+            let n = Obj["NSArray"](names.addr()).count()
+            var i = 0
+            while i < n:
+                let nm = ns_to_string(
+                    Obj["NSArray"](names.addr()).objectAtIndex(i)
+                )
+                if not nm.startswith("."):
+                    out.append(nm)
+                i += 1
+    except:
+        pass
+    return out^
+
+
+def _merge_new_examples(bundle: String, user: String) -> Bool:
+    """Copy every example folder the bundle has and the user copy lacks.
+
+    Additive and non-destructive: an example already in the user copy is
+    skipped whole, edits and all. This is what makes a new release's examples
+    appear without a Reset, and without touching anything a person changed.
+    """
+    var brought = False
+    let entries = _dir_entries(bundle)
+    for i in range(len(entries)):
+        let name = entries[i]
+        let dst = user + String("/") + name
+        if file_exists(dst):
+            continue
+        if _copy_tree(bundle + String("/") + name, dst):
+            brought = True
+    return brought
+
+
 def _copy_tree(source: String, destination: String) -> Bool:
     """NSFileManager's copy, whole-tree, refusing to overwrite."""
     try:
@@ -4498,6 +4544,16 @@ def migrate_user_space(force: Bool = False) -> Bool:
         _ = _remove_tree(ex_dst)
     if not file_exists(ex_dst + String("/README.md")):
         did = _copy_tree(tc + String("/share/examples"), ex_dst) or did
+    else:
+        # The copy above runs once, on first launch. A later release that
+        # ships a NEW example (chip, abcplayer) would never reach the user's
+        # writable copy, so the Examples menu -- which reads that copy -- would
+        # never show it, and the menu-builder's promise that shipping an
+        # example is enough to list it would be false. Add whatever the bundle
+        # has and the user copy lacks, folder by folder. _copy_tree refuses to
+        # overwrite, so an example the user has edited is left exactly as they
+        # left it; only genuinely new ones are brought over.
+        did = _merge_new_examples(tc + String("/share/examples"), ex_dst) or did
     let ide_dst = user_ide_source_dir()
     if force and file_exists(ide_dst):
         _ = _remove_tree(ide_dst)
