@@ -12,12 +12,12 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/DepthFirstIterator.h"
-#include "llvm/ADT/StringSwitch.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/PostDominators.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
-#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -75,6 +75,12 @@ Rule Rules[] = {
    "LOG until each live intrinsic in the expanded corpus is classified: "
    "llvm.vector.reduce.fadd currently reaches three packaged modules, but a "
    "metallib alone does not prove successful driver pipeline creation"},
+
+  {"divergent-barrier",    RuleAction::Fail,   "semantic",
+   "air.wg.barrier whose execution is control-dependent on an AIR thread, "
+   "lane, or simdgroup identity. A workgroup barrier is one dynamic rendezvous "
+   "for the whole threadgroup; selecting or skipping it per thread can silently "
+   "expose partially written threadgroup memory"},
 
   // --- measured here, but still finding false positives: log only ----------
   {"generic-deref",        RuleAction::Log,    "measured",
@@ -237,17 +243,18 @@ std::once_flag ConfigOnce;
 
 RuleAction parseAction(llvm::StringRef v, bool &ok) {
   ok = true;
-  return llvm::StringSwitch<RuleAction>(v.lower())
-      .Case("permit", RuleAction::Permit)
-      .Case("off", RuleAction::Permit)
-      .Case("no", RuleAction::Permit)
-      .Case("log", RuleAction::Log)
-      .Case("warn", RuleAction::Log)
-      .Case("warning", RuleAction::Log)
-      .Case("fail", RuleAction::Fail)
-      .Case("error", RuleAction::Fail)
-      .Case("err", RuleAction::Fail)
-      .Default((ok = false, RuleAction::Log));
+  v = v.trim();
+  if (v.equals_insensitive("permit") || v.equals_insensitive("off") ||
+      v.equals_insensitive("no"))
+    return RuleAction::Permit;
+  if (v.equals_insensitive("log") || v.equals_insensitive("warn") ||
+      v.equals_insensitive("warning"))
+    return RuleAction::Log;
+  if (v.equals_insensitive("fail") || v.equals_insensitive("error") ||
+      v.equals_insensitive("err"))
+    return RuleAction::Fail;
+  ok = false;
+  return RuleAction::Log;
 }
 
 llvm::StringRef actionName(RuleAction a) {
@@ -446,6 +453,155 @@ std::string typeStr(llvm::Type *t) {
   return s;
 }
 
+/// True for AIR builtin kernel parameters that can differ among threads in one
+/// workgroup. Threadgroup position and group/grid sizes are deliberately not
+/// included: they are uniform over the rendezvous domain of air.wg.barrier.
+bool isWorkgroupVaryingBuiltin(llvm::StringRef tag) {
+  return tag == "air.thread_position_in_grid" ||
+         tag == "air.thread_position_in_threadgroup" ||
+         tag == "air.thread_index_in_simdgroup" ||
+         tag == "air.simdgroup_index_in_threadgroup" ||
+         tag == "air.thread_index_in_threadgroup";
+}
+
+/// Read the AIR kernel argument table and collect the parameters whose values
+/// vary inside a workgroup. At the final legality gate the thread builtins are
+/// no longer calls: legalizeKernel has made them ordinary parameters and this
+/// metadata is the authoritative description of their semantics.
+void collectWorkgroupVaryingArguments(
+    llvm::Module &m, const llvm::Function &fn,
+    llvm::SmallPtrSetImpl<const llvm::Value *> &out) {
+  const llvm::NamedMDNode *kernels = m.getNamedMetadata("air.kernel");
+  if (!kernels)
+    return;
+  for (const llvm::MDNode *kernel : kernels->operands()) {
+    if (!kernel || kernel->getNumOperands() < 3)
+      continue;
+    const auto *fnMD =
+        llvm::dyn_cast_or_null<llvm::ValueAsMetadata>(kernel->getOperand(0));
+    if (!fnMD || fnMD->getValue() != &fn)
+      continue;
+    const auto *args =
+        llvm::dyn_cast_or_null<llvm::MDNode>(kernel->getOperand(2));
+    if (!args)
+      continue;
+    for (const llvm::MDOperand &argOperand : args->operands()) {
+      const auto *argMD =
+          llvm::dyn_cast_or_null<llvm::MDNode>(argOperand.get());
+      if (!argMD || argMD->getNumOperands() < 2)
+        continue;
+      const auto *indexMD = llvm::dyn_cast_or_null<llvm::ConstantAsMetadata>(
+          argMD->getOperand(0));
+      const auto *tagMD =
+          llvm::dyn_cast_or_null<llvm::MDString>(argMD->getOperand(1));
+      const auto *index =
+          indexMD ? llvm::dyn_cast<llvm::ConstantInt>(indexMD->getValue())
+                  : nullptr;
+      if (!index || !tagMD || !isWorkgroupVaryingBuiltin(tagMD->getString()))
+        continue;
+      uint64_t argNo = index->getZExtValue();
+      if (argNo < fn.arg_size())
+        out.insert(fn.getArg(static_cast<unsigned>(argNo)));
+    }
+  }
+}
+
+/// Does `value` have an SSA data-dependence on a per-thread AIR builtin?
+///
+/// This intentionally follows all operands, including pointer operands of
+/// loads and arguments to calls. The final AIR pipeline inlines internal
+/// helpers and promotes ordinary scalar temporaries, so the generated
+/// branch conditions retain this dependence in SSA. It does not invent a
+/// whole-program memory-dependence analysis: a future lowering that spills a
+/// thread id through unknown memory must preserve uniformity explicitly or
+/// extend this verifier with MemorySSA.
+bool dependsOnWorkgroupIdentity(
+    const llvm::Value *value,
+    const llvm::SmallPtrSetImpl<const llvm::Value *> &sources,
+    llvm::SmallPtrSetImpl<const llvm::Value *> &seen) {
+  if (sources.contains(value))
+    return true;
+  if (!seen.insert(value).second || llvm::isa<llvm::Constant>(value))
+    return false;
+  const auto *user = llvm::dyn_cast<llvm::User>(value);
+  if (!user)
+    return false;
+  for (const llvm::Value *operand : user->operands())
+    if (dependsOnWorkgroupIdentity(operand, sources, seen))
+      return true;
+  return false;
+}
+
+const llvm::Value *conditionalTerminatorValue(const llvm::Instruction &term) {
+  if (const auto *branch = llvm::dyn_cast<llvm::CondBrInst>(&term))
+    return branch->getCondition();
+  if (const auto *sw = llvm::dyn_cast<llvm::SwitchInst>(&term))
+    return sw->getCondition();
+  if (const auto *indirect = llvm::dyn_cast<llvm::IndirectBrInst>(&term))
+    return indirect->getAddress();
+  return nullptr;
+}
+
+bool isWorkgroupBarrier(const llvm::CallBase &call) {
+  const llvm::Function *callee = call.getCalledFunction();
+  if (!callee)
+    return false;
+  llvm::StringRef name = callee->getName();
+  return name.take_front(name.find('$')) == "air.wg.barrier";
+}
+
+std::string blockLabel(const llvm::BasicBlock &bb) {
+  return bb.hasName() ? ("%" + bb.getName()).str() : "<unnamed block>";
+}
+
+/// Report a barrier only when a thread-varying conditional dominates it and
+/// the barrier does not postdominate that conditional. The postdominator test
+/// is the important half: lanes may take different paths so long as those
+/// paths reconverge before all lanes execute the same barrier instance.
+void checkDivergentWorkgroupBarriers(
+    llvm::Module &m, llvm::Function &fn, const Rule &rule,
+    llvm::function_ref<void(const Rule *, const llvm::Twine &,
+                            const llvm::Function *)>
+        report) {
+  llvm::SmallPtrSet<const llvm::Value *, 8> sources;
+  collectWorkgroupVaryingArguments(m, fn, sources);
+  if (sources.empty())
+    return;
+
+  llvm::SmallVector<const llvm::BasicBlock *, 8> divergentControls;
+  for (const llvm::BasicBlock &bb : fn) {
+    const llvm::Value *condition =
+        conditionalTerminatorValue(*bb.getTerminator());
+    if (!condition)
+      continue;
+    llvm::SmallPtrSet<const llvm::Value *, 32> seen;
+    if (dependsOnWorkgroupIdentity(condition, sources, seen))
+      divergentControls.push_back(&bb);
+  }
+  if (divergentControls.empty())
+    return;
+
+  llvm::DominatorTree dominators(fn);
+  llvm::PostDominatorTree postDominators(fn);
+  for (llvm::BasicBlock &bb : fn)
+    for (llvm::Instruction &inst : bb) {
+      const auto *call = llvm::dyn_cast<llvm::CallBase>(&inst);
+      if (!call || !isWorkgroupBarrier(*call))
+        continue;
+      for (const llvm::BasicBlock *control : divergentControls) {
+        if (control == &bb || !dominators.dominates(control, &bb) ||
+            postDominators.dominates(&bb, control))
+          continue;
+        report(&rule,
+               "workgroup barrier in " + blockLabel(bb) +
+                   " is control-dependent on thread-varying conditional in " +
+                   blockLabel(*control),
+               &fn);
+        break; // one precise diagnostic per barrier is enough
+      }
+    }
+}
+
 } // namespace
 
 void printRuleTable();
@@ -597,6 +753,9 @@ std::vector<Finding> checkLegality(llvm::Module &m) {
               report(r, name + " with no NaN-propagation select", &fn);
         }
       }
+
+    if (const Rule *r = enabled("divergent-barrier"))
+      checkDivergentWorkgroupBarriers(m, fn, *r, report);
   }
   return out;
 }
@@ -652,12 +811,9 @@ void doConfigureXforms() {
   for (llvm::StringRef p : parts) {
     auto [name, val] = p.trim().split('=');
     name = name.trim();
-    bool on = llvm::StringSwitch<bool>(val.trim().lower())
-                  .Case("on", true)
-                  .Case("yes", true)
-                  .Case("true", true)
-                  .Case("1", true)
-                  .Default(false);
+    val = val.trim();
+    bool on = val.equals_insensitive("on") || val.equals_insensitive("yes") ||
+              val.equals_insensitive("true") || val == "1";
     if (name.equals_insensitive("all")) {
       for (Transform &t : Transforms)
         t.enabled = on;
