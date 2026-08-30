@@ -197,3 +197,6 @@ wheels/
 
 # personal signing identity and notary profile (see .example)
 tools/signing.local.sh
+
+# Our cache of built toolchain components (large binaries, not source).
+.components/

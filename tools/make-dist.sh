@@ -13,6 +13,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 B="$(readlink bazel-bin || echo bazel-bin)"
+# Our own cache of built components, so a release does not depend on bazel
+# having kept its scratch tree. See tools/components.sh.
+. "$ROOT/tools/components.sh"
+HEAD_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 # Where the distribution goes. Overridable, and that is not a convenience:
 # rewriting dist/CocoaMojo pulls the binaries and the stdlib out from under a
 # running Roast, which is a genuinely unpleasant thing to do to someone who is
@@ -33,9 +37,19 @@ cp -f "$ROOT/tools/cocoamojo" "$D/bin/cocoamojo"; chmod +x "$D/bin/cocoamojo"
 
 # The language server, for editors. It speaks LSP on stdin/stdout and shares
 # libLLVM.dylib with the compiler rather than carrying a second copy.
-if [ -f "$B/KGEN/tools/mojo-lsp-server/mojo-lsp-server" ]; then
-  cp -f "$B/KGEN/tools/mojo-lsp-server/mojo-lsp-server" "$D/bin/"
+LSP_B="$B/KGEN/tools/mojo-lsp-server/mojo-lsp-server"
+if [ -f "$LSP_B" ]; then
+  cp -f "$LSP_B" "$D/bin/"
+  components_store lsp "$HEAD_COMMIT" "$LSP_B:bin" \
+    || echo "   (could not write the component cache)"
   echo "   mojo-lsp-server"
+elif components_have lsp && ! components_stale lsp KGEN; then
+  components_restore lsp "$D" \
+    && echo "   mojo-lsp-server (cached, built $(components_built lsp))" \
+    || echo "   no mojo-lsp-server (cache unreadable)"
+elif components_have lsp; then
+  echo "   no mojo-lsp-server: the cached one is from $(components_commit lsp)"
+  echo "   and KGEN has changed since -- build //KGEN/tools/mojo-lsp-server:mojo-lsp-server"
 else
   echo "   no mojo-lsp-server (build //KGEN/tools/mojo-lsp-server:mojo-lsp-server)"
 fi
@@ -61,17 +75,43 @@ if [ "${NO_DEBUGGER:-0}" = 1 ]; then
   rm -f "$D/bin/lldb" "$D/bin/lldb-dap" "$D/lib/libMojoLLDB.dylib" \
         "$D/lib/liblldb24.0.0git.dylib" "$D/lib/lldb-argdumper"
 else
+  have_built=1
   for f in "$LLDB_B/lldb-dap" "$LLDB_B/lldb" "$LLDB_B/liblldb24.0.0git.dylib" \
            "$LLDB_B/lldb-argdumper" "$B/KGEN/libMojoLLDB.dylib"; do
-    [ -f "$f" ] || { echo "   MISSING: $f"; \
-      echo "   build //KGEN:MojoLLDB @llvm-project//lldb:{lldb,lldb-dap,lldb-argdumper}"; \
-      echo "   (refusing to leave a stale debugger in $D; NO_DEBUGGER=1 to skip)"; \
-      exit 1; }
+    [ -f "$f" ] || have_built=0
   done
-  cp -f "$LLDB_B/lldb-dap" "$LLDB_B/lldb" "$D/bin/"
-  cp -f "$LLDB_B/liblldb24.0.0git.dylib" "$D/lib/"
-  cp -f "$LLDB_B/lldb-argdumper" "$D/lib/"
-  cp -f "$B/KGEN/libMojoLLDB.dylib" "$D/lib/"
+
+  if [ "$have_built" = 1 ]; then
+    cp -f "$LLDB_B/lldb-dap" "$LLDB_B/lldb" "$D/bin/"
+    cp -f "$LLDB_B/liblldb24.0.0git.dylib" "$D/lib/"
+    cp -f "$LLDB_B/lldb-argdumper" "$D/lib/"
+    cp -f "$B/KGEN/libMojoLLDB.dylib" "$D/lib/"
+    # Keep a copy, so the next release does not depend on bazel having kept
+    # one. KGEN and bazel/ are what feed these: the plugin is built against
+    # compiler internals, and bazel/ is where the llvm revision is pinned.
+    components_store debugger "$HEAD_COMMIT" \
+      "$LLDB_B/lldb-dap:bin" "$LLDB_B/lldb:bin" \
+      "$LLDB_B/liblldb24.0.0git.dylib:lib" "$LLDB_B/lldb-argdumper:lib" \
+      "$B/KGEN/libMojoLLDB.dylib:lib" \
+      || echo "   (could not write the component cache)"
+  elif components_have debugger && ! components_stale debugger KGEN bazel; then
+    # Not built, but nothing that feeds it has changed since it was. A
+    # component that is dynamically loaded and byte-identical to the one that
+    # would be produced is the same component.
+    components_restore debugger "$D" \
+      || { echo "   MISSING: the component cache is unreadable"; exit 1; }
+    echo "   from the component cache, built $(components_built debugger)"
+    echo "   at $(components_commit debugger); KGEN and bazel/ unchanged since"
+  else
+    echo "   MISSING: $LLDB_B/lldb-dap and friends are not built"
+    if components_have debugger; then
+      echo "   the cached debugger is from $(components_commit debugger), and"
+      echo "   KGEN or bazel/ has changed since -- it would be a stale plugin"
+    fi
+    echo "   build //KGEN:MojoLLDB @llvm-project//lldb:{lldb,lldb-dap,lldb-argdumper}"
+    echo "   (refusing to leave a stale debugger in $D; NO_DEBUGGER=1 to skip)"
+    exit 1
+  fi
   # Prove what landed, so a stale-artifact claim can be checked, not asserted.
   for f in "$D/bin/lldb-dap" "$D/bin/lldb" "$D/lib/libMojoLLDB.dylib"; do
     printf "   %s  %s\n" "$(shasum -a 256 "$f" | cut -c1-12)" "$(basename "$f")"
