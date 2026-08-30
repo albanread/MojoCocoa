@@ -313,6 +313,11 @@ struct AGMetalFunc {
   id pipeline = nullptr; // id<MTLComputePipelineState>
   std::string name;
   int32_t maxDynamicSharedBytes = -1;
+  /// Static threadgroup storage reported by the compiled pipeline. Metal's
+  /// dispatch validator applies the device limit to this plus any dynamic
+  /// allocation supplied at launch, so the runtime must do the same before it
+  /// reaches an API-validation assertion.
+  uint64_t staticThreadgroupBytes = 0;
   std::vector<AGMetalArgSlot> argSlots; // indexed by buffer index
   /// True when this came from an MTLB container, i.e. a metallib THIS
   /// compiler produced. False for MSL source compiled at load time.
@@ -1106,6 +1111,8 @@ const char *AppleGPUMetal_loadFunction(AGMetalFunc **out, AGMetalCtx *ctx,
   fn->name = functionName;
   fn->generated = generated;
   fn->maxDynamicSharedBytes = maxDynamicSharedBytes;
+  fn->staticThreadgroupBytes =
+      msg<unsigned long>(pipeline, "staticThreadgroupMemoryLength");
 
   // Record the contract. Reflection is best-effort: if it is unavailable the
   // slots stay `known == false` and the launch path falls back to the old
@@ -1160,6 +1167,13 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   const bool async = asyncLaunchEnabled();
   const bool batching = async && batchedLaunchEnabled();
 
+  auto flushOpenBatchForLaunchError = [&] {
+    if (!batching)
+      return;
+    std::lock_guard<std::mutex> lock(ctx->mu);
+    commitOpenBatchLocked(ctx);
+  };
+
   // Metal can silently no-op a dispatch whose threadgroup is too large for
   // the pipeline (SDL #15241); validate against the pipeline's own limit and
   // fail loudly instead.
@@ -1168,15 +1182,37 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   unsigned long requested =
       static_cast<unsigned long>(block[0]) * block[1] * block[2];
   if (maxThreads && requested > maxThreads) {
-    if (batching) {
-      std::lock_guard<std::mutex> lock(ctx->mu);
-      commitOpenBatchLocked(ctx);
-    }
+    flushOpenBatchForLaunchError();
     return agmErrorf("AppleGPURT[metal]: threadgroup %ux%ux%u = %lu threads "
                      "exceeds this pipeline's maxTotalThreadsPerThreadgroup "
                      "(%lu) for '%s'",
                      block[0], block[1], block[2], requested, maxThreads,
                      fn->name.c_str());
+  }
+
+  if (fn->maxDynamicSharedBytes >= 0 &&
+      static_cast<uint64_t>(sharedMemBytes) >
+          static_cast<uint64_t>(fn->maxDynamicSharedBytes)) {
+    flushOpenBatchForLaunchError();
+    return agmErrorf(
+        "AppleGPURT[metal]: dynamic threadgroup memory %u bytes exceeds "
+        "the compiled maximum %d for '%s'",
+        sharedMemBytes, fn->maxDynamicSharedBytes, fn->name.c_str());
+  }
+
+  const uint64_t maxThreadgroupBytes =
+      msg<unsigned long>(ctx->device, "maxThreadgroupMemoryLength");
+  const uint64_t totalThreadgroupBytes =
+      fn->staticThreadgroupBytes + static_cast<uint64_t>(sharedMemBytes);
+  if (maxThreadgroupBytes && totalThreadgroupBytes > maxThreadgroupBytes) {
+    flushOpenBatchForLaunchError();
+    return agmErrorf(
+        "AppleGPURT[metal]: threadgroup memory for '%s' is %llu bytes "
+        "(%llu static + %u dynamic), exceeding this device's %llu-byte "
+        "limit",
+        fn->name.c_str(), (unsigned long long)totalThreadgroupBytes,
+        (unsigned long long)fn->staticThreadgroupBytes, sharedMemBytes,
+        (unsigned long long)maxThreadgroupBytes);
   }
 
   std::unique_lock<std::mutex> batchLock(ctx->mu, std::defer_lock);
@@ -1238,11 +1274,12 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   if (trace) {
     fprintf(stderr,
             "[applegpu] launch '%s' grid=%ux%ux%u block=%ux%ux%u smem=%u "
-            "argc=%u flags=%s batch=%s\n",
+            "argc=%u flags=%s batch=%s static-smem=%llu\n",
             fn->name.c_str(), grid[0], grid[1], grid[2], block[0], block[1],
             block[2], sharedMemBytes, argc,
             argIsDevicePtr ? "explicit" : "heuristic",
-            batching ? "open" : "off");
+            batching ? "open" : "off",
+            (unsigned long long)fn->staticThreadgroupBytes);
   }
 
   for (uint32_t i = 0; i < argc; i++) {

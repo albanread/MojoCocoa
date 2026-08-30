@@ -193,6 +193,21 @@ int main(void) {
   AsyncRT_DeviceContext_strfree(expectedError);
   CHECK(AsyncRT_DeviceContext_synchronize(ctx));
 
+  // Metal API validation aborts the process when static plus dynamic
+  // threadgroup storage exceeds the device limit. Reject it before encoding,
+  // and make sure valid work queued immediately before the error is flushed.
+  CHECK(AsyncRT_DeviceContext_enqueueFunctionDirect(
+      ctx, fn, 1, 1, 1, 1, 1, 1, 0, NULL, 0, packed, 4, NULL));
+  expectedError = AsyncRT_DeviceContext_enqueueFunctionDirect(
+      ctx, fn, 1, 1, 1, 1, 1, 1, 32769, NULL, 0, packed, 4, NULL);
+  if (!expectedError) {
+    fprintf(stderr, "SMOKE FAIL: oversized threadgroup memory was accepted\n");
+    return 1;
+  }
+  printf("oversized threadgroup memory: rejected\n");
+  AsyncRT_DeviceContext_strfree(expectedError);
+  CHECK(AsyncRT_DeviceContext_synchronize(ctx));
+
   // memset path too. Counted separately: folding this into `bad` and then
   // announcing "verified zero" regardless of the count meant the gate
   // reported a pass it had not established.
