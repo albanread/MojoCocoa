@@ -8,17 +8,8 @@ _FILECHECK_TESTS = [
     "test_stencil2d.mojo",
 ]
 
-_APPLE_GPU_INCOMPATIBLE = select({
-    "//:apple_gpu": ["@platforms//:incompatible"],
-    "//conditions:default": [],
-})
-
 _EXTRA_CONSTRAINTS = {
     "test_tiled_matmul_backtoback.mojo": ["//:nvidia_gpu"],  # FIXME: KERN-1377
-    "test_matmul_int.mojo": _APPLE_GPU_INCOMPATIBLE,  # FIXME: MOCO-2397
-    "test_double_buffer_gemm.mojo": _APPLE_GPU_INCOMPATIBLE,  # FIXME: MOCO-2415
-    # Metal metallib compile failure on this NVIDIA/AMD-tuned warp-tiling GEMM,
-    # pre-existing on main (same class as MOCO-2397/2415).
 }
 
 _TEST_SIZE = {
@@ -62,9 +53,7 @@ _GPU_MEMORY = {
         exec_properties = {
             "test.resources:gpu-memory": _GPU_MEMORY.get(src, "2"),
         },
-        tags = ["gpu"] + (
-            ["manual"] if src == "test_scatterND.mojo" else []
-        ),
+        tags = ["gpu"],
         target_compatible_with = ["//:has_gpu"] + _EXTRA_CONSTRAINTS.get(src, []),
         deps = [
             "//max:internal_utils",
