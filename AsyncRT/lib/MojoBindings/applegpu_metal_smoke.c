@@ -125,18 +125,22 @@ int main(void) {
     const bool *isDev;
   } metalArgs = {addrs, sizes, isDev};
   void *packed[1] = {&metalArgs};
-  CHECK(AsyncRT_DeviceContext_enqueueFunctionDirect(
-      ctx, fn, (N + 255) / 256, 1, 1, 256, 1, 1, 0, NULL, 0, packed, 4, NULL));
-  CHECK(AsyncRT_DeviceContext_synchronize(ctx));
+  // Three dependent launches without an intervening synchronize exercise
+  // queue ordering. DtoH below is the observation boundary and must drain all
+  // three before copying from unified memory.
+  for (int launch = 0; launch < 3; ++launch)
+    CHECK(AsyncRT_DeviceContext_enqueueFunctionDirect(
+        ctx, fn, (N + 255) / 256, 1, 1, 256, 1, 1, 0, NULL, 0, packed, 4,
+        NULL));
 
   CHECK(AsyncRT_DeviceContext_DtoH_async(ctx, hostY, y));
   size_t bad = 0;
   for (int i = 0; i < N; i++) {
-    float want = 3.0f * (float)i + 2.0f * (float)i;
+    float want = 11.0f * (float)i; // initial 2x + three additions of 3x
     if (hostY[i] != want && bad++ < 3)
       fprintf(stderr, "  wrong at %d: got %f want %f\n", i, hostY[i], want);
   }
-  printf("saxpy: %zu/%d wrong\n", bad, N);
+  printf("queued saxpy x3: %zu/%d wrong\n", bad, N);
 
   // memset path too. Counted separately: folding this into `bad` and then
   // announcing "verified zero" regardless of the count meant the gate

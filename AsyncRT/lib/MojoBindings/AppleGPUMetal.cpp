@@ -22,8 +22,8 @@
 // storageModePrivate mode (worthwhile for GPU-only buffers, which Apple can
 // keep in a compressed layout) can switch it back per-buffer.
 //
-// Synchronous under the async names for bring-up, same completion model the
-// CPU backend uses.
+// Launches queue by default and drain at synchronization or host-observation
+// boundaries. APPLEGPU_SYNC_LAUNCH=1 restores the synchronous bring-up mode.
 //
 // Device pointers handed to Mojo are MTLBuffer gpuAddress values. A global
 // interval map resolves any device address back to its owning MTLBuffer and
@@ -39,6 +39,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <strings.h>
 
 #include <IOKit/IOKitLib.h>
 #include <vector>
@@ -73,14 +74,24 @@ void objcRelease(id obj) {
     msg<void>(obj, "release");
 }
 
+bool environmentFlag(const char *name, bool defaultValue) {
+  const char *v = ::getenv(name);
+  if (!v)
+    return defaultValue;
+  return *v && v[0] != '0' && ::strcasecmp(v, "off") != 0 &&
+         ::strcasecmp(v, "false") != 0 && ::strcasecmp(v, "no") != 0;
+}
+
 /// Whether a dispatch may return before the GPU has finished it.
 ///
-/// Off by default: every read path in this file has to drain first, and a
-/// missed drain is a data race that looks like flaky numerics. Read once.
+/// Async is the normal AsyncRT contract. `APPLEGPU_SYNC_LAUNCH=1` restores the
+/// bring-up behaviour for debugging, while the old `APPLEGPU_ASYNC_LAUNCH`
+/// switch remains an explicit compatibility override. Read once.
 bool asyncLaunchEnabled() {
   static const bool on = [] {
-    const char *v = ::getenv("APPLEGPU_ASYNC_LAUNCH");
-    return v && *v && v[0] != '0' && ::strcmp(v, "off") != 0;
+    if (environmentFlag("APPLEGPU_SYNC_LAUNCH", false))
+      return false;
+    return environmentFlag("APPLEGPU_ASYNC_LAUNCH", true);
   }();
   return on;
 }
