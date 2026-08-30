@@ -67,8 +67,9 @@ void configureFromEnv();
 /// Called automatically when APPLEGPU_AIR_RULES contains `list`.
 void printRuleTable();
 
-/// Enumerate declaration-only symbols the Apple reader would have to resolve
-/// and report the ones not on the measured allowlist. Separate from
+/// Enumerate declaration-only symbols the Apple reader would have to resolve,
+/// validate `air.*` names and function types against the builtin registry, and
+/// report non-AIR symbols not on the measured allowlist. Separate from
 /// checkLegality because it must run on the FINAL module, immediately before
 /// bitcode serialization: the downgrade pipeline and PointerRewriter both
 /// strand declarations after the earlier sweeps have run.

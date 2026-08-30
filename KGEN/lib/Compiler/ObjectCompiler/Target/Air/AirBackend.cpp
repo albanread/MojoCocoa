@@ -2137,10 +2137,11 @@ public:
       }
       if (!fatal.empty())
         return Error(
-            "AIR module declares symbols the Metal reader cannot resolve. "
+            "AIR module declares invalid or unresolved runtime symbols. "
             "These pass metallib and fail at pipeline creation with no "
-            "diagnostic, so they are rejected here instead. Set "
-            "APPLEGPU_AIR_RULES=unresolved-external=log to downgrade.\n" +
+            "diagnostic, so proven failures are rejected here instead. Set "
+            "APPLEGPU_AIR_RULES=unknown-air-symbol=log or "
+            "unresolved-external=log to downgrade the relevant rule.\n" +
             fatal);
     }
 

@@ -1,6 +1,7 @@
 //===- AirLegality.cpp - Data-driven legality firewall for AIR -----------===//
 
 #include "AirLegality.h"
+#include "Target/Air/AirBuiltinRegistry.h"
 
 #include <cstdlib>
 #include <mutex>
@@ -65,6 +66,16 @@ Rule Rules[] = {
    "vector llvm.fma -- Apple spells it air.fma.<ty>; scalar llvm.fma.f32 is "
    "accepted"},
 
+  {"unknown-air-symbol",   RuleAction::Fail,   "measured",
+   "air.* declaration whose name or LLVM function type is not in the AIR "
+   "runtime contract. A misspelled name or wrong signature survives metallib "
+   "and kills the compiler service at pipeline creation"},
+  {"unresolved-external",  RuleAction::Log,    "measured",
+   "declaration-only symbol that Apple's reader may not resolve. Keep this at "
+   "LOG until each live intrinsic in the expanded corpus is classified: "
+   "llvm.vector.reduce.fadd currently reaches three packaged modules, but a "
+   "metallib alone does not prove successful driver pipeline creation"},
+
   // --- measured here, but still finding false positives: log only ----------
   {"generic-deref",        RuleAction::Log,    "measured",
    "load/store/atomic through an addrspace(0) pointer that is not "
@@ -73,13 +84,6 @@ Rule Rules[] = {
   {"addrspacecast",        RuleAction::Log,    "measured",
    "addrspacecast -- Apple emits none; the idiom is ptrtoint+inttoptr. A "
    "same-space cast is also invalid IR outright"},
-  {"unresolved-external",  RuleAction::Log,    "measured",
-   "declaration-only symbol that Apple's reader has to resolve and probably "
-   "cannot. An unresolved external survives metallib and then kills the "
-   "compiler service at pipeline creation with "
-   "XPC_ERROR_CONNECTION_INTERRUPTED, naming nothing -- measured on "
-   "llvm.stepvector and again on llvm.vector.interleave2. The allowlist below "
-   "is measured across 188 distinct captured modules, not guessed"},
   {"dead-intrinsic-decl",  RuleAction::Log,    "measured",
    "llvm.* declaration nothing calls -- the reader resolves every declared "
    "symbol, so a dead declare is as fatal as a live call and far harder to "
@@ -863,12 +867,273 @@ namespace M::KGEN::Air {
 
 namespace {
 
+std::optional<std::string> payloadSuffixForType(llvm::Type *ty) {
+  unsigned vectorWidth = 1;
+  if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(ty)) {
+    vectorWidth = vt->getNumElements();
+    ty = vt->getElementType();
+  } else if (ty->isVectorTy()) {
+    return std::nullopt;
+  }
+  if (ty->isHalfTy())
+    return payloadTypeSuffix(/*isFloating=*/true, 16, vectorWidth);
+  if (ty->isFloatTy())
+    return payloadTypeSuffix(/*isFloating=*/true, 32, vectorWidth);
+  if (auto *it = llvm::dyn_cast<llvm::IntegerType>(ty))
+    return payloadTypeSuffix(/*isFloating=*/false, it->getBitWidth(),
+                             vectorWidth);
+  return std::nullopt;
+}
+
+bool isFloatingPayload(llvm::Type *ty) {
+  if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(ty))
+    ty = vt->getElementType();
+  return ty->isHalfTy() || ty->isFloatTy();
+}
+
+std::optional<std::string> overloadTypeName(llvm::Type *ty) {
+  if (ty->isFloatTy())
+    return std::string("f32");
+  if (ty->isHalfTy())
+    return std::string("f16");
+  if (ty->isBFloatTy())
+    return std::string("bf16");
+  if (auto *it = llvm::dyn_cast<llvm::IntegerType>(ty))
+    return "i" + std::to_string(it->getBitWidth());
+  if (auto *vt = llvm::dyn_cast<llvm::FixedVectorType>(ty))
+    if (auto elem = overloadTypeName(vt->getElementType()))
+      return "v" + std::to_string(vt->getNumElements()) + *elem;
+  return std::nullopt;
+}
+
+bool validateBuiltinFamily(const llvm::Function &fn,
+                           const BuiltinFamily &family,
+                           llvm::StringRef visibleStem, std::string &reason) {
+  llvm::FunctionType *type = fn.getFunctionType();
+  if (type->isVarArg()) {
+    reason = "AIR runtime declarations cannot be variadic";
+    return false;
+  }
+
+  llvm::StringRef suffix = fn.getName().drop_front(visibleStem.size());
+  auto failSignature = [&]() {
+    reason = ("signature does not match family '" + family.stem + "'").str();
+    return false;
+  };
+
+  if (!family.carriesTypeSuffix) {
+    if (!suffix.empty()) {
+      reason = "unexpected suffix on non-overloaded AIR builtin";
+      return false;
+    }
+    switch (family.signature) {
+    case BuiltinSignature::Barrier:
+      if (!type->getReturnType()->isVoidTy() || type->getNumParams() != 2 ||
+          !type->getParamType(0)->isIntegerTy(32) ||
+          !type->getParamType(1)->isIntegerTy(32))
+        return failSignature();
+      return true;
+    case BuiltinSignature::Ballot:
+      if (!type->getReturnType()->isIntegerTy(32) ||
+          type->getNumParams() != 1 || !type->getParamType(0)->isIntegerTy(1))
+        return failSignature();
+      return true;
+    default:
+      return failSignature();
+    }
+  }
+
+  if (!suffix.starts_with(".")) {
+    reason = "missing AIR payload type suffix";
+    return false;
+  }
+  if (type->getNumParams() == 0) {
+    reason = "overloaded AIR builtin has no payload operand";
+    return false;
+  }
+  llvm::Type *payload = type->getParamType(0);
+  auto expected = payloadSuffixForType(payload);
+  if (!expected) {
+    reason = "payload type has no legal AIR overload suffix";
+    return false;
+  }
+  bool suffixMatches = suffix == *expected;
+  if (!suffixMatches && llvm::StringRef(*expected).starts_with(".u.")) {
+    std::string signedSuffix =
+        ".s." + llvm::StringRef(*expected).drop_front(3).str();
+    suffixMatches = suffix == signedSuffix;
+  }
+  if (!suffixMatches) {
+    reason = ("name suffix '" + suffix + "' does not describe payload type; " +
+              "expected '" + *expected + "'")
+                 .str();
+    return false;
+  }
+  if (family.payloadDomain == PayloadDomain::Floating &&
+      !isFloatingPayload(payload)) {
+    reason = "integer payload used with a floating-point AIR family";
+    return false;
+  }
+  if (type->getReturnType() != payload)
+    return failSignature();
+
+  unsigned expectedParams = 0;
+  switch (family.signature) {
+  case BuiltinSignature::Unary:
+    expectedParams = 1;
+    break;
+  case BuiltinSignature::Binary:
+    expectedParams = 2;
+    break;
+  case BuiltinSignature::Ternary:
+    expectedParams = 3;
+    break;
+  case BuiltinSignature::Shuffle:
+    if (type->getNumParams() != 2 || !type->getParamType(1)->isIntegerTy(16))
+      return failSignature();
+    return true;
+  default:
+    return failSignature();
+  }
+  if (type->getNumParams() != expectedParams)
+    return failSignature();
+  for (unsigned i = 0; i != expectedParams; ++i)
+    if (type->getParamType(i) != payload)
+      return failSignature();
+  return true;
+}
+
+bool validateConvert(const llvm::Function &fn, std::string &reason) {
+  llvm::StringRef rest = fn.getName();
+  if (!rest.consume_front("air.convert."))
+    return false;
+  llvm::FunctionType *type = fn.getFunctionType();
+  if (type->isVarArg() || type->getNumParams() != 1) {
+    reason = "air.convert must have exactly one operand";
+    return false;
+  }
+  llvm::SmallVector<llvm::StringRef, 4> parts;
+  rest.split(parts, '.', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+  if (parts.size() != 4) {
+    reason = "air.convert name must encode dst-kind.dst-type.src-kind.src-type";
+    return false;
+  }
+  auto dst = overloadTypeName(type->getReturnType());
+  auto src = overloadTypeName(type->getParamType(0));
+  if (!dst || !src || parts[1] != *dst || parts[3] != *src) {
+    reason = "air.convert name types do not match its LLVM function type";
+    return false;
+  }
+  auto kindMatches = [](llvm::StringRef kind, llvm::Type *ty) {
+    llvm::Type *scalar = ty->isVectorTy() ? ty->getScalarType() : ty;
+    if (scalar->isFloatingPointTy())
+      return kind == "f";
+    if (scalar->isIntegerTy())
+      return kind == "s" || kind == "u";
+    return false;
+  };
+  if (!kindMatches(parts[0], type->getReturnType()) ||
+      !kindMatches(parts[2], type->getParamType(0))) {
+    reason = "air.convert signedness/kind token does not match its LLVM type";
+    return false;
+  }
+  return true;
+}
+
+bool validateMatrixMMA(const llvm::Function &fn, std::string &reason) {
+  static constexpr llvm::StringLiteral stems[] = {
+      "air.simdgroup_matrix_8x8_multiply_accumulate",
+      "air.simdgroup_matrix_16x16x16_multiply_accumulate",
+      "air.simdgroup_matrix_16x16x16_widening_multiply_accumulate",
+  };
+  llvm::StringRef suffix;
+  bool matched = false;
+  for (llvm::StringRef stem : stems)
+    if (fn.getName().starts_with(stem) &&
+        fn.getName().drop_front(stem.size()).starts_with(".")) {
+      suffix = fn.getName().drop_front(stem.size() + 1);
+      matched = true;
+      break;
+    }
+  if (!matched)
+    return false;
+
+  llvm::FunctionType *type = fn.getFunctionType();
+  if (type->isVarArg()) {
+    reason = "simdgroup matrix declarations cannot be variadic";
+    return false;
+  }
+  llvm::SmallVector<llvm::StringRef, 8> parts;
+  suffix.split(parts, '.', /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+
+  unsigned flags = 0;
+  llvm::SmallVector<std::string, 5> expectedTypes;
+  auto result = overloadTypeName(type->getReturnType());
+  if (!result) {
+    reason = "simdgroup matrix result has no AIR overload spelling";
+    return false;
+  }
+  expectedTypes.push_back(*result);
+  for (llvm::Type *param : type->params()) {
+    if (param->isIntegerTy(1)) {
+      ++flags;
+      continue;
+    }
+    auto encoded = overloadTypeName(param);
+    if (!encoded) {
+      reason = "simdgroup matrix operand has no AIR overload spelling";
+      return false;
+    }
+    expectedTypes.push_back(*encoded);
+  }
+  if (parts.size() != flags + expectedTypes.size()) {
+    reason = "simdgroup matrix name has the wrong number of signature tokens";
+    return false;
+  }
+  for (unsigned i = 0; i != flags; ++i)
+    if (parts[i] != "f" && parts[i] != "t") {
+      reason = "simdgroup matrix transpose token must be f or t";
+      return false;
+    }
+  for (auto [index, expected] : llvm::enumerate(expectedTypes))
+    if (parts[flags + index] != expected) {
+      reason =
+          "simdgroup matrix name types do not match its LLVM function type";
+      return false;
+    }
+  return true;
+}
+
+bool validateAirRuntimeDeclaration(const llvm::Function &fn,
+                                   std::string &reason) {
+  for (const BuiltinFamily &family : builtinFamilies()) {
+    llvm::StringRef name = fn.getName();
+    if (name.starts_with(family.stem) &&
+        (name.size() == family.stem.size() || name[family.stem.size()] == '.'))
+      return validateBuiltinFamily(fn, family, family.stem, reason);
+
+    if (family.payloadDomain == PayloadDomain::Floating) {
+      std::string fastStem =
+          "air.fast_" + family.stem.drop_front(4).str();
+      if (name.starts_with(fastStem) &&
+          (name.size() == fastStem.size() || name[fastStem.size()] == '.'))
+        return validateBuiltinFamily(fn, family, fastStem, reason);
+    }
+  }
+  if (fn.getName().starts_with("air.convert."))
+    return validateConvert(fn, reason);
+  if (fn.getName().starts_with("air.simdgroup_matrix_"))
+    return validateMatrixMMA(fn, reason);
+  reason = "AIR runtime symbol is not registered";
+  return false;
+}
+
 /// `llvm.*` externals measured to reach AIR and be accepted.
 ///
 /// Taken from a census of 188 distinct captured modules across 13 tests, not
-/// from a guess about what ought to work. Anything absent fails the rule --
-/// which is the point: llvm.stepvector and llvm.vector.interleave2 both got
-/// this far and killed the Metal compiler service rather than being rejected.
+/// from a guess about what ought to work. Anything absent is reported by the
+/// rule: llvm.stepvector and llvm.vector.interleave2 both got this far and
+/// killed the Metal compiler service rather than being rejected.
 bool isAllowedExternal(const llvm::Function &fn) {
   llvm::StringRef n = fn.getName();
 
@@ -880,12 +1145,6 @@ bool isAllowedExternal(const llvm::Function &fn) {
   // getIntrinsicID() answers not_intrinsic. Any rule phrased as
   // "declaration + isIntrinsic()" will match them by accident.
   if (n.starts_with("llvm.agx3."))
-    return true;
-
-  // Apple provides the air.* runtime. Whether a given air.* name is one Apple
-  // actually defines is a different question, checked against golden samples
-  // elsewhere; it is not an unresolved-external problem.
-  if (n.starts_with("air."))
     return true;
 
   switch (fn.getIntrinsicID()) {
@@ -915,11 +1174,28 @@ bool isAllowedExternal(const llvm::Function &fn) {
 std::vector<Finding> checkExternals(llvm::Module &m) {
   configureFromEnv();
   std::vector<Finding> out;
-  const Rule *r = ruleFor("unresolved-external");
-  if (!r || r->action == RuleAction::Permit)
+  const Rule *airRule = ruleFor("unknown-air-symbol");
+  const Rule *externalRule = ruleFor("unresolved-external");
+  if ((!airRule || airRule->action == RuleAction::Permit) &&
+      (!externalRule || externalRule->action == RuleAction::Permit))
     return out;
   for (llvm::Function &fn : m) {
-    if (!fn.isDeclaration() || isAllowedExternal(fn))
+    if (!fn.isDeclaration())
+      continue;
+    if (fn.getName().starts_with("air.")) {
+      if (airRule && airRule->action != RuleAction::Permit) {
+        std::string reason;
+        if (!validateAirRuntimeDeclaration(fn, reason))
+          out.push_back({airRule->id,
+                         ("invalid AIR runtime declaration @" + fn.getName() +
+                          ": " + reason)
+                             .str(),
+                         airRule->action});
+      }
+      continue;
+    }
+    if (!externalRule || externalRule->action == RuleAction::Permit ||
+        isAllowedExternal(fn))
       continue;
     // Name a caller: the symbol alone rarely says which kernel to look at.
     std::string where;
@@ -931,15 +1207,18 @@ std::vector<Finding> checkExternals(llvm::Module &m) {
         }
     if (where.empty() && fn.use_empty())
       where = "  [no uses -- a dead declare is resolved too]";
-    out.push_back({r->id, ("unresolved external @" + fn.getName() + where).str(),
-                   r->action});
+    out.push_back({externalRule->id,
+                   ("unresolved external @" + fn.getName() + where).str(),
+                   externalRule->action});
   }
   return out;
 }
 
 void reportLegality(llvm::Module &m) {
   unsigned fails = 0;
-  for (const Finding &f : checkLegality(m)) {
+  std::vector<Finding> findings = checkLegality(m);
+  llvm::append_range(findings, checkExternals(m));
+  for (const Finding &f : findings) {
     llvm::errs() << (f.action == RuleAction::Fail ? "fail" : "log") << '\t'
                  << f.ruleId << '\t' << f.detail << '\n';
     fails += f.action == RuleAction::Fail;
