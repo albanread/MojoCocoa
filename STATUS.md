@@ -21,7 +21,7 @@ plan and should now be read as history rather than current status.
 | --- | --- | --- |
 | Cocoa compiler hook and `std.objc` | Working | `./spikes/run-cocoa-checks.sh`: 9 passed, 0 failed. |
 | Mojo/MAX → AIR → metallib | Working vertical slice | The source-built compiler emits metallibs accepted by the current Xcode toolchain. |
-| AppleGPURT pipeline and launch | Working vertical slice | Pipeline reflection, argument binding, coarse residency, and dispatch pass with Metal debug and shader validation enabled. Launch is synchronous by default; `APPLEGPU_ASYNC_LAUNCH=1` defers the wait to `synchronize()` and is worth +29% on a 1-chain FMA kernel (exactly upstream's rate) falling to +2.9% at 64 chains. Same corpus failure set under both. The 25 Aug review made deferred launch safe to leave on — command buffers tracked before any path can return, teardown drain, locking, first-error-wins — and a 35-dispatch-per-frame fluid workload (`spikes/fluid`) measures it at 5.1x (10.19 → 1.99 ms/step, variance collapsing from ~70% to ±0.2%). Still opt-in: the per-dispatch command buffer is not yet batched, which is where the remaining 13-17% at 2-8 chains lives. |
+| AppleGPURT pipeline and launch | Working vertical slice | Pipeline reflection, argument binding, coarse residency, and dispatch pass with Metal debug and shader validation enabled. Launch is asynchronous by default; `APPLEGPU_SYNC_LAUNCH=1` restores the bring-up mode and `APPLEGPU_ASYNC_LAUNCH=0` remains a compatibility opt-out. Command buffers are tracked before any path can return, host observation and teardown drain, state is locked, and the first deferred error wins. A fresh M4 Max rebuild measures 35-dispatch fluid steps at 1.06 ms default versus 3.70–3.90 ms synchronous with identical diagnostics; the original corpus measured 5.1x (10.19 → 1.99 ms/step). Per-dispatch command buffers are still unbatched. |
 | Numerical smoke | Passing | Rebuilt Mandelbrot: CPU 95.214 ms, GPU 0.849 ms, 100% exact on the latest verification run. Timing is a smoke observation, not a stable benchmark. |
 | Apple MMA | Passing on the 8x8 path only | `test_apple_mma_8x8`: 19 sub-tests PASS, 0 SKIP, after signature-specific declaration uniquing. `test_tensor_core_apple` also reports PASS but is **vacuous here** — all 18 sub-tests print `SKIP: requires Apple M5 + Metal 4`, and its FileCheck pattern `{{PASS|SKIP}}` accepts a skip. It is not evidence for this machine. |
 | AIR overload regression | Passing in current uncommitted worktree | New compile-only `test_air_overload_symbols`: 1/1 pass across mixed dtype signatures; its two kernels are separate `_compile_code` invocations, so a same-module multi-function pass test is still needed. |
@@ -124,9 +124,9 @@ These are separate work streams, not one GPU defect:
 - Captured pointers use `markAllResident()`, an `O(all live allocations)`
   correctness fallback until `air.indirect_buffer` metadata enables precise
   residency.
-- Asynchronous launch exists behind `APPLEGPU_ASYNC_LAUNCH=1` and is safe as
-  of 25 Aug (every read path drains, teardown drains, state is locked). Not
-  yet the default, and the per-dispatch command buffer is unbatched.
+- Asynchronous launch is the default. Every read path and teardown drain, state
+  is locked, and `APPLEGPU_SYNC_LAUNCH=1` provides the synchronous debug mode.
+  The per-dispatch command buffer is still unbatched.
 
 ### Numerical/runtime correctness
 
@@ -196,10 +196,11 @@ Cocoa here, COM on Windows — not whatever upstream adds later.
    capture-trait, KERN-2651 threadgroup memory over 32 KB, and the MHA XPC
    crash reduction.
 
-5. **Make asynchronous launch the default.** One full corpus soak with it on;
-   if the failure set matches sync (it has so far), flip the default and make
-   the env var the opt-out. The remaining 13-17% at 2-8 chains is the
-   unbatched per-dispatch command buffer, which becomes the next runtime item.
+5. **Batch queued dispatches.** Asynchronous launch is now the default after
+   matching the synchronous failure set and passing the runtime and fluid
+   checks. The remaining runtime gap is one Metal command buffer per dispatch;
+   encode compatible launches into a shared buffer, with explicit flush points
+   at synchronization, host observation, error boundaries, and backpressure.
 
 6. **Snapshot the oracle while it still is one.** The correctness comparisons
    against upstream's release depend on the two kernel libraries still

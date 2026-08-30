@@ -87,6 +87,38 @@ transform settings.
 The SRAM run validates the corrected oracle and existing runtime.  It does not
 yet qualify a distribution built from the new compiler commits.
 
+### Asynchronous dispatch is now the runtime default
+
+The runtime's already-implemented deferred launch path is now the default
+AsyncRT behavior. `APPLEGPU_SYNC_LAUNCH=1` restores one-wait-per-dispatch for
+debugging, and `APPLEGPU_ASYNC_LAUNCH=0` remains a compatibility override.
+The launch smoke now queues three dependent SAXPY kernels and relies on DtoH to
+drain them, directly checking queue order and the host-observation boundary.
+
+Measured with a freshly rebuilt 125-symbol runtime dylib on the M4 Max:
+
+- the 35-dispatch fluid solver produced identical dye, velocity, divergence,
+  and rendered-pixel diagnostics in both modes; warm steps were 1.06 ms by
+  default versus 3.70-3.90 ms synchronous, a 3.5x-3.7x improvement;
+- the checked FMA oracle's warm 32-dispatch samples improved from 12.44 to
+  8.64 ms at four chains, 15.10 to 11.04 ms at eight, and 22.20 to 16.61 ms
+  at sixteen, with identical checksums.
+
+This removes an implicit CPU-GPU round trip from the normal launch contract.
+It does not batch encoders: each dispatch still owns a Metal command buffer,
+which is the next bounded runtime optimization.
+
+### Wide-vector scalarization was not promoted
+
+`spikes/air_perf/fma_peak_bench.mojo` makes the LLVM scalarizer experiment
+repeatable. Float4 fragmentation (`ScalarizeMinBits=128`) and full scalarization
+(`=32`) produced no stable throughput improvement at widths 4, 8, or 16.
+Explicit width 32 reaches metallib successfully but terminates Apple's pipeline
+compiler connection on this M4 Max, with the scalarizer on or off. The pass is
+therefore still opt-in. The next compiler capability slice should reduce that
+PSO failure and split wide per-thread values before the failure-inducing form,
+not enable a late LLVM pass solely because the printed IR looks more scalar.
+
 ## Current infrastructure blocker
 
 The fresh-tree Bazel target
@@ -118,7 +150,16 @@ Metal runtime check.
 5. **Add a real driver acceptance gate.**  Compile a small representative
    kernel matrix through AIR, metallib, pipeline-state creation, and execution.
    This is where remaining unresolved LLVM intrinsics can be classified safely.
+6. **Batch command buffers after queued-launch soak.**  Reuse a command buffer
+   for compatible consecutive dispatches and flush it only at synchronization,
+   host observation, backpressure, or an error boundary. Preserve the
+   synchronous debug path and queued SAXPY ordering oracle.
+7. **Reduce the explicit-SIMD width-32 PSO failure.**  Keep the reduced FMA
+   source and emitted AIR together. Determine whether the failure is caused by
+   vector reconstruction, register pressure, or a specific instruction shape,
+   then lower wide per-thread values earlier than final LLVM scalarization.
 
-The immediate next implementation should now be item 1: make barrier semantics
-survive the shared optimiser, using the AIR verifier as the fail-closed oracle
-and sweeping the non-Apple GPU targets before enabling the change generally.
+For performance, the immediate next implementation is item 6, command-buffer
+batching. For compiler capability, it is item 7, the width-32 PSO reduction.
+Item 1 remains the next shared-optimizer correctness change and still requires
+the non-Apple GPU sweep before it is enabled generally.

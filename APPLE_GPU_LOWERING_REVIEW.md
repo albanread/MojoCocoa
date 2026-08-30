@@ -459,12 +459,13 @@ Specific adjustment:
 Exit criterion: each phase has one owner, one named artifact, and a diagnostic
 that preserves the original cause.
 
-### P2: replace synchronous bring-up semantics with AsyncRT semantics
+### P2: replace synchronous bring-up semantics with AsyncRT semantics — initial slice landed
 
-Every kernel launch commits a command buffer and calls `waitUntilCompleted`.
-This simplifies correctness work but removes overlap, makes the AsyncRT API
-synchronous in practice, and can hide lifetime/order bugs that will appear as
-soon as real queuing is enabled.
+Kernel launch now queues by default and drains at synchronization, host
+observation, backpressure, and teardown. `APPLEGPU_SYNC_LAUNCH=1` preserves the
+synchronous diagnostic path. The remaining work is command-buffer batching and
+the stronger concurrent allocation/lifetime stress coverage in the exit
+criterion below.
 
 Specific adjustment:
 
