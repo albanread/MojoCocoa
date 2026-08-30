@@ -126,7 +126,10 @@ def check_shape[
     with c_dev.map_to_host() as h:
         for i in range(M):
             for j in range(N):
-                var v = h[i * N + j]
+                # map_to_host indexing yields a scalar wrapper; normalize it
+                # before comparing so the oracle tests the numeric value, not
+                # wrapper identity/overload behaviour.
+                var v = Float32(h[i * N + j])
                 if v != Float32(K):
                     if bad == 0:
                         first_r = i
