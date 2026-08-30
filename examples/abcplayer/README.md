@@ -1,11 +1,11 @@
 # An ABC player, in Mojo
 
 Reads ABC notation — the format thousands of folk tunes are already written
-in — and plays it, either through the SID chip in [`../sid/`](../sid/) or
+in — and plays it, either through the chip in [`../chip/`](../chip/) or
 through General MIDI. It also writes Standard MIDI Files.
 
     cocoamojo --build examples/abcplayer/main.mojo \
-        -I examples/abcplayer -I examples/sid -o /tmp/abcplayer
+        -I examples/abcplayer -I examples/chip -o /tmp/abcplayer
 
     /tmp/abcplayer tunes/carolan.abc            # chip voices
     /tmp/abcplayer tunes/carolan.abc --midi     # Apple's DLS synthesiser
@@ -65,7 +65,7 @@ chord symbols `"Am7"`; bar lines and repeats including first and second
 endings; tuplets `(3` and `(p:q:r`; broken rhythm `> <`; ties; grace notes;
 and `V:` with `name=`, `transpose=` and `octave=`.
 
-Ignored deliberately, because a SID cannot hear them: slurs, decorations,
+Ignored deliberately, because a chip cannot hear them: slurs, decorations,
 lyrics alignment, and clefs.
 
 ## What the port fixed
@@ -113,7 +113,7 @@ in `K:D` now plays in D.
 | [music.mojo](music.mojo) | the music-line parser |
 | [repeats.mojo](repeats.mojo) | repeats and endings, expanded over events |
 | [schedule.mojo](schedule.mojo) | ticks to samples; ties; ordering |
-| [chipplay.mojo](chipplay.mojo) | driving the SID chip from a schedule |
+| [chipplay.mojo](chipplay.mojo) | driving the chip from a schedule |
 | [midi.mojo](midi.mojo) | Standard MIDI File output |
 | [main.mojo](main.mojo) | CoreAudio, both backends, and the window |
 

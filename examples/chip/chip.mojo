@@ -1,11 +1,11 @@
-# A SID-flavoured synthesiser: three voices, ADSR, a resonant filter.
+# A 6581-flavoured synthesiser: three voices, ADSR, a resonant filter.
 #
-# Not an emulator. reSID exists, it is cycle-exact, and it is thousands of
+# Not an emulator. rechip exists, it is cycle-exact, and it is thousands of
 # lines of measured analogue behaviour. This is the other thing -- the
 # arithmetic that gives the 6581 its voice, written plainly, small enough to
 # read in one sitting and fast enough to run under a real-time deadline.
 #
-# What makes it sound like a SID rather than like a generic synth:
+# What makes it sound like a chip rather than like a generic synth:
 #
 #   * the oscillators are 24-bit phase accumulators, so the pitch drifts in
 #     the same quantised way and the waveforms have the same hard edges
@@ -29,7 +29,7 @@ from std.ffi import external_call
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
-# The PAL machine's clock. Every frequency register in every SID tune ever
+# The PAL machine's clock. Every frequency register in every chip tune ever
 # written was chosen against this number.
 comptime CLOCK_PAL = 985248
 comptime SAMPLE_RATE = 48000
@@ -168,7 +168,7 @@ fn chip_free(st: P):
 
 # ── Registers ───────────────────────────────────────────────────────────────
 # The interface a player routine pokes. These take the same numbers a C64
-# player would write, so a tune ported from real SID data keeps its values.
+# player would write, so a tune ported from real chip data keeps its values.
 
 
 @always_inline
@@ -185,7 +185,7 @@ fn set_freq_reg(st: P, voice: Int, freq: Int):
 
 @always_inline
 fn set_freq_hz(st: P, voice: Int, hz: Float64):
-    """The same thing in Hz, for tunes that were never SID data."""
+    """The same thing in Hz, for tunes that were never chip data."""
     set_freq_reg(st, voice, Int(hz * 16777216.0 / Float64(CLOCK_PAL)))
 
 
@@ -325,7 +325,7 @@ fn waveform(st: P, voice: Int, acc24: Int, ring_source_msb: Int) -> Int:
     if (wave & WAVE_TRI) != 0:
         # The triangle folds the top bit into the rest, and ring modulation
         # replaces that bit with the previous voice's -- which is the whole
-        # of ring modulation on this chip. One XOR, and it is why SID bells
+        # of ring modulation on this chip. One XOR, and it is why bells
         # and gongs sound the way they do.
         var folded = acc24
         if ((acc24 ^ ring_source_msb) & 0x800000) != 0:
@@ -342,7 +342,7 @@ fn waveform(st: P, voice: Int, acc24: Int, ring_source_msb: Int) -> Int:
         let lfsr = vget(st, voice, V_LFSR)
         # Eight taps, scattered: bits 22, 20, 16, 13, 11, 7, 4 and 2 become
         # the output's bits 11 down to 4. The low four bits are always zero,
-        # which is part of why SID noise sounds coarse.
+        # which is part of why the noise sounds coarse.
         out &= (
             ((lfsr >> 11) & 0x800)
             | ((lfsr >> 10) & 0x400)
@@ -366,8 +366,8 @@ fn advance_envelope(st: P, voice: Int) -> Int:
     The decay and release are not exponential curves. The chip counts down at
     a rate that is divided further as the level falls -- once below 93, then
     54, 26, 14 and 6 -- so the tail flattens in five visible steps. Replacing
-    that with a smooth exponential is the single change that makes a SID
-    emulation sound like a synthesiser instead.
+    that with a smooth exponential is the single change that makes this
+    sound like a synthesiser instead of a games machine.
     """
     let phase = vget(st, voice, V_PHASE)
     if phase == ENV_IDLE:
@@ -448,7 +448,7 @@ fn chip_render(
 
             # Hard sync: when the previous voice's accumulator wraps, this one
             # is slammed back to zero. Two oscillators at unrelated pitches,
-            # one resetting the other, is the SID lead sound.
+            # one resetting the other, is the chip lead sound.
             if vget(st, voice=v, field=V_SYNC) != 0:
                 let src = (v + 2) % 3
                 let s_now = (vget(st, voice=src, field=V_ACC) >> 8) & 0xFFFFFF

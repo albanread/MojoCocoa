@@ -1,6 +1,6 @@
-# Playing a schedule through the SID chip, sample by sample.
+# Playing a schedule through the chip, sample by sample.
 #
-# The chip in examples/sid/ is a synthesiser with three voices and no idea
+# The chip in examples/chip/ is a synthesiser with three voices and no idea
 # what a tune is. This is what tells it: a flat array of "at sample N, start
 # note M" that the render callback walks as it fills the buffer.
 #
@@ -25,7 +25,7 @@ from chip import (
 )
 from schedule import Step, SE_NOTE_ON, SE_NOTE_OFF
 
-# Slots in the chip's player region. The SID example's own player does not
+# Slots in the chip's player region. The chip example's own player does not
 # run here -- this is a different way to drive the same chip -- so the whole
 # region is free.
 comptime SC_ADDR = 0          # address of the flattened schedule

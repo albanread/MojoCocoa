@@ -15,7 +15,7 @@ which opens itself when a build starts and toggles with ⌘0.
                   and coloured by one Mojo kernel on the Apple GPU
     othello/      the board game, and an honest answer to where a GPU helps
                   a computer player -- and where it does not
-    sid/          a chip-tune synthesiser: three voices, a resonant filter,
+    chip/         a chip-tune synthesiser: three voices, a resonant filter,
                   and a Mojo `fn` serving as CoreAudio's render callback on
                   a real-time thread. Plays ABC notation.
     abcplayer/    a full ABC notation player -- parser, repeats, tuplets,

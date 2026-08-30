@@ -1,6 +1,6 @@
 # The player routine: what runs fifty times a second and pokes the chip.
 #
-# This is the part people forget when they say "SID music". The chip has three
+# This is the part people forget when they say "chip music". The chip has three
 # voices and no memory of anything; everything that makes a C64 tune sound
 # like a C64 tune happens up here, in a routine the raster interrupt called
 # once per frame:

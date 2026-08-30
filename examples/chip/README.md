@@ -1,12 +1,12 @@
-# SID — a chip-tune synthesiser, in Mojo
+# CHIP — a chip-tune synthesiser, in Mojo
 
 Three voices, a resonant filter, and a player routine that rewrites the
 registers fifty times a second. It sounds like a Commodore 64 because it does
 what a Commodore 64 did, not because it plays samples of one.
 
-    cocoamojo --build examples/sid/main.mojo -I examples/sid -o /tmp/sid
-    /tmp/sid                              # the built-in tune
-    /tmp/sid examples/sid/tunes/ode.abc   # an ABC tune
+    cocoamojo --build examples/chip/main.mojo -I examples/chip -o /tmp/chip
+    /tmp/chip                              # the built-in tune
+    /tmp/chip examples/chip/tunes/ode.abc   # an ABC tune
 
     SPACE pause   1 2 3 mute a voice   < > cutoff   - + resonance
     F filter mode   Q quit
@@ -42,8 +42,8 @@ limitation, and it is also why the older API is the right one here.)
 
 ## What is in the chip
 
-[chip.mojo](chip.mojo) is a SID-flavoured synthesiser, not an emulator —
-reSID already exists, is cycle-exact, and is thousands of lines of measured
+[chip.mojo](chip.mojo) is a 6581-flavoured synthesiser, not an emulator —
+rechip already exists, is cycle-exact, and is thousands of lines of measured
 analogue behaviour. This is the arithmetic that gives the 6581 its voice,
 small enough to read in one sitting.
 
@@ -90,7 +90,7 @@ translation rather than a convenient one.
 
 Repeats are ignored rather than expanded, so a tune plays through once per
 loop. Slurs, ties, grace notes and decorations are skipped: they change
-nothing a SID can hear.
+nothing a chip can hear.
 
 ## Two bugs worth keeping
 

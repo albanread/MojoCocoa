@@ -1,10 +1,10 @@
-# ABC notation in, SID registers out.
+# ABC notation in, chip registers out.
 #
 # ABC is how folk tunes are written down when they are written for a computer:
 # a few header fields, then letters for notes. It is the natural input for
 # this synthesiser because the tunes already exist in it by the thousand, and
 # because turning one into chip music is exactly the translation this example
-# is about -- notes are a score, and a SID wants a schedule of register
+# is about -- notes are a score, and a chip wants a schedule of register
 # writes.
 #
 # The subset here is the one real tunes actually use:
@@ -19,7 +19,7 @@
 #   broken       a>b and a<b
 #   voices       V:1 V:2 V:3, mapped to the chip's three
 #
-# Ignored on purpose, because they change nothing a SID can hear: slurs,
+# Ignored on purpose, because they change nothing a chip can hear: slurs,
 # ties, grace notes, decorations, chord symbols, and repeat marks. Repeats
 # are ignored rather than expanded, so a tune plays through once per loop.
 

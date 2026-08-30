@@ -1,6 +1,6 @@
 # An ABC player, in Mojo, with two ways to make the sound.
 #
-#   --chip   three SID voices: pulse, saw, noise, filter (the fun one)
+#   --chip   three chip voices: pulse, saw, noise, filter (the fun one)
 #   --midi   Apple's DLS synthesiser, General MIDI (the dull, correct one)
 #   --write  a Standard MIDI File, and no playing at all
 #
@@ -603,7 +603,7 @@ def main() raises:
     _ = flatten_schedule(steps, st)
 
     # A chip voice per part: pulse for the melody, saw underneath. The
-    # settings are the ones the SID example arrived at, which is the point of
+    # settings are the ones the chip example arrived at, which is the point of
     # having the chip in its own module.
     for v in range(3):
         set_wave(st, v, WAVE_PULSE if v == 0 else WAVE_SAW)

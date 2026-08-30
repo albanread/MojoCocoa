@@ -1,4 +1,4 @@
-# A SID synthesiser with a window, in Mojo.
+# A chip-tune synthesiser with a window, in Mojo.
 #
 # The point of this example is the thread boundary. CoreAudio calls a render
 # callback on a real-time thread it owns: a C function pointer, invoked every
@@ -63,19 +63,19 @@ comptime UI_SAVED_WAVE = 72  # three slots: what a muted voice was playing
 
 comptime SCOPE_LEN = 1024
 
-comptime g_chip = named_global["sid.chip", Int]
-comptime g_view = named_global["sid.view", Int]
-comptime g_cmd = named_global["sid.cmd", Int]
-comptime g_quit = named_global["sid.quit", Int]
+comptime g_chip = named_global["chip.state", Int]
+comptime g_view = named_global["chip.view", Int]
+comptime g_cmd = named_global["chip.cmd", Int]
+comptime g_quit = named_global["chip.quit", Int]
 
 # The fonts, made once and retained. Building a font inside drawRect: is both
 # wasteful and unreliable: at thirty frames a second the font this asked for
 # eventually came back nil, and a nil value into an attributes dictionary
 # raises -- which surfaces as a trap inside AppKit's drawing machinery with a
 # stack that mentions nothing about fonts.
-comptime g_font_title = named_global["sid.font.title", Int]
-comptime g_font_body = named_global["sid.font.body", Int]
-comptime g_font_small = named_global["sid.font.small", Int]
+comptime g_font_title = named_global["chip.font.title", Int]
+comptime g_font_body = named_global["chip.font.body", Int]
+comptime g_font_small = named_global["chip.font.small", Int]
 
 comptime CMD_QUIT = 1
 
@@ -375,7 +375,7 @@ fn draw_screen():
         var y = WIN_H - FRAME - 34.0
 
         draw_text(
-            String("**** MOJO SID SYNTHESISER ****"),
+            String("**** MOJO CHIP SYNTHESISER ****"),
             left, y, g_font_title()[], c64_light_blue(),
         )
         y -= 22.0
@@ -603,7 +603,7 @@ def main() raises:
     g_font_small()[] = make_font(11.0)
 
     let unit = start_audio(st)
-    print("SID.  SPACE pause · 1 2 3 mute · < > cutoff · - + resonance · F filter · Q quit")
+    print("CHIP.  SPACE pause · 1 2 3 mute · < > cutoff · - + resonance · F filter · Q quit")
 
     with autoreleasepool():
         let NSApplication = ObjCClass.lookup["NSApplication"]()
@@ -627,7 +627,7 @@ def main() raises:
             Bool(False),
         )
         _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
-            win, nsstring(String("SID")).ptr()
+            win, nsstring(String("CHIP")).ptr()
         )
 
         let view = ObjCObject(SidView().__objc_id)
