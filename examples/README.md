@@ -13,6 +13,8 @@ which opens itself when a build starts and toggles with ⌘0.
     fluid/        Stable Fluids on the GPU, every kernel written in Mojo
     mandelbrot/   a live-zooming fractal at 60fps, every pixel computed
                   and coloured by one Mojo kernel on the Apple GPU
+    othello/      the board game, and an honest answer to where a GPU helps
+                  a computer player -- and where it does not
     ferns/        a landscape of Barnsley ferns growing live over a
                   procedural lawn, under a cloudy dusk sky (CPU)
     fernwind/     the same meadow swaying in the wind: every fern redrawn
