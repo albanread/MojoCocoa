@@ -88,6 +88,9 @@ def readable(fd: Int) -> Bool:
 # ── State ───────────────────────────────────────────────────────────────────
 comptime g_task = named_global["lsp.task", Int]
 comptime g_in = named_global["lsp.in", Int]      # NSFileHandle we write to
+comptime MAX_MESSAGE = 64 * 1024 * 1024
+comptime MAX_INBOX = 96 * 1024 * 1024
+
 comptime g_pending = named_global["lsp.inbox.pending", List[UInt8]]
 comptime g_read_fd = named_global["lsp.readfd", Int]
 comptime g_next_id = named_global["lsp.nextid", Int]
@@ -977,7 +980,19 @@ def poll() -> Int:
                     break
                 i += 1
             let body_at = header_end + 4
+            # Same bound as the debug adapter, for the same reason: a length
+            # that is not a length leaves an inbox that can never drain, and
+            # every later read is appended to it until a String asks the
+            # allocator for gigabytes. The server's largest real messages --
+            # semantic tokens for a big file -- are megabytes at worst.
+            if length < 0 or length > MAX_MESSAGE:
+                set_inbox(String())
+                print("  lsp: implausible Content-Length", length, "— resynchronising")
+                break
             if acc.byte_length() < body_at + length:
+                if acc.byte_length() > MAX_INBOX:
+                    set_inbox(String())
+                    print("  lsp: inbox past", MAX_INBOX, "bytes with no whole message — resynchronising")
                 break  # the rest has not arrived
             let body = String(acc[byte = body_at : body_at + length])
             set_inbox(String(acc[byte = body_at + length : acc.byte_length()]))

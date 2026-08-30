@@ -89,3 +89,51 @@ def take_chunk(mut pending: List[UInt8], buf: OpaquePointer, n: Int) -> String:
         rest.append(pending[i])
     pending = rest^
     return text^
+
+
+def sanitized(text: String) -> String:
+    """`text` with any byte that is not valid UTF-8 replaced by U+FFFD.
+
+    For DISPLAY only, and the opposite policy from `take_chunk` on purpose.
+    A partial sequence at a read boundary is early, so it is held back and
+    completed. A variable's value out of the debuggee is not early -- it is
+    whatever bytes were at that address, and there is no later read that
+    completes them. Uninitialised memory rendered as a `String` is exactly
+    that, and it reaches the locals view as arbitrary bytes.
+
+    Left alone it crashes: the grapheme iterator unwraps an empty Optional
+    from `Codepoint.unsafe_decode_utf8_codepoint`, which is what killed
+    Roast when the locals view was drawn while stepping.
+    """
+    let raw = text.as_bytes()
+    let n = len(raw)
+    var out = List[UInt8]()
+    var i = 0
+    while i < n:
+        let b = Int(raw[i])
+        let need = _needed_for(b)
+        # A continuation byte with no lead, or a byte that leads nothing.
+        if need == 0:
+            out.append(0xEF)
+            out.append(0xBF)
+            out.append(0xBD)
+            i += 1
+            continue
+        # A sequence that runs off the end, or whose continuations are not
+        # continuations, is replaced whole rather than byte by byte.
+        var ok = i + need <= n
+        if ok:
+            for j in range(1, need):
+                if Int(raw[i + j]) & 0xC0 != 0x80:
+                    ok = False
+                    break
+        if not ok:
+            out.append(0xEF)
+            out.append(0xBF)
+            out.append(0xBD)
+            i += 1
+            continue
+        for j in range(need):
+            out.append(raw[i + j])
+        i += need
+    return String(StringSlice(unsafe_from_utf8=Span(out)[0 : len(out)]))

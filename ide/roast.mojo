@@ -1180,14 +1180,27 @@ def _pretty_type(raw: String) -> String:
     MLIR spelling -- `!kgen.scalar<index>` is what every `Int` in the
     program prints as -- and a locals view full of MLIR is a locals view
     nobody reads. Unrecognised types pass through untouched."""
-    if raw.find("scalar<index>") >= 0:
-        return String("Int")
-    if raw.find("scalar<bool>") >= 0:
-        return String("Bool")
-    if raw.find("scalar<f64>") >= 0:
-        return String("Float64")
-    if raw.find("scalar<f32>") >= 0:
-        return String("Float32")
+    # Every scalar the compiler spells in MLIR, not the four that happened
+    # to come up first: `peak: __mlir_type.`!kgen.scalar<ui32>`` is what a
+    # UInt32 looked like in the locals view until now.
+    for pair in [
+        (String("scalar<index>"), String("Int")),
+        (String("scalar<bool>"), String("Bool")),
+        (String("scalar<f64>"), String("Float64")),
+        (String("scalar<f32>"), String("Float32")),
+        (String("scalar<f16>"), String("Float16")),
+        (String("scalar<bf16>"), String("BFloat16")),
+        (String("scalar<si8>"), String("Int8")),
+        (String("scalar<si16>"), String("Int16")),
+        (String("scalar<si32>"), String("Int32")),
+        (String("scalar<si64>"), String("Int64")),
+        (String("scalar<ui8>"), String("UInt8")),
+        (String("scalar<ui16>"), String("UInt16")),
+        (String("scalar<ui32>"), String("UInt32")),
+        (String("scalar<ui64>"), String("UInt64")),
+    ]:
+        if raw.find(pair[0]) >= 0:
+            return pair[1]
     return raw
 
 
@@ -1206,12 +1219,44 @@ def _show_variables():
     g_vars_serial()[] = g_vars_serial()[] + 1
     var block = String("── locals · ") + _basename(dap.stop_file())
     block += String(":") + String(dap.stop_line()) + String(" ──\n")
+    # `name: Type` built first so the values can share a column. A locals
+    # view is read by running an eye down it, and ragged `=` signs make
+    # that a search instead.
+    var labels = List[String]()
+    var width = 0
     for i in range(n):
-        block += String("  ") + dap.variable_name(i)
+        var label = dap.variable_name(i)
         let t = _pretty_type(dap.variable_type(i))
         if t != "":
-            block += String(": ") + t
-        block += String(" = ") + dap.variable_value(i) + String("\n")
+            label += String(": ") + t
+        let w = len(label.codepoints())
+        if w > width:
+            width = w
+        labels.append(label^)
+    for i in range(n):
+        block += String("  ") + labels[i]
+        let value = dap.variable_value(i)
+        # Pad only when something follows. A line that ends in the column
+        # padding is a line with trailing spaces, which shows up in a diff
+        # and in anything a person copies out of the console.
+        if value != "" and value != _pretty_type(dap.variable_type(i)):
+            var pad = width - len(labels[i].codepoints())
+            while pad > 0:
+                block += String(" ")
+                pad -= 1
+        # A value that only repeats the type says nothing: `rng: Rng = Rng`
+        # is one fact printed twice. The type already carried it.
+        if value == _pretty_type(dap.variable_type(i)) or value == "":
+            block += String("\n")
+            continue
+        # lldb says `<error: variable not available>` for a local that is
+        # declared but not yet live. That is an ordinary state at a
+        # breakpoint on the first line, and reading it as an error sends
+        # people looking for a fault that is not there.
+        if value.find("variable not available") >= 0:
+            block += String("   — not yet in scope\n")
+            continue
+        block += String(" = ") + value + String("\n")
     # The stack under the locals: how the program got here, top first. The
     # runtime's startup frames are real but nobody is debugging THEM, so the
     # walk stops at the first frame whose source is not the user's -- which

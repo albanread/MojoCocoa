@@ -91,9 +91,25 @@ def clear_output():
     _put(g_out(), String())
 
 
+# The console keeps what a person scrolls back through, not a session's
+# entire history. Without a ceiling it grows for as long as Roast runs --
+# and a program that prints in a loop, or an adapter trace left on, reaches
+# a size where doubling the buffer is a request the allocator refuses.
+comptime MAX_CONSOLE = 8 * 1024 * 1024
+comptime CONSOLE_KEEP = 6 * 1024 * 1024
+
+
 def append_output(var s: String):
     var acc = output()
     acc += s
+    if acc.byte_length() > MAX_CONSOLE:
+        # Drop the oldest, on a line boundary so nothing is cut mid-line.
+        let from_byte = acc.byte_length() - CONSOLE_KEEP
+        let nl = acc.find("\n", from_byte)
+        let cut = nl + 1 if nl >= 0 else from_byte
+        acc = String("… earlier output trimmed …\n") + String(
+            acc[byte = cut : acc.byte_length()]
+        )
     _put(g_out(), acc^)
 
 

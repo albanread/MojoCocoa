@@ -41,7 +41,7 @@
 # before `start` and is the natural way for an editor to use it.
 from json import JSON
 from json import parse
-from pipeutf8 import take_chunk
+from pipeutf8 import take_chunk, sanitized
 from lsp import readable, posix_read
 from std.objc import (
     ObjCClass,
@@ -65,6 +65,13 @@ comptime g_read_fd = named_global["dap.readfd", Int]
 comptime g_seq = named_global["dap.seq", Int]
 # 0 not started, 1 spawned, 2 initialized-event seen, 3 configured and running
 comptime g_phase = named_global["dap.phase", Int]
+# Nothing the adapter legitimately sends is this large: a stack, a scope,
+# a few hundred variables. A number past these is invalid data, and the
+# honest response is to stop believing the stream rather than to allocate
+# for it.
+comptime MAX_MESSAGE = 64 * 1024 * 1024
+comptime MAX_INBOX = 96 * 1024 * 1024
+
 comptime g_pending = named_global["dap.inbox.pending", List[UInt8]]
 comptime g_inbox = named_global["dap.inbox", List[String]]
 
@@ -262,21 +269,54 @@ def variable_value(i: Int) -> String:
     shape, the hex is dropped. Anything else passes through untouched."""
     let raw = g_var_values()[][i]
     let sep = raw.find("  ")
-    if sep == 16:
+    # Sixteen digits for a pointer-width scalar, eight for a 32-bit one --
+    # `peak` came back as `02000000  2`, which the old fixed 16 missed and
+    # so leaked the raw bytes into a view meant to show a number.
+    if sep == 8 or sep == 16:
         var all_hex = True
         let b = raw.as_bytes()
-        for j in range(16):
+        for j in range(sep):
             let c = Int(b[j])
-            if not ((c >= 0x30 and c <= 0x39) or (c >= 0x61 and c <= 0x66)):
+            if not (
+                (c >= 0x30 and c <= 0x39)
+                or (c >= 0x61 and c <= 0x66)
+                or (c >= 0x41 and c <= 0x46)
+            ):
                 all_hex = False
                 break
-        if all_hex:
-            return String(raw[byte = 18 : raw.byte_length()])
+        if all_hex and raw.byte_length() > sep + 2:
+            return String(raw[byte = sep + 2 : raw.byte_length()])
     return raw
 
 
 def variable_type(i: Int) -> String:
     return g_var_types()[][i]
+
+
+# What a locals view can actually show. `hits` in the fern example is a
+# List of 691,200 UInt32, and lldb renders it in full: a value nobody can
+# read, that we then copy out of the list, into the block being built, and
+# through the sanitiser, on every fetch -- because these accessors hand
+# back Strings BY VALUE. Inspecting a variable should not mean copying it.
+#
+# Bounding it here means every copy downstream is cheap by construction.
+# The tail is the part a person loses, and losing it is the point: nothing
+# past this is being read off a screen.
+comptime DISPLAY_LIMIT = 4096
+
+
+def _display(var text: String) -> String:
+    """`text`, valid UTF-8 and short enough to show."""
+    var clean = sanitized(text^)
+    if clean.byte_length() <= DISPLAY_LIMIT:
+        return clean^
+    # Cut on a character boundary, not a byte one.
+    var cut = DISPLAY_LIMIT
+    let raw = clean.as_bytes()
+    while cut > 0 and Int(raw[cut]) & 0xC0 == 0x80:
+        cut -= 1
+    return String(clean[byte=0:cut]) + String(" … (")
+        + String(clean.byte_length()) + String(" bytes)")
 
 
 def _clear_variables():
@@ -545,10 +585,22 @@ def start_with_environment(
     # belongs -- the type system must be registered before the first module
     # is parsed); `preRunCommands` run with a target, before launch (where a
     # command that sets breakpoints, like `mojo break-on-raise`, belongs).
+    var cmds = JSON.array()
+    # Tell lldb what a locals view is for before it renders anything. A
+    # `List[UInt32]` of 691,200 elements is a legitimate variable and an
+    # illegitimate string: rendered in full it is tens of megabytes, sent
+    # over the wire, parsed, stored, and copied -- to show a person the
+    # first line of it. Roast never displays more than a few bytes of a
+    # value, so it should never ask for more.
+    #
+    # These are lldb's own limits, applied at the source rather than
+    # trimmed after the fact, which is the difference between not doing
+    # work and doing it twice.
+    cmds.push(JSON(String("settings set target.max-children-count 64")))
+    cmds.push(JSON(String("settings set target.max-string-summary-length 512")))
     if init_command != "":
-        var cmds = JSON.array()
         cmds.push(JSON(init_command))
-        launch_args.set(String("initCommands"), cmds^)
+    launch_args.set(String("initCommands"), cmds^)
     if pre_run_command != "":
         var pre = JSON.array()
         pre.push(JSON(pre_run_command))
@@ -695,7 +747,23 @@ def poll() -> Int:
                     break
                 i += 1
             let body_at = header_end + 4
+            # A length that is not a length means the stream is not where we
+            # think it is. Nothing this adapter sends is anywhere near this
+            # big, so rather than wait for bytes that will never come --
+            # appending every later read to an inbox that can no longer
+            # drain, until a String asks the allocator for gigabytes -- drop
+            # what we have and resynchronise on the next header.
+            if length < 0 or length > MAX_MESSAGE:
+                _put(g_inbox(), String())
+                print("  dap: implausible Content-Length", length, "— resynchronising")
+                break
             if acc.byte_length() < body_at + length:
+                # Still waiting for the body. That is normal, but only up to
+                # a point: an inbox that grows without ever yielding a
+                # message is a desynchronised stream, not a slow one.
+                if acc.byte_length() > MAX_INBOX:
+                    _put(g_inbox(), String())
+                    print("  dap: inbox past", MAX_INBOX, "bytes with no whole message — resynchronising")
                 break
             let body = String(acc[byte = body_at : body_at + length])
             _put(g_inbox(), String(acc[byte = body_at + length : acc.byte_length()]))
@@ -738,7 +806,12 @@ def _handle(var msg: JSON):
             # answer in `body.result`; either way the asker hears back.
             if msg.get("success")[].as_bool():
                 g_eval_ok()[] = 1
-                _put(g_eval_result(), msg.get("body")[].get("result")[].as_string())
+                # Same reasoning as the locals: an expression's result is
+                # the debuggee's bytes.
+                _put(
+                    g_eval_result(),
+                    _display(msg.get("body")[].get("result")[].as_string()),
+                )
             else:
                 g_eval_ok()[] = 0
                 # lldb-dap does not use the DAP `message` field: the text
@@ -883,9 +956,9 @@ def _take_stack(body: JSON):
     var i = 0
     while i < frames.count():
         let f = frames.at(i)[]
-        g_frame_names()[].append(f.get("name")[].as_string())
+        g_frame_names()[].append(_display(f.get("name")[].as_string()))
         g_frame_files()[].append(
-            f.get("source")[].get("path")[].as_string()
+            _display(f.get("source")[].get("path")[].as_string())
         )
         g_frame_lines()[].append(f.get("line")[].as_int())
         i += 1
@@ -921,9 +994,14 @@ def _take_variables(body: JSON):
     var i = 0
     while i < vars.count():
         let v = vars.at(i)[]
-        g_var_names()[].append(v.get("name")[].as_string())
-        g_var_values()[].append(v.get("value")[].as_string())
-        g_var_types()[].append(v.get("type")[].as_string())
+        # Sanitised at the boundary. These are the debuggee's bytes, not
+        # ours: a String local that is not yet initialised renders as
+        # whatever was at that address, and arbitrary bytes are not text.
+        # Everything downstream -- the locals view, the console, the agent's
+        # reply -- can then treat them as the strings they claim to be.
+        g_var_names()[].append(_display(v.get("name")[].as_string()))
+        g_var_values()[].append(_display(v.get("value")[].as_string()))
+        g_var_types()[].append(_display(v.get("type")[].as_string()))
         i += 1
     g_var_fresh()[] = 1
     g_serial()[] += 1
