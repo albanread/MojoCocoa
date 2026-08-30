@@ -197,23 +197,29 @@ Metal runtime check.
    `air.indirect_buffer` / `air.struct_type_info`, retain a precise resource
    snapshot for the batch, and benchmark against allocation count.
 
-   *Runtime half landed, 30 August 2026.* An `MTLResidencySet` per device,
-   attached to each command queue and mirrored from the address registry:
-   membership edits at allocation and free, nothing on the dispatch path.
-   `APPLEGPU_COARSE_RESIDENCY=1` restores the walk, which is also how
-   `applegpu_residency_bench` measures both sides in one binary. On an M4 Max,
-   warm best-of-five over 256 tiny dispatches, walk vs set in us/dispatch:
-   4.16 vs 3.78 empty, 8.64 vs 6.49 at 64 live buffers, 23.53 vs 18.40 at
-   256 -- the per-dispatch walk is gone, and its cost was real at every
-   population size. At 1024 and 4096 the two modes converge (74 and ~290
-   us/dispatch), so past ~1k allocations the dominant cost is no longer in
-   this runtime: it scales with total resident allocations per submit either
-   way, pointing at per-command-buffer residency processing below the API.
-   `requestResidency` after each commit was tried and made 64-256 *worse*
-   (7.2 -> 10.3 us at 64), so it stays out. What remains of this item is the
-   compiler half -- reachability metadata so the set can shrink below "every
-   live allocation" -- and, for the >1k regime, fewer-larger allocations
-   (heap suballocation) rather than more residency bookkeeping.
+   *Runtime half landed, 30 August 2026; corrected 30 August 2026.* An
+   `MTLResidencySet` per device, attached to each command queue and mirrored
+   from the address registry: membership edits at allocation and free, nothing
+   on the dispatch path. `APPLEGPU_COARSE_RESIDENCY=1` restores the walk, and
+   `applegpu_residency_bench` measures both in one binary.
+
+   The first landing used the wrong factory selector -- `make...` where MTLDevice
+   exposes `newResidencySetWithDescriptor:error:` -- so `respondsToSelector:`
+   answered no, the set was never created, and every launch silently ran the
+   walk. Correct results the whole time, which is what hid it: the measurements
+   that reported a ~25% win were the fallback walk timing against itself, i.e.
+   noise. Only re-measuring on the product tree, where the set was verified
+   absent by a runtime probe, surfaced the bug.
+
+   With the set actually active, M4 Max, 9-pass medians, us/dispatch walk vs
+   set: 6.66 -> 3.77 at 64 live buffers (-43%), 18.56 -> 3.46 at 256 (-81%),
+   73.35 -> 3.25 at 1024 (-96%), 289.53 -> 3.37 at 4096 (-99%). The set is flat
+   in the allocation count -- ~3.4us at every size -- while the walk is linear,
+   which is the whole claim, now true instead of asserted. Below ~16 buffers
+   the set's fixed setup makes it ~0.4us slower in absolute terms; irrelevant
+   once a workload has allocations. requestResidency after commit was tried and
+   hurt, so it is not here. What remains is the compiler half -- reachability
+   metadata so the set can hold fewer than every live allocation.
 7. **Reduce the explicit-SIMD width-32 PSO failure.**  Keep the reduced FMA
    source and emitted AIR together. Determine whether the failure is caused by
    vector reconstruction, register pressure, or a specific instruction shape,

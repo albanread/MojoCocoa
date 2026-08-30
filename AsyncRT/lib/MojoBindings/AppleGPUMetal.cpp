@@ -410,17 +410,22 @@ id residencySetForLocked(ResidencyState &st, id device) {
       return e.second;
 
   id set = nullptr;
+  // The factory is `new`-prefixed -- newResidencySetWithDescriptor:error: --
+  // so it returns a +1-retained set that this never-destroyed singleton keeps.
+  // The earlier `make...` spelling does not exist on MTLDevice: respondsToSelector
+  // answered no, the set was never created, and every launch silently ran the
+  // useResource walk instead. That the fallback is correct is exactly what hid
+  // the bug -- results were right, the optimisation just never executed.
   Class descClass = objc_getClass("MTLResidencySetDescriptor");
   if (descClass &&
       msg<signed char>(device, "respondsToSelector:",
-                       sel_registerName("makeResidencySetWithDescriptor:error:"))) {
+                       sel_registerName("newResidencySetWithDescriptor:error:"))) {
     id desc = msg<id>(msg<id>((id)descClass, "alloc"), "init");
     if (desc) {
-      set = msg<id>(device, "makeResidencySetWithDescriptor:error:", desc,
+      set = msg<id>(device, "newResidencySetWithDescriptor:error:", desc,
                     (id *)nullptr);
       objcRelease(desc);
-      if (set)
-        msg<id>(set, "retain");
+      // No extra retain: `new` already handed us +1.
     }
   }
   // A nil set is recorded too: the decision is per device, made once, and a
