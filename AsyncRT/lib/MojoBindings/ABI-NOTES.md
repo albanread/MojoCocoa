@@ -4,7 +4,7 @@
 hand-edit** -- run the generator, or `tools/check-abi-table.sh` to see
 what has drifted.
 
-Source: `AppleGPURT.cpp`, `AppleGPUMetal.cpp` at `e715188`.
+Source: `AppleGPURT.cpp`, `AppleGPUMetal.cpp` at `95cb642`.
 
 Status is read out of the code, not asserted here, because a
 hand-maintained status column is wrong the moment someone implements a

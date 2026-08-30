@@ -22,8 +22,9 @@
 // storageModePrivate mode (worthwhile for GPU-only buffers, which Apple can
 // keep in a compressed layout) can switch it back per-buffer.
 //
-// Launches queue by default and drain at synchronization or host-observation
-// boundaries. APPLEGPU_SYNC_LAUNCH=1 restores the synchronous bring-up mode.
+// Launches queue and batch by default, then drain at synchronization or
+// host-observation boundaries. APPLEGPU_SYNC_LAUNCH=1 restores the synchronous
+// bring-up mode.
 //
 // Device pointers handed to Mojo are MTLBuffer gpuAddress values. A global
 // interval map resolves any device address back to its owning MTLBuffer and
@@ -96,9 +97,22 @@ bool asyncLaunchEnabled() {
   return on;
 }
 
+/// Whether consecutive asynchronous dispatches share a Metal command buffer.
+///
+/// The synchronous debug path never batches, regardless of this setting.
+/// `APPLEGPU_BATCH_DISPATCHES=0` keeps asynchronous launch but restores one
+/// command buffer per dispatch for diagnosis and A/B measurement.
+bool batchedLaunchEnabled() {
+  static const bool on = environmentFlag("APPLEGPU_BATCH_DISPATCHES", true);
+  return on;
+}
+
 /// Number of command buffers allowed in flight before a launch blocks.
 /// Bounds memory and keeps error reporting close to the failing dispatch.
 constexpr size_t kMaxPending = 64;
+/// Preserve the existing 64-dispatch backpressure bound when those dispatches
+/// are encoded into one command buffer instead of 64 separate buffers.
+constexpr size_t kMaxBatchDispatches = kMaxPending;
 
 std::string nsstringToStd(id nsstr) {
   if (!nsstr)
@@ -193,7 +207,29 @@ struct AGMetalCtx {
   /// waiting on the last implies the rest are done, but dropping the earlier
   /// ones would silently discard their failures.
   std::vector<id> pending;
+  /// An uncommitted command buffer used by batched asynchronous launch.
+  ///
+  /// Each dispatch owns a separate compute encoder, so encoder state cannot
+  /// leak between kernels. `mu` guards both fields and all encoding into this
+  /// command buffer. The buffer is retained when opened and ownership moves to
+  /// `pending` when it is committed.
+  id openBatch = nullptr;
+  size_t openBatchDispatches = 0;
 };
+
+/// Commit the open batch and transfer its retained ownership to `pending`.
+/// The caller must hold `ctx->mu`.
+void commitOpenBatchLocked(AGMetalCtx *ctx) {
+  if (!ctx->openBatch)
+    return;
+  if (::getenv("APPLEGPU_TRACE_LAUNCH"))
+    fprintf(stderr, "[applegpu] commit batch dispatches=%zu\n",
+            ctx->openBatchDispatches);
+  msg<void>(ctx->openBatch, "commit");
+  ctx->pending.push_back(ctx->openBatch);
+  ctx->openBatch = nullptr;
+  ctx->openBatchDispatches = 0;
+}
 
 /// Wait for every outstanding dispatch and surface the first failure.
 ///
@@ -205,6 +241,7 @@ struct AGMetalCtx {
 /// the lock deliberately: a second thread must not reach device memory while
 /// a drain is only half done.
 const char *drainPendingLocked(AGMetalCtx *ctx) {
+  commitOpenBatchLocked(ctx);
   if (ctx->pending.empty())
     return nullptr;
   const char *firstErr = nullptr;
@@ -1120,6 +1157,9 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
                                uint32_t sharedMemBytes, void *const *argAddrs,
                                const uint64_t *argSizes,
                                const bool *argIsDevicePtr, uint32_t argc) {
+  const bool async = asyncLaunchEnabled();
+  const bool batching = async && batchedLaunchEnabled();
+
   // Metal can silently no-op a dispatch whose threadgroup is too large for
   // the pipeline (SDL #15241); validate against the pipeline's own limit and
   // fail loudly instead.
@@ -1127,18 +1167,68 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
       msg<unsigned long>(fn->pipeline, "maxTotalThreadsPerThreadgroup");
   unsigned long requested =
       static_cast<unsigned long>(block[0]) * block[1] * block[2];
-  if (maxThreads && requested > maxThreads)
+  if (maxThreads && requested > maxThreads) {
+    if (batching) {
+      std::lock_guard<std::mutex> lock(ctx->mu);
+      commitOpenBatchLocked(ctx);
+    }
     return agmErrorf("AppleGPURT[metal]: threadgroup %ux%ux%u = %lu threads "
                      "exceeds this pipeline's maxTotalThreadsPerThreadgroup "
                      "(%lu) for '%s'",
                      block[0], block[1], block[2], requested, maxThreads,
                      fn->name.c_str());
+  }
 
-  id cb = msg<id>(ctx->queue, "commandBuffer");
+  std::unique_lock<std::mutex> batchLock(ctx->mu, std::defer_lock);
+  id cb = nullptr;
+  if (batching) {
+    batchLock.lock();
+    if (!ctx->openBatch) {
+      // Error paths can commit a partially filled batch before it reaches the
+      // normal dispatch-count limit. Keep those command buffers bounded too:
+      // drain before opening another one once the retained-buffer limit is
+      // reached, surfacing any earlier GPU failure at this launch boundary.
+      if (ctx->pending.size() >= kMaxPending) {
+        if (const char *err = drainPendingLocked(ctx))
+          return err;
+      }
+      ctx->openBatch = msg<id>(ctx->queue, "commandBuffer");
+      if (ctx->openBatch)
+        msg<id>(ctx->openBatch, "retain");
+    }
+    cb = ctx->openBatch;
+  } else {
+    cb = msg<id>(ctx->queue, "commandBuffer");
+  }
   if (!cb)
     return agmErrorf("AppleGPURT[metal]: commandBuffer creation failed");
   id enc = msg<id>(cb, "computeCommandEncoder");
+  if (!enc) {
+    if (batching) {
+      commitOpenBatchLocked(ctx);
+    } else {
+      // Command buffers occupy queue order when they are created, not only
+      // after a successful dispatch is encoded. Commit this empty buffer so a
+      // later launch cannot stall behind an abandoned predecessor.
+      msg<void>(cb, "commit");
+    }
+    return agmErrorf("AppleGPURT[metal]: computeCommandEncoder failed");
+  }
   msg<void>(enc, "setComputePipelineState:", fn->pipeline);
+
+  auto endEncodingForError = [&] {
+    msg<void>(enc, "endEncoding");
+    // Preserve any valid dispatches encoded by earlier calls. This call has
+    // not dispatched yet, so committing an encoder containing only its
+    // partial bindings is harmless and makes the earlier work drainable.
+    if (batching) {
+      commitOpenBatchLocked(ctx);
+    } else {
+      // Leaving an ended-but-uncommitted command buffer on a queue can block
+      // later committed buffers because Metal preserves creation order.
+      msg<void>(cb, "commit");
+    }
+  };
 
   // APPLEGPU_TRACE_LAUNCH=1 dumps what actually reaches the encoder. Argument
   // binding is the hard part of this ABI and the failure mode is silent: a
@@ -1148,10 +1238,11 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   if (trace) {
     fprintf(stderr,
             "[applegpu] launch '%s' grid=%ux%ux%u block=%ux%ux%u smem=%u "
-            "argc=%u flags=%s\n",
+            "argc=%u flags=%s batch=%s\n",
             fn->name.c_str(), grid[0], grid[1], grid[2], block[0], block[1],
             block[2], sharedMemBytes, argc,
-            argIsDevicePtr ? "explicit" : "heuristic");
+            argIsDevicePtr ? "explicit" : "heuristic",
+            batching ? "open" : "off");
   }
 
   for (uint32_t i = 0; i < argc; i++) {
@@ -1212,7 +1303,7 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
       // driver disagree about the signature, and guessing which is right is
       // how a scalar gets bound as a buffer.
       if (!slot) {
-        msg<void>(enc, "endEncoding");
+        endEncodingForError();
         return agmErrorf(
             "AppleGPURT[metal]: '%s' is a compiler-generated kernel but "
             "pipeline reflection describes no argument at index %u, while the "
@@ -1243,7 +1334,7 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
       // the point: it is a standing invariant on the argument contract, cheap
       // to check, and the failure it guards against is silent.
       if (!isDev && argSizes && argSizes[i] != slot->declaredSize) {
-        msg<void>(enc, "endEncoding");
+        endEncodingForError();
         return agmErrorf(
             "AppleGPURT[metal]: '%s' arg %u expects %llu bytes of constant "
             "data (air.arg_type_size), host supplied %llu. The kernel's "
@@ -1276,7 +1367,7 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
       size_t off = 0;
       id buffer = resolveAddress(addr, &off);
       if (!buffer) {
-        msg<void>(enc, "endEncoding");
+        endEncodingForError();
         return agmErrorf("AppleGPURT[metal]: launch arg %u: unknown device "
                          "address 0x%llx",
                          i, (unsigned long long)addr);
@@ -1347,6 +1438,19 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   msg<void>(enc, "dispatchThreadgroups:threadsPerThreadgroup:", gridSize,
             blockSize);
   msg<void>(enc, "endEncoding");
+
+  if (batching) {
+    ++ctx->openBatchDispatches;
+    // Preserve the old 64-dispatch memory/error-locality bound. A full batch
+    // is committed and drained here; shorter batches commit at synchronize,
+    // host observation, or teardown through drainPendingLocked().
+    if (ctx->openBatchDispatches >= kMaxBatchDispatches) {
+      commitOpenBatchLocked(ctx);
+      return drainPendingLocked(ctx);
+    }
+    return nullptr;
+  }
+
   msg<void>(cb, "commit");
 
   // Synchronous launch waits here, which costs a full CPU-GPU round trip per
@@ -1363,7 +1467,7 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   // that returns without recording it leaves work running that no later drain
   // can wait on -- and the copy-out that follows then memcpys a buffer the GPU
   // is still writing, which is the very race these drains exist to prevent.
-  if (asyncLaunchEnabled()) {
+  if (async) {
     msg<id>(cb, "retain");
     std::lock_guard<std::mutex> lock(ctx->mu);
     ctx->pending.push_back(cb);

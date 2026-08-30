@@ -142,6 +142,57 @@ int main(void) {
   }
   printf("queued saxpy x3: %zu/%d wrong\n", bad, N);
 
+  // Cross the 64-dispatch backpressure boundary twice. A zero coefficient
+  // leaves the checked result unchanged while still exercising command-buffer
+  // rollover, commit, wait, and error inspection.
+  a = 0.0f;
+  for (int launch = 0; launch < 130; ++launch)
+    CHECK(AsyncRT_DeviceContext_enqueueFunctionDirect(
+        ctx, fn, (N + 255) / 256, 1, 1, 256, 1, 1, 0, NULL, 0, packed, 4,
+        NULL));
+  CHECK(AsyncRT_DeviceContext_DtoH_async(ctx, hostY, y));
+  size_t badBackpressure = 0;
+  for (int i = 0; i < N; i++)
+    if (hostY[i] != 11.0f * (float)i)
+      badBackpressure++;
+  printf("backpressure x130: %zu/%d wrong\n", badBackpressure, N);
+  bad += badBackpressure;
+
+  // A malformed launch after a valid queued one must not strand the earlier
+  // dispatch in an uncommitted batch. Repeat past the retained-buffer limit:
+  // each size-contract failure commits a partial batch, so the next valid
+  // launch must eventually apply backpressure without losing either work or
+  // the immediate validation error.
+  const char *expectedError = NULL;
+  for (int rejection = 0; rejection < 65; ++rejection) {
+    CHECK(AsyncRT_DeviceContext_enqueueFunctionDirect(
+        ctx, fn, 1, 1, 1, 1, 1, 1, 0, NULL, 0, packed, 4, NULL));
+    sizes[2] = 8;
+    expectedError = AsyncRT_DeviceContext_enqueueFunctionDirect(
+        ctx, fn, 1, 1, 1, 1, 1, 1, 0, NULL, 0, packed, 4, NULL);
+    sizes[2] = 4;
+    if (!expectedError) {
+      fprintf(stderr, "SMOKE FAIL: malformed constant size was accepted\n");
+      return 1;
+    }
+    AsyncRT_DeviceContext_strfree(expectedError);
+  }
+  printf("malformed launch x65: rejected\n");
+  CHECK(AsyncRT_DeviceContext_synchronize(ctx));
+
+  // The pre-encoder validation path must flush an already-open batch too.
+  CHECK(AsyncRT_DeviceContext_enqueueFunctionDirect(
+      ctx, fn, (N + 255) / 256, 1, 1, 256, 1, 1, 0, NULL, 0, packed, 4, NULL));
+  expectedError = AsyncRT_DeviceContext_enqueueFunctionDirect(
+      ctx, fn, 1, 1, 1, 2048, 1, 1, 0, NULL, 0, packed, 4, NULL);
+  if (!expectedError) {
+    fprintf(stderr, "SMOKE FAIL: oversized threadgroup was accepted\n");
+    return 1;
+  }
+  printf("oversized launch: rejected\n");
+  AsyncRT_DeviceContext_strfree(expectedError);
+  CHECK(AsyncRT_DeviceContext_synchronize(ctx));
+
   // memset path too. Counted separately: folding this into `bad` and then
   // announcing "verified zero" regardless of the count meant the gate
   // reported a pass it had not established.
@@ -155,6 +206,13 @@ int main(void) {
   printf("memset: %zu/%d wrong\n", badMemset, N);
   bad += badMemset;
 
+  // Leave one final no-op dispatch unsynchronized. Releasing the function and
+  // buffers before the context exercises Metal's encoder-held resource
+  // lifetime; context teardown must commit and drain the open batch safely.
+  a = 0.0f;
+  CHECK(AsyncRT_DeviceContext_enqueueFunctionDirect(
+      ctx, fn, (N + 255) / 256, 1, 1, 256, 1, 1, 0, NULL, 0, packed, 4, NULL));
+
   AsyncRT_DeviceFunction_release(fn);
   AsyncRT_DeviceBuffer_release(x);
   AsyncRT_DeviceBuffer_release(y);
@@ -166,6 +224,7 @@ int main(void) {
     fprintf(stderr, "SMOKE FAIL: %zu wrong elements\n", bad);
     return 1;
   }
+  printf("teardown drain: PASS\n");
   printf("APPLEGPU METAL SMOKE: ALL PASS\n");
   return 0;
 }
