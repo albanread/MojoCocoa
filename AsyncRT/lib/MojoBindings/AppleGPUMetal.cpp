@@ -349,18 +349,142 @@ AddressRegistry &registry() {
   return *r;
 }
 
+//===----------------------------------------------------------------------===//
+// Precise residency: an MTLResidencySet mirroring the registry
+//===----------------------------------------------------------------------===//
+//
+// markAllResident() declares every live root buffer to every compute encoder,
+// one useResource: call per buffer per dispatch, under the registry lock.
+// That is correct and O(live allocations) per dispatch -- the cost of a
+// dispatch grows with every unrelated allocation in the process, which
+// AIR_EXPERIMENTS.md item 6 names as the next runtime scaling defect.
+//
+// MTLResidencySet inverts the cost. The set is attached to the command queue
+// once; membership is edited when an allocation is created or destroyed and
+// committed then -- O(changes), off the dispatch path entirely. Metal keeps
+// everything in an attached, committed set resident for all command buffers
+// on that queue, which is exactly the guarantee useResource was providing,
+// minus the per-dispatch walk.
+//
+// The registry stays the source of truth; the set mirrors it. Sub-views are
+// covered by their root's membership, the same way the registry covers them.
+//
+// Per DEVICE, not per context: the registry is global because a capture blob
+// may carry any live device address, so the residency guarantee must span
+// contexts too. Two contexts on one device share a set; the set is attached
+// to both queues.
+//
+// This is the runtime half of item 6. The compiler half -- describing which
+// buffers a kernel can actually reach, so the set could shrink below "all of
+// them" -- still wants air.indirect_buffer/air.struct_type_info, but the
+// scaling defect is the per-dispatch walk, and that dies here.
+//
+// APPLEGPU_COARSE_RESIDENCY=1 restores the walk: the diagnostic escape hatch,
+// and the A side of the benchmark. Devices without the API (pre-macOS 15) get
+// the walk automatically.
+
+struct ResidencyState {
+  std::mutex mu;
+  bool coarse = false;  // forced off by env, or unavailable on this device
+  bool decided = false;
+  // device -> id<MTLResidencySet>, one entry per device ever seen. Never
+  // destroyed, like the registry: allocations may outlive any one context.
+  std::vector<std::pair<id, id>> sets;
+};
+ResidencyState &residency() {
+  static ResidencyState *s = new ResidencyState(); // never destroyed
+  return *s;
+}
+
+// The set for a device, created on first sight. nil when unsupported, and
+// that answer is stable for the lifetime of the process.
+id residencySetForLocked(ResidencyState &st, id device) {
+  if (!st.decided) {
+    st.coarse = ::getenv("APPLEGPU_COARSE_RESIDENCY") != nullptr;
+    st.decided = true;
+  }
+  if (st.coarse || !device)
+    return nullptr;
+  for (auto &e : st.sets)
+    if (e.first == device)
+      return e.second;
+
+  id set = nullptr;
+  Class descClass = objc_getClass("MTLResidencySetDescriptor");
+  if (descClass &&
+      msg<signed char>(device, "respondsToSelector:",
+                       sel_registerName("makeResidencySetWithDescriptor:error:"))) {
+    id desc = msg<id>(msg<id>((id)descClass, "alloc"), "init");
+    if (desc) {
+      set = msg<id>(device, "makeResidencySetWithDescriptor:error:", desc,
+                    (id *)nullptr);
+      objcRelease(desc);
+      if (set)
+        msg<id>(set, "retain");
+    }
+  }
+  // A nil set is recorded too: the decision is per device, made once, and a
+  // device that cannot make one falls back to the walk forever.
+  st.sets.push_back({device, set});
+  return set;
+}
+
+bool residencyActiveFor(id device) {
+  auto &st = residency();
+  std::lock_guard<std::mutex> lock(st.mu);
+  return residencySetForLocked(st, device) != nullptr;
+}
+
+void residencyAttach(id device, id queue) {
+  auto &st = residency();
+  std::lock_guard<std::mutex> lock(st.mu);
+  id set = residencySetForLocked(st, device);
+  if (set && queue)
+    msg<void>(queue, "addResidencySet:", set);
+}
+
+void residencyAdd(id device, id buffer) {
+  auto &st = residency();
+  std::lock_guard<std::mutex> lock(st.mu);
+  id set = residencySetForLocked(st, device);
+  if (!set || !buffer)
+    return;
+  msg<void>(set, "addAllocation:", buffer);
+  msg<void>(set, "commit");
+}
+
+void residencyRemove(id device, id buffer) {
+  auto &st = residency();
+  std::lock_guard<std::mutex> lock(st.mu);
+  id set = residencySetForLocked(st, device);
+  if (!set || !buffer)
+    return;
+  msg<void>(set, "removeAllocation:", buffer);
+  msg<void>(set, "commit");
+}
+
 void registerRoot(AGMetalBuf *buf, size_t fullBytes) {
-  auto &r = registry();
-  std::lock_guard<std::mutex> lock(r.mu);
-  r.map[buf->gpuBase] = {buf, fullBytes};
+  {
+    auto &r = registry();
+    std::lock_guard<std::mutex> lock(r.mu);
+    r.map[buf->gpuBase] = {buf, fullBytes};
+  }
+  // Mirrored after the registry write, never under its lock: the two locks
+  // are independent and nothing may hold both.
+  if (buf->ctx)
+    residencyAdd(buf->ctx->device, buf->buffer);
 }
 
 void unregisterRoot(const AGMetalBuf *buf) {
-  auto &r = registry();
-  std::lock_guard<std::mutex> lock(r.mu);
-  auto it = r.map.find(buf->gpuBase);
-  if (it != r.map.end() && it->second.first == buf)
-    r.map.erase(it);
+  {
+    auto &r = registry();
+    std::lock_guard<std::mutex> lock(r.mu);
+    auto it = r.map.find(buf->gpuBase);
+    if (it != r.map.end() && it->second.first == buf)
+      r.map.erase(it);
+  }
+  if (buf->ctx)
+    residencyRemove(buf->ctx->device, buf->buffer);
 }
 
 // Resolve a device address to (MTLBuffer id, offset). Returns nil on miss.
@@ -622,6 +746,11 @@ const char *AppleGPUMetal_createContext(AGMetalCtx **out, int id_,
     delete ctx;
     return agmErrorf("AppleGPURT[metal]: newCommandQueue failed");
   }
+  // Attach the device's residency set, so everything committed to it is
+  // resident for every command buffer this queue will ever run. This is what
+  // retires the per-dispatch markAllResident() walk; see the ResidencyState
+  // comment for the whole story.
+  residencyAttach(ctx->device, ctx->queue);
   std::string devName = nsstringToStd(msg<id>(ctx->device, "name"));
   // test_smoke requires "Apple" in the name when api == "metal"; truthfully,
   // this is the Apple Metal API driving an AMD GPU.
@@ -1461,10 +1590,15 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
 
   // The fork bound hoisted capture pointers here as real resources. Apple
   // Silicon dereferences them directly out of the capture buffer instead,
-  // which means nothing has told Metal to keep the pointee resident -- see
-  // markAllResident() for the measurement showing this is a real fault and
-  // not a theoretical one.
-  markAllResident(enc);
+  // which means something has to tell Metal to keep every pointee resident.
+  // Normally that is the queue's residency set, maintained as allocations
+  // come and go -- O(changes), nothing on this path. The walk below is the
+  // fallback: the same guarantee, declared to this one encoder, at a cost
+  // that grows with every live allocation in the process. It runs when the
+  // device has no residency-set API, or when APPLEGPU_COARSE_RESIDENCY=1
+  // forces it for diagnosis or measurement.
+  if (!residencyActiveFor(ctx->device))
+    markAllResident(enc);
 
   if (sharedMemBytes)
     msg<void>(enc, "setThreadgroupMemoryLength:atIndex:",

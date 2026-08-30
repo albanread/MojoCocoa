@@ -36,6 +36,16 @@ modular_cc_binary(
     deps = [":MojoBindings"],
 )
 
+# The number behind AIR_EXPERIMENTS.md item 6: dispatch cost as a function of
+# unrelated live allocations. Flat under the residency set, linear under
+# APPLEGPU_COARSE_RESIDENCY=1 -- and if those two ever match, the precise path
+# has quietly stopped working.
+modular_cc_binary(
+    name = "applegpu_residency_bench",
+    srcs = ["applegpu_residency_bench.c"],
+    deps = [":MojoBindings"],
+)
+
 # The capability table is generated from the runtime source, so it can drift
 # the moment someone implements a stub and does not re-run the generator. A
 # table nobody trusts is worse than no table -- the whole point is to say what

@@ -196,6 +196,24 @@ Metal runtime check.
    dispatch cost grows with every unrelated live allocation. Emit and consume
    `air.indirect_buffer` / `air.struct_type_info`, retain a precise resource
    snapshot for the batch, and benchmark against allocation count.
+
+   *Runtime half landed, 30 August 2026.* An `MTLResidencySet` per device,
+   attached to each command queue and mirrored from the address registry:
+   membership edits at allocation and free, nothing on the dispatch path.
+   `APPLEGPU_COARSE_RESIDENCY=1` restores the walk, which is also how
+   `applegpu_residency_bench` measures both sides in one binary. On an M4 Max,
+   warm best-of-five over 256 tiny dispatches, walk vs set in us/dispatch:
+   4.16 vs 3.78 empty, 8.64 vs 6.49 at 64 live buffers, 23.53 vs 18.40 at
+   256 -- the per-dispatch walk is gone, and its cost was real at every
+   population size. At 1024 and 4096 the two modes converge (74 and ~290
+   us/dispatch), so past ~1k allocations the dominant cost is no longer in
+   this runtime: it scales with total resident allocations per submit either
+   way, pointing at per-command-buffer residency processing below the API.
+   `requestResidency` after each commit was tried and made 64-256 *worse*
+   (7.2 -> 10.3 us at 64), so it stays out. What remains of this item is the
+   compiler half -- reachability metadata so the set can shrink below "every
+   live allocation" -- and, for the >1k regime, fewer-larger allocations
+   (heap suballocation) rather than more residency bookkeeping.
 7. **Reduce the explicit-SIMD width-32 PSO failure.**  Keep the reduced FMA
    source and emitted AIR together. Determine whether the failure is caused by
    vector reconstruction, register pressure, or a specific instruction shape,
