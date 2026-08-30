@@ -217,6 +217,37 @@ the square was legal, and the move still vanished one line later. Every
 observable signal says the code works, because the only thing wrong is a
 read that happens after a write nobody thought of as a write.
 
+#### Three more ways this compiler bites
+
+Found while porting a parser; none of them produced a useful diagnostic.
+
+**`+=` through a List subscript updates a temporary.** `voices[i].tick += n`
+compiles and does nothing at all. Read it out, add, write it back:
+
+```mojo
+var t = voices[i].tick
+voices[i].tick = t + n
+```
+
+This is the same rule as `let` binding by reference, seen from the other side:
+the subscript yields a value, and a compound assignment has nowhere to put the
+result. It cost an afternoon because rests silently occupied no time, and
+every note after them simply arrived early -- nothing in the parse looked
+wrong.
+
+**Passing `mut Struct` on to a second function crashes at the call.** A
+function that holds a struct mutably cannot hand that borrow to another
+function; the process dies inside the caller with a stack in the Mojo runtime
+and no source location. Methods on the struct are fine -- `tune.ensure_voice()`
+works everywhere -- so the workaround is either a method or writing the callee
+out inline.
+
+**A `fn` returning a heap-owning type crashes the compiler.** `fn f() ->
+List[Int]`, or a `fn` returning a struct with a `String` field, fails in
+`DialectConversion` with "incorrect # of replacement values" before any of the
+code runs. `def` is fine for the same signature. The same assertion fires for
+a struct with about ten `List` fields.
+
 ### MAX Kernel Development
 
 - Fine-grained control over memory layout and parallelism

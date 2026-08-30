@@ -18,6 +18,9 @@ which opens itself when a build starts and toggles with ⌘0.
     sid/          a chip-tune synthesiser: three voices, a resonant filter,
                   and a Mojo `fn` serving as CoreAudio's render callback on
                   a real-time thread. Plays ABC notation.
+    abcplayer/    a full ABC notation player -- parser, repeats, tuplets,
+                  MIDI file output -- scheduled to the sample, playing
+                  through either the chip or General MIDI
     ferns/        a landscape of Barnsley ferns growing live over a
                   procedural lawn, under a cloudy dusk sky (CPU)
     fernwind/     the same meadow swaying in the wind: every fern redrawn
