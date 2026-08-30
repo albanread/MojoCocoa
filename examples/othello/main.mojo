@@ -40,7 +40,7 @@ from std.objc import (
     CGRect,
 )
 from std.memory import OpaquePointer
-from std.ffi import external_call
+from std.ffi import external_call, c_char
 from std.os import getenv
 from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext
@@ -275,23 +275,33 @@ class OthelloView(NSView):
 
     def mouseDown_(self, event: ObjCObject):
         # Only a flag: the pump owns the game, and the GPU, and the redraw.
-        with autoreleasepool():
-            let win_point = Obj["NSEvent"](event.addr()).locationInWindow()
-            let col = Int((win_point.x - MARGIN) // CELL)
-            let row = 7 - Int((win_point.y - MARGIN - STATUS_H) // CELL)
-            if col >= 0 and col < 8 and row >= 0 and row < 8:
-                g_click()[] = 1 + row * 8 + col
+        #
+        # The point comes back through the TYPED msg_send. An NSPoint is two
+        # doubles returned in registers, and the dynamic `Obj[...]` path does
+        # not describe that to the ABI -- the call returns nothing usable and
+        # every click lands on the same wrong square, silently.
+        let at = msg_send[CGPoint, "NSEvent", "locationInWindow"](event)
+        let col = Int((at.x - MARGIN) // CELL)
+        let row = 7 - Int((at.y - MARGIN - STATUS_H) // CELL)
+        if col >= 0 and col < 8 and row >= 0 and row < 8:
+            g_click()[] = 1 + row * 8 + col
 
     def keyDown_(self, event: ObjCObject):
-        with autoreleasepool():
-            let chars = Obj["NSEvent"](event.addr()).charactersIgnoringModifiers()
-            if chars.addr() == 0:
-                return
-            let n = Obj["NSString"](chars.addr()).length()
-            if n == 0:
-                return
-            let c = Obj["NSString"](chars.addr()).characterAtIndex(0)
-            if c == 110 or c == 78:              # n
+        # No pool: AppKit's dispatch already has one, and every object read
+        # here is autoreleased by the caller.
+        let chars = msg_send[
+            ObjCObject, "NSEvent", "charactersIgnoringModifiers"
+        ](event)
+        if chars.is_nil():
+            return
+        let p = msg_send[P, "NSString", "UTF8String"](chars)
+        if Int(p) == 0:
+            return
+        let text = String(unsafe_from_utf8_ptr=p.unsafe_bitcast[c_char]())
+        if len(text.as_bytes()) == 0:
+            return
+        let c = Int(text.as_bytes()[0])
+        if c == 110 or c == 78:              # n
                 g_cmd()[] = g_cmd()[] | CMD_NEW
             elif c == 113 or c == 81 or c == 27:  # q or escape
                 g_cmd()[] = g_cmd()[] | CMD_QUIT
@@ -461,22 +471,28 @@ def main() raises:
             if not msg_send[Bool, "NSWindow", "isVisible"](win):
                 break
 
-            let cmd = g_cmd()[]
-            if cmd != 0:
+            # Read the flag out BEFORE clearing it. `let` binds by reference
+            # here, so `let cmd = g_cmd()[]` is a live view of the global and
+            # not a snapshot: clearing the global first makes every later
+            # read of `cmd` return zero, and the command silently evaporates.
+            if g_cmd()[] != 0:
+                let quit = (g_cmd()[] & CMD_QUIT) != 0
+                let fresh = (g_cmd()[] & CMD_NEW) != 0
                 g_cmd()[] = 0
-                if (cmd & CMD_QUIT) != 0:
+                if quit:
                     running = False
                     continue
-                if (cmd & CMD_NEW) != 0:
+                if fresh:
                     new_game()
                 redraw()
 
             # The human's move, if one is waiting and it is legal.
-            let clicked = g_click()[]
-            if clicked != 0:
+            # Same rule: the square is taken out of the global before the
+            # global is cleared.
+            if g_click()[] != 0:
+                let m = bit(g_click()[] - 1)
                 g_click()[] = 0
                 if g_over()[] == 0 and g_black_turn()[] != 0:
-                    let m = bit(clicked - 1)
                     if (legal_moves(board_black(), board_white()) & m) != 0:
                         apply_move(m)
                         settle_turn()
