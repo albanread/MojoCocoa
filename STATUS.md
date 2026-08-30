@@ -21,7 +21,7 @@ plan and should now be read as history rather than current status.
 | --- | --- | --- |
 | Cocoa compiler hook and `std.objc` | Working | `./spikes/run-cocoa-checks.sh`: 9 passed, 0 failed. |
 | Mojo/MAX → AIR → metallib | Working vertical slice | The source-built compiler emits metallibs accepted by the current Xcode toolchain. |
-| AppleGPURT pipeline and launch | Working vertical slice | Pipeline reflection, argument binding, coarse residency, and dispatch pass with Metal debug and shader validation enabled. Launch is asynchronous by default; `APPLEGPU_SYNC_LAUNCH=1` restores the bring-up mode and `APPLEGPU_ASYNC_LAUNCH=0` remains a compatibility opt-out. Command buffers are tracked before any path can return, host observation and teardown drain, state is locked, and the first deferred error wins. A fresh M4 Max rebuild measures 35-dispatch fluid steps at 1.06 ms default versus 3.70–3.90 ms synchronous with identical diagnostics; the original corpus measured 5.1x (10.19 → 1.99 ms/step). Per-dispatch command buffers are still unbatched. |
+| AppleGPURT pipeline and launch | Working vertical slice | Pipeline reflection, argument binding, coarse residency, and dispatch pass with Metal debug and shader validation enabled. Launch is asynchronous and command-buffer-batched by default; `APPLEGPU_SYNC_LAUNCH=1` restores the bring-up mode, while `APPLEGPU_BATCH_DISPATCHES=0` isolates batching. Each dispatch retains a separate compute encoder; batches flush on errors and drain at synchronization, host observation, teardown, or the 64-dispatch bound. Rejected post-command-buffer launches commit an empty buffer so later queue entries cannot stall behind an abandoned predecessor. On the M4 Max, batching reduces the 35-dispatch fluid median from about 1.06 to 0.93 ms/step with identical diagnostics, on top of the earlier 3.5x-3.7x asynchronous-over-synchronous gain. |
 | Numerical smoke | Passing | Rebuilt Mandelbrot: CPU 95.214 ms, GPU 0.849 ms, 100% exact on the latest verification run. Timing is a smoke observation, not a stable benchmark. |
 | Apple MMA | Passing on the 8x8 path only | `test_apple_mma_8x8`: 19 sub-tests PASS, 0 SKIP, after signature-specific declaration uniquing. `test_tensor_core_apple` also reports PASS but is **vacuous here** — all 18 sub-tests print `SKIP: requires Apple M5 + Metal 4`, and its FileCheck pattern `{{PASS|SKIP}}` accepts a skip. It is not evidence for this machine. |
 | AIR overload regression | Passing in current uncommitted worktree | New compile-only `test_air_overload_symbols`: 1/1 pass across mixed dtype signatures; its two kernels are separate `_compile_code` invocations, so a same-module multi-function pass test is still needed. |
@@ -126,7 +126,8 @@ These are separate work streams, not one GPU defect:
   residency.
 - Asynchronous launch is the default. Every read path and teardown drain, state
   is locked, and `APPLEGPU_SYNC_LAUNCH=1` provides the synchronous debug mode.
-  The per-dispatch command buffer is still unbatched.
+  Consecutive dispatches share one command buffer by default, with separate
+  compute encoders and `APPLEGPU_BATCH_DISPATCHES=0` as the isolation switch.
 
 ### Numerical/runtime correctness
 
@@ -196,11 +197,12 @@ Cocoa here, COM on Windows — not whatever upstream adds later.
    capture-trait, KERN-2651 threadgroup memory over 32 KB, and the MHA XPC
    crash reduction.
 
-5. **Batch queued dispatches.** Asynchronous launch is now the default after
-   matching the synchronous failure set and passing the runtime and fluid
-   checks. The remaining runtime gap is one Metal command buffer per dispatch;
-   encode compatible launches into a shared buffer, with explicit flush points
-   at synchronization, host observation, error boundaries, and backpressure.
+5. **Profile the post-batching runtime.** Command-buffer batching is now the
+   default and retains separate encoders for state isolation. The next known
+   scaling cost is `markAllResident()`: every dispatch walks every live
+   allocation. Implement `air.indirect_buffer` metadata, measure launch cost
+   against unrelated allocation count, and only then consider sharing one
+   encoder across compatible launches.
 
 6. **Snapshot the oracle while it still is one.** The correctness comparisons
    against upstream's release depend on the two kernel libraries still

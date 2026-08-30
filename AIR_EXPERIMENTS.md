@@ -105,8 +105,29 @@ Measured with a freshly rebuilt 125-symbol runtime dylib on the M4 Max:
   at sixteen, with identical checksums.
 
 This removes an implicit CPU-GPU round trip from the normal launch contract.
-It does not batch encoders: each dispatch still owns a Metal command buffer,
-which is the next bounded runtime optimization.
+
+Command-buffer batching is now layered on top. Each dispatch retains its own
+compute encoder, but consecutive encoders share one command buffer until a
+drain or the 64-dispatch backpressure limit. The runtime smoke covers three
+dependent kernels, 130 launches crossing backpressure twice, an invalid launch
+after valid queued work, 65 repeated partial-batch rejections, an oversized
+pre-encoder rejection, and an unsynchronized teardown after function and buffer
+release. Default-batched, async-unbatched, and synchronous modes all pass under
+Metal API and GPU validation. Generated-AIR fluid and all eight aligned/ragged
+SRAM matmul shapes also pass with batching and validation.
+
+The repeated-rejection stress also exposed an older unbatched sequencing bug:
+the validation path ended its encoder but abandoned the command buffer without
+committing it. Because Metal preserves command-buffer creation order, a later
+committed launch could wait forever behind that predecessor. Every error after
+command-buffer creation now commits an empty/partial buffer; batching likewise
+flushes prior valid work before returning the immediate validation error.
+
+Across ten alternating fluid A/B rounds, the warm median fell from about 1.06
+ms/step unbatched to 0.93 ms/step batched, roughly 12% lower latency. The FMA
+oracle was neutral at four and eight chains and about 1% faster at sixteen,
+which is the expected shape: batching removes submission overhead, not kernel
+work. `APPLEGPU_BATCH_DISPATCHES=0` isolates the unbatched asynchronous path.
 
 ### Wide-vector scalarization was not promoted
 
@@ -150,16 +171,17 @@ Metal runtime check.
 5. **Add a real driver acceptance gate.**  Compile a small representative
    kernel matrix through AIR, metallib, pipeline-state creation, and execution.
    This is where remaining unresolved LLVM intrinsics can be classified safely.
-6. **Batch command buffers after queued-launch soak.**  Reuse a command buffer
-   for compatible consecutive dispatches and flush it only at synchronization,
-   host observation, backpressure, or an error boundary. Preserve the
-   synchronous debug path and queued SAXPY ordering oracle.
+6. **Replace coarse residency with compiler-described reachability.**  Batching
+   has landed. The next runtime scaling defect is `markAllResident()`, whose
+   dispatch cost grows with every unrelated live allocation. Emit and consume
+   `air.indirect_buffer` / `air.struct_type_info`, retain a precise resource
+   snapshot for the batch, and benchmark against allocation count.
 7. **Reduce the explicit-SIMD width-32 PSO failure.**  Keep the reduced FMA
    source and emitted AIR together. Determine whether the failure is caused by
    vector reconstruction, register pressure, or a specific instruction shape,
    then lower wide per-thread values earlier than final LLVM scalarization.
 
-For performance, the immediate next implementation is item 6, command-buffer
-batching. For compiler capability, it is item 7, the width-32 PSO reduction.
+For performance, the immediate next implementation is item 6, precise
+residency. For compiler capability, it is item 7, the width-32 PSO reduction.
 Item 1 remains the next shared-optimizer correctness change and still requires
 the non-Apple GPU sweep before it is enabled generally.

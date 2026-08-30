@@ -12,8 +12,8 @@
 # velocity, take the divergence, run 30 Jacobi iterations on the pressure,
 # subtract its gradient, shade. At the measured 0.40 ms per synchronous
 # dispatch that is ~15 ms of pure round-trip in a 16 ms frame budget, which is
-# the difference between 60 fps and 30. Queued launch is now the default;
-# APPLEGPU_SYNC_LAUNCH=1 restores the bring-up behaviour for comparison.
+# the difference between 60 fps and 30. Queued, command-buffer-batched launch
+# is now the default; APPLEGPU_SYNC_LAUNCH=1 restores the bring-up behaviour.
 #
 # The physics, in one paragraph: velocity is advected along itself by tracing
 # each cell backwards through the field and sampling where it came from

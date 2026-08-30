@@ -19,6 +19,12 @@ ms at eight chains, and 22.20 to 16.61 ms at sixteen chains. Checksums were
 identical in both modes. This is 1.44x, 1.37x, and 1.34x throughput,
 respectively.
 
+Command-buffer batching is intentionally visible here as a separate runtime
+axis. Ten alternating runs were neutral at four and eight chains and roughly
+1% faster at sixteen; these kernels are compute-bound once warm. The
+35-dispatch fluid workload improves by about 12%, which confirms that batching
+removes submission overhead rather than changing generated arithmetic.
+
 The LLVM wide-vector scalarizer was tested both as float4 fragments
 (`APPLEGPU_AIR_SCALARIZE_MIN_BITS=128`) and as scalars (`=32`). Neither
 improved the stable width-4/8/16 results. Explicit SIMD widths 32 and 64 are a

@@ -65,10 +65,12 @@ channels on the corrected field. Per-dispatch overhead is the dominant term,
 which makes this the first spike that can see it.
 
 Measured on an M4 Max, 320×240 grid, 60 steps. The first table is the original
-bring-up measurement; a fresh rebuilt-runtime check on 30 August measured
-1.06 ms/step by default versus 3.70–3.90 ms/step with
-`APPLEGPU_SYNC_LAUNCH=1`, with identical numerical diagnostics and rendered
-pixel count.
+bring-up measurement. A fresh rebuilt-runtime check on 30 August measured
+about 0.93 ms/step with default command-buffer batching, 1.06 ms/step with
+`APPLEGPU_BATCH_DISPATCHES=0`, and 3.70–3.90 ms/step with
+`APPLEGPU_SYNC_LAUNCH=1`. Ten alternating batched/unbatched rounds produced
+identical numerical diagnostics and rendered pixel counts; batching removes a
+further roughly 12% of step latency.
 
 | launch mode | ms/step | spread across runs |
 |---|---:|---|
@@ -83,6 +85,8 @@ pixel is drawn.
 
 `APPLEGPU_ASYNC_LAUNCH=0` remains a compatibility opt-out, but new scripts
 should use the positive `APPLEGPU_SYNC_LAUNCH=1` debug switch.
+`APPLEGPU_BATCH_DISPATCHES=0` keeps queued launch while restoring one command
+buffer per dispatch for diagnosis and measurement.
 
 ## The physics, briefly
 

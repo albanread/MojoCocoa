@@ -463,9 +463,15 @@ that preserves the original cause.
 
 Kernel launch now queues by default and drains at synchronization, host
 observation, backpressure, and teardown. `APPLEGPU_SYNC_LAUNCH=1` preserves the
-synchronous diagnostic path. The remaining work is command-buffer batching and
-the stronger concurrent allocation/lifetime stress coverage in the exit
-criterion below.
+synchronous diagnostic path. Consecutive launches now share one command buffer
+by default while retaining separate compute encoders; the batch is capped at 64
+dispatches and `APPLEGPU_BATCH_DISPATCHES=0` isolates the unbatched path. The
+remaining work is precise residency, broader corpus soak, and the stronger
+concurrent allocation/lifetime stress coverage in the exit criterion below.
+Rejected launches after command-buffer creation must still commit their empty
+buffer: abandoning it can block later committed work behind Metal's queue-order
+predecessor. The runtime smoke now repeats that sequence past the 64-buffer
+backpressure boundary in all three launch modes.
 
 Specific adjustment:
 

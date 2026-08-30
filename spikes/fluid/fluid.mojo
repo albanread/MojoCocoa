@@ -24,8 +24,9 @@
 # dispatch, in the same ballpark as the 0.40 ms measured independently for
 # short kernels. Synchronously the physics alone eats a whole 60fps frame.
 #
-#     ./fluid                         # queued launch, drained on read
-#     APPLEGPU_SYNC_LAUNCH=1 ./fluid  # synchronous debug mode
+#     ./fluid                              # queued + command-buffer batched
+#     APPLEGPU_BATCH_DISPATCHES=0 ./fluid  # queued, one buffer per dispatch
+#     APPLEGPU_SYNC_LAUNCH=1 ./fluid       # synchronous debug mode
 #
 # ===----------------------------------------------------------------------=== #
 
