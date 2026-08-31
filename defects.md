@@ -286,3 +286,13 @@ Resume point: the staged-but-unrun probe is a one-shot stack trace at the
 first DIFFERS in the differ (built once, reverted) naming the verifying
 pass; if it shows verification preceding operand-constant processing, the
 fold belongs at the clone/verify boundary.
+
+
+### Runtime lifetime repairs — FIXED (ed3a5302)
+destroyBuffer drains in-flight dispatch before release (was a
+use-after-free under the async default; test_gated_group_rmsnorm
+recovered fail->pass, sweep +2/zero regressions);
+createStream retains its context; CLOCK_RATE refuses on Metal contexts
+instead of returning a Xeon literal; raw-copy staging allocations
+report legible failures. Standing stress:
+spikes/capture-abi/lifetime_stress.c.
