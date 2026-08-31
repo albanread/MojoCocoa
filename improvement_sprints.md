@@ -117,13 +117,32 @@ Behind a clean corpus sweep, per the transforms' own policy:
 1. `applyAirKernelFnAttributes` (MSL fast-math semantics; `nosync` already
    correctly withheld from barrier-reaching kernels).
 2. `rename-llvm-intrinsics` + `guard-nan-minmax` as a pair, never separately.
+   Measured 31 Aug: the scalar `llvm.maxnum/minnum.f32` forms are tolerated
+   by Apple's reader (probe 05 runs clean both spellings), so this is
+   naming consistency, not correctness.
 3. `split-i64-shuffle`, unblocked by Sprint 1's F3 fix.
-4. Measure before building: per-kernel `xcrun metallib` subprocess cost in a
-   large build; `air.read` vs `air.read_write` precision only with a golden
-   sample showing Apple distinguishing them for device buffers.
+4. ~~`APPLEGPU_AIR_SCALARIZE_WIDE_VECTORS` on perf grounds~~ — measured 31
+   Aug against upstream on fma_peak and the unrolled register matmul: no
+   effect beyond noise, slightly negative on the matmul, correctness EXACT.
+   Stays off; see oracles `findings/air-quality-2026-08-31.md`.
+5. **NEW, top compute-side item:** the unroll inversion — unrolling the
+   register matmul helps upstream (2048³: 3058→3216 GFLOP/s) and hurts us
+   (3113→2951). Diff the unrolled kernel's AIR against theirs' (the
+   probe-09 method in the findings doc) before writing any transform.
+6. Small-shape matmul (512³, ragged-513) at 15-17% behind upstream is
+   consistent with per-dispatch overhead on short kernels — that is
+   STATUS item 5 (runtime profiling), not codegen.
+7. Measure before building: per-kernel `xcrun metallib` subprocess cost in
+   a large build; `air.read` vs `air.read_write` precision only with a
+   golden sample showing Apple distinguishing them for device buffers.
 
 Each promotion is its own commit with the sweep result recorded, so a
 regression bisects to one knob.
+
+Also recorded 31 Aug: fma peak is at parity with upstream (9525 vs 9539
+GFLOP/s at 64 chains; we win at 1 chain) — the 25 Aug 1.35-1.43x launch-tax
+gap is closed by async launch + batching. The refreshed tables live in the
+oracles repo beside the 25 Aug ones.
 
 ## Standing verification commands
 
