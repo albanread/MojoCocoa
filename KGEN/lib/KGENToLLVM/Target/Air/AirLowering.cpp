@@ -26,6 +26,11 @@
 namespace M::KGEN {
 namespace {
 
+/// Passthrough attribute marking an exported AIR kernel between
+/// LowerKGENToLLVM (which stamps it via markExportedKernel) and the object
+/// backend (which recognizes it via isExportedKernel and scrubs it).
+static constexpr llvm::StringLiteral kKernelMark = "air-kernel";
+
 // AIR runtime functions are type-suffixed (air.simd_shuffle_xor.u.i32,
 // .f32, .f16 — golden MSL probes). Mangle at declaration time so each
 // payload type gets its own correctly-typed declaration; a shared bare stem
@@ -253,6 +258,51 @@ class AirLowering final : public TargetLowering {
 public:
   const TargetTraits *traits() const override { return &AirTraits::get(); }
   bool isBaseTarget() const override { return false; }
+
+  /// Stamp an exported device kernel so later stages (and
+  /// functionRequiresByVal in LowerKGENToLLVM) can recognize it. Travels as
+  /// an LLVM passthrough attribute — a channel that survives translation —
+  /// and the AIR backend scrubs it before emission; Apple's reader has never
+  /// heard of it.
+  void markExportedKernel(mlir::Operation *func) const override {
+    auto f = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(func);
+    if (!f)
+      return;
+    llvm::SmallVector<mlir::Attribute, 4> passthrough =
+        llvm::to_vector(f.getPassthroughAttr().getValue());
+    mlir::Attribute mark = mlir::StringAttr::get(f->getContext(), kKernelMark);
+    if (llvm::is_contained(passthrough, mark))
+      return;
+    passthrough.push_back(mark);
+    f.setPassthroughAttr(mlir::ArrayAttr::get(f->getContext(), passthrough));
+  }
+
+  bool isExportedKernel(mlir::Operation *func) const override {
+    auto f = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(func);
+    return f && llvm::is_contained(
+                    f.getPassthroughAttr().getValue(),
+                    mlir::StringAttr::get(f->getContext(), kKernelMark));
+  }
+
+  /// Borrowed kernel arguments pass `byval(<pointee>)` on the AIR target.
+  ///
+  /// This is the discriminator the capture-pack fix turns on. A kernel
+  /// argument this target cannot pass in registers — a marshaled capture
+  /// aggregate, the TileTensor packs of nn/index_tensor — is lifted to a
+  /// pointer with ArgConvention::ReadMem by LowerArgConventions, and
+  /// convertLLVMMetadata attaches byval with the pointee TYPE converted from
+  /// the KGEN signature, where it still exists. By LLVM IR the parameter
+  /// itself is an opaque pointer and the pointee is gone, but the byval
+  /// attribute keeps it: `byval(%struct.Caps)` is a by-value argument pack
+  /// (constant bytes on Metal, bound with setBytes), while a device buffer
+  /// argument carries byval of a non-struct pointee or none at all and is
+  /// ignored by the backend's pack rule. That is the same classification the
+  /// launcher applies at enqueue time (`arg_is_device_ptr`: a device pointer
+  /// is exactly pointer-sized and pushes one buffer), decided where the type
+  /// still says so.
+  llvm::StringRef getKernelByValArgAttrName() const override {
+    return "llvm.byval";
+  }
 
   bool isLoweredInGlobalPOPPass(mlir::Operation *op) const override {
     auto call = llvm::dyn_cast<POP::CallLLVMIntrinsicOp>(op);

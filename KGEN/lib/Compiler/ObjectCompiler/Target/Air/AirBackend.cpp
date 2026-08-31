@@ -628,10 +628,41 @@ llvm::Function *legalizeKernel(llvm::Function &fn,
   // AIR's model for MSL `constant T&` — loaded at entry; the runtime binds
   // them with setBytes at the same index. Generic pointers move to device
   // AS(1).
+  //
+  // A pointer parameter carrying byval of a STRUCT pointee is neither: it is
+  // a marshaled argument pack (a capture aggregate the launcher passes as
+  // bytes), and it becomes a constant-AS(2) pointer used directly — no entry
+  // load, the body reads its fields through AS2 like Apple's own
+  // `constant Caps&`. AirLowering attaches byval with the pointee type
+  // converted where it still exists; by this point the parameter itself is
+  // opaque, so the attribute is the only surviving witness of what it was.
+  // Pointer loads out of the pack are turned into device pointers by
+  // deviceizeCapturedPointers, which already handles AS2 sources.
+  //
+  // Before this rule the pack was typed device AS(1) — "caller says
+  // constant, reflection says device" — and the launch bound host bytes as a
+  // device address: test_index_tensor's getitem kernel read garbage and the
+  // runtime refused later ones with "unknown device address".
   llvm::SmallVector<llvm::Type *, 8> paramTypes;
   llvm::SmallVector<llvm::Type *, 8> scalarOrigTypes; // per-param, null if ptr
-  for (llvm::Type *ty : fn.getFunctionType()->params()) {
+  llvm::SmallVector<llvm::Type *, 8> packTypes; // marshaled-pack pointee, or null
+  for (auto [argIdx, ty] :
+       llvm::enumerate(fn.getFunctionType()->params())) {
+    llvm::Type *packTy = nullptr;
     if (auto *pt = llvm::dyn_cast<llvm::PointerType>(ty)) {
+      if (llvm::Attribute byval =
+              fn.getArg(argIdx)->getAttribute(llvm::Attribute::ByVal);
+          byval.isValid()) {
+        if (llvm::Type *pTy = byval.getValueAsType();
+            pTy && pTy->isStructTy() && pt->getAddressSpace() == 0)
+          packTy = pTy;
+      }
+    }
+    packTypes.push_back(packTy);
+    if (packTy) {
+      scalarOrigTypes.push_back(nullptr);
+      paramTypes.push_back(llvm::PointerType::get(ctx_, 2));
+    } else if (auto *pt = llvm::dyn_cast<llvm::PointerType>(ty)) {
       scalarOrigTypes.push_back(nullptr);
       paramTypes.push_back(pt->getAddressSpace() == 0
                                ? llvm::PointerType::get(ctx_, 1)
@@ -776,24 +807,32 @@ llvm::Function *legalizeKernel(llvm::Function &fn,
   for (unsigned i = 0; i != numOrigParams; ++i) {
     llvm::Argument *arg = newFn->getArg(i);
     bool isScalar = scalarOrigTypes[i] != nullptr;
-    unsigned as = isScalar
+    bool isPack = packTypes[i] != nullptr;
+    unsigned as = isScalar || isPack
                       ? 2u
                       : llvm::cast<llvm::PointerType>(arg->getType())
                             ->getAddressSpace();
+    // The pack's size must be the same number the launcher computed when it
+    // packed the bytes (Mojo size_of of the argument's device type), or the
+    // runtime's constant-binding size check would refuse the launch.
     unsigned size =
-        isScalar ? static_cast<unsigned>(
-                       m.getDataLayout().getTypeAllocSize(scalarOrigTypes[i]))
-                 : 4u;
+        isScalar
+            ? static_cast<unsigned>(
+                  m.getDataLayout().getTypeAllocSize(scalarOrigTypes[i]))
+            : isPack ? static_cast<unsigned>(
+                           m.getDataLayout().getTypeAllocSize(packTypes[i]))
+                     : 4u;
     argMD.push_back(mdStrings(
         c, {mdI32(c, i), mdStr(c, "air.buffer"),
             mdStr(c, "air.location_index"), mdI32(c, i), mdI32(c, 1),
-            mdStr(c, isScalar ? "air.read" : "air.read_write"),
+            mdStr(c, isScalar || isPack ? "air.read" : "air.read_write"),
             mdStr(c, "air.address_space"), mdI32(c, as ? as : 1),
             mdStr(c, "air.arg_type_size"), mdI32(c, size),
             mdStr(c, "air.arg_type_align_size"), mdI32(c, size),
-            mdStr(c, "air.arg_type_name"), mdStr(c, isScalar ? "uint" : "void"),
+            mdStr(c, "air.arg_type_name"),
+            mdStr(c, isScalar || isPack ? "uint" : "void"),
             mdStr(c, "air.arg_name"), mdStr(c, arg->getName())}));
-    if (!isScalar)
+    if (!isScalar && !isPack)
       arg->addAttr(llvm::Attribute::get(c, "air-buffer-no-alias"));
   }
   for (unsigned u = 0; u < uses.size(); ++u) {
@@ -1959,6 +1998,11 @@ llvm::Error legalizeModule(llvm::Module &m) {
     fn.removeFnAttr("target-cpu");
     fn.removeFnAttr("target-features");
     fn.removeFnAttr("tune-cpu");
+    // Ours, not Apple's: the exported-kernel mark stamped by AirLowering's
+    // markExportedKernel, and the byval attributes carrying the marshaled-
+    // argument-pack typing. Both did their job by legalizeKernel; neither
+    // belongs in a module handed to the AIR reader.
+    fn.removeFnAttr("air-kernel");
     // Only for functions that are NOT local. LLVM requires local linkage to
     // imply dso_local ("GlobalValue with local linkage or non-default
     // visibility must be dso_local!"), so clearing it unconditionally emitted
@@ -1969,6 +2013,7 @@ llvm::Error legalizeModule(llvm::Module &m) {
     if (!fn.hasLocalLinkage())
       fn.setDSOLocal(false);
     for (llvm::Argument &arg : fn.args()) {
+      arg.removeAttr(llvm::Attribute::ByVal);
       arg.removeAttr(llvm::Attribute::Captures);
       arg.removeAttr(llvm::Attribute::Range);
       arg.removeAttr(llvm::Attribute::Initializes);
