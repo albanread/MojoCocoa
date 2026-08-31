@@ -217,10 +217,18 @@ ParametricElaborator.cpp ~480-498 constructs TypeInstanceRefAttr when
 bindings resolve, and ParserEvaluationContext::getAndFold does the same
 at attr-construction time (but only for attrs implementing
 ContextuallyEvaluatedAttrInterface, and only when built through it).
-THE FIX: construct the pack-member TypeParamAttrs through the evaluation
-context's fold — either route the closure pack member construction
-through getAndFold-style evaluation, or add the genref-with-concrete-
-bindings → instref fold as a canonicalization applied where the pack
-struct type is built for the call. A second symptom in the same repro
+THE FIX (sharpened twice more): concretizeSymbolsWithin only folds
+SymbolConstantAttr — it lets TypeGeneratorRefAttr pass through unfolded,
+and Elaborator::getConcreteStructTypeReference is the existing
+genref→instref fold nothing calls from there. Tried adding that case
+(Elaborator.cpp concretizeSymbolsWithin; the fold is replacer-safe since
+it returns the instance ref immediately): BUILDS, but does not fire on
+this path — the differing type is the closure literal's RESULT type, set
+at parse time (liftClosure bindReference), which never passes through
+constant concretization at all. The fold must therefore hook where
+elaboration finalizes op RESULT TYPES (or where the offload call's
+operand types are settled) — Elaborator-side, in the processing of the
+closure-literal op. That is the named next step; the two attempted
+variants are recorded so they are not retried. A second symptom in the same repro
 ('value defined outside the region') may be separate; re-check after.
 Repro: rms_crash.mojo against the widened dist kernels.
