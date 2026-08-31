@@ -359,3 +359,87 @@ class LifeView(NSView):
 
 Three nil checks before touching anything. AppKit will hand you a nil string
 for a dead key, and a null `UTF8String` for an empty one.
+
+## When the caller is not Objective-C
+
+Everything above is Cocoa calling you through the Objective-C runtime: you
+declare a `class`, the runtime finds your selector, and dispatch does the
+work. Some of the most interesting parts of macOS do not work that way. They
+take a **C function pointer** and call it directly — no object, no selector,
+no runtime in between.
+
+This is where the fork's `fn` earns its revived meaning. `fn` is thin,
+non-raising, and C ABI: that is exactly an Objective-C `IMP`, and it is
+exactly a C callback too. So a Mojo `fn` *is* a C function pointer, and can
+be handed to a C API with nothing in between — no shim, no trampoline, no C
+file in the build.
+
+CoreAudio's render callback is the sharpest case, because it also has a
+deadline. Declare the signature as a type, and the function is that type:
+
+```mojo
+comptime P = OpaquePointer[MutUntrackedOrigin]
+comptime AURenderCallback = fn(P, P, P, UInt32, UInt32, P, /) -> Int32
+
+fn render(
+    ref_con: P, action_flags: P, timestamp: P,
+    bus: UInt32, frames: UInt32, io_data: P,
+) -> Int32:
+    ...
+    return 0
+```
+
+Installing it means writing the function's address into the struct CoreAudio
+expects. Read it out of a slot holding the value rather than bitcasting the
+function itself — the slot's eight bytes are the pointer:
+
+```mojo
+var cbfn: AURenderCallback = render
+let fn_addr = Pointer(to=cbfn).unsafe_bitcast[Int]()[]
+var cbs = external_call["calloc", P](Int(2), Int(8))
+cbs.unsafe_bitcast[Int]()[unsafe_offset=0] = fn_addr
+cbs.unsafe_bitcast[Int]()[unsafe_offset=1] = Int(state)   # the refCon
+```
+
+### What a real-time thread forbids
+
+`render` runs on a thread CoreAudio owns, every few milliseconds, with a hard
+deadline: 512 frames at 48 kHz is 10.7 ms, and a buffer not filled in time is
+a gap you can hear. Three rules follow, and none of them is advice:
+
+- **No allocation.** Everything the callback touches is allocated before the
+  unit starts.
+- **No locks.** The drawing thread reads the same state to paint meters; a
+  torn read costs one wrong pixel for one frame, where a held lock costs a
+  click in the speaker. Take the torn read.
+- **No raising.** An `fn` cannot raise, which is the language enforcing the
+  rule rather than the programmer remembering it.
+
+The callback carries no captured state — a C function pointer has nowhere to
+put any. That is what `refCon` is for: the last field of the struct above is
+handed back as the first argument on every call, so the whole synthesiser
+hangs off one pointer and nothing needs a global.
+
+### An unbounded loop is a hang, not a slow path
+
+Ordinary code survives a loop that runs too long; a real-time thread does
+not. A range-reduction written as *subtract 2π until in range* is fine for a
+filter coefficient and ruinous for a vibrato whose argument grows with a
+frame counter: the loop gets one iteration longer every fifty frames, and one
+day the audio simply stops. Reduce in one step instead, and clamp anything
+derived from data:
+
+```mojo
+let turns = x * 0.15915494309189535     # 1 / 2*pi
+var t = x - 6.283185307179586 * Float64(Int(turns))
+```
+
+The same reasoning applies to a note number arriving from a file. Clamping it
+is not defensive decoration: unclamped, an octave normalisation is a loop
+over the octave count, and a nonsense value is not a wrong pitch but a
+stopped speaker.
+
+`examples/chip/` is the whole of it — a three-voice synthesiser whose
+oscillators are phase accumulators, with the render callback above — and
+`examples/abcplayer/` reads ABC notation and schedules it to the sample
+through the same path.

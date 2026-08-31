@@ -170,6 +170,11 @@ Mojo — a thousand lines, a split view, syntax highlighting, and a child proces
 pixel computed and coloured by a Mojo kernel on the Apple GPU. The GPU stack
 this once waited for works now: it times one CPU core against the GPU (a
 couple of hundred times apart on an M4 Max), then holds 60fps while it zooms.
+`examples/chip/` and `examples/abcplayer/` are the real-time counterpart: a
+synthesiser and an ABC-notation player whose audio is produced by a Mojo `fn`
+serving as CoreAudio's render callback, on a thread with a 10.7 ms deadline
+(chapter 6).
+
 `examples/fluid/` is the deeper GPU example — Stable Fluids, about 35
 dependent dispatches a frame, no shader anywhere.
 
