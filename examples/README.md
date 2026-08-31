@@ -111,18 +111,24 @@ up the plant, the rotation compounds into a progressive bend -- stems lean,
 tips whip. `mandelbrot/`, `fluid/` and `fernwind/` compute on the GPU;
 `life/` and `ferns/` compute on the CPU and use Metal only to present.
 
-`life/`, `fluid/`, `mandelbrot/`, `ferns/` and `fernwind/` are the ones that
-look like applications.
+`life/`, `fluid/`, `mandelbrot/`, `othello/`, `ferns/` and `fernwind/` are the
+ones that look like applications. They declare Objective-C classes with
+`class` — the view whose mouse and key handlers Cocoa calls, the app delegate,
+the timer target in `life/`, the Apple Event handler in `fluid/` — so there is
+no `ObjCClassBuilder`, no hand-written type encoding, and no `cmd` slot
+anywhere in them. `fluid/` is Jos Stam's Stable Fluids with every kernel
+compiled through this fork's AIR backend; there is no shader in the pipeline.
 
 The last five are Modular's, copied from `mojo/examples/` and `max/examples/`
 in this same tree with nothing changed but the filename — including
 `DeviceContext()` with no arguments, which resolves to the Apple GPU here.
 That is the point of carrying them: upstream's own teaching examples, warp
 primitives aside, build and run through this fork's AIR backend as written.
-`tiled-matmul/` is the strongest proof in the set — shared-memory tiles and
-barrier synchronisation, finishing with its own validation pass. Both declare
-Objective-C classes with `class` — the view whose mouse and key handlers Cocoa
-calls, the app delegate, the timer target, the Apple Event handler — so there
-is no `ObjCClassBuilder`, no hand-written type encoding, and no `cmd` slot
-anywhere in them. `fluid/` is Jos Stam's Stable Fluids with every kernel
-compiled through this fork's AIR backend; there is no shader in the pipeline.
+`tiled-matmul/` is the strongest of the five — shared-memory tiles and barrier
+synchronisation, and the only one that checks its own arithmetic at all, though
+what it checks is five closed-form spot values rather than the CPU reference
+its own output claims.
+
+Each example gets a section in the guide: **The examples**, in
+`CocoaMojoGuide/examples/`, says what every one of them teaches — and says so
+plainly where the honest answer is "nothing".

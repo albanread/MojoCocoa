@@ -8,9 +8,11 @@
 # `CAMetalLayer`. No shader anywhere in the pipeline.
 #
 # The solver is `fluid_smoke.mojo`, which runs the same kernels headless and
-# checks them (mass conservation to 0.6%, post-projection divergence within
-# ±0.05). Run that first if this ever looks wrong -- it separates "the physics
-# broke" from "the window broke".
+# fails if the dye vanished, if it blew up, or if the splat never landed. It
+# also prints mass conservation and post-projection divergence (0.6% and
+# within ±0.05 on a good run) -- those are observations to read, not
+# thresholds it enforces. Run it first if this ever looks wrong: it separates
+# "the physics broke" from "the window broke".
 #
 # WHY THIS SPIKE EXISTS, beyond being nice to look at: mandelbrot is one
 # dispatch per frame and life is none, so neither measures launch cost. A
@@ -24,8 +26,15 @@
 # dispatch, in the same ballpark as the 0.40 ms measured independently for
 # short kernels. Synchronously the physics alone eats a whole 60fps frame.
 #
-#     ./fluid                          # synchronous launch
-#     APPLEGPU_ASYNC_LAUNCH=1 ./fluid  # deferred wait, drained on read
+# Those were the numbers when async launch was the opt-in. It is now the
+# default, and batching has since narrowed the gap by making the slow side
+# faster -- 3.87 sync against 1.49 batched-and-async on the same workload,
+# 2.6x. The conclusion is unchanged: launch overhead, not arithmetic, is what
+# a 35-dispatch step is made of.
+#
+#     ./fluid                          # async, command-buffer-batched (default)
+#     APPLEGPU_SYNC_LAUNCH=1 ./fluid   # the old synchronous bring-up mode
+#     APPLEGPU_BATCH_DISPATCHES=0 ./fluid  # async, batching off
 #
 # ===----------------------------------------------------------------------=== #
 

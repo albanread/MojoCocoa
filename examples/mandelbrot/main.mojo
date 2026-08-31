@@ -12,8 +12,9 @@
 #   r        start again from the whole set
 #   q / esc  quit, as does closing the window
 #
-# Ported from spikes/mandelbrot and converted to the current patterns, the
-# same conversion life and fluid had:
+# Ported from spikes/mandelbrot and converted to the current patterns. It is
+# ahead of life and fluid on both counts below rather than level with them --
+# those two still redeclare the CG structs, and fluid has no view class at all:
 #
 #   * CGPoint/CGSize/CGRect come from std.objc rather than being redeclared
 #     here -- they are TrivialRegisterPassable there, which is what the C ABI
@@ -22,7 +23,8 @@
 #   * The mouse and keyboard arrive through a `class` the runtime calls, not
 #     by picking events apart in the pump. The handlers only set flags: the
 #     frame loop owns every Metal and GPU call, so a callback arriving
-#     between two frames cannot race one (the fluid demo's doctrine).
+#     between two frames cannot race one. The flags-only discipline is the
+#     fluid demo's; the view class is not -- fluid reads events in the pump.
 #   * The GPU context and its buffers are locals in `main`. That is why the
 #     event loop is a hand-rolled pump rather than `[NSApp run]`: a
 #     DeviceContext cannot live in a `named_global`, and locals cannot be
