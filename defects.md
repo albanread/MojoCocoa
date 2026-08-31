@@ -233,8 +233,22 @@ closure-literal op (the storage-struct VarDeclOp from emitInitializerCall
 by measurement, so a fourth (verifier-side isEqualCanon) is not attempted
 in vain: the canonicalizer strips type sugar, not parametric form —
 isEqualCanon answers 0 on this pair (the differ now reports that verdict
-whenever it fires, f61e8d8b). The remaining fix is the emission-side fold
-at elaborated-type finalization; everything needed is staged (repro,
-widened dist, differ). A second symptom in the same repro
+whenever it fires, f61e8d8b). The remaining fix is the emission-side fold at elaborated-type
+finalization. Five structured attempts (budgeted ten) narrowed it to
+this: (1) lldb proved the elaborator's ParameterEvaluator folds genrefs
+via IREvaluator::evaluateContextSpecific, while the parser's context
+does not — and the closure storage struct is non-parametric, so its
+field attrs are never rebound; (2) the failing argument is always a
+kgen.param.constant holding the capture pack (loc(unknown)), created at
+IREmitter.cpp:452 with the parse-time type; (3)+(4) adding a result-type
+fold to BOTH processParamConstantOp twins builds cleanly but NEVER RUNS
+on this path (zero folds traced) — the constants are not processed there
+before verification fails, i.e. the call is verified against the
+un-folded type, an ordering problem; (5) the next probe (stack trace at
+the verifying pass) was staged but not run when the attempt budget
+closed. NEXT: instrument verifyCallOperands' caller to name the
+verifying pass; if verification runs before operand-defining constants
+are processed, the fold belongs at the clone/verify boundary or the call
+processing must process its operand constants first. A second symptom in the same repro
 ('value defined outside the region') may be separate; re-check after.
 Repro: rms_crash.mojo against the widened dist kernels.
