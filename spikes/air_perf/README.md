@@ -34,3 +34,40 @@ pipeline-state creation terminates the Metal compiler connection with
 enable the scalarizer by default on the strength of IR shape alone. Reduce the
 width-32 PSO failure, then split wide per-thread values before the form that
 causes Apple's compiler to fail.
+
+
+## Re-measured at HEAD `fca4e767`, 30 August 2026
+
+Both oracles were re-run after the AIR lowering merge and the residency-set
+selector fix. They measure orthogonal axes, and the comparison shows it:
+
+**FMA compute oracle — unchanged, as it should be.** Six passes, first
+discarded as cold, median of the rest, M4 Max:
+
+| chains | sync ms (prev → now) | async ms (prev → now) | async speedup (prev → now) |
+|---|---|---|---|
+| 4 | 12.44 → 12.40 | 8.64 → 8.60 | 1.44x → 1.44x |
+| 8 | 15.10 → 15.20 | 11.04 → 10.92 | 1.37x → 1.39x |
+| 16 | 22.20 → 22.63 | 16.61 → 16.30 | 1.34x → 1.39x |
+
+Within ~2% of the baseline everywhere, and the checksums are bit-identical to
+the recorded run. This oracle holds one output buffer and is compute-bound
+once warm, so nothing in the latest changes moves it -- which is exactly why
+it is a separate oracle from the residency bench. A change that altered the
+generated arithmetic would show here as a different checksum or a different
+warm time; neither moved.
+
+**Residency bench — transformed by the selector fix.** The companion oracle,
+`AsyncRT/lib/MojoBindings/applegpu_residency_bench`, measures the opposite
+axis: per-dispatch cost against the number of live allocations. The residency
+set had never actually activated (wrong factory selector; see
+`AIR_EXPERIMENTS.md` item 6 and MojoCocoa `267766a4`), so before the fix both
+its modes ran the same useResource walk and were identical. With the set
+genuinely active, us/dispatch walk vs set, 9-pass medians: 6.66 -> 3.77 at 64
+live buffers, 18.56 -> 3.46 at 256, 73.35 -> 3.25 at 1024, 289.53 -> 3.37 at
+4096. Flat in the allocation count where the walk is linear.
+
+Taken together: the latest AIR changes left the compute schedule exactly
+where it was and fixed the dispatch path that had silently never run. The two
+oracles are the reason that statement can be made with numbers rather than
+asserted.
