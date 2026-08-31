@@ -228,7 +228,13 @@ at parse time (liftClosure bindReference), which never passes through
 constant concretization at all. The fold must therefore hook where
 elaboration finalizes op RESULT TYPES (or where the offload call's
 operand types are settled) — Elaborator-side, in the processing of the
-closure-literal op. That is the named next step; the two attempted
-variants are recorded so they are not retried. A second symptom in the same repro
+closure-literal op (the storage-struct VarDeclOp from emitInitializerCall
+/ liftClosure's bindReference). THREE candidate fixes are now eliminated
+by measurement, so a fourth (verifier-side isEqualCanon) is not attempted
+in vain: the canonicalizer strips type sugar, not parametric form —
+isEqualCanon answers 0 on this pair (the differ now reports that verdict
+whenever it fires, f61e8d8b). The remaining fix is the emission-side fold
+at elaborated-type finalization; everything needed is staged (repro,
+widened dist, differ). A second symptom in the same repro
 ('value defined outside the region') may be separate; re-check after.
 Repro: rms_crash.mojo against the widened dist kernels.
