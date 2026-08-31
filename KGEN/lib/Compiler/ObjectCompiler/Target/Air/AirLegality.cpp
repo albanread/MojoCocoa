@@ -336,7 +336,7 @@ bool isAllocaDerived(const llvm::Value *v);
 bool isAllocaDerivedImpl(const llvm::Value *v, unsigned depth);
 
 /// The alloca a pointer expression is rooted at, or null.
-const llvm::AllocaInst *allocaBaseOf(const llvm::Value *p, unsigned depth) {
+const llvm::AllocaInst *allocaBaseOf(const llvm::Value *p) {
   for (unsigned i = 0; i < 8; ++i) {
     p = p->stripPointerCasts();
     if (const auto *a = llvm::dyn_cast<llvm::AllocaInst>(p))
@@ -381,23 +381,15 @@ bool isAllocaDerivedImpl(const llvm::Value *v, unsigned depth) {
     //
     // But a device pointer spilled to the stack and reloaded is exactly the
     // defect this rule exists to catch, so "came off the stack" is not enough
-    // on its own: follow it back to what was STORED there. Private only if
+    // on its own: follow it back to what was STORED there, and accept only if
     // every store into that slot stored something itself alloca-derived.
+    //
+    // This whole case may only ESTABLISH privacy or decline to; it must not
+    // return false, because that would abandon the other work items and
+    // report a pointer that a different path proves private. Getting that
+    // wrong took suite findings from 77 to 443.
     if (auto *ld = llvm::dyn_cast<const llvm::LoadInst>(cur)) {
-      // A pointer LOADED OUT of stack memory. `alloca [2 x ptr]` holding
-      // pointers to other allocas is ordinary private indirection, and
-      // treating the reload as a device access produced 77 false positives.
-      //
-      // But a device pointer spilled to the stack and reloaded is exactly the
-      // defect this rule exists to catch, so "came off the stack" is not
-      // enough: follow it back to what was STORED there, and accept only if
-      // every store into that slot stored something itself alloca-derived.
-      //
-      // This whole case may only ESTABLISH privacy or decline to; it must not
-      // return false, because that would abandon the other work items and
-      // report a pointer that a different path proves private. Getting that
-      // wrong took suite findings from 77 to 443.
-      if (const auto *base = allocaBaseOf(ld->getPointerOperand(), depth)) {
+      if (const auto *base = allocaBaseOf(ld->getPointerOperand())) {
         bool sawStore = false, allPrivate = true;
         llvm::SmallPtrSet<const llvm::User *, 16> visited;
         llvm::SmallVector<const llvm::User *, 16> users(base->users());
@@ -406,9 +398,14 @@ bool isAllocaDerivedImpl(const llvm::Value *v, unsigned depth) {
           if (!visited.insert(u).second)
             continue;
           if (const auto *st = llvm::dyn_cast<llvm::StoreInst>(u)) {
-            if (st->getValueOperand() != u->getOperand(1)) {
+            // Only stores INTO the slot say anything about its contents. A
+            // store whose pointer does not root at `base` is `base` being
+            // stored somewhere else (it reached this worklist through its
+            // value operand), which neither establishes nor refutes privacy.
+            if (allocaBaseOf(st->getPointerOperand()) == base) {
               sawStore = true;
-              allPrivate = isAllocaDerivedImpl(st->getValueOperand(), depth + 1);
+              allPrivate =
+                  isAllocaDerivedImpl(st->getValueOperand(), depth + 1);
             }
             continue;
           }
@@ -949,6 +946,17 @@ bool splitI64Shuffle(llvm::Module &m) {
     ci->replaceAllUsesWith(b.CreateBitCast(call, ci->getType()));
     ci->eraseFromParent();
   }
+  // The emptied i64 declarations are as fatal as live calls -- the reader
+  // resolves every declared symbol -- and i64 has no legal overload suffix,
+  // so checkExternals would reject the module for the transform's own leavings.
+  // Erase what the rewrite emptied, exactly as renameIntrinsics does.
+  llvm::SmallVector<llvm::Function *, 8> dead;
+  for (llvm::Function &fn : m)
+    if (fn.isDeclaration() && fn.use_empty() &&
+        fn.getName().starts_with("air.simd_shuffle"))
+      dead.push_back(&fn);
+  for (llvm::Function *fn : dead)
+    fn->eraseFromParent();
   return true;
 }
 
