@@ -114,13 +114,18 @@ things live in it.
 startup; **Add…** opens a file panel for more. Click one and press **Play**, or
 hit Space. **Stop** returns to live mode.
 
-**A voice editor.** The chip has three voices and one shared filter, and every
-register it actually has is on screen: the four waveforms (they AND together,
+**A voice editor, showing all three voices at once.** There are only three, and
+a patch is the relationship *between* them — which voice carries the melody,
+which one is the noise channel — so none of them is hidden behind a tab. Every
+register the chip actually has is on screen: the four waveforms (they AND together,
 which is what the hardware did, so they are toggles and not a radio group),
 attack, decay, sustain, release, pulse width, filter routing, cutoff,
-resonance, filter mode and master level. Drag a bar and the sound changes under
-your fingers, because these are register writes and the render callback reads
-the registers on its own clock.
+resonance, filter mode and master level. Cutoff, resonance and level sit in
+their own block underneath, labelled, because they belong to the one filter all
+three voices share — a control that looks per-voice and is not would be worse
+than no label at all. Drag a bar and the sound changes under your fingers,
+because these are register writes and the render callback reads the registers
+on its own clock.
 
 **A playable keyboard**, using Logic Pro's and GarageBand's *Musical Typing*
 layout — the mapping a Mac musician already has in their fingers:
@@ -153,6 +158,43 @@ three-oscillator chip has to do.
 
 `ABC_SHOT=<path>` draws one frame to a PNG and exits, so the window can be
 checked without a person at the screen.
+
+## Changing the sound mid-tune: `[I:chip …]`
+
+ABC's `I:` field is specified as instructions to the software, which is exactly
+what a chip register is, so the directive goes there rather than inventing
+syntax nobody else would recognise. It is inline, so it applies at the point in
+the music where it is written:
+
+```abc
+[I:chip v=1 wave=pulse pw=1100 a=0 d=6 s=9 r=3 cutoff=1200 res=7 vol=11]ACEA cAec
+[I:chip v=1 pw=350 cutoff=450]aged cAEC
+```
+
+| Key | |
+|:---|:---|
+| `v=` | which voice the per-voice keys apply to; the current one otherwise |
+| `wave=` | `tri` `saw` `pulse` `noise`, joinable with `+` — the chip ANDs them, as the hardware did |
+| `pw=` | pulse width, 0–4095 |
+| `a= d= s= r=` | envelope, 0–15 each |
+| `filt=` | `on` / `off` — route this voice through the filter |
+| `cutoff= res= mode=` | the shared filter: 0–2047, 0–15, `lp` `bp` `hp` |
+| `vol=` | master level, 0–15 |
+
+Unknown keys are ignored rather than refused, so a tune using a setting this
+build does not have still plays its notes.
+
+A directive is not special machinery. It becomes a `Step` at a sample position
+exactly like a note-on, and is applied on the audio thread by a function that
+allocates nothing and cannot raise — the same contract the notes keep, because
+it runs from the same place they do. The panel reads the chip's registers
+rather than its own copy of them, so you can watch a tune move the sliders.
+
+`tunes/galixigans.abc` is the demonstration: a dive where the pulse width
+narrows and the filter closes as they come at you, a four-step power-up with
+the cutoff opening on every bar, and a fanfare. It is in A minor throughout the
+defence and ends in A major. The picardy third is the joke — it is a
+triumphant ending, and the triumph is not ours.
 
 ## How it is put together
 

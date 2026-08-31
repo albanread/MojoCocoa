@@ -38,6 +38,8 @@ comptime SAMPLE_RATE = 48000
 # interrupt hung off. Every C64 tune is written in these units.
 comptime FRAME_SAMPLES = SAMPLE_RATE // 50
 
+comptime FILTER_CEILING = 65536.0
+
 comptime WAVE_TRI = 1
 comptime WAVE_SAW = 2
 comptime WAVE_PULSE = 4
@@ -495,6 +497,28 @@ fn chip_render(
         low += f * band
         let high = wet - low - q * band
         band += f * high
+
+        # A state-variable filter is only CONDITIONALLY stable, and nothing
+        # stops a tune asking for a high cutoff and a high resonance at the
+        # same time. Left alone the state diverges, reaches infinity, and the
+        # next subtraction turns it into NaN -- which is sticky: every sample
+        # after it is NaN too, so the synth goes silent for good and only a
+        # restart brings it back. The output clamp below cannot help, because
+        # by then the damage is in the state rather than the sample.
+        #
+        # A real filter saturates, so this one does. The reset on NaN is what
+        # makes it recoverable rather than merely quieter.
+        if low != low or band != band:
+            low = 0.0
+            band = 0.0
+        if low > FILTER_CEILING:
+            low = FILTER_CEILING
+        elif low < -FILTER_CEILING:
+            low = -FILTER_CEILING
+        if band > FILTER_CEILING:
+            band = FILTER_CEILING
+        elif band < -FILTER_CEILING:
+            band = -FILTER_CEILING
         fput(st, S_LOW, low)
         fput(st, S_BAND, band)
 
@@ -528,10 +552,28 @@ fn recompute_filter(st: P):
     let cutoff = get(st, S_CUTOFF)
     let hz = 200.0 + Float64(cutoff) * 5.8
     var f = 2.0 * _sin(3.141592653589793 * hz / Float64(SAMPLE_RATE))
-    if f > 1.4:
-        f = 1.4
-    fput(st, S_F, f)
+
     # Resonance 0..15 maps to damping 1.4 down to 0.1: higher resonance is
     # less damping, and the filter rings.
-    fput(st, S_Q, 1.4 - Float64(get(st, S_RES)) * 0.086)
+    let q = 1.4 - Float64(get(st, S_RES)) * 0.086
+
+    # The two coefficients are NOT independent. A Chamberlin state-variable
+    # filter is stable only while f + q < 2, so the usable cutoff depends on
+    # the resonance chosen with it. Clamping f to a flat 1.4 was enough for
+    # the single cutoff and resonance the demo tunes used, and left the filter
+    # sitting just inside its own limit there -- f 1.099 against a bound of
+    # 1.116 -- with much of the rest of the range unstable. At cutoff 1700
+    # with resonance 5 the state diverges within a second, and everything
+    # after that is a buzz.
+    #
+    # Nothing found this until a tune began sweeping the cutoff, because
+    # nothing had ever changed it while a note was sounding.
+    var limit = 0.95 * (2.0 - q)
+    if limit > 1.4:
+        limit = 1.4
+    if f > limit:
+        f = limit
+
+    fput(st, S_F, f)
+    fput(st, S_Q, q)
     put(st, S_DIRTY, 0)

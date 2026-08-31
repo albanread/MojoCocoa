@@ -16,9 +16,12 @@
 # readable to a musician, and a parser that skips it plays wrong notes in
 # roughly every tune that has an accidental in it.
 
+from chip import WAVE_TRI, WAVE_SAW, WAVE_PULSE, WAVE_NOISE, FILT_LP, FILT_BP, FILT_HP
 from model import (
     Tune, Event, Voice, TICKS_PER_QUARTER, TICKS_PER_WHOLE,
-    EV_NOTE, EV_REST, EV_BAR, EV_TEMPO, EV_KEY, EV_METER, EV_VOICE,
+    EV_NOTE, EV_REST, EV_BAR, EV_TEMPO, EV_KEY, EV_METER, EV_VOICE, EV_CHIP,
+    CP_WAVE, CP_PW, CP_A, CP_D, CP_S, CP_R, CP_FILT,
+    CP_CUTOFF, CP_RES, CP_FMODE, CP_VOL,
     F_CHORD, F_TIE, F_GRACE, F_GCHORD,
     BAR_SINGLE, BAR_DOUBLE, BAR_REPEAT_START, BAR_REPEAT_END,
     BAR_ENDING_1, BAR_ENDING_2, BAR_THIN_THICK,
@@ -335,6 +338,34 @@ def parse_music_line(line: String, mut tune: Tune, mut ctx: MusicCtx):
                     value += chr(Int(b[k]))
                 # Parsed here, applied here: the parse returns numbers so
                 # that nothing has to hand `mut tune` to another function.
+                if field == 73:                  # I: -- instructions to the
+                    # software, which is exactly what this is. Anything else
+                    # under I: is somebody else's directive and is ignored.
+                    let text = String(value.strip())
+                    if text.startswith("chip"):
+                        # The ABC voice number, 1-based, exactly as a note
+                        # carries it. expand_repeats replays events per voice
+                        # and matches on that number, so an event holding a
+                        # chip-side 0 belongs to no voice and is silently
+                        # dropped before it ever reaches the schedule. The
+                        # conversion to a chip voice happens in
+                        # build_schedule, which is where a voice stops being
+                        # a part and starts being an oscillator.
+                        let trips = chip_settings(text, ctx.voice)
+                        var t = 0
+                        while t + 2 < len(trips):
+                            let cv = trips[t]
+                            let cp = trips[t + 1]
+                            let cval = trips[t + 2]
+                            let ct = tune.ensure_voice(ctx.voice)
+                            tune.events.append(Event(
+                                kind=EV_CHIP, voice=cv,
+                                tick=tune.voices[ct].tick, duration=0,
+                                midi=0, velocity=cval, aux=cp, flags=0,
+                            ))
+                            t += 3
+                    i = close + 1
+                    continue
                 let setting = parse_inline_field(field, String(value.strip()))
                 if setting[0] == 1:              # V:
                     ctx.voice = setting[1]
@@ -694,6 +725,107 @@ def adjust_for_tuplet_and_broken(ticks_in: Int, mut ctx: MusicCtx) -> Int:
     if ticks < 1:
         ticks = 1
     return ticks
+
+
+def chip_settings(value: String, cur_voice: Int) -> List[Int]:
+    """Parse `chip v=2 wave=pulse pw=900 d=4 cutoff=1800` into flat triples.
+
+    Returns [voice, param, value, voice, param, value, ...] rather than
+    editing the tune, for the same reason parse_inline_field does: the caller
+    already holds the tune mutably and cannot hand that borrow on.
+
+    Unknown keys are ignored rather than refused. A tune carrying a setting
+    this build does not have should still play the notes.
+    """
+    var out = List[Int]()
+    let b = value.as_bytes()
+    let n = len(b)
+    var voice = cur_voice
+    var i = 0
+    while i < n:
+        while i < n and (Int(b[i]) == 32 or Int(b[i]) == 44):
+            i += 1
+        var key = String("")
+        while i < n and Int(b[i]) != 61 and Int(b[i]) != 32 and Int(b[i]) != 44:
+            key += chr(Int(b[i]))
+            i += 1
+        if i >= n or Int(b[i]) != 61:
+            continue                     # a bare word: `chip` itself
+        i += 1
+        var val = String("")
+        while i < n and Int(b[i]) != 32 and Int(b[i]) != 44:
+            val += chr(Int(b[i]))
+            i += 1
+        if len(key.as_bytes()) == 0 or len(val.as_bytes()) == 0:
+            continue
+
+        if key == "v":
+            let r = read_int(val, 0)
+            if r[2] != 0:
+                voice = r[0]             # 1-based, as the rest of the model is
+            continue
+
+        var param = -1
+        var number = -1
+        if key == "wave":
+            param = CP_WAVE
+            number = 0
+            let wb = val.as_bytes()
+            var w = 0
+            var name = String("")
+            for k in range(len(wb) + 1):
+                if k == len(wb) or Int(wb[k]) == 43:      # + joins waveforms
+                    if name == "tri":
+                        w = w | WAVE_TRI
+                    elif name == "saw":
+                        w = w | WAVE_SAW
+                    elif name == "pulse":
+                        w = w | WAVE_PULSE
+                    elif name == "noise":
+                        w = w | WAVE_NOISE
+                    name = String("")
+                else:
+                    name += chr(Int(wb[k]))
+            number = w
+        elif key == "mode":
+            param = CP_FMODE
+            if val == "lp":
+                number = FILT_LP
+            elif val == "bp":
+                number = FILT_BP
+            elif val == "hp":
+                number = FILT_HP
+            else:
+                number = FILT_LP
+        elif key == "filt":
+            param = CP_FILT
+            number = 1 if (val == "on" or val == "1") else 0
+        else:
+            if key == "pw":
+                param = CP_PW
+            elif key == "a":
+                param = CP_A
+            elif key == "d":
+                param = CP_D
+            elif key == "s":
+                param = CP_S
+            elif key == "r":
+                param = CP_R
+            elif key == "cutoff":
+                param = CP_CUTOFF
+            elif key == "res":
+                param = CP_RES
+            elif key == "vol":
+                param = CP_VOL
+            if param >= 0:
+                let r2 = read_int(val, 0)
+                number = r2[0] if r2[2] != 0 else 0
+
+        if param >= 0 and number >= 0:
+            out.append(voice)
+            out.append(param)
+            out.append(number)
+    return out^
 
 
 def parse_inline_field(field: Int, value: String) -> List[Int]:

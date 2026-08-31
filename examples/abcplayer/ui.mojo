@@ -32,10 +32,15 @@ from std.memory import OpaquePointer, Pointer, MutUntrackedOrigin
 from chip import (
     P, get, put, vget, vput, set_wave, set_adsr, set_filter, route_filter,
     set_volume, set_pulse_width, set_freq_hz, PLAYER_BASE, SAMPLE_RATE,
-    V_ENV, V_GATE, WAVE_TRI, WAVE_SAW, WAVE_PULSE, WAVE_NOISE,
+    V_ENV, V_GATE, V_WAVE, V_PW, V_FILT, gate_on, gate_off,
+    S_CUTOFF, S_RES, S_FMODE, S_VOL,
+    WAVE_TRI, WAVE_SAW, WAVE_PULSE, WAVE_NOISE,
     FILT_LP, FILT_BP, FILT_HP,
 )
-from chipplay import SC_PAUSE, SC_SAMPLE, SC_END, SC_VOICE_NOTE, midi_to_hz
+from chipplay import (
+    SC_PAUSE, SC_SAMPLE, SC_END, SC_VOICE_NOTE, midi_to_hz, record_adsr,
+    CHIP_ADSR,
+)
 
 # UI and backend state, in the tail of the chip's player region. chipplay
 # owns slots 0..23 there; these start well clear of them.
@@ -48,7 +53,7 @@ comptime BACKEND_MIDI = 1
 comptime SCOPE_LEN = 1024
 
 comptime WIN_W = 980.0
-comptime WIN_H = 700.0
+comptime WIN_H = 660.0
 comptime FRAME = 18.0
 
 # ── State ───────────────────────────────────────────────────────────────────
@@ -175,6 +180,8 @@ def apply_params():
         set_wave(st, v, p[][b + PV_WAVE])
         set_adsr(st, v, p[][b + PV_A], p[][b + PV_D], p[][b + PV_S],
                  p[][b + PV_R])
+        record_adsr(st, v, p[][b + PV_A], p[][b + PV_D], p[][b + PV_S],
+                    p[][b + PV_R])
         set_pulse_width(st, v, p[][b + PV_PW])
         route_filter(st, v, p[][b + PV_FILT] != 0)
     set_filter(st, p[][PG_CUTOFF], p[][PG_RES], p[][PG_FMODE])
@@ -229,10 +236,14 @@ def note_on(midi: Int):
         # sounding longest, and a chip with three oscillators has to drop
         # something.
         slot = 0
-        vput(st, slot, V_GATE, 0)
+        gate_off(st, slot)
     held[][slot] = midi
     set_freq_hz(st, slot, midi_to_hz(midi))
-    vput(st, slot, V_GATE, 1)
+    # gate_on, not a bare V_GATE write. A gate is TWO registers: the gate bit
+    # and the envelope phase. Setting the bit alone leaves the envelope in
+    # ENV_IDLE, so the oscillator runs and the envelope multiplies it to
+    # nothing -- a key that is audibly dead while every register looks right.
+    gate_on(st, slot)
 
 
 def note_off(midi: Int):
@@ -244,7 +255,7 @@ def note_off(midi: Int):
     let held = g_held()
     for v in range(3):
         if held[][v] == midi:
-            vput(st, v, V_GATE, 0)
+            gate_off(st, v)
             held[][v] = -1
 
 
@@ -254,7 +265,7 @@ def all_notes_off():
         return
     let held = g_held()
     for v in range(3):
-        vput(st, v, V_GATE, 0)
+        gate_off(st, v)
         held[][v] = -1
 
 
@@ -431,16 +442,140 @@ comptime SCOPE_TOP = 96.0
 comptime SCOPE_H = 86.0
 comptime EDIT_TOP = 232.0
 
-comptime KEYS_TOP = 502.0
+comptime KEYS_TOP = 452.0
 comptime WHITE_W = 62.0
 comptime WHITE_H = 148.0
 comptime BLACK_W = 38.0
 comptime BLACK_H = 92.0
 comptime KEYS_X = 20.0
 
-comptime SL_X = PANEL_X + 12.0
-comptime SL_W = 250.0
-comptime SL_H = 16.0
+# Three voices, all on screen. The chip has three and no more, and a patch is
+# the relationship BETWEEN them -- which voice carries the melody, which one is
+# the noise channel -- so hiding two behind a tab hides the thing you are
+# actually editing. The globals sit in their own block underneath, because
+# cutoff and resonance belong to the one filter all three share, and a slider
+# that looks per-voice but is not is worse than no label at all.
+
+comptime VCOL_W = 214.0
+comptime BAR_TOP = EDIT_TOP + 56.0
+comptime BAR_H = 70.0
+comptime BAR_W = 26.0
+comptime BAR_GAP = 38.0
+comptime GLOB_TOP = KEYS_TOP
+comptime GS_W = 150.0
+comptime GS_H = 16.0
+
+
+fn vcol_x(v: Int) -> Float64:
+    return PANEL_X + Float64(v) * VCOL_W
+
+
+fn wave_rect(v: Int, i: Int) -> CGRect:
+    return box(vcol_x(v) + 6.0 + Float64(i) * 50.0, EDIT_TOP + 22.0, 46.0, 18.0)
+
+
+fn bar_rect(v: Int, k: Int) -> CGRect:
+    return box(vcol_x(v) + 6.0 + Float64(k) * BAR_GAP, BAR_TOP, BAR_W, BAR_H)
+
+
+fn filt_rect(v: Int) -> CGRect:
+    return box(vcol_x(v) + 6.0, EDIT_TOP + 164.0, 120.0, 18.0)
+
+
+# To the right of the keyboard, which is 10 white keys wide and leaves this
+# column empty. The filter is one block for all three voices, so it wants to
+# sit apart from the per-voice columns rather than under one of them.
+comptime FILT_X = KEYS_X + 10.0 * WHITE_W + 28.0
+
+
+fn gslider_rect(i: Int) -> CGRect:
+    return box(FILT_X, GLOB_TOP + 26.0 + Float64(i) * 26.0, GS_W, GS_H)
+
+
+fn fmode_rect(i: Int) -> CGRect:
+    return box(FILT_X + Float64(i) * 52.0, GLOB_TOP + 112.0, 46.0, 20.0)
+
+
+fn bar_label(k: Int) -> String:
+    if k == 0: return String("A")
+    if k == 1: return String("D")
+    if k == 2: return String("S")
+    if k == 3: return String("R")
+    return String("pw")
+
+
+fn bar_max(k: Int) -> Int:
+    return 4095 if k == 4 else 15
+
+
+fn bar_field(k: Int) -> Int:
+    if k == 0: return PV_A
+    if k == 1: return PV_D
+    if k == 2: return PV_S
+    if k == 3: return PV_R
+    return PV_PW
+
+
+def bar_value(v: Int, k: Int) -> Int:
+    """Read the chip, not the UI's copy of it.
+
+    A tune's [I:chip ...] directives move these registers while it plays, so
+    a panel drawn from `g_params` would show what the user last set while the
+    chip did something else -- a display that is confidently wrong.
+    """
+    let st = P(unsafe_from_address=g_chip()[])
+    if Int(st) == 0:
+        return g_params()[][v * PV_STRIDE + bar_field(k)]
+    if k == 4:
+        return vget(st, v, V_PW)
+    return get(st, PLAYER_BASE + CHIP_ADSR + v * 4 + k)
+
+
+def bar_set(v: Int, k: Int, value: Int):
+    var x = value
+    if x < 0:
+        x = 0
+    if x > bar_max(k):
+        x = bar_max(k)
+    g_params()[][v * PV_STRIDE + bar_field(k)] = x
+    apply_params()
+
+
+fn gs_label(i: Int) -> String:
+    if i == 0: return String("cutoff")
+    if i == 1: return String("resonance")
+    return String("level")
+
+
+fn gs_max(i: Int) -> Int:
+    return 2047 if i == 0 else 15
+
+
+fn gs_slot(i: Int) -> Int:
+    if i == 0: return PG_CUTOFF
+    if i == 1: return PG_RES
+    return PG_VOL
+
+
+def gs_value(i: Int) -> Int:
+    let st = P(unsafe_from_address=g_chip()[])
+    if Int(st) == 0:
+        return g_params()[][gs_slot(i)]
+    if i == 0:
+        return get(st, S_CUTOFF)
+    if i == 1:
+        return get(st, S_RES)
+    return get(st, S_VOL)
+
+
+def gs_set(i: Int, value: Int):
+    var x = value
+    if x < 0:
+        x = 0
+    if x > gs_max(i):
+        x = gs_max(i)
+    g_params()[][gs_slot(i)] = x
+    apply_params()
 
 
 fn wave_bit(i: Int) -> Int:
@@ -523,77 +658,6 @@ fn black_rect(i: Int) -> CGRect:
     return box(x, KEYS_TOP, BLACK_W, BLACK_H)
 
 
-fn slider_rect(id: Int) -> CGRect:
-    return box(SL_X, EDIT_TOP + 52.0 + Float64(id) * 26.0, SL_W, SL_H)
-
-
-fn slider_max(id: Int) -> Int:
-    if id == 0: return 4095      # pulse width
-    if id == 5: return 2047      # cutoff
-    return 15                    # A D S R, resonance, level
-
-
-fn slider_label(id: Int) -> String:
-    if id == 0: return String("pulse width")
-    if id == 1: return String("attack")
-    if id == 2: return String("decay")
-    if id == 3: return String("sustain")
-    if id == 4: return String("release")
-    if id == 5: return String("cutoff")
-    if id == 6: return String("resonance")
-    return String("level")
-
-
-def slider_value(id: Int) -> Int:
-    let p = g_params()
-    let b = iget(I_EDIT) * PV_STRIDE
-    if id == 0: return p[][b + PV_PW]
-    if id == 1: return p[][b + PV_A]
-    if id == 2: return p[][b + PV_D]
-    if id == 3: return p[][b + PV_S]
-    if id == 4: return p[][b + PV_R]
-    if id == 5: return p[][PG_CUTOFF]
-    if id == 6: return p[][PG_RES]
-    return p[][PG_VOL]
-
-
-def slider_set(id: Int, value: Int):
-    let p = g_params()
-    let b = iget(I_EDIT) * PV_STRIDE
-    var v = value
-    if v < 0:
-        v = 0
-    if v > slider_max(id):
-        v = slider_max(id)
-    if id == 0: p[][b + PV_PW] = v
-    elif id == 1: p[][b + PV_A] = v
-    elif id == 2: p[][b + PV_D] = v
-    elif id == 3: p[][b + PV_S] = v
-    elif id == 4: p[][b + PV_R] = v
-    elif id == 5: p[][PG_CUTOFF] = v
-    elif id == 6: p[][PG_RES] = v
-    else: p[][PG_VOL] = v
-    apply_params()
-
-
-fn wave_rect(i: Int) -> CGRect:
-    return box(SL_X + Float64(i) * 74.0, EDIT_TOP + 24.0, 68.0, 20.0)
-
-
-fn voice_tab_rect(v: Int) -> CGRect:
-    return box(PANEL_X + PANEL_W - 210.0 + Float64(v) * 68.0, EDIT_TOP - 4.0,
-               62.0, 20.0)
-
-
-fn fmode_rect(i: Int) -> CGRect:
-    return box(PANEL_X + PANEL_W - 210.0 + Float64(i) * 52.0,
-               EDIT_TOP + 24.0, 46.0, 20.0)
-
-
-fn filt_rect() -> CGRect:
-    return box(PANEL_X + PANEL_W - 210.0, EDIT_TOP + 52.0, 150.0, 20.0)
-
-
 fn btn_rect(i: Int) -> CGRect:
     let w = (LIST_W - 16.0) / 3.0
     return box(LIST_X + Float64(i) * (w + 8.0), BTN_TOP, w, BTN_H)
@@ -630,19 +694,35 @@ def draw_button(r: CGRect, label: String, on: Bool, enabled: Bool):
     draw_text(l, r.origin.x + 8.0, r.origin.y + 4.0, g_font_small()[], ink)
 
 
-def draw_slider(id: Int):
-    let r = slider_rect(id)
-    let v = slider_value(id)
-    let m = slider_max(id)
+def draw_bar(v: Int, k: Int):
+    """A vertical bar, the way a synth shows an envelope."""
+    let r = bar_rect(v, k)
+    let val = bar_value(v, k)
     fill_rect(r, rgb(30, 34, 44))
-    var frac = Float64(v) / Float64(m)
+    var frac = Float64(val) / Float64(bar_max(k))
     if frac > 1.0:
         frac = 1.0
-    fill_rect(rect(r.origin.x, r.origin.y, r.size.width * frac, r.size.height),
+    if frac > 0.0:
+        fill_rect(rect(r.origin.x, r.origin.y, BAR_W, BAR_H * frac),
+                  rgb(120, 220, 160))
+    draw_text(bar_label(k), r.origin.x + 6.0, r.origin.y - 16.0,
+              g_font_small()[], rgb(150, 158, 176))
+    draw_text(String(val), r.origin.x - 4.0, r.origin.y - 30.0,
+              g_font_small()[], rgb(190, 198, 212))
+
+
+def draw_gslider(i: Int):
+    let r = gslider_rect(i)
+    let val = gs_value(i)
+    fill_rect(r, rgb(30, 34, 44))
+    var frac = Float64(val) / Float64(gs_max(i))
+    if frac > 1.0:
+        frac = 1.0
+    fill_rect(rect(r.origin.x, r.origin.y, GS_W * frac, GS_H),
               rgb(120, 220, 160))
-    draw_text(slider_label(id), r.origin.x + r.size.width + 10.0,
-              r.origin.y + 1.0, g_font_small()[], rgb(150, 158, 176))
-    draw_text(String(v), r.origin.x + r.size.width + 108.0, r.origin.y + 1.0,
+    draw_text(gs_label(i), r.origin.x + GS_W + 10.0, r.origin.y + 1.0,
+              g_font_small()[], rgb(150, 158, 176))
+    draw_text(String(val), r.origin.x + GS_W + 86.0, r.origin.y + 1.0,
               g_font_small()[], rgb(228, 232, 240))
 
 
@@ -789,30 +869,42 @@ def draw_screen():
             )
 
         # ── Voice editor ────────────────────────────────────────────────────
-        draw_text(String("VOICE"), PANEL_X, WIN_H - EDIT_TOP + 4.0,
-                  g_font_small()[], dim)
-        for v in range(3):
-            let held = get(st, PLAYER_BASE + SC_VOICE_NOTE + v)
-            var label = String(" ") + String(v + 1)
-            if iget(I_MODE) == MODE_TUNE and held >= 0:
-                label += String(" ") + note_name(held)
-            elif g_held()[][v] >= 0:
-                label += String(" ") + note_name(g_held()[][v])
-            draw_button(voice_tab_rect(v), label, v == iget(I_EDIT), True)
-
         let p = g_params()
-        let b = iget(I_EDIT) * PV_STRIDE
-        for i in range(4):
-            draw_button(wave_rect(i), wave_name(i),
-                        (p[][b + PV_WAVE] & wave_bit(i)) != 0, True)
-        for id in range(8):
-            draw_slider(id)
+        for v in range(3):
+            let cx = vcol_x(v)
+            # Which note this voice is sounding, whichever mode we are in.
+            var sounding = g_held()[][v]
+            if iget(I_MODE) == MODE_TUNE:
+                sounding = get(st, PLAYER_BASE + SC_VOICE_NOTE + v)
+            var head = String("VOICE ") + String(v + 1)
+            if sounding >= 0:
+                head += String("   ") + note_name(sounding)
+            draw_text(head, cx + 6.0, WIN_H - EDIT_TOP - 12.0,
+                      g_font_small()[], ink if sounding >= 0 else dim)
 
-        draw_button(filt_rect(), String("through filter"),
-                    p[][b + PV_FILT] != 0, True)
+            var wave_now = p[][v * PV_STRIDE + PV_WAVE]
+            var filt_now = p[][v * PV_STRIDE + PV_FILT]
+            if Int(st) != 0:
+                wave_now = vget(st, v, V_WAVE)
+                filt_now = vget(st, v, V_FILT)
+            for i in range(4):
+                draw_button(wave_rect(v, i), wave_name(i),
+                            (wave_now & wave_bit(i)) != 0, True)
+            for k in range(5):
+                draw_bar(v, k)
+            draw_button(filt_rect(v), String("through filter"),
+                        filt_now != 0, True)
+
+        draw_text(String("FILTER — all three voices"), FILT_X,
+                  WIN_H - GLOB_TOP - 12.0, g_font_small()[], dim)
+        for i in range(3):
+            draw_gslider(i)
+        var fmode_now = p[][PG_FMODE]
+        if Int(st) != 0:
+            fmode_now = get(st, S_FMODE)
         for i in range(3):
             draw_button(fmode_rect(i), fmode_name(i),
-                        (p[][PG_FMODE] & fmode_bit(i)) != 0, True)
+                        (fmode_now & fmode_bit(i)) != 0, True)
 
         # ── Keyboard ────────────────────────────────────────────────────────
         draw_keyboard()
@@ -847,26 +939,26 @@ def click(x: Float64, y: Float64):
             iset(I_SEL, i)
             return
 
-    for v in range(3):
-        if inside(voice_tab_rect(v), x, y):
-            iset(I_EDIT, v)
-            return
-
     let p = g_params()
-    let b = iget(I_EDIT) * PV_STRIDE
-    for i in range(4):
-        if inside(wave_rect(i), x, y):
-            # The chip ANDs selected waveforms together, so this is a set of
-            # toggles rather than a radio group -- and clearing the last one
-            # leaves silence, which is what the register means.
-            p[][b + PV_WAVE] = p[][b + PV_WAVE] ^ wave_bit(i)
+    for v in range(3):
+        let b = v * PV_STRIDE
+        for i in range(4):
+            if inside(wave_rect(v, i), x, y):
+                # The chip ANDs selected waveforms together, so these are
+                # toggles rather than a radio group -- and clearing the last
+                # one leaves silence, which is what the register means.
+                p[][b + PV_WAVE] = p[][b + PV_WAVE] ^ wave_bit(i)
+                apply_params()
+                return
+        if inside(filt_rect(v), x, y):
+            p[][b + PV_FILT] = 0 if p[][b + PV_FILT] != 0 else 1
             apply_params()
             return
-
-    if inside(filt_rect(), x, y):
-        p[][b + PV_FILT] = 0 if p[][b + PV_FILT] != 0 else 1
-        apply_params()
-        return
+        for k in range(5):
+            if inside(bar_rect(v, k), x, y):
+                iset(I_DRAG, v * 5 + k)
+                drag(x, y)
+                return
 
     for i in range(3):
         if inside(fmode_rect(i), x, y):
@@ -874,10 +966,9 @@ def click(x: Float64, y: Float64):
             apply_params()
             return
 
-    for id in range(8):
-        let r = slider_rect(id)
-        if inside(r, x, y):
-            iset(I_DRAG, id)
+    for i in range(3):
+        if inside(gslider_rect(i), x, y):
+            iset(I_DRAG, 15 + i)
             drag(x, y)
             return
 
@@ -895,16 +986,29 @@ def click(x: Float64, y: Float64):
 
 
 def drag(x: Float64, y: Float64):
+    """Bars fill upwards, so a bar reads y and a horizontal slider reads x."""
     let id = iget(I_DRAG)
     if id < 0:
         return
-    let r = slider_rect(id)
-    var frac = (x - r.origin.x) / r.size.width
-    if frac < 0.0:
-        frac = 0.0
-    if frac > 1.0:
-        frac = 1.0
-    slider_set(id, Int(frac * Float64(slider_max(id)) + 0.5))
+    if id >= 15:
+        let i = id - 15
+        let r = gslider_rect(i)
+        var fx = (x - r.origin.x) / r.size.width
+        if fx < 0.0:
+            fx = 0.0
+        if fx > 1.0:
+            fx = 1.0
+        gs_set(i, Int(fx * Float64(gs_max(i)) + 0.5))
+        return
+    let v = id // 5
+    let k = id % 5
+    let r2 = bar_rect(v, k)
+    var fy = (y - r2.origin.y) / r2.size.height
+    if fy < 0.0:
+        fy = 0.0
+    if fy > 1.0:
+        fy = 1.0
+    bar_set(v, k, Int(fy * Float64(bar_max(k)) + 0.5))
 
 
 def release():

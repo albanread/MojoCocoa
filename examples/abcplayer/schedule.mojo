@@ -18,12 +18,13 @@
 # about and can subtract exactly.
 
 from model import (
-    Tune, Event, EV_NOTE, EV_REST, EV_BAR, F_TIE, F_CHORD, F_GRACE,
+    Tune, Event, EV_NOTE, EV_REST, EV_BAR, EV_CHIP, F_TIE, F_CHORD, F_GRACE,
     TICKS_PER_WHOLE,
 )
 
 comptime SE_NOTE_ON = 0
 comptime SE_NOTE_OFF = 1
+comptime SE_CHIP = 2
 
 
 @fieldwise_init
@@ -101,6 +102,16 @@ def build_schedule(tune: Tune, sample_rate: Int, mut steps: List[Step]):
 
     for i in range(len(tune.events)):
         let ev = tune.events[i]
+        if ev.kind == EV_CHIP:
+            # A register change is an event like any other: it happens at a
+            # sample, not at a bar line, so it lands mid-phrase exactly where
+            # it was written.
+            steps.append(Step(
+                sample=tick_to_sample(ev.tick, bpm, per_beat, sample_rate),
+                kind=SE_CHIP, voice=ev.voice - 1, midi=ev.aux,
+                velocity=ev.velocity,
+            ))
+            continue
         if ev.kind != EV_NOTE:
             continue
         if ev.velocity <= 0:

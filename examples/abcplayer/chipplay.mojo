@@ -20,10 +20,15 @@ from std.ffi import external_call
 
 from chip import (
     P, get, put, vget, vput, chip_render, set_freq_hz, set_wave, set_adsr,
-    gate_on, gate_off, route_filter, PLAYER_BASE, V_ENV, V_PHASE, ENV_IDLE,
+    set_filter, set_volume, set_pulse_width, gate_on, gate_off, route_filter,
+    PLAYER_BASE, S_CUTOFF, S_RES, S_FMODE, V_ENV, V_PHASE, ENV_IDLE,
     ENV_RELEASE, WAVE_PULSE, WAVE_SAW, WAVE_TRI, Tick,
 )
-from schedule import Step, SE_NOTE_ON, SE_NOTE_OFF
+from schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
+from model import (
+    CP_WAVE, CP_PW, CP_A, CP_D, CP_S, CP_R, CP_FILT,
+    CP_CUTOFF, CP_RES, CP_FMODE, CP_VOL,
+)
 
 # Slots in the chip's player region. The chip example's own player does not
 # run here -- this is a different way to drive the same chip -- so the whole
@@ -152,6 +157,72 @@ fn apply_note_off(st: P, midi: Int):
             return
 
 
+@always_inline
+fn apply_chip(st: P, voice: Int, param: Int, value: Int):
+    """One register change, on the audio thread.
+
+    No allocation and nothing that can raise: this is the same contract the
+    note events keep, because it runs from the same place they do. The ADSR
+    setters recompute increments, which is arithmetic and nothing more.
+    """
+    if param == CP_CUTOFF:
+        set_filter(st, value, get(st, S_RES), get(st, S_FMODE))
+        return
+    if param == CP_RES:
+        set_filter(st, get(st, S_CUTOFF), value, get(st, S_FMODE))
+        return
+    if param == CP_FMODE:
+        set_filter(st, get(st, S_CUTOFF), get(st, S_RES), value)
+        return
+    if param == CP_VOL:
+        set_volume(st, value)
+        return
+
+    if voice < 0 or voice > 2:
+        return
+    if param == CP_WAVE:
+        set_wave(st, voice, value)
+    elif param == CP_PW:
+        set_pulse_width(st, voice, value)
+    elif param == CP_FILT:
+        route_filter(st, voice, value != 0)
+    else:
+        let b = PLAYER_BASE + CHIP_ADSR + voice * 4
+        var a = get(st, b + 0)
+        var d = get(st, b + 1)
+        var sus = get(st, b + 2)
+        var r = get(st, b + 3)
+        if param == CP_A:
+            a = value
+        elif param == CP_D:
+            d = value
+        elif param == CP_S:
+            sus = value
+        elif param == CP_R:
+            r = value
+        set_adsr(st, voice, a, d, sus, r)
+        record_adsr(st, voice, a, d, sus, r)
+
+
+comptime CHIP_ADSR = 40      # 12 slots: voice * 4 + {a, d, s, r}
+
+
+@always_inline
+fn record_adsr(st: P, voice: Int, a: Int, d: Int, sus: Int, r: Int):
+    """Remember the four nibbles a set_adsr was given.
+
+    set_adsr turns them into 16.16 increments through a period-stretching
+    ladder, and that is not invertible -- so changing only the decay later
+    means keeping the other three somewhere. They live in the player region
+    where the audio thread can read them without a lock.
+    """
+    let b = PLAYER_BASE + CHIP_ADSR + voice * 4
+    put(st, b + 0, a)
+    put(st, b + 1, d)
+    put(st, b + 2, sus)
+    put(st, b + 3, r)
+
+
 fn silent_tick(st: P) -> None:
     """The chip's own player routine, doing nothing.
 
@@ -189,7 +260,14 @@ fn render_scheduled(
             let at = cursor * STEP_SLOTS
             if sched[unsafe_offset=at] > now:
                 break
-            if sched[unsafe_offset=at + 1] == SE_NOTE_ON:
+            if sched[unsafe_offset=at + 1] == SE_CHIP:
+                apply_chip(
+                    st,
+                    sched[unsafe_offset=at + 2],
+                    sched[unsafe_offset=at + 3],
+                    sched[unsafe_offset=at + 4],
+                )
+            elif sched[unsafe_offset=at + 1] == SE_NOTE_ON:
                 apply_note_on(
                     st, sched[unsafe_offset=at + 3], sched[unsafe_offset=at + 4]
                 )

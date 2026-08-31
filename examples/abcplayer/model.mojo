@@ -29,6 +29,21 @@ comptime EV_TEMPO = 3
 comptime EV_KEY = 4
 comptime EV_METER = 5
 comptime EV_VOICE = 6
+comptime EV_CHIP = 7        # a chip register change, at a point in the tune
+
+# Which register an EV_CHIP carries. Per-voice ids are below 20, global ones
+# above, so the audio-thread side can tell them apart with one comparison.
+comptime CP_WAVE = 1
+comptime CP_PW = 2
+comptime CP_A = 3
+comptime CP_D = 4
+comptime CP_S = 5
+comptime CP_R = 6
+comptime CP_FILT = 7
+comptime CP_CUTOFF = 20
+comptime CP_RES = 21
+comptime CP_FMODE = 22
+comptime CP_VOL = 23
 
 # Flags on an event.
 comptime F_CHORD = 1        # sounds together with the event before it

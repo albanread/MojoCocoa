@@ -405,14 +405,26 @@ def basename(path: String) -> String:
 
 def add_tune(var path: String):
     let paths = g_paths()
-    for i in range(len(paths[])):
-        if paths[][i] == path:
-            return                      # already listed
     let name = basename(path)
+    for i in range(len(paths[])):
+        # By NAME, not by path: `tunes/ode.abc` from the command line and the
+        # absolute path the directory scan produces are the same file spelled
+        # two ways, and listing it twice is confusing rather than harmless.
+        if paths[][i] == path or basename(paths[][i]) == name:
+            return
     paths[].append(path^)
     g_names()[].append(name)
     if iget(I_SEL) < 0:
         iset(I_SEL, len(g_names()[]) - 1)
+
+
+def tune_index(var name: String) -> Int:
+    """Where a tune sits in the list, by file name, or -1."""
+    let paths = g_paths()
+    for i in range(len(paths[])):
+        if basename(paths[][i]) == name:
+            return i
+    return -1
 
 
 def scan_tunes() raises:
@@ -634,8 +646,14 @@ def main() raises:
 
     scan_tunes()
     if len(first.as_bytes()) > 0:
+        # Select it BY NAME. The scan has usually already listed the same
+        # file, so add_tune returns without appending and "the last entry"
+        # is some other tune entirely -- which is how a named tune on the
+        # command line ended up playing whatever sorted last.
         add_tune(first)
-        iset(I_SEL, len(g_names()[]) - 1)
+        let want = tune_index(basename(first))
+        if want >= 0:
+            iset(I_SEL, want)
 
     let unit = start_audio(st, backend)
     go_live()
@@ -663,6 +681,15 @@ def main() raises:
         _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
             win, nsstring(String("ABC player")).ptr()
         )
+        # An NSWindow made this way is RELEASED WHEN CLOSED by default, so
+        # closing it deallocates the object this loop is about to ask whether
+        # it is still visible. The answer then comes from freed memory: often
+        # the app exits as if quit, sometimes it runs on with no window at
+        # all, frontmost and drawing nothing. Own the window instead.
+        _ = msg_send[ObjCObject, "NSWindow", "setReleasedWhenClosed:"](
+            win, Bool(False)
+        )
+        _ = external_call["objc_retain", P](win.ptr())
 
         let view = ObjCObject(AbcView().__objc_id)
         _ = msg_send[ObjCObject, "NSView", "setFrame:"](
@@ -698,8 +725,12 @@ def main() raises:
                 _ = msg_send[ObjCObject, "NSApplication", "sendEvent:"](
                     app, ev.ptr()
                 )
+            # `isVisible` is NO for a MINIATURISED window as well as a closed
+            # one, so testing it alone makes the yellow button quit the app.
+            # A window in the Dock is still a window.
             if not msg_send[Bool, "NSWindow", "isVisible"](win):
-                break
+                if not msg_send[Bool, "NSWindow", "isMiniaturized"](win):
+                    break
 
             # Read the flags out BEFORE clearing them. `let` names the global
             # rather than copying it, so clearing first would make every

@@ -20,7 +20,10 @@ which opens itself when a build starts and toggles with ⌘0.
                   a real-time thread. Plays ABC notation.
     abcplayer/    a full ABC notation player -- parser, repeats, tuplets,
                   MIDI file output -- scheduled to the sample, playing
-                  through either the chip or General MIDI
+                  through either the chip or General MIDI. A window with a
+                  tune list, an editor for all three chip voices, and a
+                  playable keyboard on Logic's Musical Typing layout. Tunes
+                  can change the chip's registers mid-phrase with [I:chip ...]
     ferns/        a landscape of Barnsley ferns growing live over a
                   procedural lawn, under a cloudy dusk sky (CPU)
     fernwind/     the same meadow swaying in the wind: every fern redrawn
