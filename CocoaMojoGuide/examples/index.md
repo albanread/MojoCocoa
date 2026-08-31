@@ -1,6 +1,6 @@
 # The examples, and what each one is for
 
-The distribution ships seventeen example projects, about 11,900 lines of Mojo.
+The distribution ships eighteen example projects, about 12,100 lines of Mojo.
 They are not a gallery. Most of them were written to answer a question, and a
 few were carried in from elsewhere to prove that they still run. This section
 walks through every one and says what it teaches.
@@ -27,6 +27,7 @@ section ends with a plain verdict, and some of those verdicts are "none".
 | [`othello`](03-the-applications.md#othello) | 1,024 lines | The honest answer about game trees: one search suits a GPU, one does not |
 | [`chip`](04-sound-and-time.md#chip) | 2,159 lines | A Mojo `fn` serving as a C function pointer on a real-time thread |
 | [`abcplayer`](04-sound-and-time.md#abcplayer) | 3,344 lines | The largest example: a real parser, and exact timing without floats |
+| [`bifurcation`](05-python-used-well.md#bifurcation) | 246 lines | What Python is genuinely better at, measured rather than assumed |
 | [`fern`](../gpu/04-three-ferns.md) | 289 lines | Wide work with no deadline — correctly on the CPU |
 | [`ferns`](../gpu/04-three-ferns.md) | 659 lines | A deadline, but work too narrow to move |
 | [`fernwind`](../gpu/04-three-ferns.md) | 778 lines | Wide *and* out of time — the crossing, measured at 104× |
@@ -42,6 +43,7 @@ because together they make an argument no single example can.
 | [2. The GPU primers](02-the-gpu-primers.md) | `vector-add`, `grayscale`, `tiled-matmul` |
 | [3. The applications](03-the-applications.md) | `life`, `mandelbrot`, `fluid`, `othello` |
 | [4. Sound, and time](04-sound-and-time.md) | `chip`, `abcplayer` |
+| [5. Python, used well](05-python-used-well.md) | `bifurcation`, and what it measures about the boundary |
 
 ## Two questions the set keeps asking
 
@@ -70,8 +72,9 @@ Every example is a folder with a `main.mojo` in it. In Roast, **File ▸ Open
 Folder…**, then ⌘R. There is no project file and nothing to generate.
 
 The GPU examples guard themselves with `has_accelerator` and will say so
-rather than fail if there is no Metal device. `life-python` needs a Python
-environment; its README explains what and why, and Roast builds one on demand.
+rather than fail if there is no Metal device. `life-python` and `bifurcation`
+need a Python environment; each README explains what and why, and Roast builds
+one on demand — only for projects that actually use Python.
 
     And the largest example is not in this folder: File ▸ Open IDE Source
     opens Roast's own source — the editor you are reading this in, written

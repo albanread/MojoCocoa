@@ -25,6 +25,10 @@ which opens itself when a build starts and toggles with ⌘0.
                   procedural lawn, under a cloudy dusk sky (CPU)
     fernwind/     the same meadow swaying in the wind: every fern redrawn
                   from scratch each frame by 24,576 GPU chaos-game streams
+    bifurcation/  the logistic map: 6.4M iterations in Mojo, then a
+                  publication-quality figure from matplotlib. What Python
+                  is genuinely good at, measured against what it is not.
+                  Needs a Python environment — see its README
     life-python/  Conway again, drawn by PYGAME instead of Cocoa: the
                   same program in two windowing worlds. Needs a Python
                   environment — see its README

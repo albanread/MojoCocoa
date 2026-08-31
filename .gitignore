@@ -200,3 +200,5 @@ tools/signing.local.sh
 
 # Our cache of built toolchain components (large binaries, not source).
 .components/
+/examples/bifurcation/bifurcation.png
+/examples/bifurcation/bif

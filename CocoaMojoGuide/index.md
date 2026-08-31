@@ -43,7 +43,7 @@ need it to write anything.
 | [Programmer's Guide](guide/) | Read this first. Ten chapters and an appendix: installing the toolchain, the frozen dialect, Mojo's own object model, Cocoa from the first message to a walked-through Life implementation, and the fork's own IDE read as a program. |
 | [Reference Manual](reference/) | Look things up here. The frozen language dialect, every `std.objc` entry point, every `cocoakb` query, and every diagnostic. |
 | [GPU programming](gpu/) | Writing Mojo functions that run on the Apple GPU: the execution model, threads and memory, and how to build, run and verify them. |
-| [The examples](examples/) | A walkthrough of all seventeen example projects, and an honest statement of what each one teaches — including the ones that teach nothing. |
+| [The examples](examples/) | A walkthrough of all eighteen example projects, and an honest statement of what each one teaches — including the ones that teach nothing. |
 
 ## A warning about versions
 
