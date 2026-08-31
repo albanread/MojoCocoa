@@ -51,6 +51,15 @@ Rule Rules[] = {
    "bitcast between <N x i1> and iN -- InstCombine's `any(mask)` idiom. This "
    "is the form that was MEASURED to pass verifyModule, metallib AND air-opt "
    "and then kill the compiler service at pipeline creation"},
+  {"three-way-compare",    RuleAction::Fail,   "measured",
+   "llvm.scmp / llvm.ucmp still present in the final module. AIR has no "
+   "three-way compare instruction and no runtime function for one, and "
+   "InstCombine synthesises these out of ordinary comparison code -- othello's "
+   "MCTS kernel reached the reader as the undefined symbol llvm.scmp.i32.i64, "
+   "naming neither the kernel nor anything in the source. lowerThreeWayCompares "
+   "expands them during legalisation, so one surviving to here means the "
+   "expansion missed a form. Fail on day one is safe BECAUSE of that: the "
+   "expected count is zero, not low, so there is no false positive to find"},
   {"odd-int-width",        RuleAction::Log,    "unproven",
    "integer width outside 1/8/16/32/64, other than the mask bitcast above. "
    "LOG, not fail: generalising from the i4 mask case was wrong. "
@@ -1332,12 +1341,36 @@ std::vector<Finding> checkExternals(llvm::Module &m) {
   std::vector<Finding> out;
   const Rule *airRule = ruleFor("unknown-air-symbol");
   const Rule *externalRule = ruleFor("unresolved-external");
+  const Rule *cmpRule = ruleFor("three-way-compare");
   if ((!airRule || airRule->action == RuleAction::Permit) &&
-      (!externalRule || externalRule->action == RuleAction::Permit))
+      (!externalRule || externalRule->action == RuleAction::Permit) &&
+      (!cmpRule || cmpRule->action == RuleAction::Permit))
     return out;
   for (llvm::Function &fn : m) {
     if (!fn.isDeclaration())
       continue;
+    // Checked ahead of the generic external rule, which is pinned at Log for
+    // its own reasons: this one has a known-zero expected count, so it says
+    // what is wrong instead of adding another line to a log nobody reads.
+    if (cmpRule && cmpRule->action != RuleAction::Permit &&
+        (fn.getIntrinsicID() == llvm::Intrinsic::scmp ||
+         fn.getIntrinsicID() == llvm::Intrinsic::ucmp)) {
+      std::string where;
+      for (const llvm::User *u : fn.users())
+        if (auto *ci = llvm::dyn_cast<llvm::CallBase>(u))
+          if (const llvm::Function *caller = ci->getFunction()) {
+            where = ("  [called from @" + caller->getName() + "]").str();
+            break;
+          }
+      if (!where.empty() || !fn.use_empty()) {
+        out.push_back({cmpRule->id,
+                       ("three-way compare @" + fn.getName() +
+                        " survived legalisation" + where)
+                           .str(),
+                       cmpRule->action});
+        continue;
+      }
+    }
     if (fn.getName().starts_with("air.")) {
       if (airRule && airRule->action != RuleAction::Permit) {
         std::string reason;

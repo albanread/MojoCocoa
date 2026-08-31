@@ -1085,6 +1085,59 @@ void eraseDeadIntrinsicDeclarations(llvm::Module &m) {
 }
 
 
+/// Expand `llvm.scmp` / `llvm.ucmp` into selects. AIR has no three-way compare
+/// instruction and no runtime function for one.
+///
+/// This is not something a kernel author writes. InstCombine SYNTHESISES it
+/// from every ordinary spelling of "which of these two is bigger" -- the
+/// `a < b ? -1 : (a > b ? 1 : 0)` chain, and `zext(a > b) - zext(b > a)` alike
+/// -- so source that never mentions a three-way compare acquires one during
+/// optimisation. It is valid LLVM, so the verifier passes it, and every check
+/// in this backend passes it too; it surfaces at the Apple reader as an
+/// undefined symbol named `llvm.scmp.i32.i64`, which identifies neither the
+/// function it is in nor anything the author typed. Othello's Monte-Carlo
+/// kernel hit exactly this, and the workaround in its source -- writing the
+/// winner test as `Int(b > w) * 2 - Int(b != w)` -- exists only because of it.
+///
+/// Selects rather than the subtraction of two zexts, deliberately: that
+/// subtraction is the canonical shape InstCombine matches, so emitting it here
+/// would invite the fold straight back if any later pass runs it.
+void lowerThreeWayCompares(llvm::Module &m) {
+  llvm::SmallVector<llvm::CallInst *, 8> work;
+  for (llvm::Function &fn : m)
+    for (llvm::BasicBlock &bb : fn)
+      for (llvm::Instruction &inst : bb)
+        if (auto *call = llvm::dyn_cast<llvm::CallInst>(&inst))
+          if (llvm::Function *callee = call->getCalledFunction())
+            if (callee->getIntrinsicID() == llvm::Intrinsic::scmp ||
+                callee->getIntrinsicID() == llvm::Intrinsic::ucmp)
+              work.push_back(call);
+
+  for (llvm::CallInst *call : work) {
+    bool isSigned =
+        call->getCalledFunction()->getIntrinsicID() == llvm::Intrinsic::scmp;
+    llvm::Value *lhs = call->getArgOperand(0);
+    llvm::Value *rhs = call->getArgOperand(1);
+    // The result width is independent of the operand width -- `llvm.scmp.i32.i64`
+    // compares two i64s and answers in i32 -- so every constant below is built
+    // from the RESULT type and never from the operands.
+    llvm::Type *resTy = call->getType();
+    llvm::IRBuilder<> b(call);
+    llvm::Value *gt =
+        isSigned ? b.CreateICmpSGT(lhs, rhs) : b.CreateICmpUGT(lhs, rhs);
+    llvm::Value *lt =
+        isSigned ? b.CreateICmpSLT(lhs, rhs) : b.CreateICmpULT(lhs, rhs);
+    llvm::Value *below = b.CreateSelect(
+        lt, llvm::ConstantInt::getSigned(resTy, -1),
+        llvm::ConstantInt::get(resTy, 0));
+    llvm::Value *res =
+        b.CreateSelect(gt, llvm::ConstantInt::get(resTy, 1), below);
+    call->replaceAllUsesWith(res);
+    call->eraseFromParent();
+  }
+}
+
+
 void lowerVectorFMA(llvm::Module &m) {
   llvm::SmallVector<llvm::CallInst *, 8> calls;
   for (llvm::Function &fn : m)
@@ -1726,6 +1779,7 @@ llvm::Error legalizeModule(llvm::Module &m) {
   m.setTargetTriple(llvm::Triple(profile.triple()));
   lowerVectorFMA(m);
   lowerMaskBitcasts(m);
+  lowerThreeWayCompares(m);
   // Table-driven transforms, all off by default (APPLEGPU_AIR_XFORMS).
   Air::applyTransforms(m);
   mangleAirOps(m);
@@ -2080,6 +2134,10 @@ public:
         // zero -- an output buffer full of zeroes, no diagnostic anywhere, and
         // nothing in the IR that any verifier objects to.
         deviceizeCapturedPointers(module);
+
+        // Same reasoning, for the same reason: a callee that still contained a
+        // three-way compare has just been inlined into a kernel that had none.
+        lowerThreeWayCompares(module);
 
         llvm::ModulePassManager mpm2;
       // The published Metal emission machinery, by its own declarations:
