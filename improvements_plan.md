@@ -38,6 +38,45 @@ change blind.
 | F13 | Default-off work with strong measured rationale awaiting promotion: `applyAirKernelFnAttributes` (MSL fast-math set, `nosync` withheld from barrier-reaching kernels), `rename-llvm-intrinsics` + `guard-nan-minmax`, `split-i64-shuffle` (unblocked by F3). | `AirBackend.cpp:1841`, `AirLegality.cpp` transforms | Sprint 5 — promote each only behind a clean corpus sweep, per the table's own policy. Measured 31 Aug (oracles `findings/air-quality-2026-08-31.md`): the scalarize-wide-vectors knob neither helps nor hurts fma or the unrolled matmul, so it stays off; `rename-llvm-intrinsics`' scalar half has corpus evidence of reader tolerance, making it polish rather than correctness. New evidence-backed item: unrolling the register matmul helps upstream (3058→3216 at 2048³) and hurts us (3113→2951) — the largest remaining compute-side gap, investigate before any transform work. |
 | F14 | Perf candidates: per-kernel `xcrun metallib` subprocess (batchable), `air.read_write` stamped on every device buffer (precision needs golden evidence), linear family/rule lookups (~60 entries — fine until the registry grows). | `AirBackend.cpp:767`, `:2283-2299` | Sprint 5, after measurement; the repo's rule is that performance claims carry benchmarks. |
 
+| F15 | The opt pipeline runs against an arm64 TargetMachine for the air64 target, and it SLP-vectorizes float arithmetic into widths no Apple GPU executes — measured 31 Aug: the unrolled register matmul emits `fmul/fadd <16 x float>` packed by 64 `insertelement` chains where upstream emits 256 scalar mul+add pairs. The Scalarizer knob removes the vector arithmetic but not the packing (module grows 671→805 lines), which is why it measured as a no-op. The fix belongs at SLP width/creation, not at cleanup. | `AirBackend.cpp` opt pipeline; evidence in oracles `findings/air-quality-2026-08-31.md` | Sprint 5 item 5 — the top compute-side gap. |
+
+## Match, then exceed — the Apple Silicon thesis
+
+Parity on the visible artifact is now measured, not hoped: fma peak at
+parity, large matmuls at parity or ahead, every probe and bench shape
+EXACT against upstream on the same machine, same session. What we cannot
+see of theirs — their scheduler internals, their property handling — we
+were never going to copy, and do not need to: the thesis is focus. Apple
+Silicon is one target among many for upstream and none of their
+datacentre-shaped priorities (multi-vendor, multi-node, closed kernels)
+buy them anything here. It is *the* accelerator for this fork. Concretely,
+"exceed" is available on four fronts where being specialized wins:
+
+1. **Codegen for AGX specifically.** Wide-vector float ops, unroll shapes,
+   threadgroup-memory tiling and simdgroup-matrix scheduling decided
+   against one GPU family instead of five. F15 is the first instance; the
+   probe corpus plus `compare-air.sh` is the scoreboard, refreshed after
+   every backend change.
+2. **The runtime, which is ours alone.** Precise residency via
+   `air.indirect_buffer` (Sprint 2), encoder sharing across compatible
+   launches, dispatch cost that does not scale with live allocations —
+   upstream's runtime is a shared component serving every vendor; ours
+   serves one driver on one OS.
+3. **Unified memory, used as unified memory.** A datacentre-shaped stack
+   treats the GPU as discrete; on this machine host and device are the
+   same RAM. Host-pointer binding with precise residency and zero-copy
+   paths for the Cocoa compositing case (a `CAMetalLayer` whose texture a
+   Mojo kernel wrote microseconds earlier) is something they have no
+   reason to build and we use daily.
+4. **The desktop iteration loop.** `cocoamojo --run` JITs GPU code;
+   compile latency is a feature here in a way it never is for a
+   datacentre build farm.
+
+The match/exceed line is empirical, per the usual rule: the oracles
+comparison is re-run after each backend sprint and the tables updated in
+place. "Ahead" means the same tables reading below 1.00 where they matter,
+not a claim.
+
 ## What is deliberately not in this plan
 
 - Re-deriving any AIR version stamp or profile number. Those are

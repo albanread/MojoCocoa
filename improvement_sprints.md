@@ -125,10 +125,14 @@ Behind a clean corpus sweep, per the transforms' own policy:
    Aug against upstream on fma_peak and the unrolled register matmul: no
    effect beyond noise, slightly negative on the matmul, correctness EXACT.
    Stays off; see oracles `findings/air-quality-2026-08-31.md`.
-5. **NEW, top compute-side item:** the unroll inversion — unrolling the
-   register matmul helps upstream (2048³: 3058→3216 GFLOP/s) and hurts us
-   (3113→2951). Diff the unrolled kernel's AIR against theirs' (the
-   probe-09 method in the findings doc) before writing any transform.
+5. **NEW, top compute-side item — mechanism found 31 Aug (F15):** our opt
+   pipeline SLP-vectorizes the unrolled register tile into `<16 x float>`
+   mul/add packed by 64 `insertelement` chains; upstream emits 256 scalar
+   mul+add pairs. The Scalarizer knob is the wrong layer (it removes the
+   arithmetic, leaves the packing, module grows 671→805 lines — measured).
+   Fix at creation: cap or disable SLP float vectorization when the
+   emission target is air64, then re-run the unrolled bench and the
+   compare-air corpus before anything else.
 6. Small-shape matmul (512³, ragged-513) at 15-17% behind upstream is
    consistent with per-dispatch overhead on short kernels — that is
    STATUS item 5 (runtime profiling), not codegen.
