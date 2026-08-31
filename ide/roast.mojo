@@ -4559,21 +4559,35 @@ def _dir_entries(path: String) -> List[String]:
 
 
 def _merge_new_examples(bundle: String, user: String) -> Bool:
-    """Copy every example folder the bundle has and the user copy lacks.
+    """Bring across everything the bundle has and the user copy lacks.
 
-    Additive and non-destructive: an example already in the user copy is
-    skipped whole, edits and all. This is what makes a new release's examples
-    appear without a Reset, and without touching anything a person changed.
+    Additive and non-destructive, PER FILE rather than per folder. Skipping a
+    folder whole was the obvious reading of "do not touch what someone has
+    edited", and it meant an example could never gain a file: a release that
+    added ui.mojo and a new tune to abcplayer changed nothing for anyone who
+    already had abcplayer, while a brand-new example appeared normally. The
+    example was in the image, in the payload, and in the bundle, and still
+    did not reach the person who installed it.
+
+    A file that already exists is still left exactly as it is, so edits
+    survive. A file that was deleted comes back, which is the right trade for
+    a folder that is meant to be a copy of what shipped.
     """
     var brought = False
     let entries = _dir_entries(bundle)
     for i in range(len(entries)):
         let name = entries[i]
+        let src = bundle + String("/") + name
         let dst = user + String("/") + name
-        if file_exists(dst):
+        if not file_exists(dst):
+            if _copy_tree(src, dst):
+                brought = True
             continue
-        if _copy_tree(bundle + String("/") + name, dst):
-            brought = True
+        # Present already: recurse, so a folder can gain files without
+        # losing the ones beside them.
+        if is_directory(src) and is_directory(dst):
+            if _merge_new_examples(src, dst):
+                brought = True
     return brought
 
 
@@ -4648,9 +4662,12 @@ def migrate_user_space(force: Bool = False) -> Bool:
         # writable copy, so the Examples menu -- which reads that copy -- would
         # never show it, and the menu-builder's promise that shipping an
         # example is enough to list it would be false. Add whatever the bundle
-        # has and the user copy lacks, folder by folder. _copy_tree refuses to
-        # overwrite, so an example the user has edited is left exactly as they
-        # left it; only genuinely new ones are brought over.
+        # has and the user copy lacks, FILE by file -- folder by folder was
+        # not enough, because an example that already existed could then never
+        # gain one, and a release adding a file to abcplayer changed nothing
+        # for anyone who already had abcplayer. _copy_tree refuses to
+        # overwrite, so a file the user has edited is left exactly as they
+        # left it.
         did = _merge_new_examples(tc + String("/share/examples"), ex_dst) or did
     let ide_dst = user_ide_source_dir()
     if force and file_exists(ide_dst):

@@ -291,6 +291,14 @@ echo "== examples =="
 rsync -a --delete --delete-excluded \
       --exclude 'build/' --exclude '*.png' --exclude '.DS_Store' \
       "$ROOT/examples/" "$D/share/examples/"
+# A binary left behind by someone running `cocoamojo build -o name` inside an
+# example folder is not part of the example, and rsync cannot tell it from a
+# source. build/ is excluded above; this catches the other spelling.
+stray="$(find "$D/share/examples" -type f -perm +111 ! -name '*.sh' | wc -l | tr -d ' ')"
+if [ "$stray" -gt 0 ]; then
+  find "$D/share/examples" -type f -perm +111 ! -name '*.sh' -delete
+  echo "   dropped $stray stray executable(s)"
+fi
 echo "   $(find "$D/share/examples" -name '*.mojo' | wc -l | tr -d ' ') files in $(ls "$D/share/examples" | grep -vc README) projects"
 
 echo "== the IDE's source =="
