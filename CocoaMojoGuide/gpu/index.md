@@ -25,6 +25,7 @@ right.
 | [1. Your first kernel](01-first-kernel.md) | The execution model, and a complete program from allocation to result |
 | [2. Threads, blocks and memory](02-threads-and-memory.md) | Indexing, shared memory, barriers, and SIMD-group operations |
 | [3. Running and checking](03-running-and-checking.md) | Building, timing, verifying results, and what this hardware supports |
+| [4. Three ferns: when a GPU kernel is worth writing](04-three-ferns.md) | A guided tour of `fern/`, `ferns/` and `fernwind/`: where the crossing from CPU to GPU actually happens, and why the first two are right to stay put |
 
 ## The execution model, briefly
 
