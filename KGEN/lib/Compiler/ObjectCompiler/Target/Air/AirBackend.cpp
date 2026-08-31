@@ -653,8 +653,15 @@ llvm::Function *legalizeKernel(llvm::Function &fn,
       if (llvm::Attribute byval =
               fn.getArg(argIdx)->getAttribute(llvm::Attribute::ByVal);
           byval.isValid()) {
+        // A NON-EMPTY struct pointee. An opaque pointer's pointee converts
+        // to the empty struct `{}`, and a mutable device buffer arrives with
+        // exactly that shape -- accepting it here would type every opaque
+        // device buffer a constant. The empty struct is the "pointee
+        // unknown" case and means device, precisely the opposite of the pack
+        // it resembles.
         if (llvm::Type *pTy = byval.getValueAsType();
-            pTy && pTy->isStructTy() && pt->getAddressSpace() == 0)
+            pTy && pt->getAddressSpace() == 0 && pTy->isStructTy() &&
+            pTy->getStructNumElements() > 0)
           packTy = pTy;
       }
     }
