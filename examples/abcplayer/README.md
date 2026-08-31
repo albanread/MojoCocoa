@@ -103,6 +103,57 @@ worked. Found by reading it before porting:
 Numbers 1 and 2 are why this port is not a rewrite for its own sake: a tune
 in `K:D` now plays in D.
 
+## The window
+
+![the window](example-window.png)
+
+`abcplayer` opens an interface rather than just playing and printing. Three
+things live in it.
+
+**A tune list.** Whatever is in `tunes/` beside the project is found at
+startup; **Add…** opens a file panel for more. Click one and press **Play**, or
+hit Space. **Stop** returns to live mode.
+
+**A voice editor.** The chip has three voices and one shared filter, and every
+register it actually has is on screen: the four waveforms (they AND together,
+which is what the hardware did, so they are toggles and not a radio group),
+attack, decay, sustain, release, pulse width, filter routing, cutoff,
+resonance, filter mode and master level. Drag a bar and the sound changes under
+your fingers, because these are register writes and the render callback reads
+the registers on its own clock.
+
+**A playable keyboard**, using Logic Pro's and GarageBand's *Musical Typing*
+layout — the mapping a Mac musician already has in their fingers:
+
+```text
+     W E   T Y U   O P          the black keys, in their piano positions
+    A S D F G H J K L ;         the white keys, from C
+```
+
+`R` and `I` are gaps because a piano has no black key between E and F, or
+between B and C.
+
+| Key | |
+|:---|:---|
+| `Z` `X` | octave down / up |
+| `C` `V` | level down / up |
+| `Tab` | sustain |
+| `Space` | play / pause |
+| `Q` `Esc` | quit |
+
+`Z X C V` are free for that job precisely because they are not note keys, which
+is why Logic chose them and why this does too.
+
+Velocity is deliberately absent. The chip has no per-note velocity — neither
+did the 6581 — so `C` and `V` move the master level, which is the register that
+exists.
+
+Three voices means three notes. A fourth steals the oldest, which is what a
+three-oscillator chip has to do.
+
+`ABC_SHOT=<path>` draws one frame to a PNG and exits, so the window can be
+checked without a person at the screen.
+
 ## How it is put together
 
 | File | What it does |

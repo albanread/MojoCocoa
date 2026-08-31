@@ -23,6 +23,8 @@ from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
 from std.ffi import external_call, c_char
 from std.time import sleep
 from std.sys import argv
+from std.pathlib import cwd
+from std.os import getenv
 
 from chip import (
     P, chip_new, get, put, vget, vput, set_wave, set_adsr, set_filter,
@@ -40,26 +42,15 @@ from chipplay import (
 )
 from schedule import SE_NOTE_ON, SE_NOTE_OFF
 from midi import write_midi
-
-# UI and backend state, in the tail of the chip's player region. chipplay
-# owns slots 0..23 there; these start well clear of them.
-comptime UI_SCOPE = 32
-comptime UI_SCOPE_POS = 33
-comptime UI_BACKEND = 34
-comptime UI_SYNTH = 35           # the DLS synth's AudioUnit, as an address
-
-comptime BACKEND_CHIP = 0
-comptime BACKEND_MIDI = 1
-comptime SCOPE_LEN = 1024
-
-comptime g_chip = named_global["abc.chip", Int]
-comptime g_view = named_global["abc.view", Int]
-comptime g_cmd = named_global["abc.cmd", Int]
-comptime g_font_title = named_global["abc.font.title", Int]
-comptime g_font_body = named_global["abc.font.body", Int]
-comptime g_font_small = named_global["abc.font.small", Int]
-
-comptime CMD_QUIT = 1
+from ui import (
+    WIN_W, WIN_H, UI_SCOPE, UI_SCOPE_POS, UI_BACKEND, UI_SYNTH, SCOPE_LEN,
+    BACKEND_CHIP, BACKEND_MIDI, CMD_QUIT, CMD_ADD, CMD_PLAY, CMD_STOP,
+    MODE_LIVE, MODE_TUNE, I_SEL, I_MODE, I_LOADED, ROWS,
+    g_chip, g_view, g_cmd, g_title, g_subtitle,
+    g_font_title, g_font_body, g_font_small, g_paths, g_names,
+    ui_init, iget, iset, apply_params, all_notes_off, set_status,
+    draw_screen, click, drag, release, key_down, key_up, make_font,
+)
 
 # ── CoreAudio ───────────────────────────────────────────────────────────────
 
@@ -309,203 +300,13 @@ fn stop_audio(unit_addr: Int):
 
 # ── The window ──────────────────────────────────────────────────────────────
 
-comptime WIN_W = 780.0
-comptime WIN_H = 460.0
-comptime FRAME = 20.0
-
-comptime g_title = named_global["abc.title", Int]      # an NSString, retained
-comptime g_subtitle = named_global["abc.subtitle", Int]
-comptime g_backend_name = named_global["abc.backend", Int]
-
-
-fn rgb(r: Int, g: Int, b: Int) -> ObjCObject:
-    return Cls["NSColor"]().colorWithSRGBRed_green_blue_alpha(
-        Float64(r) / 255.0, Float64(g) / 255.0, Float64(b) / 255.0, 1.0
-    )
-
-
-fn rect(x: Float64, y: Float64, w: Float64, h: Float64) -> CGRect:
-    return CGRect(CGPoint(x, y), CGSize(w, h))
-
-
-fn fill_rect(r: CGRect, colour: ObjCObject):
-    Obj["NSColor"](colour.addr()).setFill()
-    _ = external_call["NSRectFill", NoneType](r)
-
-
-fn make_font(size: Float64) -> Int:
-    with autoreleasepool():
-        let f = Cls["NSFont"]().monospacedSystemFontOfSize_weight(
-            size, Float64(0.0)
-        )
-        if not f.is_nil():
-            _ = external_call["objc_retain", P](f.ptr())
-            return f.addr()
-        let g = Cls["NSFont"]().systemFontOfSize(size)
-        if g.is_nil():
-            return 0
-        _ = external_call["objc_retain", P](g.ptr())
-        return g.addr()
-
-
-fn draw_text(text: String, x: Float64, y: Float64, font_addr: Int,
-             colour: ObjCObject):
-    with autoreleasepool():
-        var attrs = Cls["NSMutableDictionary"]().dictionary()
-        if font_addr != 0:
-            Obj["NSMutableDictionary"](attrs.addr()).setObject_forKey(
-                ObjCObject(font_addr).ptr(),
-                extern_object["NSFontAttributeName"]().ptr(),
-            )
-        Obj["NSMutableDictionary"](attrs.addr()).setObject_forKey(
-            colour.ptr(),
-            extern_object["NSForegroundColorAttributeName"]().ptr(),
-        )
-        Obj["NSString"](nsstring(text).addr()).drawAtPoint_withAttributes(
-            CGPoint(x, y), attrs.ptr()
-        )
-
-
-fn note_name(midi: Int) -> String:
-    if midi < 0:
-        return String("---")
-    let names = String("C C#D D#E F F#G G#A A#B ")
-    let pc = midi % 12
-    let octave = midi // 12 - 1
-    return names[byte = pc * 2 : pc * 2 + 2] + String(octave)
-
-
-fn format_time(samples: Int) -> String:
-    let total = samples // SAMPLE_RATE
-    let minutes = total // 60
-    let seconds = total % 60
-    var s = String(minutes) + String(":")
-    if seconds < 10:
-        s += String("0")
-    return s + String(seconds)
-
-
-fn draw_screen():
-    let st = P(unsafe_from_address=g_chip()[])
-    with autoreleasepool():
-        let ink = rgb(228, 232, 240)
-        let dim = rgb(128, 138, 158)
-        let accent = rgb(120, 220, 160)
-        fill_rect(rect(0.0, 0.0, WIN_W, WIN_H), rgb(18, 20, 26))
-
-        let left = FRAME + 8.0
-        var y = WIN_H - FRAME - 30.0
-        if g_title()[] != 0:
-            draw_nsstring(g_title()[], left, y, g_font_title()[], ink)
-        y -= 24.0
-        if g_subtitle()[] != 0:
-            draw_nsstring(g_subtitle()[], left, y, g_font_small()[], dim)
-
-        # ── The scope ───────────────────────────────────────────────────────
-        let sx = left
-        let sy = 250.0
-        let sw = WIN_W - 2.0 * FRAME - 16.0
-        let sh = 120.0
-        fill_rect(rect(sx, sy, sw, sh), rgb(10, 12, 16))
-        let mid = sy + sh / 2.0
-        fill_rect(rect(sx, mid, sw, 1.0), rgb(38, 44, 54))
-        let scope_addr = get(st, PLAYER_BASE + UI_SCOPE)
-        if scope_addr != 0:
-            let scope = Pointer[Float32, MutUntrackedOrigin](
-                unsafe_from_address=scope_addr
-            )
-            Obj["NSColor"](accent.addr()).setFill()
-            let points = Int(sw) // 2
-            for i in range(points):
-                let s = Float64(scope[unsafe_offset=(i * SCOPE_LEN) // points])
-                let h = s * (sh / 2.0 - 4.0)
-                var top = mid
-                var height = h
-                if h < 0.0:
-                    top = mid + h
-                    height = -h
-                if height < 1.5:
-                    height = 1.5
-                _ = external_call["NSRectFill", NoneType](
-                    rect(sx + Float64(i * 2), top, 2.0, height)
-                )
-
-        # ── Position and voices ─────────────────────────────────────────────
-        y = 210.0
-        let played = get(st, PLAYER_BASE + SC_SAMPLE)
-        let total = get(st, PLAYER_BASE + SC_END)
-        var line = String("position ") + format_time(played)
-        line += String(" / ") + format_time(total)
-        if get(st, PLAYER_BASE + SC_PAUSE) != 0:
-            line += String("   [paused]")
-        draw_text(line, left, y, g_font_body()[], ink)
-
-        # The progress bar, which is the only part of this that a listener
-        # actually watches.
-        y -= 26.0
-        let bar_w = WIN_W - 2.0 * FRAME - 16.0
-        fill_rect(rect(left, y, bar_w, 10.0), rgb(34, 38, 48))
-        if total > 0:
-            var frac = Float64(played) / Float64(total)
-            if frac > 1.0:
-                frac = 1.0
-            fill_rect(rect(left, y, bar_w * frac, 10.0), accent)
-
-        y -= 40.0
-        if get(st, PLAYER_BASE + UI_BACKEND) == BACKEND_CHIP:
-            draw_text(String("chip voices"), left, y, g_font_small()[], dim)
-            y -= 26.0
-            for v in range(3):
-                let held = get(st, PLAYER_BASE + SC_VOICE_NOTE + v)
-                let env = vget(st, v, V_ENV) >> 16
-                var row = String("  ") + String(v + 1) + String("   ")
-                row += note_name(held) + String("   ")
-                draw_text(row, left, y, g_font_body()[],
-                          ink if held >= 0 else dim)
-                let bx = left + 140.0
-                fill_rect(rect(bx, y + 2.0, 200.0, 10.0), rgb(34, 38, 48))
-                if env > 0:
-                    fill_rect(
-                        rect(bx, y + 2.0, 200.0 * Float64(env) / 255.0, 10.0),
-                        accent,
-                    )
-                y -= 24.0
-        else:
-            draw_text(
-                String("General MIDI · Apple DLS synthesiser"),
-                left, y, g_font_body()[], ink,
-            )
-
-        draw_text(
-            String("SPACE pause    Q quit"),
-            left, FRAME + 6.0, g_font_small()[], dim,
-        )
-
-
-fn draw_nsstring(addr: Int, x: Float64, y: Float64, font_addr: Int,
-                 colour: ObjCObject):
-    """Draw a string built once and retained, rather than rebuilt per frame.
-
-    The title does not change; converting it from a Mojo String thirty times
-    a second would be work for nothing.
-    """
-    with autoreleasepool():
-        var attrs = Cls["NSMutableDictionary"]().dictionary()
-        if font_addr != 0:
-            Obj["NSMutableDictionary"](attrs.addr()).setObject_forKey(
-                ObjCObject(font_addr).ptr(),
-                extern_object["NSFontAttributeName"]().ptr(),
-            )
-        Obj["NSMutableDictionary"](attrs.addr()).setObject_forKey(
-            colour.ptr(),
-            extern_object["NSForegroundColorAttributeName"]().ptr(),
-        )
-        Obj["NSString"](ObjCObject(addr).addr()).drawAtPoint_withAttributes(
-            CGPoint(x, y), attrs.ptr()
-        )
-
 
 class AbcView(NSView):
+    """The whole interface. Handlers set flags or write registers; nothing
+    here parses a file or touches the audio unit -- the pump does that, for
+    the reason mandelbrot gives: work that can block does not belong in a
+    callback AppKit is waiting on."""
+
     def drawRect_(self, dirty: CGRect):
         draw_screen()
 
@@ -513,6 +314,7 @@ class AbcView(NSView):
         return True
 
     def keyDown_(self, event: ObjCObject):
+        let repeat = msg_send[Bool, "NSEvent", "isARepeat"](event)
         let chars = msg_send[
             ObjCObject, "NSEvent", "charactersIgnoringModifiers"
         ](event)
@@ -524,13 +326,65 @@ class AbcView(NSView):
         let text = String(unsafe_from_utf8_ptr=p.unsafe_bitcast[c_char]())
         if len(text.as_bytes()) == 0:
             return
-        let c = Int(text.as_bytes()[0])
-        let st = P(unsafe_from_address=g_chip()[])
-        if c == 113 or c == 81 or c == 27:
-            g_cmd()[] = g_cmd()[] | CMD_QUIT
-        elif c == 32:
-            let was = get(st, PLAYER_BASE + SC_PAUSE)
-            put(st, PLAYER_BASE + SC_PAUSE, 0 if was != 0 else 1)
+        key_down(Int(text.as_bytes()[0]), repeat)
+
+    def keyUp_(self, event: ObjCObject):
+        let chars = msg_send[
+            ObjCObject, "NSEvent", "charactersIgnoringModifiers"
+        ](event)
+        if chars.is_nil():
+            return
+        let p = msg_send[P, "NSString", "UTF8String"](chars)
+        if Int(p) == 0:
+            return
+        let text = String(unsafe_from_utf8_ptr=p.unsafe_bitcast[c_char]())
+        if len(text.as_bytes()) == 0:
+            return
+        key_up(Int(text.as_bytes()[0]))
+
+    def mouseDown_(self, event: ObjCObject):
+        # The TYPED msg_send: an NSPoint comes back in two registers, and the
+        # dynamic path does not describe that to the ABI -- every click would
+        # land on the same wrong pixel, silently.
+        let at = msg_send[CGPoint, "NSEvent", "locationInWindow"](event)
+        click(at.x, at.y)
+
+    def mouseDragged_(self, event: ObjCObject):
+        let at = msg_send[CGPoint, "NSEvent", "locationInWindow"](event)
+        drag(at.x, at.y)
+
+    def mouseUp_(self, event: ObjCObject):
+        release()
+
+
+def write_shot(view: ObjCObject, var path: String):
+    """Draw one frame into a PNG and exit.
+
+    ABC_SHOT=<path> makes the window checkable without a person at the
+    screen, which is the same reason mandelbrot has MANDEL_FRAMES: a layout
+    nobody can capture is a layout nobody reviews.
+    """
+    with autoreleasepool():
+        let r = CGRect(CGPoint(0.0, 0.0), CGSize(WIN_W, WIN_H))
+        let rep = msg_send[
+            ObjCObject, "NSView", "bitmapImageRepForCachingDisplayInRect:"
+        ](view, r)
+        if rep.is_nil():
+            return
+        _ = msg_send[
+            ObjCObject, "NSView", "cacheDisplayInRect:toBitmapImageRep:"
+        ](view, r, rep.ptr())
+        let empty = Cls["NSMutableDictionary"]().dictionary()
+        let data = msg_send[
+            ObjCObject, "NSBitmapImageRep",
+            "representationUsingType:properties:",
+        ](rep, Int(4), empty.ptr())      # NSBitmapImageFileTypePNG
+        if data.is_nil():
+            return
+        var pth = path
+        _ = msg_send[Bool, "NSData", "writeToFile:atomically:"](
+            data, nsstring(pth).ptr(), Bool(True)
+        )
 
 
 fn redraw():
@@ -538,31 +392,145 @@ fn redraw():
         Obj["NSView"](ObjCObject(g_view()[]).addr()).setNeedsDisplay(True)
 
 
-def main() raises:
-    var path = String("")
-    var backend = BACKEND_CHIP
-    var write_only = String("")
-    let args = argv()
-    for i in range(1, len(args)):
-        let a = String(args[i])
-        if a == "--midi":
-            backend = BACKEND_MIDI
-        elif a == "--chip":
-            backend = BACKEND_CHIP
-        elif a.startswith("--write="):
-            write_only = String(a[byte=8 : len(a.as_bytes())])
-        else:
-            path = a
-    if len(path.as_bytes()) == 0:
-        print("usage: abcplayer <tune.abc> [--chip|--midi] [--write=out.mid]")
-        return
+def basename(path: String) -> String:
+    let b = path.as_bytes()
+    var cut = -1
+    for i in range(len(b)):
+        if b[i] == 47:
+            cut = i
+    if cut < 0:
+        return path
+    return String(path[byte = cut + 1 : len(b)])
 
+
+def add_tune(var path: String):
+    let paths = g_paths()
+    for i in range(len(paths[])):
+        if paths[][i] == path:
+            return                      # already listed
+    let name = basename(path)
+    paths[].append(path^)
+    g_names()[].append(name)
+    if iget(I_SEL) < 0:
+        iset(I_SEL, len(g_names()[]) - 1)
+
+
+def scan_tunes() raises:
+    """Whatever is in tunes/ beside the project, so the list is never empty."""
+    let dir = String(cwd()) + String("/tunes")
+    with autoreleasepool():
+        let NSFileManager = ObjCClass.lookup["NSFileManager"]()
+        let fm = msg_send[
+            ObjCObject, "NSFileManager", "defaultManager", is_class=True
+        ](NSFileManager.as_object())
+        var d = dir
+        let names = msg_send[
+            ObjCObject, "NSFileManager", "contentsOfDirectoryAtPath:error:"
+        ](fm, nsstring(d).ptr(), ObjCObject(0).ptr())
+        if names.addr() == 0:
+            return
+        let n = msg_send[Int, "NSArray", "count"](names)
+        for i in range(n):
+            let item = msg_send[ObjCObject, "NSArray", "objectAtIndex:"](
+                names, i
+            )
+            let cp = msg_send[P, "NSString", "UTF8String"](item)
+            if Int(cp) == 0:
+                continue
+            let nm = String(unsafe_from_utf8_ptr=cp.unsafe_bitcast[c_char]())
+            if nm.endswith(".abc"):
+                add_tune(dir + String("/") + nm)
+
+
+def open_panel():
+    """NSOpenPanel, run modally from the pump."""
+    with autoreleasepool():
+        let cls = ObjCClass.lookup["NSOpenPanel"]()
+        let panel = msg_send[
+            ObjCObject, "NSOpenPanel", "openPanel", is_class=True
+        ](cls.as_object())
+        _ = msg_send[
+            ObjCObject, "NSOpenPanel", "setAllowsMultipleSelection:"
+        ](panel, Bool(True))
+        _ = msg_send[ObjCObject, "NSOpenPanel", "setCanChooseFiles:"](
+            panel, Bool(True)
+        )
+        _ = msg_send[ObjCObject, "NSOpenPanel", "setCanChooseDirectories:"](
+            panel, Bool(False)
+        )
+        let resp = msg_send[Int, "NSOpenPanel", "runModal"](panel)
+        if resp != 1:                    # NSModalResponseOK
+            return
+        let urls = msg_send[ObjCObject, "NSOpenPanel", "URLs"](panel)
+        if urls.is_nil():
+            return
+        let n = msg_send[Int, "NSArray", "count"](urls)
+        for i in range(n):
+            let url = msg_send[ObjCObject, "NSArray", "objectAtIndex:"](urls, i)
+            let ps = msg_send[ObjCObject, "NSURL", "path"](url)
+            let cp = msg_send[P, "NSString", "UTF8String"](ps)
+            if Int(cp) != 0:
+                add_tune(String(unsafe_from_utf8_ptr=cp.unsafe_bitcast[c_char]()))
+
+
+def set_header(var title: String, var sub: String):
+    with autoreleasepool():
+        let t = nsstring(title)
+        _ = external_call["objc_retain", P](t.ptr())
+        if g_title()[] != 0:
+            _ = external_call["objc_release", NoneType](
+                ObjCObject(g_title()[]).ptr()
+            )
+        g_title()[] = t.addr()
+        let s = nsstring(sub)
+        _ = external_call["objc_retain", P](s.ptr())
+        if g_subtitle()[] != 0:
+            _ = external_call["objc_release", NoneType](
+                ObjCObject(g_subtitle()[]).ptr()
+            )
+        g_subtitle()[] = s.addr()
+
+
+def go_live():
+    """No schedule, so nothing drives the voices but the keyboard.
+
+    SC_ADDR must stay non-zero -- render_scheduled fills silence when it is
+    null -- and SC_END goes far away so the loop-round at the end of a tune
+    never fires and gates the live notes off underneath you.
+    """
+    let st = P(unsafe_from_address=g_chip()[])
+    put(st, PLAYER_BASE + SC_PAUSE, 1)
+    all_notes_off()
+    put(st, PLAYER_BASE + SC_COUNT, 0)
+    put(st, PLAYER_BASE + SC_CURSOR, 0)
+    put(st, PLAYER_BASE + SC_SAMPLE, 0)
+    put(st, PLAYER_BASE + SC_LOOP, 0)
+    put(st, PLAYER_BASE + SC_END, 1 << 60)
+    for v in range(3):
+        put(st, PLAYER_BASE + SC_VOICE_NOTE + v, -1)
+    iset(I_MODE, MODE_LIVE)
+    iset(I_LOADED, -1)
+    apply_params()
+    put(st, PLAYER_BASE + SC_PAUSE, 0)
+
+
+def play_tune(index: Int) raises:
+    """Parse, schedule and hand it to the audio thread.
+
+    Paused across the swap: the render callback returns before it reads
+    SC_ADDR when SC_PAUSE is set, which is the whole handoff.
+    """
+    let paths = g_paths()
+    if index < 0 or index >= len(paths[]):
+        return
+    let path = paths[][index]
     var text = String("")
     try:
         with open(path, "r") as f:
             text = f.read()
     except:
-        raise Error("could not read " + path)
+        set_status(String("could not read ") + basename(path))
+        return
 
     var tune = Tune()
     parse_abc(text, tune)
@@ -573,70 +541,106 @@ def main() raises:
     for i in range(len(tune.events)):
         if tune.events[i].kind == EV_NOTE and tune.events[i].velocity > 0:
             notes += 1
-    print("tune:", tune.title, " voices:", len(tune.voices), " notes:", notes)
-    print("tempo:", tune.tempo_bpm, "bpm")
 
+    var steps = List[Step]()
+    build_schedule(tune, SAMPLE_RATE, steps)
+    if len(steps) == 0:
+        set_status(String("nothing to play in ") + basename(path))
+        return
+
+    var st = P(unsafe_from_address=g_chip()[])
+    put(st, PLAYER_BASE + SC_PAUSE, 1)
+    all_notes_off()
+    # The previous schedule was calloc'd and nothing else owns it.
+    let old = get(st, PLAYER_BASE + SC_ADDR)
+    if old != 0:
+        _ = external_call["free", NoneType](P(unsafe_from_address=old))
+    put(st, PLAYER_BASE + SC_ADDR, 0)
+    _ = flatten_schedule(steps, st)
+    put(st, PLAYER_BASE + SC_LOOP, 1)
+    put(st, PLAYER_BASE + SC_DONE, 0)
+
+    var sub = String("")
+    if len(tune.composer.as_bytes()) > 0:
+        sub += tune.composer + String("   ·   ")
+    sub += String(len(tune.voices)) + String(" voices   ·   ")
+    sub += String(notes) + String(" notes   ·   ")
+    sub += String(tune.tempo_bpm) + String(" bpm")
+    set_header(
+        tune.title if len(tune.title.as_bytes()) > 0 else basename(path),
+        sub^,
+    )
+    iset(I_MODE, MODE_TUNE)
+    iset(I_LOADED, index)
+    set_status(String("playing"))
+    put(st, PLAYER_BASE + SC_PAUSE, 0)
+
+
+def main() raises:
+    var backend = BACKEND_CHIP
+    var write_only = String("")
+    var first = String("")
+    let args = argv()
+    for i in range(1, len(args)):
+        let a = String(args[i])
+        if a == "--midi":
+            backend = BACKEND_MIDI
+        elif a == "--chip":
+            backend = BACKEND_CHIP
+        elif a.startswith("--write="):
+            write_only = String(a[byte=8 : len(a.as_bytes())])
+        else:
+            first = a
+
+    # --write is the one mode with no window: parse, write, done.
     if len(write_only.as_bytes()) > 0:
+        if len(first.as_bytes()) == 0:
+            print("usage: abcplayer <tune.abc> --write=out.mid")
+            return
+        var text = String("")
+        with open(first, "r") as f:
+            text = f.read()
+        var tune = Tune()
+        parse_abc(text, tune)
+        expand_repeats(tune)
+        resolve_ties(tune)
         if write_midi(tune, write_only):
             print("wrote", write_only)
         else:
             print("could not write", write_only)
         return
 
-    var steps = List[Step]()
-    build_schedule(tune, SAMPLE_RATE, steps)
-    if len(steps) == 0:
-        print("nothing to play")
-        return
-
     if not load_framework["AppKit"]():
         raise Error("could not load AppKit")
 
+    ui_init()
     var st = chip_new()
     g_chip()[] = Int(st)
     put(st, PLAYER_BASE + UI_BACKEND, backend)
-    put(st, PLAYER_BASE + SC_LOOP, 1)
     put(
         st, PLAYER_BASE + UI_SCOPE,
         Int(external_call["calloc", P](Int(SCOPE_LEN), Int(4))),
     )
-    _ = flatten_schedule(steps, st)
-
-    # A chip voice per part: pulse for the melody, saw underneath. The
-    # settings are the ones the chip example arrived at, which is the point of
-    # having the chip in its own module.
-    for v in range(3):
-        set_wave(st, v, WAVE_PULSE if v == 0 else WAVE_SAW)
-        set_adsr(st, v, 0, 7, 11, 5)
-        set_pulse_width(st, v, 1400)
-        route_filter(st, v, True)
-    set_filter(st, 1500, 6, FILT_LP)
-    set_volume(st, 14)
-
-    # The two fixed strings, made once and retained.
-    with autoreleasepool():
-        let title_str = nsstring(
-            tune.title if len(tune.title.as_bytes()) > 0 else String("(untitled)")
-        )
-        _ = external_call["objc_retain", P](title_str.ptr())
-        g_title()[] = title_str.addr()
-        var sub = String("")
-        if len(tune.composer.as_bytes()) > 0:
-            sub += tune.composer + String("   ·   ")
-        sub += String(len(tune.voices)) + String(" voices   ·   ")
-        sub += String(notes) + String(" notes   ·   ")
-        sub += String(tune.tempo_bpm) + String(" bpm   ·   ")
-        sub += String("chip" if backend == BACKEND_CHIP else "General MIDI")
-        let sub_str = nsstring(sub)
-        _ = external_call["objc_retain", P](sub_str.ptr())
-        g_subtitle()[] = sub_str.addr()
+    # An empty schedule, so live mode renders the chip rather than silence.
+    put(
+        st, PLAYER_BASE + SC_ADDR,
+        Int(external_call["calloc", P](Int(STEP_SLOTS + 8), Int(8))),
+    )
 
     g_font_title()[] = make_font(16.0)
     g_font_body()[] = make_font(13.0)
     g_font_small()[] = make_font(11.0)
+    set_header(String("ABC player"), String("chip · three voices"))
+
+    scan_tunes()
+    if len(first.as_bytes()) > 0:
+        add_tune(first)
+        iset(I_SEL, len(g_names()[]) - 1)
 
     let unit = start_audio(st, backend)
-    print("playing through the", "DLS synth" if backend == BACKEND_MIDI else "chip")
+    go_live()
+    if len(first.as_bytes()) > 0:
+        play_tune(iget(I_SEL))
 
     with autoreleasepool():
         let NSApplication = ObjCClass.lookup["NSApplication"]()
@@ -653,20 +657,17 @@ def main() raises:
             ObjCObject, "NSWindow",
             "initWithContentRect:styleMask:backing:defer:",
         ](
-            win, CGRect(CGPoint(200.0, 200.0), CGSize(WIN_W, WIN_H)),
+            win, CGRect(CGPoint(160.0, 160.0), CGSize(WIN_W, WIN_H)),
             Int(15), Int(2), Bool(False),
         )
         _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
-            win, nsstring(tune.title if len(tune.title.as_bytes()) > 0
-                          else String("ABC")).ptr()
+            win, nsstring(String("ABC player")).ptr()
         )
 
         let view = ObjCObject(AbcView().__objc_id)
         _ = msg_send[ObjCObject, "NSView", "setFrame:"](
-            view, rect(0.0, 0.0, WIN_W, WIN_H)
+            view, CGRect(CGPoint(0.0, 0.0), CGSize(WIN_W, WIN_H))
         )
-        # Retained: the Mojo wrapper releases at the end of this statement,
-        # and AppKit would then be drawing into a freed object.
         _ = external_call["objc_retain", P](view.ptr())
         g_view()[] = view.addr()
         _ = msg_send[ObjCObject, "NSWindow", "setContentView:"](win, view.ptr())
@@ -699,10 +700,33 @@ def main() raises:
                 )
             if not msg_send[Bool, "NSWindow", "isVisible"](win):
                 break
-            if (g_cmd()[] & CMD_QUIT) != 0:
-                break
+
+            # Read the flags out BEFORE clearing them. `let` names the global
+            # rather than copying it, so clearing first would make every
+            # command evaporate one line later.
+            if g_cmd()[] != 0:
+                let quit = (g_cmd()[] & CMD_QUIT) != 0
+                let want_add = (g_cmd()[] & CMD_ADD) != 0
+                let want_play = (g_cmd()[] & CMD_PLAY) != 0
+                let want_stop = (g_cmd()[] & CMD_STOP) != 0
+                g_cmd()[] = 0
+                if quit:
+                    break
+                if want_add:
+                    open_panel()
+                if want_stop:
+                    go_live()
+                    set_status(String("ready"))
+                if want_play:
+                    play_tune(iget(I_SEL))
+
             redraw()
             sleep(0.033)
+            let shot = getenv("ABC_SHOT")
+            if len(shot.as_bytes()) > 0:
+                write_shot(view, shot)
+                print("wrote", shot)
+                break
 
     stop_audio(unit)
     print("stopped.")

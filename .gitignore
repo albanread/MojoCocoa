@@ -202,3 +202,4 @@ tools/signing.local.sh
 .components/
 /examples/bifurcation/bifurcation.png
 /examples/bifurcation/bif
+/examples/abcplayer/abcp
