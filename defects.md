@@ -252,3 +252,37 @@ are processed, the fold belongs at the clone/verify boundary or the call
 processing must process its operand constants first. A second symptom in the same repro
 ('value defined outside the region') may be separate; re-check after.
 Repro: rms_crash.mojo against the widened dist kernels.
+
+
+## Campaign status: the widened-closure work is PAUSED (backed out), 31 Aug night
+
+Decision after five structured attempts on D13 (of a budgeted ten): the fix
+is an ordering change in the elaborator's verify-vs-process sequence — core
+machinery surgery with real regression surface — and the work is backed out
+rather than risked further. Nothing speculative was left in the tree: every
+failed attempt (the rebind, both processParamConstantOp type folds, the
+instrumentation scaffolding) was reverted before commit.
+
+What STANDS from the campaign, each verified on its own:
+
+- `096a5f52` MOCO-4045 — copy-captured DevicePassable types cross the device
+  boundary by value. tile_caps.mojo is the regression probe; full sweep was
+  zero-regression, +3 tests.
+- `228f57d2` — three latent divergent-barrier kernels made sound.
+- `be118d91`, `2c2d93b2` — four crash-to-correct-behavior hardening fixes
+  (matchParams, sortValueUses ×D9, SCCP lattice ×D12). These fired only on
+  widened shapes but are independently sound; sweeps after each were
+  identical to HEAD.
+- `31844c7f`/`f61e8d8b` — the call-types differ (KGEN_DUMP_CALL_TYPES=1),
+  a permanent diagnostic for any print-identical/compare-unequal pair.
+
+What is UNDONE and stays undone: the RegisterPassable widening itself (it
+lives only in the disposable /tmp/aircmp dist), the reroute flip (repo's
+normalization.mojo remains reroute=False with accurate notes), and D13's
+fold. The reroute stays blocked on D13; test_cpu_gpu_differential stays on
+the rowwise path.
+
+Resume point: the staged-but-unrun probe is a one-shot stack trace at the
+first DIFFERS in the differ (built once, reverted) naming the verifying
+pass; if it shows verification preceding operand-constant processing, the
+fold belongs at the clone/verify boundary.
