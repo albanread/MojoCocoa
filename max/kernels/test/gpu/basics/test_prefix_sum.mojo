@@ -94,11 +94,16 @@ def block_prefix_sum_kernel[
 ):
     var size = Int(size_dev)
     var tid = global_idx.x
-    if tid >= size:
-        return
-    output[tid] = block.prefix_sum[exclusive=exclusive, block_size=block_size](
-        input[tid]
+    # Same as test_sum's block kernel: the collective inside
+    # block.prefix_sum must be reached by every thread, so clamp the load
+    # index instead of returning early and guard only the store. The test's
+    # sizes are full blocks, where the clamp is the identity.
+    var idx = Int(0) if size <= 0 else min(tid, size - 1)
+    var s = block.prefix_sum[exclusive=exclusive, block_size=block_size](
+        input[idx]
     )
+    if tid < size:
+        output[tid] = s
 
 
 def test_block_prefix_sum[exclusive: Bool](ctx: DeviceContext) raises:

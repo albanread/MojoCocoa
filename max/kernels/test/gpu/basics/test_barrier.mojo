@@ -29,15 +29,21 @@ def kernel[
 ):
     var size = Int(size_dev)
     var global_tid = global_idx.x
-    if global_tid >= size:
-        return
-    shared_data[global_tid] = input[global_tid]
+    # Reaching the barrier must be uniform over the threadgroup: an early
+    # return here would put it under a thread-varying conditional, which the
+    # divergent-barrier legality rule refuses (lanes that returned reach a
+    # different barrier instance and the group never synchronises). Clamp
+    # the load index and guard only the store; the test's sizes are full
+    # blocks, where the clamp is the identity.
+    var idx = Int(0) if size <= 0 else min(global_tid, size - 1)
+    shared_data[global_tid] = input[idx]
 
     barrier()
 
     var result = shared_data[global_tid] + shared_data[0]
 
-    output[global_tid] = result
+    if global_tid < size:
+        output[global_tid] = result
 
 
 def test_barrier[dtype: DType](ctx: DeviceContext) raises:

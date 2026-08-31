@@ -87,9 +87,17 @@ def block_sum_kernel[
 ):
     var size = Int(size_dev)
     var tid = global_idx.x
-    if tid >= size:
-        return
-    output[tid] = block.sum[block_size=block_size, broadcast=True](input[tid])
+    # The early `return` this replaces put the block.sum barrier under a
+    # thread-varying conditional -- the exact shape the divergent-barrier
+    # legality rule refuses, because lanes that returned early reach a
+    # different barrier instance and the threadgroup never synchronises.
+    # The collective must be reached by every thread: clamp the load index
+    # instead and guard only the store. The test's sizes are full blocks,
+    # where the clamp is the identity.
+    var idx = Int(0) if size <= 0 else min(tid, size - 1)
+    var s = block.sum[block_size=block_size, broadcast=True](input[idx])
+    if tid < size:
+        output[tid] = s
 
 
 def test_block_sum(ctx: DeviceContext) raises:

@@ -22,3 +22,7 @@ GPU validation on:
 The probes that failed to launch print the runtime's own classification
 ("caller says constant, reflection says device"), which is the fastest
 orientation when a change moves one of these.
+- `tile_caps.mojo` — a copy-captured TileTensor (memory-passable,
+  DevicePassable): the MOCO-4045 regression test. Crosses BY VALUE since the
+  ClosureEmitter fix; before it, boxed thin and died with
+  "unknown device address".
