@@ -2571,7 +2571,10 @@ LogicalResult KGEN::verifyCallOperands(Operation *op, ValueRange args,
                   << "(different type kinds or not structs)\n";
             };
         llvm::errs() << "[call-types] expected : " << type << "\n"
-                     << "[call-types] actual   : " << arg.getType() << "\n";
+                     << "[call-types] actual   : " << arg.getType() << "\n"
+                     << "[call-types] isEqualCanon: "
+                     << (KGEN::isEqualCanon(type, arg.getType()) ? 1 : 0)
+                     << "\n";
         diffTypes(type, arg.getType(), 1);
       }
       return op->emitOpError("callee argument #")
