@@ -15,6 +15,14 @@
 # and the MMA calls span the operand cross-product rather than one diagonal --
 # (f16, bf16) and (f16, f32) collide under any scheme that keys on the first
 # operand alone, which an earlier per-call-site fix did.
+#
+# Coverage boundary, stated so nobody leans on what is not here: both kernels
+# go through SEPARATE `_compile_code` invocations, i.e. separate modules. The
+# same-module shape -- two kernels sharing one symbol table in the
+# module-scoped POP pass -- is not reachable through `_compile_code`
+# (SplitStrategy::PerExported hands the object backend one kernel per module,
+# while the MLIR-level pass runs pre-split over the whole module). STATUS.md
+# tracks that gap; this file does not close it.
 # ===----------------------------------------------------------------------=== #
 # CHECK: compiled True True
 
@@ -43,15 +51,17 @@ def kernel_mixed_mma(d_ptr: UnsafePointer[Scalar[DType.float32], MutAnyOrigin]):
     _mma_pair[DType.float16, DType.float32](d_ptr)
 
 
-# Kernel two: the same stems again, from a DIFFERENT kernel. Declarations are
-# module-scoped, so a second kernel is what proves the key is shared correctly
-# rather than accidentally per-function.
+# Kernel two: the same stems in a different mix, compiled as a SECOND
+# invocation (its own module -- see the coverage note above, which is why
+# this does not exercise module-scoped sharing across kernels). What it does
+# cover: a second compilation over the same stems with the signatures in a
+# different order, in one process.
 def kernel_mixed_mma_again(
     d_ptr: UnsafePointer[Scalar[DType.float32], MutAnyOrigin]
 ):
     _mma_pair[DType.bfloat16, DType.float16](d_ptr)
     _mma_pair[DType.float32, DType.float32](d_ptr)
-    _mma_pair[DType.float16, DType.float16](d_ptr)  # repeat: must REUSE, not clash
+    _mma_pair[DType.float16, DType.float16](d_ptr)  # first in kernel one, last here
 
 
 def main():
