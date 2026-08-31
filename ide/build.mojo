@@ -489,6 +489,18 @@ def parse_issues(text: String) -> List[Issue]:
                 sev = 2
         else:
             sev = 1
+        if at < 0:
+            # A note is the second half of the diagnostic above it: "origin was
+            # invalidated here", "previous definition is here". It carries its
+            # own path and line, so it is worth making navigable rather than
+            # leaving as console text -- the note is usually the line you
+            # actually need to edit, and the error is on a line that reads
+            # innocently. Severity 3: advisory, so it is not counted as a
+            # problem of its own.
+            at = line.find(": note: ")
+            skip = 8
+            if at >= 0:
+                sev = 3
         if sev == 0:
             continue
 

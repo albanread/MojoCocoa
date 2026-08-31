@@ -149,6 +149,38 @@ def main() raises:
         failures += check("colon in the path: path", odd[0].path, String("/Volumes/x:y/a.mojo"))
         failures += check_int("colon in the path: line", odd[0].line, 3)
 
+    # A note is the second half of the diagnostic above it, and it is usually
+    # the line you actually have to edit -- the error lands on a read that
+    # looks innocent, the note on the mutation that spoiled it. It gets a
+    # location so it can be jumped to, and severity 3 so it is not counted as
+    # a second problem or mistaken for the error.
+    print("build: notes are navigable, not counted")
+    var withnote = parse_issues(
+        String(
+            "/p/a.mojo:7:37: error: use of invalidated interior reference\n"
+            "/p/a.mojo:6:17: note: origin was invalidated here\n"
+        )
+    )
+    failures += check_int("note: both parsed", len(withnote), 2)
+    if len(withnote) == 2:
+        failures += check_int("note: error first", withnote[0].severity, 1)
+        failures += check_int("note: advisory severity", withnote[1].severity, 3)
+        failures += check_int("note: line", withnote[1].line, 6)
+        failures += check_int("note: column", withnote[1].col, 17)
+        failures += check(
+            "note: message",
+            withnote[1].message,
+            String("origin was invalidated here"),
+        )
+    # and the note must not be picked as the error to jump to.
+    let ne = first_error(
+        String(
+            "/p/a.mojo:7:37: error: use of invalidated interior reference\n"
+            "/p/a.mojo:6:17: note: origin was invalidated here\n"
+        )
+    )
+    failures += check_int("note: jump goes to the error", ne.line, 7)
+
     print()
     if failures == 0:
         print("build OK")
