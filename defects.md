@@ -183,12 +183,21 @@ crashed the compiler twice, both without diagnostics, both fixed:
   "unreproduced D9" crash all along: it needed the widened closure shapes
   to produce the IR that trips it. Now inserts on miss.
 
-### D12 — SCCP lattice assertion on the widened-closure chain — OPEN, next wall
-With D9/D10 fixed, the widened rms_norm repro compiles past trait matching
-and bytecode emission and stops at:
-`Assertion failed: (!lattice->getValue().isUninitialized() && "All
-operands should have initialized lattice value.")`, SCCP.cpp:211 — the
-third distinct crash on this chain. The RegisterPassable widening (rowwise
-layers + the kernel structs in algorithm/gpu/rowwise.mojo, all mapped and
-dist-tested) remains blocked behind it. Repro: rms_crash.mojo against the
-widened dist kernels.
+### D12 — SCCP lattice assertion — FIXED (2c2d93b2)
+The region-order constant-propagation visitor asserted every operand
+lattice was initialized when read, but it reaches operations ahead of
+their operands' definitions whenever the emitted region order is not a
+topological order for every use — which the widened closure traits
+produce. Uninitialized is the lattice BOTTOM (reading it folds garbage);
+now returns the unknown (top) constant, so the operation simply does not
+fold. Gates 7/7, full sweep identical.
+
+### D13 — Widened-closure emission produces mismatched param-pack structs — OPEN, next wall
+With D9/D10/D12 fixed, the widened rms_norm repro gets a genuine verifier
+diagnostic instead of a crash — a fourth and deeper issue: the closure
+offload emits a `kgen.call` whose argument struct and whose callee's
+expected struct PRINT IDENTICALLY but are distinct IR types (two
+instantiations of the same param-pack shape), plus a value used outside
+its region. Emitted-IR work in the closure/offload machinery, not an
+invariant to relax. Repro: rms_crash.mojo against the widened dist
+kernels.
