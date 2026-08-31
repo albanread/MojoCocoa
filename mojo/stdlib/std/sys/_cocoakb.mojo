@@ -546,3 +546,196 @@ comptime cocoakb_p_ret_class_for_str[
 `StringLiteral`'s own parameter is a `!kgen.string`, so only this form can
 parameterise a type through it -- `Obj[StringLiteral[...]()]`, which is how a
 call's result gets the class the SDK says it has."""
+
+
+# The KEYWORD form of the same three lookups: the method name plus the
+# selector's trailing parts, one StringLiteral each, because joining them in
+# Mojo would be string surgery and would not fold. The SQL assembles the
+# selector (`?2 || ':' || ?4 || ':'` for one part) and the chain walk, kind
+# and class answers are the same as the name-keyed queries above. Parts
+# beyond five are not wrapped; the positional tier covers the whole span.
+
+
+comptime cocoakb_p_selector_for_parts_1[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "selector_for_parts_1" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+        `> : !kgen.string`,
+    ]
+)
+"""The selector `obj.name(a0, p1=v1)` means, verified to exist on the class
+or above it. One label; the first argument is positional and the method name
+is the selector's first part."""
+
+comptime cocoakb_p_ret_kind_for_parts_1[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "ret_kind_for_parts_1" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+        `> : index`,
+    ]
+)
+"""The result KIND's code point for the one-label keyword form; 0 when the
+class does not answer the selector the labels build."""
+
+comptime cocoakb_p_ret_class_for_parts_1_str[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral,
+] = __mlir_attr[
+    `#kgen.param.expr<cocoakb_query, "ret_class_for_parts_1" : !kgen.string, `,
+    cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+    `> : !kgen.string`,
+]
+"""WHICH object the one-label keyword form returns, as a raw `!kgen.string`
+so it can parameterise a type."""
+
+
+comptime cocoakb_p_selector_for_parts_2[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "selector_for_parts_2" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+        `, `, p2.value,
+        `> : !kgen.string`,
+    ]
+)
+
+comptime cocoakb_p_ret_kind_for_parts_2[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "ret_kind_for_parts_2" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+        `, `, p2.value,
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_ret_class_for_parts_2_str[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral,
+] = __mlir_attr[
+    `#kgen.param.expr<cocoakb_query, "ret_class_for_parts_2" : !kgen.string, `,
+    cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+    `, `, p2.value,
+    `> : !kgen.string`,
+]
+
+
+comptime cocoakb_p_selector_for_parts_3[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "selector_for_parts_3" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+        `, `, p2.value, `, `, p3.value,
+        `> : !kgen.string`,
+    ]
+)
+
+comptime cocoakb_p_ret_kind_for_parts_3[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "ret_kind_for_parts_3" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+        `, `, p2.value, `, `, p3.value,
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_ret_class_for_parts_3_str[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+] = __mlir_attr[
+    `#kgen.param.expr<cocoakb_query, "ret_class_for_parts_3" : !kgen.string, `,
+    cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+    `, `, p2.value, `, `, p3.value,
+    `> : !kgen.string`,
+]
+
+
+comptime cocoakb_p_selector_for_parts_4[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+    p4: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "selector_for_parts_4" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+        `, `, p2.value, `, `, p3.value, `, `, p4.value,
+        `> : !kgen.string`,
+    ]
+)
+
+comptime cocoakb_p_ret_kind_for_parts_4[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+    p4: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "ret_kind_for_parts_4" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+        `, `, p2.value, `, `, p3.value, `, `, p4.value,
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_ret_class_for_parts_4_str[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+    p4: StringLiteral,
+] = __mlir_attr[
+    `#kgen.param.expr<cocoakb_query, "ret_class_for_parts_4" : !kgen.string, `,
+    cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+        `, `, p2.value, `, `, p3.value, `, `, p4.value,
+    `> : !kgen.string`,
+]
+
+
+comptime cocoakb_p_selector_for_parts_5[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+    p4: StringLiteral, p5: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "selector_for_parts_5" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+        `, `, p2.value, `, `, p3.value, `, `, p4.value, `, `, p5.value,
+        `> : !kgen.string`,
+    ]
+)
+
+comptime cocoakb_p_ret_kind_for_parts_5[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+    p4: StringLiteral, p5: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "ret_kind_for_parts_5" : !kgen.string, `,
+        cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+        `, `, p2.value, `, `, p3.value, `, `, p4.value, `, `, p5.value,
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_ret_class_for_parts_5_str[
+    cls: StringLiteral, name: StringLiteral, is_class: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+    p4: StringLiteral, p5: StringLiteral,
+] = __mlir_attr[
+    `#kgen.param.expr<cocoakb_query, "ret_class_for_parts_5" : !kgen.string, `,
+    cls.value, `, `, name.value, `, `, is_class.value, `, `, p1.value,
+        `, `, p2.value, `, `, p3.value, `, `, p4.value, `, `, p5.value,
+    `> : !kgen.string`,
+]

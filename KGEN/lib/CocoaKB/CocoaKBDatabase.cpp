@@ -226,6 +226,67 @@ constexpr StringRef kRetClassForNameSQL =
     "    ORDER BY chain.depth LIMIT 1), 'NSObject')";
 #undef COCOAKB_NAME_CTE
 
+// The KEYWORD-ARGUMENT form of the same three lookups. A call like
+// `win.setFrame(aRect, display=True)` carries the selector's trailing parts
+// as labels, and they arrive here as separate strings because joining them
+// in Mojo would be string surgery, which does not fold. The selector is
+// assembled in SQL: `?2 || ':' || ?4 || ':'` for one label, each further
+// label appending `?N || ':'`. The first argument is positional and its
+// part is the method name itself (?2), so `setFrame` + `display` is
+// `setFrame:display:` -- the same selector the underscore rule builds, read
+// from the other direction. Labels beyond five are not wrapped (a six-label
+// selector is rarer than one in a thousand); the positional tier covers the
+// whole span.
+#define COCOAKB_PARTS_CTE(expr, table, sel)                                     \
+  "WITH RECURSIVE chain(c, depth) AS ("                                        \
+  "  SELECT ?1, 0"                                                             \
+  "  UNION ALL"                                                                \
+  "  SELECT rc.superclass, chain.depth + 1 FROM rt_classes rc, chain"          \
+  "    WHERE rc.name = chain.c AND rc.superclass IS NOT NULL)"                 \
+  " SELECT " expr " FROM chain JOIN " table " m"                               \
+  "   ON m.class = chain.c"                                                    \
+  "  AND m.selector = (" sel ")"                                               \
+  "  AND m.is_class = CAST(?3 AS INTEGER)"                                     \
+  " ORDER BY chain.depth LIMIT 1"
+
+#define COCOAKB_PARTS_COALESCE_CTE(expr, table, sel, fallback)                  \
+  "WITH RECURSIVE chain(c, depth) AS ("                                        \
+  "  SELECT ?1, 0"                                                             \
+  "  UNION ALL"                                                                \
+  "  SELECT rc.superclass, chain.depth + 1 FROM rt_classes rc, chain"          \
+  "    WHERE rc.name = chain.c AND rc.superclass IS NOT NULL)"                 \
+  " SELECT COALESCE(("                                                         \
+  "   SELECT " expr " FROM chain JOIN " table " m"                             \
+  "     ON m.class = chain.c"                                                  \
+  "    AND m.selector = (" sel ")"                                             \
+  "    AND m.is_class = CAST(?3 AS INTEGER)"                                   \
+  "  ORDER BY chain.depth LIMIT 1), " fallback ")"
+
+#define COCOAKB_PARTS_QUERIES(suffix, argcount, sel)                           \
+  constexpr StringRef kSelectorForParts##suffix##SQL =                         \
+      COCOAKB_PARTS_CTE("m.selector", "rt_methods", sel);                      \
+  constexpr StringRef kRetKindForParts##suffix##SQL =                          \
+      COCOAKB_PARTS_COALESCE_CTE("unicode(m.kind)", "method_ret_kind", sel,    \
+                                 "0");                                         \
+  constexpr StringRef kRetClassForParts##suffix##SQL =                         \
+      COCOAKB_PARTS_COALESCE_CTE(                                              \
+          "CASE WHEN m.ret_class = '@self' THEN ?1 ELSE m.ret_class END",      \
+          "method_ret_class", sel, "'NSObject'");
+
+COCOAKB_PARTS_QUERIES(1, 4, "?2 || ':' || ?4 || ':'")
+COCOAKB_PARTS_QUERIES(2, 5, "?2 || ':' || ?4 || ':' || ?5 || ':'")
+COCOAKB_PARTS_QUERIES(3, 6,
+                      "?2 || ':' || ?4 || ':' || ?5 || ':' || ?6 || ':'")
+COCOAKB_PARTS_QUERIES(4, 7,
+                      "?2 || ':' || ?4 || ':' || ?5 || ':' || ?6 || ':'"
+                      " || ?7 || ':'")
+COCOAKB_PARTS_QUERIES(
+    5, 8, "?2 || ':' || ?4 || ':' || ?5 || ':' || ?6 || ':' || ?7 || ':'"
+          " || ?8 || ':'")
+#undef COCOAKB_PARTS_QUERIES
+#undef COCOAKB_PARTS_COALESCE_CTE
+#undef COCOAKB_PARTS_CTE
+
 constexpr StringRef kSelectorVariantSQL =
     "SELECT CASE WHEN ret_class = '?' OR arg_classes LIKE '%?%' THEN '?' "
     "ELSE 'objc_msgSend' END FROM method_abi WHERE selector = ?1 "
@@ -274,6 +335,24 @@ const CocoaKBQueryDef kCocoaQueries[] = {
     {"selector_for_name", 4, kSelectorForNameSQL},
     {"ret_kind_for_name", 4, kRetKindForNameSQL},
     {"ret_class_for_name", 4, kRetClassForNameSQL},
+    // The call direction, keyword form: keyed on the method name and the
+    // selector's trailing parts as separate strings. Argument count is 3 +
+    // label count (class, name, is_class, then one string per label).
+    {"selector_for_parts_1", 4, kSelectorForParts1SQL},
+    {"ret_kind_for_parts_1", 4, kRetKindForParts1SQL},
+    {"ret_class_for_parts_1", 4, kRetClassForParts1SQL},
+    {"selector_for_parts_2", 5, kSelectorForParts2SQL},
+    {"ret_kind_for_parts_2", 5, kRetKindForParts2SQL},
+    {"ret_class_for_parts_2", 5, kRetClassForParts2SQL},
+    {"selector_for_parts_3", 6, kSelectorForParts3SQL},
+    {"ret_kind_for_parts_3", 6, kRetKindForParts3SQL},
+    {"ret_class_for_parts_3", 6, kRetClassForParts3SQL},
+    {"selector_for_parts_4", 7, kSelectorForParts4SQL},
+    {"ret_kind_for_parts_4", 7, kRetKindForParts4SQL},
+    {"ret_class_for_parts_4", 7, kRetClassForParts4SQL},
+    {"selector_for_parts_5", 8, kSelectorForParts5SQL},
+    {"ret_kind_for_parts_5", 8, kRetKindForParts5SQL},
+    {"ret_class_for_parts_5", 8, kRetClassForParts5SQL},
     {"selector_variant", 1, kSelectorVariantSQL},
     {"selector_arg_classes", 1, kSelectorArgClassesSQL},
     {"selector_ret_class", 1, kSelectorRetClassSQL},

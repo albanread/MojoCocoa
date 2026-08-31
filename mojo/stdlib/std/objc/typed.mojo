@@ -45,6 +45,21 @@ from std.sys._cocoakb import (
     cocoakb_p_ret_kind_for,
     cocoakb_p_ret_class_for,
     cocoakb_p_ret_class_for_str,
+    cocoakb_p_selector_for_parts_1,
+    cocoakb_p_ret_kind_for_parts_1,
+    cocoakb_p_ret_class_for_parts_1_str,
+    cocoakb_p_selector_for_parts_2,
+    cocoakb_p_ret_kind_for_parts_2,
+    cocoakb_p_ret_class_for_parts_2_str,
+    cocoakb_p_selector_for_parts_3,
+    cocoakb_p_ret_kind_for_parts_3,
+    cocoakb_p_ret_class_for_parts_3_str,
+    cocoakb_p_selector_for_parts_4,
+    cocoakb_p_ret_kind_for_parts_4,
+    cocoakb_p_ret_class_for_parts_4_str,
+    cocoakb_p_selector_for_parts_5,
+    cocoakb_p_ret_kind_for_parts_5,
+    cocoakb_p_ret_class_for_parts_5_str,
 )
 from std.memory import OpaquePointer
 from .runtime import ObjCObject, ObjCClass, msg_send
@@ -100,6 +115,163 @@ comptime _Result[
     # Everything left is an integer of some width, which is an Int here. A
     # struct this does not name is refused in `__call__` rather than silently
     # read as one -- see the constraint there.
+    else Int
+)
+
+
+# The KEYWORD form of `_Kind`/`_Result`: the same ladder keyed on the method
+# name and the selector's trailing parts, one StringLiteral per label. The
+# selector is assembled in SQL (`name || ':' || part || ':' ...`), so a
+# mislabelled call answers _NOSUCH and becomes a sentence, not a symbolic
+# type. One alias per label count because the queries are keyed that way.
+
+
+comptime _KindP1[
+    cls: StringLiteral, name: StringLiteral, isc: StringLiteral,
+    p1: StringLiteral,
+] = cocoakb_p_ret_kind_for_parts_1[cls, name, isc, p1]
+
+comptime _ResultP1[
+    cls: StringLiteral, name: StringLiteral, isc: StringLiteral,
+    p1: StringLiteral,
+]: AnyType = (
+    NoneType if _KindP1[cls, name, isc, p1] == _VOID
+    else Bool if _KindP1[cls, name, isc, p1] == _BOOL
+    else Float64 if _KindP1[cls, name, isc, p1] == _DOUBLE
+    else CGRect if _KindP1[cls, name, isc, p1] == _RECT
+    else CGPoint if _KindP1[cls, name, isc, p1] == _POINT
+    else CGSize if _KindP1[cls, name, isc, p1] == _SIZE
+    else NSRange if _KindP1[cls, name, isc, p1] == _RANGE
+    else Obj[
+        StringLiteral[cocoakb_p_ret_class_for_parts_1_str[cls, name, isc, p1]]()
+    ] if _KindP1[cls, name, isc, p1] == _OBJECT
+    else ObjCObject if _KindP1[cls, name, isc, p1] == _CLASS
+    else ObjCObject if _KindP1[cls, name, isc, p1] == _SEL
+    else ObjCObject if _KindP1[cls, name, isc, p1] == _CHARP
+    else ObjCObject if _KindP1[cls, name, isc, p1] == _POINTER
+    else Int if _KindP1[cls, name, isc, p1] != _NOSUCH
+    else Int
+)
+
+
+comptime _KindP2[
+    cls: StringLiteral, name: StringLiteral, isc: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral,
+] = cocoakb_p_ret_kind_for_parts_2[cls, name, isc, p1, p2]
+
+comptime _ResultP2[
+    cls: StringLiteral, name: StringLiteral, isc: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral,
+]: AnyType = (
+    NoneType if _KindP2[cls, name, isc, p1, p2] == _VOID
+    else Bool if _KindP2[cls, name, isc, p1, p2] == _BOOL
+    else Float64 if _KindP2[cls, name, isc, p1, p2] == _DOUBLE
+    else CGRect if _KindP2[cls, name, isc, p1, p2] == _RECT
+    else CGPoint if _KindP2[cls, name, isc, p1, p2] == _POINT
+    else CGSize if _KindP2[cls, name, isc, p1, p2] == _SIZE
+    else NSRange if _KindP2[cls, name, isc, p1, p2] == _RANGE
+    else Obj[
+        StringLiteral[
+            cocoakb_p_ret_class_for_parts_2_str[cls, name, isc, p1, p2]
+        ]()
+    ] if _KindP2[cls, name, isc, p1, p2] == _OBJECT
+    else ObjCObject if _KindP2[cls, name, isc, p1, p2] == _CLASS
+    else ObjCObject if _KindP2[cls, name, isc, p1, p2] == _SEL
+    else ObjCObject if _KindP2[cls, name, isc, p1, p2] == _CHARP
+    else ObjCObject if _KindP2[cls, name, isc, p1, p2] == _POINTER
+    else Int
+)
+
+
+comptime _KindP3[
+    cls: StringLiteral, name: StringLiteral, isc: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+] = cocoakb_p_ret_kind_for_parts_3[cls, name, isc, p1, p2, p3]
+
+comptime _ResultP3[
+    cls: StringLiteral, name: StringLiteral, isc: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+]: AnyType = (
+    NoneType if _KindP3[cls, name, isc, p1, p2, p3] == _VOID
+    else Bool if _KindP3[cls, name, isc, p1, p2, p3] == _BOOL
+    else Float64 if _KindP3[cls, name, isc, p1, p2, p3] == _DOUBLE
+    else CGRect if _KindP3[cls, name, isc, p1, p2, p3] == _RECT
+    else CGPoint if _KindP3[cls, name, isc, p1, p2, p3] == _POINT
+    else CGSize if _KindP3[cls, name, isc, p1, p2, p3] == _SIZE
+    else NSRange if _KindP3[cls, name, isc, p1, p2, p3] == _RANGE
+    else Obj[
+        StringLiteral[
+            cocoakb_p_ret_class_for_parts_3_str[cls, name, isc, p1, p2, p3]
+        ]()
+    ] if _KindP3[cls, name, isc, p1, p2, p3] == _OBJECT
+    else ObjCObject if _KindP3[cls, name, isc, p1, p2, p3] == _CLASS
+    else ObjCObject if _KindP3[cls, name, isc, p1, p2, p3] == _SEL
+    else ObjCObject if _KindP3[cls, name, isc, p1, p2, p3] == _CHARP
+    else ObjCObject if _KindP3[cls, name, isc, p1, p2, p3] == _POINTER
+    else Int
+)
+
+
+comptime _KindP4[
+    cls: StringLiteral, name: StringLiteral, isc: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+    p4: StringLiteral,
+] = cocoakb_p_ret_kind_for_parts_4[cls, name, isc, p1, p2, p3, p4]
+
+comptime _ResultP4[
+    cls: StringLiteral, name: StringLiteral, isc: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+    p4: StringLiteral,
+]: AnyType = (
+    NoneType if _KindP4[cls, name, isc, p1, p2, p3, p4] == _VOID
+    else Bool if _KindP4[cls, name, isc, p1, p2, p3, p4] == _BOOL
+    else Float64 if _KindP4[cls, name, isc, p1, p2, p3, p4] == _DOUBLE
+    else CGRect if _KindP4[cls, name, isc, p1, p2, p3, p4] == _RECT
+    else CGPoint if _KindP4[cls, name, isc, p1, p2, p3, p4] == _POINT
+    else CGSize if _KindP4[cls, name, isc, p1, p2, p3, p4] == _SIZE
+    else NSRange if _KindP4[cls, name, isc, p1, p2, p3, p4] == _RANGE
+    else Obj[
+        StringLiteral[
+            cocoakb_p_ret_class_for_parts_4_str[cls, name, isc, p1, p2, p3, p4]
+        ]()
+    ] if _KindP4[cls, name, isc, p1, p2, p3, p4] == _OBJECT
+    else ObjCObject if _KindP4[cls, name, isc, p1, p2, p3, p4] == _CLASS
+    else ObjCObject if _KindP4[cls, name, isc, p1, p2, p3, p4] == _SEL
+    else ObjCObject if _KindP4[cls, name, isc, p1, p2, p3, p4] == _CHARP
+    else ObjCObject if _KindP4[cls, name, isc, p1, p2, p3, p4] == _POINTER
+    else Int
+)
+
+
+comptime _KindP5[
+    cls: StringLiteral, name: StringLiteral, isc: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+    p4: StringLiteral, p5: StringLiteral,
+] = cocoakb_p_ret_kind_for_parts_5[cls, name, isc, p1, p2, p3, p4, p5]
+
+comptime _ResultP5[
+    cls: StringLiteral, name: StringLiteral, isc: StringLiteral,
+    p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+    p4: StringLiteral, p5: StringLiteral,
+]: AnyType = (
+    NoneType if _KindP5[cls, name, isc, p1, p2, p3, p4, p5] == _VOID
+    else Bool if _KindP5[cls, name, isc, p1, p2, p3, p4, p5] == _BOOL
+    else Float64 if _KindP5[cls, name, isc, p1, p2, p3, p4, p5] == _DOUBLE
+    else CGRect if _KindP5[cls, name, isc, p1, p2, p3, p4, p5] == _RECT
+    else CGPoint if _KindP5[cls, name, isc, p1, p2, p3, p4, p5] == _POINT
+    else CGSize if _KindP5[cls, name, isc, p1, p2, p3, p4, p5] == _SIZE
+    else NSRange if _KindP5[cls, name, isc, p1, p2, p3, p4, p5] == _RANGE
+    else Obj[
+        StringLiteral[
+            cocoakb_p_ret_class_for_parts_5_str[
+                cls, name, isc, p1, p2, p3, p4, p5
+            ]
+        ]()
+    ] if _KindP5[cls, name, isc, p1, p2, p3, p4, p5] == _OBJECT
+    else ObjCObject if _KindP5[cls, name, isc, p1, p2, p3, p4, p5] == _CLASS
+    else ObjCObject if _KindP5[cls, name, isc, p1, p2, p3, p4, p5] == _SEL
+    else ObjCObject if _KindP5[cls, name, isc, p1, p2, p3, p4, p5] == _CHARP
+    else ObjCObject if _KindP5[cls, name, isc, p1, p2, p3, p4, p5] == _POINTER
     else Int
 )
 
@@ -221,6 +393,132 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         return msg_send[
             _Result[Self.cls, Self.name, "0", "5"], Self.cls, sel,
         ](ObjCObject(self.id), a0, a1, a2, a3, a4)
+
+    # The KEYWORD form. A call like `win.setFrame(aRect, display=True)` lands
+    # here through the compiler's `__call_kw_param__` hook: the labels arrive
+    # as StringLiteral parameters and every value positionally, first the
+    # positional argument then the labelled ones in source order. The labels
+    # are the selector's trailing parts, so the selector is assembled in SQL
+    # from the name and the parts together and its existence is checked
+    # exactly as the positional form's is.
+
+    def __call_kw_param__[
+        p1: StringLiteral, T0: AnyType, T1: AnyType
+    ](self, a0: T0, a1: T1) -> _ResultP1[Self.cls, Self.name, "0", p1]:
+        comptime sel = cocoakb_p_selector_for_parts_1[
+            Self.cls, Self.name, "0", p1
+        ]
+        comptime assert _KindP1[Self.cls, Self.name, "0", p1] != _NOSUCH, (
+            "no such method on this class with these keyword labels: the"
+            " selector they build is not one the SDK records. Check each"
+            " label's spelling against the selector's parts, and that the"
+            " first argument is positional"
+        )
+        comptime assert _KindP1[Self.cls, Self.name, "0", p1] != _STRUCT, (
+            "this selector returns a struct std.objc does not name; send it"
+            " with msg_send and a register-passable result type"
+        )
+        return msg_send[
+            _ResultP1[Self.cls, Self.name, "0", p1], Self.cls, sel,
+        ](ObjCObject(self.id), a0, a1)
+
+    def __call_kw_param__[
+        p1: StringLiteral, p2: StringLiteral,
+        T0: AnyType, T1: AnyType, T2: AnyType,
+    ](self, a0: T0, a1: T1, a2: T2) -> _ResultP2[
+        Self.cls, Self.name, "0", p1, p2
+    ]:
+        comptime sel = cocoakb_p_selector_for_parts_2[
+            Self.cls, Self.name, "0", p1, p2
+        ]
+        comptime assert _KindP2[Self.cls, Self.name, "0", p1, p2] != _NOSUCH, (
+            "no such method on this class with these keyword labels: the"
+            " selector they build is not one the SDK records. Check each"
+            " label's spelling against the selector's parts, and that the"
+            " first argument is positional"
+        )
+        comptime assert _KindP2[Self.cls, Self.name, "0", p1, p2] != _STRUCT, (
+            "this selector returns a struct std.objc does not name; send it"
+            " with msg_send and a register-passable result type"
+        )
+        return msg_send[
+            _ResultP2[Self.cls, Self.name, "0", p1, p2], Self.cls, sel,
+        ](ObjCObject(self.id), a0, a1, a2)
+
+    def __call_kw_param__[
+        p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+        T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType,
+    ](self, a0: T0, a1: T1, a2: T2, a3: T3) -> _ResultP3[
+        Self.cls, Self.name, "0", p1, p2, p3
+    ]:
+        comptime sel = cocoakb_p_selector_for_parts_3[
+            Self.cls, Self.name, "0", p1, p2, p3
+        ]
+        comptime assert _KindP3[Self.cls, Self.name, "0", p1, p2, p3] != _NOSUCH, (
+            "no such method on this class with these keyword labels: the"
+            " selector they build is not one the SDK records. Check each"
+            " label's spelling against the selector's parts, and that the"
+            " first argument is positional"
+        )
+        comptime assert _KindP3[Self.cls, Self.name, "0", p1, p2, p3] != _STRUCT, (
+            "this selector returns a struct std.objc does not name; send it"
+            " with msg_send and a register-passable result type"
+        )
+        return msg_send[
+            _ResultP3[Self.cls, Self.name, "0", p1, p2, p3], Self.cls, sel,
+        ](ObjCObject(self.id), a0, a1, a2, a3)
+
+    def __call_kw_param__[
+        p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+        p4: StringLiteral,
+        T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType, T4: AnyType,
+    ](self, a0: T0, a1: T1, a2: T2, a3: T3, a4: T4) -> _ResultP4[
+        Self.cls, Self.name, "0", p1, p2, p3, p4
+    ]:
+        comptime sel = cocoakb_p_selector_for_parts_4[
+            Self.cls, Self.name, "0", p1, p2, p3, p4
+        ]
+        comptime assert _KindP4[Self.cls, Self.name, "0", p1, p2, p3, p4] != _NOSUCH, (
+            "no such method on this class with these keyword labels: the"
+            " selector they build is not one the SDK records. Check each"
+            " label's spelling against the selector's parts, and that the"
+            " first argument is positional"
+        )
+        comptime assert _KindP4[Self.cls, Self.name, "0", p1, p2, p3, p4] != _STRUCT, (
+            "this selector returns a struct std.objc does not name; send it"
+            " with msg_send and a register-passable result type"
+        )
+        return msg_send[
+            _ResultP4[Self.cls, Self.name, "0", p1, p2, p3, p4], Self.cls,
+            sel,
+        ](ObjCObject(self.id), a0, a1, a2, a3, a4)
+
+    def __call_kw_param__[
+        p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+        p4: StringLiteral, p5: StringLiteral,
+        T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType, T4: AnyType,
+        T5: AnyType,
+    ](self, a0: T0, a1: T1, a2: T2, a3: T3, a4: T4, a5: T5) -> _ResultP5[
+        Self.cls, Self.name, "0", p1, p2, p3, p4, p5
+    ]:
+        comptime sel = cocoakb_p_selector_for_parts_5[
+            Self.cls, Self.name, "0", p1, p2, p3, p4, p5
+        ]
+        comptime assert _KindP5[Self.cls, Self.name, "0", p1, p2, p3, p4, p5] != _NOSUCH, (
+            "no such method on this class with these keyword labels: the"
+            " selector they build is not one the SDK records. Check each"
+            " label's spelling against the selector's parts, and that the"
+            " first argument is positional"
+        )
+        comptime assert _KindP5[Self.cls, Self.name, "0", p1, p2, p3, p4, p5] != _STRUCT, (
+            "this selector returns a struct std.objc does not name; send it"
+            " with msg_send and a register-passable result type"
+        )
+        return msg_send[
+            _ResultP5[Self.cls, Self.name, "0", p1, p2, p3, p4, p5],
+            Self.cls,
+            sel,
+        ](ObjCObject(self.id), a0, a1, a2, a3, a4, a5)
 
     def __call__[
         T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType, T4: AnyType, T5: AnyType
@@ -375,6 +673,132 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         )
         return msg_send[
             _Result[Self.cls, Self.name, "1", "6"], Self.cls, sel, is_class=True,
+        ](ObjCObject(self.cls_id), a0, a1, a2, a3, a4, a5)
+
+    # The KEYWORD form of the `+` side, labels as parameters and values
+    # positionally, exactly as `Bound`'s -- only the receiver and the
+    # is_class flag differ.
+
+    def __call_kw_param__[
+        p1: StringLiteral, T0: AnyType, T1: AnyType
+    ](self, a0: T0, a1: T1) -> _ResultP1[Self.cls, Self.name, "1", p1]:
+        comptime sel = cocoakb_p_selector_for_parts_1[
+            Self.cls, Self.name, "1", p1
+        ]
+        comptime assert _KindP1[Self.cls, Self.name, "1", p1] != _NOSUCH, (
+            "no such CLASS method on this class with these keyword labels:"
+            " the selector they build is not one the SDK records. Check each"
+            " label's spelling against the selector's parts, and that the"
+            " first argument is positional"
+        )
+        comptime assert _KindP1[Self.cls, Self.name, "1", p1] != _STRUCT, (
+            "this selector returns a struct std.objc does not name; send it"
+            " with msg_send and a register-passable result type"
+        )
+        return msg_send[
+            _ResultP1[Self.cls, Self.name, "1", p1], Self.cls, sel,
+            is_class=True,
+        ](ObjCObject(self.cls_id), a0, a1)
+
+    def __call_kw_param__[
+        p1: StringLiteral, p2: StringLiteral,
+        T0: AnyType, T1: AnyType, T2: AnyType,
+    ](self, a0: T0, a1: T1, a2: T2) -> _ResultP2[
+        Self.cls, Self.name, "1", p1, p2
+    ]:
+        comptime sel = cocoakb_p_selector_for_parts_2[
+            Self.cls, Self.name, "1", p1, p2
+        ]
+        comptime assert _KindP2[Self.cls, Self.name, "1", p1, p2] != _NOSUCH, (
+            "no such CLASS method on this class with these keyword labels:"
+            " the selector they build is not one the SDK records. Check each"
+            " label's spelling against the selector's parts, and that the"
+            " first argument is positional"
+        )
+        comptime assert _KindP2[Self.cls, Self.name, "1", p1, p2] != _STRUCT, (
+            "this selector returns a struct std.objc does not name; send it"
+            " with msg_send and a register-passable result type"
+        )
+        return msg_send[
+            _ResultP2[Self.cls, Self.name, "1", p1, p2], Self.cls, sel,
+            is_class=True,
+        ](ObjCObject(self.cls_id), a0, a1, a2)
+
+    def __call_kw_param__[
+        p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+        T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType,
+    ](self, a0: T0, a1: T1, a2: T2, a3: T3) -> _ResultP3[
+        Self.cls, Self.name, "1", p1, p2, p3
+    ]:
+        comptime sel = cocoakb_p_selector_for_parts_3[
+            Self.cls, Self.name, "1", p1, p2, p3
+        ]
+        comptime assert _KindP3[Self.cls, Self.name, "1", p1, p2, p3] != _NOSUCH, (
+            "no such CLASS method on this class with these keyword labels:"
+            " the selector they build is not one the SDK records. Check each"
+            " label's spelling against the selector's parts, and that the"
+            " first argument is positional"
+        )
+        comptime assert _KindP3[Self.cls, Self.name, "1", p1, p2, p3] != _STRUCT, (
+            "this selector returns a struct std.objc does not name; send it"
+            " with msg_send and a register-passable result type"
+        )
+        return msg_send[
+            _ResultP3[Self.cls, Self.name, "1", p1, p2, p3], Self.cls, sel,
+            is_class=True,
+        ](ObjCObject(self.cls_id), a0, a1, a2, a3)
+
+    def __call_kw_param__[
+        p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+        p4: StringLiteral,
+        T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType, T4: AnyType,
+    ](self, a0: T0, a1: T1, a2: T2, a3: T3, a4: T4) -> _ResultP4[
+        Self.cls, Self.name, "1", p1, p2, p3, p4
+    ]:
+        comptime sel = cocoakb_p_selector_for_parts_4[
+            Self.cls, Self.name, "1", p1, p2, p3, p4
+        ]
+        comptime assert _KindP4[Self.cls, Self.name, "1", p1, p2, p3, p4] != _NOSUCH, (
+            "no such CLASS method on this class with these keyword labels:"
+            " the selector they build is not one the SDK records. Check each"
+            " label's spelling against the selector's parts, and that the"
+            " first argument is positional"
+        )
+        comptime assert _KindP4[Self.cls, Self.name, "1", p1, p2, p3, p4] != _STRUCT, (
+            "this selector returns a struct std.objc does not name; send it"
+            " with msg_send and a register-passable result type"
+        )
+        return msg_send[
+            _ResultP4[Self.cls, Self.name, "1", p1, p2, p3, p4], Self.cls,
+            sel, is_class=True,
+        ](ObjCObject(self.cls_id), a0, a1, a2, a3, a4)
+
+    def __call_kw_param__[
+        p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+        p4: StringLiteral, p5: StringLiteral,
+        T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType, T4: AnyType,
+        T5: AnyType,
+    ](self, a0: T0, a1: T1, a2: T2, a3: T3, a4: T4, a5: T5) -> _ResultP5[
+        Self.cls, Self.name, "1", p1, p2, p3, p4, p5
+    ]:
+        comptime sel = cocoakb_p_selector_for_parts_5[
+            Self.cls, Self.name, "1", p1, p2, p3, p4, p5
+        ]
+        comptime assert _KindP5[Self.cls, Self.name, "1", p1, p2, p3, p4, p5] != _NOSUCH, (
+            "no such CLASS method on this class with these keyword labels:"
+            " the selector they build is not one the SDK records. Check each"
+            " label's spelling against the selector's parts, and that the"
+            " first argument is positional"
+        )
+        comptime assert _KindP5[Self.cls, Self.name, "1", p1, p2, p3, p4, p5] != _STRUCT, (
+            "this selector returns a struct std.objc does not name; send it"
+            " with msg_send and a register-passable result type"
+        )
+        return msg_send[
+            _ResultP5[Self.cls, Self.name, "1", p1, p2, p3, p4, p5],
+            Self.cls,
+            sel,
+            is_class=True,
         ](ObjCObject(self.cls_id), a0, a1, a2, a3, a4, a5)
 
 
