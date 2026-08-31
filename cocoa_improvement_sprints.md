@@ -96,7 +96,7 @@ The original task list, for the record:
 5. **Parser tests for the hook**, present and absent — a callee without the
    hook and kwargs in the call is today's error, unchanged.
 
-## Sprint P2 — construction (NOT STARTED, size S–M)
+## Sprint P2 — construction (IMPLEMENTED 2026-08-31)
 
 1. Kwargs `__init__` on `Obj`, distinct from the id-taking form by the
    presence of keywords: consult the instancetype family for the
@@ -111,10 +111,45 @@ The original task list, for the record:
 3. The negative case: labels that match no initialiser in the family are a
    compile error naming what was tried and what the class does declare.
 
-Verification: the `NSWindow(contentRect=…)` probe produces a live window;
-**a second class** — `NSButton(buttonWithTitle=…, target=…, action=…)` or
-`NSTextField(labelWithString=…)` — proves the machinery is not
-NSWindow-shaped; the no-match error fires on a deliberately wrong label.
+**Status.** Landed, and the `.make` fallback was not needed — the overload
+question dissolved by using a different member: construction rides a
+**static** `__init_kw_param__` on `Obj`, so there is never a second
+`__init__` to disambiguate. The type-call arm of P1's hook re-dispatches
+`NSWindow(contentRect=…)` onto it exactly as a value call re-dispatches onto
+`__call_kw_param__`; the elaborator change was making the two arms
+independent `if`s, because a type value presents as several AnyValue shapes
+at once and one arm's member check failing must not hide the other.
+
+Two constructor spellings exist and the labels decide, both verified live:
+the INIT form (`alloc` + an initialiser whose first part is `initWith` with
+the first label capitalised onto it — `NSWindow(contentRect=…, styleMask=…,
+backing=…, defer=…)` builds a real 300×228 window) and the FACTORY form (a
+class method whose selector parts are the labels verbatim —
+`NSButton(buttonWithTitle=…, target=…, action=…)`). Factory wins when both
+exist: one send instead of two, and verbatim parts are the stronger signal.
+Three classes with three shapes prove the machinery is not NSWindow-shaped.
+The negative fires as a constraint failure naming the search:
+*no constructor for these labels on this class*, with the class and labels
+in the parameter-values note.
+
+Two things the implementation taught:
+
+1. **Existence rides `rt_methods`, not the `@self` instancetype marker.**
+   The marker is recorded on whichever class the ingest resolved a method
+   to — NSWindow's own `initWithContentRect:` carries none, its subclasses
+   do — so requiring it would refuse the most standard constructor in
+   AppKit.
+2. **The probe crashed for the reason P4 exists.** Passing a Mojo `String`
+   where the selector says `@` compiles (the value parameters are generic)
+   and dies inside AppKit; the same for an object where a SEL goes. Bridging
+   by argument class is not ergonomic polish — it is the difference between
+   a compile error and a crash, and it is the next sprint.
+
+Verification: `kwargs_init_test.mojo` and `must_fail_kwarg_init.mojo` in
+`spikes/run-cocoa-checks.sh` (**36 passed, 0 failed**); the parser test
+gained the construction arm (`tools/check-parser.sh` 332 pass / 1
+known-stale fail); a full `make-dist.sh` including the IDE builds clean;
+guide chapter 4 documents the alias and both spellings.
 
 ## Sprint P3 — `__setattr_param__`, property writes (NOT STARTED, size S)
 

@@ -188,6 +188,17 @@ carries forward unchanged.
 
 ### 3. Construction: `alloc` + the init family, generically
 
+(Implemented 2026-08-31, sprint P2. The kwargs `__init__` this section
+sketched became a static `__init_kw_param__` on `Obj` — construction has no
+self yet, and a static leaves the ordinary `__init__` entirely alone, so
+the overload question never arose and the `.make` fallback went unused. A
+second constructor form exists beside the initialiser family and the labels
+decide between them: a FACTORY is a class method whose selector parts are
+the labels verbatim (`NSButton(buttonWithTitle=…)`, one send), checked
+before the init form; existence rides `rt_methods` rather than the `@self`
+marker, which the ingest records on subclasses more often than on the
+defining class.)
+
 `Obj["NSWindow"]` gains a kwargs `__init__` (distinct from the id-taking one
 by the presence of keywords): it consults the database's instancetype family
 for the initialiser whose parts match the given labels, sends `alloc`, then
