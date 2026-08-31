@@ -60,16 +60,37 @@ identically on the unmodified compiler at current HEAD; the fp8_gemv
 regression was this sprint's own reroute flip, reverted). The runtime needed
 no change: reflection-driven setBytes already existed.
 
-**The remaining sub-case is precise: param packs.** An adapter closure
-capturing MULTIPLE values arrives as a kgen param pack whose depth-0
-members take `Mut` convention in LowerArgConventions (conservatively — "we
-do not know if it holds an address that is potentially written to"), and
-the byval hook only fires for Owned/Deinit/ReadMem. rms_norm's adapter
-still dies with "unknown device address" at arg 4; the reroute flip was
-tried, reproduced exactly that, and is reverted with a note naming the
-cause. Fixing it means either typing pack members by their pointee at the
-pack-expansion site or extending the hook — decided where the member types
-still exist, same discipline as part one.
+**The remaining sub-case is now precisely understood (31 Aug, evening).**
+The component-build loop (private dist + `cocoamojo`, AIR swapped by
+replacing `bin/cocoamojo-compiler` — the driver carries the compiler
+statically; `libMojoCompiler.dylib` is the embedder's copy and never
+affects it) plus three standalone reproducers established, by
+intervention:
+
+1. **Pointer captures are device BY DESIGN.** The launcher packs the
+   address as the slot's bytes; the runtime resolves it in the allocation
+   registry and binds the real buffer with setBuffer. Typing such a slot
+   constant (tried: `kgen.offload.capture` marker → byval([N x i8]))
+   BREAKS it — the kernel then reads constant space at a stack address.
+   Reverted; agg_caps.mojo is the standing reproducer for the correct
+   behavior.
+2. **The rms_norm blocker is not a typing problem at all.** Its adapter
+   captures by REFERENCE: the slot's bytes are a pointer to HOST memory
+   (`0x16f3…` stack addresses in every failure log), which no AIR address
+   space can make readable. The pointee must be copied into the pack at
+   marshaling time — a change to the capture ABI (`_to_device_type` for
+   by-ref captures on GPU targets, Mojo/kernels side), not to the AIR
+   backend. pack_struct.mojo reproduces the class in miniature and fails
+   identically on the pre- and post-fix compilers, as it should: it is
+   the unsupported pattern itself.
+3. byval reaches ReadReg pointer captures but as `byval({})` — the KGEN
+   pointee is opaque by LowerKGENToLLVM — so the convention path can
+   never carry a pack type. Any future marker must originate in
+   ResolveCompilerPromises, where the type still exists (the marker
+   chain built and worked mechanically before being reverted for (1)).
+
+The reroute stays off with its note updated to name reference-capture
+marshaling as the blocker.
 
 1. ✅ Plumb the pack/constant distinction to `legalizeKernel` via the
    byval hook (done, single-aggregate case; see F16 for why this lives at
