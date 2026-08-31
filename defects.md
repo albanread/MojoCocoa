@@ -111,26 +111,39 @@ Apple GPU); raw-copy staging allocations unchecked. Sprint 4.
 15-17% behind upstream at 512³/ragged-513 matmul, at parity from 1024³ —
 dispatch-shaped, not codegen. Sprint 5 / STATUS item 5 (residency).
 
-### D8 — Struct captures marshal BY REFERENCE across the device boundary — OPEN, root cause
-The true root of D4, isolated to a two-field struct: `@__copy_capture` of an
-`ImplicitlyCopyable` struct still arrives at the kernel as a POINTER to host
-memory ("capturing thin", `unknown device address 0x16f4…`) — while a
-scalar capture crosses by value and works (probe 06), and a struct passed as
-a kernel PARAMETER crosses by value and works (`gamma`). So the offload
-capture marshaling passes struct-typed captures by reference at the
-closure/device boundary, regardless of how the closure was written. This
-subsumes the reroute blocker: no Mojo-source change (copy-capture, closure
-rewrites) can fix it, because every struct capture takes the by-reference
-path. The fix belongs at the closure-conversion → offload boundary where the
-capture type is still known — the device-side argument should be the struct
-by value and the host-side populate should store its bytes, exactly as the
-scalar path already does. Minimal repro: `spikes/capture-abi/copycap_struct.mojo`.
+### D8 — By-value capture crossing stops at register-passable; DevicePassable copy-captures box thin — OPEN, mechanism complete
+Refined 31 Aug (evening) by experiment: the marshaling machinery is CORRECT
+BY DESIGN and mostly exists. ClosureEmitter's `isByReferenceCapture` honors
+copy/move conventions; `getDeviceType` resolves `DevicePassable.device_type`
+by witness and a whole `__device_type` conversion exists for capture state.
+Measured end to end:
 
-### D9 — @__copy_capture of a generic-typed local crashes the parser — OPEN
-`@__parameter @__copy_capture(src_tt)` on a TileTensor (a generic type)
-asserts in the parser during import: `DenseMap::at failed due to a missing
-key` (DenseMap.h:270), no diagnostic. A plain `@fieldwise_init` struct with
-`ImplicitlyCopyable` does not crash — the generic instantiation is the
-trigger. Reproduce with `rms_repro.mojo`'s closures changed to copy-capture.
-Blocked behind D8 in practice (thick captures wouldn't cross by value yet),
-but an independent parser defect.
+- scalar capture (probe 06) — by value, works.
+- struct PARAMETER (`gamma`) — by value, works.
+- copy-captured struct that is `TrivialRegisterPassable` — by value, WORKS
+  (proven with a two-float struct; `copycap_struct.mojo` + the trait).
+- copy-captured struct that is merely `ImplicitlyCopyable` (memory-passable)
+  — boxed THIN, arrives as a pointer to host memory: `unknown device
+  address`. The upstream parser even says so at the capture site —
+  DeclResolution.cpp's applyCopyOrMoveCapture carries upstream's own
+  `// HACK: This only has the intended effect of "immortalizing" a
+  register-passable value` and a TODO error gated on `isTrivial`, which lets
+  trivial-but-not-register-passable types through SILENTLY thin.
+- `{var}` captures — by reference by convention (their semantics).
+
+So the compiler change for the copy-capture half is precise: the capture
+materialization should route a copy-captured `DevicePassable` type through
+its `device_type` instead of the MRValue box — the by-value crossing
+machinery is sitting right there. The `{var}` half is API-shaped:
+`rms_norm`'s `InputFn` requires the `{var}` closure form, which funnels
+every caller to by-reference captures; the rowwise path evidently repacks
+them (its kernels receive by-value aggregates) — that repack site, and
+whether `InputFn` can accept copy-captured closures, are the remaining
+questions for the reroute.
+
+### D9 — @__copy_capture parser crash (TileTensor) — UNREPRODUCED, downgraded
+One run of a TileTensor copy-captured closure asserted in the parser
+(`DenseMap::at failed due to a missing key`, DenseMap.h:270, no diagnostic).
+Retries with both decorator orders and with/without `@__parameter` yield
+clean diagnostics instead — the trigger is subtler than the obvious shapes
+and was not isolated. Re-file with a reliable reproducer if it recurs.
