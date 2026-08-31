@@ -192,12 +192,26 @@ produce. Uninitialized is the lattice BOTTOM (reading it folds garbage);
 now returns the unknown (top) constant, so the operation simply does not
 fold. Gates 7/7, full sweep identical.
 
-### D13 — Widened-closure emission produces mismatched param-pack structs — OPEN, next wall
+### D13 — Widened-closure call mismatch: instref vs genref — ROOT-CAUSED (31844c7f), fix located
 With D9/D10/D12 fixed, the widened rms_norm repro gets a genuine verifier
-diagnostic instead of a crash — a fourth and deeper issue: the closure
-offload emits a `kgen.call` whose argument struct and whose callee's
-expected struct PRINT IDENTICALLY but are distinct IR types (two
-instantiations of the same param-pack shape), plus a value used outside
-its region. Emitted-IR work in the closure/offload machinery, not an
-invariant to relax. Repro: rms_crash.mojo against the widened dist
-kernels.
+diagnostic: a `kgen.call` whose argument struct and callee-expected
+struct print identically but compare unequal. Chased through three
+layers of printer elision (struct isMemoryOnly, param_list element
+resolution, TypeParamAttr's second type field) with a new env-gated
+programmatic differ (KGEN_DUMP_CALL_TYPES=1, committed), which found the
+difference:
+
+    expected: #kgen.instref<SIMD,dtype=si64,length=1>
+    actual:   #kgen.genref<SIMD<:dtype si64, 1>>
+
+The SAME resolved type as a concrete instantiation reference on one side
+and a parametric generator reference on the other. The closure-storage
+struct's element type expressions are built through two paths that
+canonicalize differently, and comparison is structural. FIX: canonicalize
+at the emission site — rebind the genref against its bindings where the
+capture field type attr is built (ClosureEmitter's
+`captureTypeAttr = TypeParamAttr::get(mlirType, anyType)` path, and/or
+the evaluator's getReboundAttribute as ParamMatcher already does). A
+second symptom in the same repro ('value defined outside the region')
+may be separate; re-check after the canonicalization lands. Repro:
+rms_crash.mojo against the widened dist kernels.
