@@ -207,9 +207,17 @@ void SCCPAnalysis::getValuesLattice(SmallVectorImpl<Attribute> &attributes,
                                     AnalysisStateType &state) {
   for (Value value : values) {
     ConstantState *lattice = getLatticeElement(value, state);
-    assert(!lattice->getValue().isUninitialized() &&
-           "All operands should have initialized lattice value.");
-    attributes.push_back(lattice->getValue().getConstantValue());
+    // An operand's lattice can still be uninitialized when this visitor
+    // reaches an operation ahead of its operand's definition (found
+    // compiling widened closure traits, whose emitted region order is not a
+    // topological order for every use). Uninitialized is the lattice BOTTOM
+    // -- reading it as a constant folds garbage. Return the unknown (top)
+    // constant instead: sound, and the operation simply does not fold.
+    if (lattice->getValue().isUninitialized())
+      attributes.push_back(
+          ConstantValue::getUnknownConstant().getConstantValue());
+    else
+      attributes.push_back(lattice->getValue().getConstantValue());
   }
 }
 
