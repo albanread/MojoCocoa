@@ -38,7 +38,31 @@ change blind.
 | F13 | Default-off work with strong measured rationale awaiting promotion: `applyAirKernelFnAttributes` (MSL fast-math set, `nosync` withheld from barrier-reaching kernels), `rename-llvm-intrinsics` + `guard-nan-minmax`, `split-i64-shuffle` (unblocked by F3). | `AirBackend.cpp:1841`, `AirLegality.cpp` transforms | Sprint 5 — promote each only behind a clean corpus sweep, per the table's own policy. Measured 31 Aug (oracles `findings/air-quality-2026-08-31.md`): the scalarize-wide-vectors knob neither helps nor hurts fma or the unrolled matmul, so it stays off; `rename-llvm-intrinsics`' scalar half has corpus evidence of reader tolerance, making it polish rather than correctness. New evidence-backed item: unrolling the register matmul helps upstream (3058→3216 at 2048³) and hurts us (3113→2951) — the largest remaining compute-side gap, investigate before any transform work. |
 | F14 | Perf candidates: per-kernel `xcrun metallib` subprocess (batchable), `air.read_write` stamped on every device buffer (precision needs golden evidence), linear family/rule lookups (~60 entries — fine until the registry grows). | `AirBackend.cpp:767`, `:2283-2299` | Sprint 5, after measurement; the repo's rule is that performance claims carry benchmarks. |
 
-| F15 | The opt pipeline runs against an arm64 TargetMachine for the air64 target, and it SLP-vectorizes float arithmetic into widths no Apple GPU executes — measured 31 Aug: the unrolled register matmul emits `fmul/fadd <16 x float>` packed by 64 `insertelement` chains where upstream emits 256 scalar mul+add pairs. The Scalarizer knob removes the vector arithmetic but not the packing (module grows 671→805 lines), which is why it measured as a no-op. The fix belongs at SLP width/creation, not at cleanup. | `AirBackend.cpp` opt pipeline; evidence in oracles `findings/air-quality-2026-08-31.md` | Sprint 5 item 5 — the top compute-side gap. |
+| F15 | The unrolled register matmul runs ~9% behind upstream at 2048³ (2951 vs 3216 GFLOP/s) and unrolling *hurts* us while it helps them. Cause NOT the vector width: the source authors a `SIMD[float32,16]` accumulator which we preserve into AIR and they eliminate, but scalarizing at 128 bits (2937) and at 32 bits — verifiably reproducing their 256-scalar-arithmetic shape (2955) — moves nothing. Remaining differences: load/GEP structure (16 `<4 x float>` tg loads + 109 GEPs vs 132 scalar loads + 148 GEPs), index-convert mix (`u.i32` vs `s.i64`). Next: body-level diff of the tile load/address pattern. Full record in oracles `findings/air-quality-2026-08-31.md` incl. both refuted attributions. | `AirBackend.cpp` opt pipeline | Sprint 5 item 5. |
+| F16 | **Type-level decisions are made after type erasure.** Address-space assignment, capture-pack classification (F1), `propagatePointerAS`'s hand-rolled use-graph walk with sibling reconciliation, and `rebuildMismatchedSignatures` (which exists purely to repair `Argument::mutateType` damage) all operate on opaque-pointer LLVM IR, where the information they need is already gone. The comment history names three incidents of the same class ("write one of these and you must write all of them"). The architectural move is to decide these in the MLIR LLVM dialect — where pointers are still typed by address space and the rewriter maintains invariants — in the module-scoped pass that already exists (`AirLowering`). This is the same move F1's fix requires ("at IR typing, from the signature"), so the keystone and the architecture converge on one sprint. | `AirBackend.cpp:612`, `propagatePointerAS`, `rebuildMismatchedSignatures` | Sprint 2, extended to carry the MLIR typing move. |
+| F17 | **One kernel per module, one metallib per kernel, one `xcrun` subprocess per metallib.** PerExported made bring-up simple but forecloses cross-kernel visibility and multiplies packaging subprocesses — a compile-latency cost on the exact axis (desktop JIT) that is supposed to be our differentiator. Apple's own metallibs carry multiple functions; the format supports batching. Measure per-kernel packaging cost first (F14), then batch. | `AirBackend.cpp` split strategy + `emitObject` | Sprint 5, after measurement. |
+
+## What this piece actually is — naming it honestly
+
+The MojoCocoa toolchain as a whole is a compiler — frontend, elaborator,
+MLIR lowering, inherited from upstream. The AIR-specific piece this fork
+wrote is a **translator and legalizer**, not a backend in the codegen
+sense: it consumes optimized LLVM IR, rewrites it into the subset Apple's
+reader accepts, stamps the AIR ABI and `!air.kernel` metadata, serializes
+LLVM-17 bitcode, and packages via `xcrun metallib`. Instruction
+selection, scheduling, register allocation and machine code generation
+happen inside Apple's Metal compiler service — downstream of us *and* of
+upstream. Nobody outside Apple schedules AGX.
+
+Two consequences worth stating in the open. First, the entire
+upstream-versus-us contest is **IR-shape quality**: both stacks hand
+Apple the same kind of artifact, and the only question is whose AIR
+Apple's compiler likes better — which is why the visible-artifact parity
+measured 31 Aug is the whole parity there is to have. Second, our levers
+are exactly three: the IR shape we hand Apple (F15), the ABI/metadata
+contract (F1/F16), and the runtime (Sprint 4) — and none of them require
+seeing upstream's internals, because their internals also end at the AIR
+boundary.
 
 ## Match, then exceed — the Apple Silicon thesis
 

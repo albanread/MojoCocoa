@@ -56,7 +56,13 @@ metadata half, the runtime's residency scaling cost.
    exist (the MLIR signature), and plumb "this parameter is a capture pack"
    down to `legalizeKernel`, so the AS0→AS1 default at `AirBackend.cpp:612`
    becomes a typed decision rather than a guess. The review doc's P0 and
-   `STATUS.md` priority 1 agree the fix belongs at IR typing.
+   `STATUS.md` priority 1 agree the fix belongs at IR typing. Architecturally
+   this is F16, not just the keystone: address-space and capture-pack typing
+   belongs in the MLIR LLVM dialect — pointers still typed, rewriter
+   invariants intact — rather than on opaque-pointer IR after the fact;
+   `propagatePointerAS`, its sibling-reconciliation cases and
+   `rebuildMismatchedSignatures` are the incident scars of the after-the-fact
+   approach, and this is the move that retires that class.
 2. Emit `air.indirect_buffer` / `air.struct_type_info` argument metadata for
    capture-struct parameters. The golden-sampled target shape, including the
    flat per-field tuple and the nested `location_index` namespace, is already
@@ -125,20 +131,25 @@ Behind a clean corpus sweep, per the transforms' own policy:
    Aug against upstream on fma_peak and the unrolled register matmul: no
    effect beyond noise, slightly negative on the matmul, correctness EXACT.
    Stays off; see oracles `findings/air-quality-2026-08-31.md`.
-5. **NEW, top compute-side item — mechanism found 31 Aug (F15):** our opt
-   pipeline SLP-vectorizes the unrolled register tile into `<16 x float>`
-   mul/add packed by 64 `insertelement` chains; upstream emits 256 scalar
-   mul+add pairs. The Scalarizer knob is the wrong layer (it removes the
-   arithmetic, leaves the packing, module grows 671→805 lines — measured).
-   Fix at creation: cap or disable SLP float vectorization when the
-   emission target is air64, then re-run the unrolled bench and the
-   compare-air corpus before anything else.
+5. **The unrolled-matmul gap (F15) — cause still open, two attributions
+   refuted.** NOT SLP (the source authors `SIMD[16]`; we preserve its
+   width into AIR, upstream eliminates it) and NOT vector width at all:
+   scalarize@128 gives 2937, scalarize@32 verifiably reproduces theirs'
+   256-scalar arithmetic shape and gives 2955, default 2951 — theirs
+   3216 GFLOP/s at 2048³. The next step is diagnostic, not a transform:
+   body-level diff of the tile-load/GEP pattern (ours 16 `<4 x float>`
+   threadgroup loads + 109 GEPs vs theirs 132 scalar loads + 148 GEPs)
+   and the index-convert mix (`u.i32` vs `s.i64`). Both scalarize knobs
+   stay off; neither width helped. Full record with both refutations:
+   oracles findings/air-quality-2026-08-31.md.
 6. Small-shape matmul (512³, ragged-513) at 15-17% behind upstream is
    consistent with per-dispatch overhead on short kernels — that is
    STATUS item 5 (runtime profiling), not codegen.
 7. Measure before building: per-kernel `xcrun metallib` subprocess cost in
-   a large build; `air.read` vs `air.read_write` precision only with a
-   golden sample showing Apple distinguishing them for device buffers.
+   a large build (F17 — if it is visible in compile latency, batch kernels
+   per metallib; the format carries multiple functions and PerExported is
+   the only reason we do not); `air.read` vs `air.read_write` precision only
+   with a golden sample showing Apple distinguishing them for device buffers.
 
 Each promotion is its own commit with the sweep result recorded, so a
 regression bisects to one knob.
