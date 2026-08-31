@@ -110,3 +110,27 @@ Apple GPU); raw-copy staging allocations unchecked. Sprint 4.
 ### D9 — Small-shape dispatch overhead — OPEN
 15-17% behind upstream at 512³/ragged-513 matmul, at parity from 1024³ —
 dispatch-shaped, not codegen. Sprint 5 / STATUS item 5 (residency).
+
+### D8 — Struct captures marshal BY REFERENCE across the device boundary — OPEN, root cause
+The true root of D4, isolated to a two-field struct: `@__copy_capture` of an
+`ImplicitlyCopyable` struct still arrives at the kernel as a POINTER to host
+memory ("capturing thin", `unknown device address 0x16f4…`) — while a
+scalar capture crosses by value and works (probe 06), and a struct passed as
+a kernel PARAMETER crosses by value and works (`gamma`). So the offload
+capture marshaling passes struct-typed captures by reference at the
+closure/device boundary, regardless of how the closure was written. This
+subsumes the reroute blocker: no Mojo-source change (copy-capture, closure
+rewrites) can fix it, because every struct capture takes the by-reference
+path. The fix belongs at the closure-conversion → offload boundary where the
+capture type is still known — the device-side argument should be the struct
+by value and the host-side populate should store its bytes, exactly as the
+scalar path already does. Minimal repro: `spikes/capture-abi/copycap_struct.mojo`.
+
+### D9 — @__copy_capture of a generic-typed local crashes the parser — OPEN
+`@__parameter @__copy_capture(src_tt)` on a TileTensor (a generic type)
+asserts in the parser during import: `DenseMap::at failed due to a missing
+key` (DenseMap.h:270), no diagnostic. A plain `@fieldwise_init` struct with
+`ImplicitlyCopyable` does not crash — the generic instantiation is the
+trigger. Reproduce with `rms_repro.mojo`'s closures changed to copy-capture.
+Blocked behind D8 in practice (thick captures wouldn't cross by value yet),
+but an independent parser defect.
