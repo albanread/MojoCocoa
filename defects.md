@@ -169,18 +169,26 @@ them (its kernels receive by-value aggregates) — that repack site, and
 whether `InputFn` can accept copy-captured closures, are the remaining
 questions for the reroute.
 
-### D10 — Widening closure trait constraints asserts in matchParams — OPEN
-Dropping `& RegisterPassable` from rowwise's body-closure trait (to admit
-memory-passable copy-captured closures, D8's remaining half) crashes the
-param matcher: `Assertion failed: (actualAttr && "conversion is double
-checked")`, ParamMatcher.cpp:760, no diagnostic. Reproducer: the widened
-normalization.mojo (InputFn without RegisterPassable) plus rms_repro.mojo's
-copy-captured closures. Needs its own minimization before the rowwise
-widening can proceed.
+### D9/D10 — Widened-closure compiler crashes — BOTH FIXED (be118d91)
+Pushing `RegisterPassable` closure constraints through the rowwise layers
+crashed the compiler twice, both without diagnostics, both fixed:
 
-### D9 — @__copy_capture parser crash (TileTensor) — UNREPRODUCED, downgraded
-One run of a TileTensor copy-captured closure asserted in the parser
-(`DenseMap::at failed due to a missing key`, DenseMap.h:270, no diagnostic).
-Retries with both decorator orders and with/without `@__parameter` yield
-clean diagnostics instead — the trigger is subtler than the obvious shapes
-and was not isolated. Re-file with a reliable reproducer if it recurs.
+- ParamMatcher.cpp:760 — `conversion is double checked` assert when the
+  pre-check and the emitter disagreed on a memory-passable closure value
+  against a widened closure-trait parameter. Now trusts the emitter and
+  falls through to the next candidate.
+- sortValueUses (EntryPoint.cpp) — the bytecode-determinism pass seeded
+  its ID map for operand-bearing ops only, then `.at()`ed every use owner,
+  and the walk does not cover every owner. This was the previously
+  "unreproduced D9" crash all along: it needed the widened closure shapes
+  to produce the IR that trips it. Now inserts on miss.
+
+### D12 — SCCP lattice assertion on the widened-closure chain — OPEN, next wall
+With D9/D10 fixed, the widened rms_norm repro compiles past trait matching
+and bytecode emission and stops at:
+`Assertion failed: (!lattice->getValue().isUninitialized() && "All
+operands should have initialized lattice value.")`, SCCP.cpp:211 — the
+third distinct crash on this chain. The RegisterPassable widening (rowwise
+layers + the kernel structs in algorithm/gpu/rowwise.mojo, all mapped and
+dist-tested) remains blocked behind it. Repro: rms_crash.mojo against the
+widened dist kernels.
