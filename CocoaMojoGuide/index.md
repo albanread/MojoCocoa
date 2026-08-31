@@ -68,6 +68,12 @@ the compiler is right and the documentation is stale. The
 because they are the single largest source of code that looks correct and will
 not build.
 
+Which of those differences are *this fork's decisions* — and which are
+upstream's own churn, inherited by freezing — is set out in
+[Deviations from Modular's compiler](reference/05-deviations.md), with the
+argument for each and what it costs. It is the place to start if you are
+weighing whether to use this rather than learn from it.
+
 ## The state of the port
 
 The Cocoa layer described here works and is verified: nine of nine

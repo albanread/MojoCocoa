@@ -9,6 +9,8 @@ rather than checking, start with the [Programmer's Guide](../guide/).
 | [2. `std.objc`](02-std-objc.md) | Every exported type and function, with signatures |
 | [3. `cocoakb` queries](03-cocoakb.md) | Every compile-time metadata query, its parameters and its result |
 | [4. Diagnostics](04-diagnostics.md) | The compile errors this layer produces, what each means, and how to fix it |
+| [5. Deviations from Modular's compiler](05-deviations.md) | Every way this fork changes the language, the argument for each, and what it costs — plus what is upstream's churn rather than ours |
+| [6. Patches applied to the compiler](06-patches.md) | The work inside the compiler that made those changes real, and the defects fixed on the way |
 
 ## Version
 
