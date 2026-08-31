@@ -235,3 +235,59 @@ For performance, the immediate next implementation is item 6, precise
 residency. For compiler capability, it is item 7, the width-32 PSO reduction.
 Item 1 remains the next shared-optimizer correctness change and still requires
 the non-Apple GPU sweep before it is enabled generally.
+
+
+## Full Apple/AIR benchmark sweep, HEAD `3d9daff5`, 30 August 2026
+
+M4 Max, macOS 26.5.1, quiet machine (no build running -- launch timing is
+sensitive to CPU load, as the residency bug taught). Run through the shipped
+CocoaMojo distribution.
+
+**1. Metal smoke** -- correctness gate, all launch modes: ALL PASS in default,
+sync (`APPLEGPU_SYNC_LAUNCH=1`) and coarse (`APPLEGPU_COARSE_RESIDENCY=1`).
+
+**2. FMA compute oracle** -- async vs sync, warm median of 5:
+
+| chains | sync ms | async ms | speedup | recorded prev |
+|---|---|---|---|---|
+| 4 | 12.48 | 8.67 | 1.44x | 1.44x |
+| 8 | 15.11 | 11.03 | 1.37x | 1.37x |
+| 16 | 22.48 | 16.59 | 1.35x | 1.34x |
+
+Reproduces the baseline. Compute schedule unchanged by the latest work.
+
+**3. Residency bench** -- per-dispatch us, walk vs set, median of 7:
+
+| live buffers | walk | set | reduction |
+|---|---|---|---|
+| 0 | 3.22 | 3.97 | +23% (fixed setup, 0.75us absolute) |
+| 16 | 3.96 | 3.95 | 0% |
+| 64 | 6.70 | 3.92 | -42% |
+| 256 | 18.18 | 3.86 | -79% |
+| 1024 | 70.40 | 3.34 | -95% |
+| 4096 | 275.28 | 3.22 | -99% |
+
+Flat where the walk is linear. Below 16 buffers the set's fixed cost makes it
+fractionally slower in absolute terms; irrelevant once a workload allocates.
+
+**4. Fluid workload** -- 35 dependent dispatches per step, 60 steps:
+
+| launch path | ms/step | total |
+|---|---|---|
+| queued + batched (default) | 1.49 | 89.2 ms |
+| synchronous (`APPLEGPU_SYNC_LAUNCH=1`) | 3.87 | 232.4 ms |
+
+2.6x over the fully-synchronous bring-up path, divergence checksums identical.
+This is the whole async+batched launch path against sync, a different and
+larger comparison than the ~12% recorded earlier for command-buffer batching
+alone (batched vs unbatched, both already async). Both hold: batching adds
+~12% on top of async, and the full path is 2.6x over sync. A 35-dispatch
+dependent workload is dispatch-bound, which is exactly where this shows.
+
+**5. Apple simdgroup matmul** (`bench_apple_gpu_matmul`) -- self-skips with
+"SKIP: Apple GPU required": it gates on a specific accelerator arch (it is the
+M5 simdgroup-tiled kernel bench) that this dist's Metal path does not present.
+Not run here; the FMA oracle is the compute-throughput measurement that does.
+GPU kernel correctness is covered separately by the Apple example corpus,
+`max/kernels/test/gpu/examples/APPLE_STATUS.md` (ten of eleven pass; the
+eleventh is NVIDIA-only mma).
