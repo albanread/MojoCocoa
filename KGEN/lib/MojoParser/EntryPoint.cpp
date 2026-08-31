@@ -60,8 +60,17 @@ static void sortValueUses(Value value,
 
   // Functor to record a new use to the current order.
   auto addUse = [&](unsigned index, OpOperand &operand) {
-    uint64_t nextID =
-        mlir::bytecode::getUseID(operand, operationIDs.at(operand.getOwner()));
+    // The ID map below is seeded for operations with operands, which every
+    // use owner trivially is -- but the walk can still miss an owner (found
+    // compiling widened closure traits: a value defined in one region used
+    // from an operation the seeded walk did not cover, previously an
+    // DenseMap::at assertion with no diagnostic). Insert on miss instead of
+    // asserting: the assignment stays deterministic within a compilation,
+    // which is all the use-list sort needs.
+    auto it = operationIDs.find(operand.getOwner());
+    if (it == operationIDs.end())
+      it = operationIDs.insert({operand.getOwner(), operationIDs.size()}).first;
+    uint64_t nextID = mlir::bytecode::getUseID(operand, it->second);
     currentOrder.emplace_back(index, nextID);
     return nextID;
   };

@@ -755,11 +755,18 @@ LogicalResult ParamMatcher::matchParams(TypedAttr actualAttr,
       auto expectedType = getCanonicalType(expectedAttr.getType());
       if (IREmitter::canImplicitlyConvertToType(
               {actualAttr, expr}, expectedType, emitter.getDeclScope())) {
+        // canImplicitlyConvertToType and emitPValue answer the same
+        // question by different machinery, and the double check does not
+        // always agree -- a memory-passable closure value against a widened
+        // closure-trait parameter converts per the first and fails in the
+        // second, taking the whole compiler down at an assert instead of
+        // letting matchParams try its next option (found widening the
+        // rowwise closure constraints; defects.md D10). Trust the emitter's
+        // answer over the pre-check and fall through to the next candidate
+        // when they disagree.
         actualAttr = emitter.emitPValue({actualAttr, expr}, EC_TypeParamValue,
                                         expectedType);
-        assert(actualAttr && "conversion is double checked");
-
-        if (isEqualCanon(actualAttr, expectedAttr))
+        if (actualAttr && isEqualCanon(actualAttr, expectedAttr))
           return success();
       }
     } else {
