@@ -677,21 +677,35 @@ def diag_visible(i: Int) -> Bool:
     return g_diag_uri()[][i] == shown_uri()
 
 
+def diag_is_note(i: Int) -> Bool:
+    """Is this entry a related site rather than a problem of its own?
+
+    Notes are stored beside the diagnostic they belong to so the line that
+    CAUSED a problem gets marked too. They are drawn -- that is the point --
+    but they must not be counted, or one error reads as two issues, and they
+    must not be reported first, or the status line explains the cause of a
+    problem it never named.
+    """
+    if i < 0 or i >= len(g_diag_sev()[]):
+        return False
+    return g_diag_sev()[][i] > 2
+
+
 def visible_diagnostic_count() -> Int:
     var n = 0
     var i = 0
     while i < len(g_diag_uri()[]):
-        if diag_visible(i):
+        if diag_visible(i) and not diag_is_note(i):
             n += 1
         i += 1
     return n
 
 
 def first_visible_diagnostic() -> Int:
-    """Index of the first diagnostic about the shown document, or -1."""
+    """Index of the first real diagnostic about the shown document, or -1."""
     var i = 0
     while i < len(g_diag_uri()[]):
-        if diag_visible(i):
+        if diag_visible(i) and not diag_is_note(i):
             return i
         i += 1
     return -1
@@ -1146,6 +1160,29 @@ def _take_diagnostics(params: JSON):
         let rng = d.get("range")[]
         let start = rng.get("start")[]
         let end = rng.get("end")[]
+
+        # The second half of the diagnostic. A server sends the site that
+        # CAUSED the problem in `relatedInformation` -- "origin was invalidated
+        # here", "previous definition is here" -- and the primary range is
+        # often a line that looks perfectly innocent on its own. A `let` into a
+        # list marks the line that READS it, while the `append` that
+        # invalidated the reference goes unmarked, which is the whole
+        # difficulty of that error. The text goes on the message so the status
+        # line explains itself; a note in this same file also gets its own
+        # marker below.
+        var tail = String("")
+        if d.has(String("relatedInformation")):
+            let rel = d.get("relatedInformation")[]
+            var k = 0
+            while k < rel.count():
+                let r = rel.at(k)[]
+                let where = r.get("location")[].get("range")[].get("start")[]
+                tail += String("  ·  ") + r.get("message")[].as_string()
+                tail += String(" (line ")
+                tail += String(where.get("line")[].as_int() + 1)
+                tail += String(")")
+                k += 1
+
         g_diag_line()[].append(start.get("line")[].as_int())
         g_diag_col()[].append(start.get("character")[].as_int())
         # An end on a later line is clamped to the start line: the gutter and
@@ -1157,6 +1194,38 @@ def _take_diagnostics(params: JSON):
         g_diag_end()[].append(end_col)
         # 1 error, 2 warning, 3 information, 4 hint.
         g_diag_sev()[].append(d.get("severity")[].as_int())
-        g_diag_msg()[].append(d.get("message")[].as_string())
+        g_diag_msg()[].append(d.get("message")[].as_string() + tail)
         g_diag_uri()[].append(uri)
+
+        # Then the notes themselves, as advisory markers on their own lines.
+        if d.has(String("relatedInformation")):
+            let rel = d.get("relatedInformation")[]
+            var k = 0
+            while k < rel.count():
+                let r = rel.at(k)[]
+                let loc = r.get("location")[]
+                if loc.get("uri")[].as_string() != uri:
+                    # A note about another file cannot be stored here. The set
+                    # is dropped by uri when its own document republishes, so
+                    # one filed under a different name would never be cleared
+                    # and would go stale on screen. It is in the message above.
+                    k += 1
+                    continue
+                let lrng = loc.get("range")[]
+                let ls = lrng.get("start")[]
+                let le = lrng.get("end")[]
+                let lline = ls.get("line")[].as_int()
+                var lend = le.get("character")[].as_int()
+                if le.get("line")[].as_int() != lline:
+                    lend = ls.get("character")[].as_int() + 1
+                g_diag_line()[].append(lline)
+                g_diag_col()[].append(ls.get("character")[].as_int())
+                g_diag_end()[].append(lend)
+                # Advisory. gridview draws anything above 2 in blue, and the
+                # count helpers below skip it, so this marks the line that
+                # caused the problem without inventing a second problem.
+                g_diag_sev()[].append(3)
+                g_diag_msg()[].append(r.get("message")[].as_string())
+                g_diag_uri()[].append(uri)
+                k += 1
         i += 1
