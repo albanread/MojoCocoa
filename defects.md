@@ -111,7 +111,35 @@ Apple GPU); raw-copy staging allocations unchecked. Sprint 4.
 15-17% behind upstream at 512³/ragged-513 matmul, at parity from 1024³ —
 dispatch-shaped, not codegen. Sprint 5 / STATUS item 5 (residency).
 
-### D8 — By-value capture crossing stops at register-passable; DevicePassable copy-captures box thin — OPEN, mechanism complete
+### D8 — By-value capture crossing — FIXED FOR COPY-CAPTURES (096a5f52); {var} chain remains
+The MOCO-4045 gate in ClosureEmitter dropped a whole closure's DevicePassable
+conformance whenever its storage struct was memory-passable, which any
+capture of a pointer-containing type forces. Removed: encodability is
+per-capture, encode_closure_state has no register-passability assumption,
+and the device_type struct is consumed as bytes. A copy-captured TileTensor
+now crosses BY VALUE and reads correctly (spikes/capture-abi/tile_caps.mojo,
+the regression probe). Pointer captures, scalar captures and
+non-DevicePassable captures are unchanged.
+
+REMAINING for the rms_norm reroute: the API chain requires register-passable
+closures end to end — rms_norm's InputFn/OutputFn and the rowwise
+body-closure trait all carry `& RegisterPassable`, which {var} closures
+satisfy (their payload is references) and copy-captured TileTensor closures
+never can. Widening rms_norm's constraints binds fine (verified in the dist);
+the failure moves into rowwise's `AnyTrait[def[...](Coord, mut Context) ->
+None & RegisterPassable & ImplicitlyCopyable]`, and widening THAT trips D10.
+So the unblock is: drop RegisterPassable through the rowwise closure layers
+(rowwise.mojo, rowwise_types.mojo, the gpu impls), fix D10, copy-capture in
+the reroute's adapters, then flip with test_cpu_gpu_differential as the gate.
+
+### D8b — Latent divergent barriers in three basics kernels — FIXED (228f57d2)
+test_sum's block_sum_kernel, test_barrier's kernel and test_prefix_sum's
+block variant all returned early on `tid >= size` before block collectives,
+putting workgroup barriers under thread-varying conditionals. They passed by
+optimization luck until the MOCO-4045 change reshaped their bodies; the
+divergent-barrier rule then correctly refused the builds. Rewritten to reach
+the collective uniformly (clamped load, guarded store). The rule's second
+real catch — the first was the original matmul_1_sram incident.
 Refined 31 Aug (evening) by experiment: the marshaling machinery is CORRECT
 BY DESIGN and mostly exists. ClosureEmitter's `isByReferenceCapture` honors
 copy/move conventions; `getDeviceType` resolves `DevicePassable.device_type`
@@ -140,6 +168,15 @@ every caller to by-reference captures; the rowwise path evidently repacks
 them (its kernels receive by-value aggregates) — that repack site, and
 whether `InputFn` can accept copy-captured closures, are the remaining
 questions for the reroute.
+
+### D10 — Widening closure trait constraints asserts in matchParams — OPEN
+Dropping `& RegisterPassable` from rowwise's body-closure trait (to admit
+memory-passable copy-captured closures, D8's remaining half) crashes the
+param matcher: `Assertion failed: (actualAttr && "conversion is double
+checked")`, ParamMatcher.cpp:760, no diagnostic. Reproducer: the widened
+normalization.mojo (InputFn without RegisterPassable) plus rms_repro.mojo's
+copy-captured closures. Needs its own minimization before the rowwise
+widening can proceed.
 
 ### D9 — @__copy_capture parser crash (TileTensor) — UNREPRODUCED, downgraded
 One run of a TileTensor copy-captured closure asserted in the parser
