@@ -2983,11 +2983,20 @@ Value ClosureEmitter::emitClosure(ASTDecl &moduleDecl, ASTDecl &nestedFnDecl,
       }
     }
   }
-  // TODO(MOCO-4045): DevicePassable conformance currently requires a
-  // register-passable storage struct.
-  if (allCapturesEncodable &&
-      highestCaptureConvention == TypeConvention::MemoryOnly)
-    allCapturesEncodable = false;
+  // MOCO-4045 upstream gated the whole closure's DevicePassable conformance
+  // on a register-passable STORAGE struct, which meant any capture of a
+  // memory-passable type -- TileTensor, which contains device pointers --
+  // silently dropped the closure to the by-reference crossing and arrived at
+  // the kernel as a pointer to host memory ("unknown device address"). The
+  // gate is not needed: encodability is per-capture (each field's device type
+  // resolved above), the synthesized _to_device_type encodes field-by-field
+  // through encode_closure_state with no register-passability assumption, and
+  // the device_type struct is only ever consumed as bytes. Verified with a
+  // copy-captured TileTensor crossing by value (spikes/capture-abi).
+  //
+  // By-reference captures still clear allCapturesEncodable above -- reference
+  // semantics cannot cross -- so only explicit copy/move captures gain the
+  // by-value path.
   FnTypeGeneratorType traitSig = FnTypeGeneratorType::get(
       closureSig.getInputParamTypes(), closureSig.getValues(),
       closureSig.getArgConventions(), closureSig.getFnEffects(),
