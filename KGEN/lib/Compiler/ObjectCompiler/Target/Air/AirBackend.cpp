@@ -57,6 +57,7 @@
 #include "mlir/IR/Location.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
@@ -214,6 +215,29 @@ static bool airKnobEnabled(llvm::StringRef key, bool dflt) {
   llvm::StringRef s(*v);
   return !(s == "0" || s.equals_insensitive("off") ||
            s.equals_insensitive("false") || s.equals_insensitive("no"));
+}
+
+/// A filesystem-safe stem for retained artifacts, keyed on the module name.
+///
+/// Under SplitStrategy::PerExported each module is one kernel, so the module
+/// name is what keeps one kernel's retained .ll/.air/.metallib from
+/// overwriting another's. The fixed names this replaces meant the LAST kernel
+/// of a multi-kernel build silently won, and the survivor could be a kernel
+/// that passed while a different one failed.
+static std::string artifactStem(llvm::StringRef name) {
+  std::string stem;
+  for (char c : name) {
+    if (llvm::isAlnum(c) || c == '_' || c == '-' || c == '.')
+      stem += c;
+    else
+      stem += '_';
+  }
+  if (stem.empty() || stem == "." || stem == "..")
+    stem = "kernel";
+  // A leading '.' hides the file; retained artifacts are for looking at.
+  if (stem[0] == '.')
+    stem[0] = '_';
+  return stem;
 }
 
 // Verified against a golden sample from THIS machine's toolchain, the same
@@ -743,11 +767,10 @@ llvm::Function *legalizeKernel(llvm::Function &fn,
 
   // Per-argument AIR metadata. Leading params: pointers become air.buffer
   // entries whose location_index is the parameter index — the exact order
-  // AppleGPURT binds buffers at launch. By-value scalars keep their position but
-  // are not listed (the golden sample lists buffers and builtins only... it
-  // listed all three including the by-value id as builtin; scalars passed
-  // by value from Mojo become setBytes-bound constant buffers instead), so
-  // v1 requires kernels whose leading params are all pointers.
+  // AppleGPURT binds buffers at launch. By-value scalars are listed too, as
+  // constant-address-space (2) buffers sized to the scalar: the entry load
+  // above reads through that pointer and the runtime binds its bytes with
+  // setBytes at the same index.
   // Original params only — builtin params get their own records below, and
   // scalarOrigTypes is sized to the original parameter list.
   for (unsigned i = 0; i != numOrigParams; ++i) {
@@ -1753,6 +1776,20 @@ llvm::Error legalizeModule(llvm::Module &m) {
       arch = fn.getFnAttribute("target-cpu").getValueAsString();
       break;
     }
+  // One module, one target. Taking the first defined function's arch silently
+  // compiles a mixed-arch module for whichever kernel the iteration happened
+  // to visit first, so a disagreement is diagnosed instead of guessed at.
+  for (llvm::Function &fn : m) {
+    if (fn.isDeclaration())
+      continue;
+    llvm::StringRef other = fn.getFnAttribute("target-cpu").getValueAsString();
+    if (!arch.empty() && !other.empty() && other != arch)
+      return llvm::createStringError(
+          llvm::inconvertibleErrorCode(),
+          "module mixes Apple archs ('%s' and '%s'); AIR legalization needs "
+          "one target profile per module",
+          arch.str().c_str(), other.str().c_str());
+  }
   bool unverifiedProfile = false;
   std::optional<Air::TargetProfile> profileOr =
       Air::profileForArch(arch, unverifiedProfile);
@@ -1867,15 +1904,15 @@ llvm::Error legalizeModule(llvm::Module &m) {
   if (!m.getModuleFlag("frame-pointer"))
     addFlag("frame-pointer", 2, llvm::Module::Max);
   addFlag("air.max_device_buffers", profile.limits.deviceBuffers,
-            llvm::Module::Max);
-    addFlag("air.max_constant_buffers", profile.limits.constantBuffers,
-            llvm::Module::Max);
-    addFlag("air.max_threadgroup_buffers", profile.limits.threadgroupBuffers,
-            llvm::Module::Max);
-    addFlag("air.max_textures", profile.limits.textures, llvm::Module::Max);
-    addFlag("air.max_read_write_textures", profile.limits.readWriteTextures,
-            llvm::Module::Max);
-    addFlag("air.max_samplers", profile.limits.samplers, llvm::Module::Max);
+          llvm::Module::Max);
+  addFlag("air.max_constant_buffers", profile.limits.constantBuffers,
+          llvm::Module::Max);
+  addFlag("air.max_threadgroup_buffers", profile.limits.threadgroupBuffers,
+          llvm::Module::Max);
+  addFlag("air.max_textures", profile.limits.textures, llvm::Module::Max);
+  addFlag("air.max_read_write_textures", profile.limits.readWriteTextures,
+          llvm::Module::Max);
+  addFlag("air.max_samplers", profile.limits.samplers, llvm::Module::Max);
   if (!m.getModuleFlag("SDK Version")) {
     // Was {14, 2} for the fork's pinned Xcode 15.2. TODO: derive from the SDK
     // actually in use rather than pinning (`xcrun --show-sdk-version` reports
@@ -2016,6 +2053,13 @@ protected:
 public:
   void emitBitcode(llvm::Module &module,
                    llvm::raw_pwrite_stream &os) const override {
+    // Deliberately NOT legalized. emitBitcode serves the --emit bitcode views
+    // (EmitAs::LLVM_BITCODE / LLVM_OPT_BITCODE in ObjectCompiler.cpp), whose
+    // point is to show the module as the pipeline produced it; the
+    // reader-compatible AIR artifact is emitObject's metallib alone. Running
+    // legalizeModule here as well would also corrupt any module that later
+    // goes through emitObject: it is not idempotent (each run appends another
+    // !air.kernel operand per kernel).
     M::KGEN::LLVM::WriteBitcode17ToFile(module, os,
                                /*ShouldPreserveUseListOrder=*/false,
                                /*Index=*/nullptr, /*GenerateHash=*/false,
@@ -2026,7 +2070,8 @@ public:
                                   EmitContext &ctx) const override {
     // Legalized textual IR: the debugging/`--emit=asm` view of the AIR.
     if (llvm::Error err = legalizeModule(module))
-      return Error("AIR legalization failed");
+      return Error("AIR legalization failed: " +
+                   llvm::toString(std::move(err)));
     WriteableBufferRef buf = WriteableBuffer::get();
     module.print(*buf, nullptr); // WriteableBuffer is a raw_pwrite_stream
     return buf;
@@ -2035,7 +2080,8 @@ public:
   ErrorOr<BufferRef> emitObject(llvm::Module &module,
                                 EmitContext &ctx) const override {
     if (llvm::Error err = legalizeModule(module))
-      return Error("AIR legalization failed");
+      return Error("AIR legalization failed: " +
+                   llvm::toString(std::move(err)));
 
     // Gate 1: verify while the IR is still CANONICAL -- after our own
     // legalization, before the downgrade pipeline.
@@ -2053,12 +2099,27 @@ public:
       // -- and the module IS the diagnosis.
       if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR")) {
         std::error_code ec;
-        llvm::raw_fd_ostream dbg(std::string(keep) + "/applegpu-rejected.ll",
+        llvm::raw_fd_ostream dbg(std::string(keep) + "/" +
+                                     artifactStem(module.getName()) +
+                                     ".rejected.ll",
                                  ec);
         if (!ec)
           module.print(dbg, nullptr);
       }
       return Error(*bad);
+    }
+
+    // Retained artifacts are named per kernel (see artifactStem):
+    // APPLEGPU_KEEP_AIR=<dir> collects <kernel>.pre.ll here -- the canonical
+    // IR as legalized, before the LLVM-17 downgrade pipeline -- then
+    // <kernel>.post.ll after it, and <kernel>.air / <kernel>.metallib below.
+    std::string stem;
+    if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR")) {
+      stem = artifactStem(module.getName());
+      std::error_code ec;
+      llvm::raw_fd_ostream dbg(std::string(keep) + "/" + stem + ".pre.ll", ec);
+      if (!ec)
+        module.print(dbg, nullptr);
     }
 
     // Downgrade modern IR constructs to what the LLVM-17-era AIR reader
@@ -2075,10 +2136,14 @@ public:
       pb.registerLoopAnalyses(lam);
       pb.crossRegisterProxies(lam, fam, cgam, mam);
       llvm::ModulePassManager mpm;
-      // Metal kernels are conventionally fully inlined, and AMD's backend
-      // cannot trace a buffer resource across a call boundary — a store
-      // through a pointer that arrived as a callee parameter crashes its
-      // lowering. Force every internal helper into its caller.
+      // Force every internal helper into its caller before the AIR-specific
+      // re-legalization below: Metal kernels are fully inlined as a matter of
+      // convention, and whatever this pass pulls in that legalizeModule never
+      // saw is made safe by deviceizeCapturedPointers and
+      // lowerThreeWayCompares running after it. (The x86-64 Vega fork needed
+      // the inline for a different reason -- AMD's backend cannot trace a
+      // buffer resource across a call boundary; that constraint is gone here,
+      // the inlining discipline stays.)
       for (llvm::Function &fn : module)
         if (!fn.isDeclaration() && fn.hasLocalLinkage()) {
           fn.removeFnAttr(llvm::Attribute::NoInline);
@@ -2121,25 +2186,25 @@ public:
           llvm::errs() << "[applegpu] scalarize-wide-vectors ON, minBits="
                        << minBits << "\n";
       }
-        mpm.run(module, mam);
+      mpm.run(module, mam);
 
-        // Re-legalise address spaces now that inlining has run. legalizeModule
-        // did this already, but only over the code that existed then: whatever
-        // AlwaysInliner has just pulled in from a callee has never been through
-        // it, and a device pointer in that code is still generic.
-        //
-        // On AIR that is not a missed optimisation, it is a wrong answer. AIR
-        // has no generic address space, so a kernel left with its stores in
-        // addrspace(1) and its loads in addrspace(0) writes correctly and reads
-        // zero -- an output buffer full of zeroes, no diagnostic anywhere, and
-        // nothing in the IR that any verifier objects to.
-        deviceizeCapturedPointers(module);
+      // Re-legalise address spaces now that inlining has run. legalizeModule
+      // did this already, but only over the code that existed then: whatever
+      // AlwaysInliner has just pulled in from a callee has never been through
+      // it, and a device pointer in that code is still generic.
+      //
+      // On AIR that is not a missed optimisation, it is a wrong answer. AIR
+      // has no generic address space, so a kernel left with its stores in
+      // addrspace(1) and its loads in addrspace(0) writes correctly and reads
+      // zero -- an output buffer full of zeroes, no diagnostic anywhere, and
+      // nothing in the IR that any verifier objects to.
+      deviceizeCapturedPointers(module);
 
-        // Same reasoning, for the same reason: a callee that still contained a
-        // three-way compare has just been inlined into a kernel that had none.
-        lowerThreeWayCompares(module);
+      // Same reasoning, for the same reason: a callee that still contained a
+      // three-way compare has just been inlined into a kernel that had none.
+      lowerThreeWayCompares(module);
 
-        llvm::ModulePassManager mpm2;
+      llvm::ModulePassManager mpm2;
       // The published Metal emission machinery, by its own declarations:
       // BitcodeWriter17.cpp:15 — "for writing Metal bitcode"; Apple's AIR
       // reader is LLVM-18-based (BitcodeWriter17.cpp ~1765) and requires
@@ -2158,21 +2223,15 @@ public:
       dropNoOpAddrSpaceCasts(module);
     }
 
-
-
-    // Debug hatch: dump post-pass text (after MetalAIRPass/PointerRewriter).
+    // Post-pipeline view, immediately before bitcode serialization: after
+    // LLVMIRDowngradePass + PointerRewriter and the post-inlining
+    // re-legalization. Distinct from .pre.ll above; these two used to be
+    // written at this same point under different names, so the "pre" file was
+    // a copy of the post one and neither survived a multi-kernel build.
     if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR")) {
       std::error_code ec;
-      llvm::raw_fd_ostream dbg(std::string(keep) + "/applegpu-kernel.post.ll", ec);
-      if (!ec)
-        module.print(dbg, nullptr);
-    }
-
-    // Debug hatch: dump the legalized module as text before encoding, so a
-    // module the reader rejects can still be inspected.
-    if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR")) {
-      std::error_code ec;
-      llvm::raw_fd_ostream dbg(std::string(keep) + "/applegpu-kernel.pre.ll", ec);
+      llvm::raw_fd_ostream dbg(std::string(keep) + "/" + stem + ".post.ll",
+                               ec);
       if (!ec)
         module.print(dbg, nullptr);
     }
@@ -2215,14 +2274,14 @@ public:
                                           /*GenerateHash=*/false,
                                           /*ModHash=*/nullptr);
     }
-    llvm::SmallString<128> llPath, libPath;
-    if (llvm::sys::fs::createTemporaryFile("applegpu-kernel", "air", llPath))
+    llvm::SmallString<128> airPath, libPath;
+    if (llvm::sys::fs::createTemporaryFile("applegpu-kernel", "air", airPath))
       return Error("failed to create temporary .air file");
     if (llvm::sys::fs::createTemporaryFile("applegpu-kernel", "metallib", libPath))
       return Error("failed to create temporary .metallib file");
     {
       std::error_code ec;
-      llvm::raw_fd_ostream out(llPath, ec);
+      llvm::raw_fd_ostream out(airPath, ec);
       if (ec)
         return Error("failed to open temporary .air for writing");
       // WriteBitcode17ToFile emits the bitcode wrapper header itself.
@@ -2254,21 +2313,8 @@ public:
     // you need, and copying it only on success meant it was deleted at the
     // one moment it mattered.
     if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR")) {
-      // Unique per kernel: a module with several kernels overwrote this, and
-      // the survivor was a kernel that PASSED while a different one failed --
-      // which reads as "the file metallib rejects is fine when I run metallib
-      // on it by hand".
-      llvm::StringRef stem = llvm::sys::path::stem(llPath);
-      llvm::sys::fs::copy_file(
-          llPath, (std::string(keep) + "/" + stem.str() + ".air"));
-      // The textual IR too, same stem: when a reader rejects the bitcode
-      // (sometimes including modern LLVM's own -- writer bugs exist), the
-      // text is the only view of what the module actually contained.
-      std::error_code ec;
-      llvm::raw_fd_ostream txt(std::string(keep) + "/" + stem.str() + ".ll",
-                               ec);
-      if (!ec)
-        module.print(txt, nullptr);
+      llvm::sys::fs::copy_file(airPath,
+                               (std::string(keep) + "/" + stem + ".air"));
     }
 
     llvm::ErrorOr<std::string> xcrun = llvm::sys::findProgramByName("xcrun");
@@ -2281,7 +2327,7 @@ public:
     if (llvm::sys::fs::createTemporaryFile("applegpu-metal", "err", errPath))
       return Error("failed to create temporary stderr file");
     llvm::SmallVector<llvm::StringRef, 12> args = {
-        *xcrun, "-sdk", "macosx", "metallib", llPath, "-o", libPath};
+        *xcrun, "-sdk", "macosx", "metallib", airPath, "-o", libPath};
     std::optional<llvm::StringRef> redirects[3] = {
         std::nullopt, std::nullopt, llvm::StringRef(errPath)};
     std::string errMsg;
@@ -2293,19 +2339,19 @@ public:
         toolErr = (*buf)->getBuffer().str();
       llvm::sys::fs::remove(errPath);
       llvm::sys::fs::remove(libPath);
-      // Keep the rejected .ll for postmortem.
+      // Keep the rejected .air for postmortem; the error names its path.
       return Error(Twine("xcrun metallib failed (rc=") + Twine(rc) +
-                   ") on " + llPath + ": " + toolErr + errMsg);
+                   ") on " + airPath + ": " + toolErr + errMsg);
     }
     llvm::sys::fs::remove(errPath);
 
-    // Debug escape hatch: APPLEGPU_KEEP_AIR=<dir> keeps the .ll and .metallib.
+    // Retained metallib, same per-kernel stem as the .air/.ll artifacts.
     if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR")) {
-      llvm::sys::fs::copy_file(
-          libPath, (std::string(keep) + "/applegpu-kernel.metallib"));
+      llvm::sys::fs::copy_file(libPath,
+                               (std::string(keep) + "/" + stem + ".metallib"));
     }
     auto libBufOr = llvm::MemoryBuffer::getFile(libPath);
-    llvm::sys::fs::remove(llPath);
+    llvm::sys::fs::remove(airPath);
     if (!libBufOr) {
       llvm::sys::fs::remove(libPath);
       return Error("failed to read packed metallib");
