@@ -37,17 +37,40 @@ stack address — measured: `agg_caps.mojo` went OK → wrong numbers → OK
 across marker-on/marker-off. Pointer captures are device BY DESIGN.
 Repro: `spikes/capture-abi/agg_caps.mojo`.
 
-### D4 — By-reference struct captures typed device — fix built, verifying
+### D4 — By-reference struct captures cannot cross the launch ABI — OPEN, mechanism complete
 A closure capturing a struct by reference (TileTensors in the rms_norm
-adapter) becomes a pointer kernel parameter whose pointee is erased by
-LowerKGENToLLVM; typed device, the runtime reads the struct's first 8
-bytes as an address and binds the wrong buffer or refuses the launch
-("unknown device address", the `0x16f3…` stack addresses). Fix: a
-`kgen.offload.capture` marker in ResolveCompilerPromises (struct-pointee
-pointer captures only, size from the pointee) → `byval([N x i8])` in
-AirLowering → constant AS(2) in the backend; scalar-pointee pointer
-captures stay device per D3. Repro: `spikes/capture-abi/pack_struct.mojo`.
-Gates re-verification in flight at the time of this note.
+adapter, `{var src_tt}` in the tests) becomes a pointer kernel parameter,
+and the slot bytes are a HOST address. Three fixes were built and refuted
+by intervention, each teaching the next:
+
+1. *Convention byval* — byval attaches but as `byval({})`: the KGEN
+   pointee is already opaque at LowerKGENToLLVM (traced).
+2. *A compiler-side capture marker* — `kgen.offload.capture` in
+   ResolveCompilerPromises, keyed on the pointee being a struct: the
+   device-side capture's pointee is ALREADY `!kgen.none` there too
+   (traced with `KGEN_TRACE_CAPTURE_MARK`); the device-boundary type
+   conversion erases it before any compiler pass runs. The type the rule
+   needs does not exist on the compiler side.
+3. *Runtime staging* — copy the slot bytes to a device buffer and bind
+   that, keeping the kernel's AS(1) reads valid as compiled: built and
+   working mechanically, but the slot bytes for a pointer capture are the
+   ADDRESS, not the struct, so the kernel reads address bits as fields —
+   silently wrong, strictly worse than the loud
+   "unknown device address". Reverted; the error stays.
+
+What actually works is already in the tree: an aggregate captured BY
+VALUE marshals as bytes through the constant path — `gamma` in the traced
+`rms_norm_gpu_warp_tiling` kernel is exactly that shape
+(`arg 1 { ptr, {…} }`, reads correctly). The fix is at the Mojo source:
+the reroute chain's closures must copy-capture the TileTensors (they
+today capture `{var …}` by reference), which requires the captured type
+to be `DevicePassable` — TileTensor already is. Where that change lives:
+the reroute's adapter closures in `nn/normalization.mojo` and the
+`{var}` capture forms in the tests that drive them. Until then the
+reroute stays off and `test_cpu_gpu_differential` keeps failing on the
+rowwise path (see D6/D7). Repro: `spikes/capture-abi/pack_struct.mojo`
+(pointer capture — the unsupported pattern, fails loudly by design);
+`rms_repro.mojo` (the real dispatcher path).
 
 ### D5 — Rerouted kernel argument order/sizes disagree with the launcher — OPEN
 With D4's typing in place, Metal validation names the next defect exactly:
