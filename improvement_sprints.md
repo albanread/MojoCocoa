@@ -48,9 +48,52 @@ distinct per-kernel artifacts.
 
 ## Sprint 2 — the keystone: capture-pack address spaces (F1)
 
-The one correctness item that blocks a cluster of numerical failures
-(`test_index_tensor`, the `rms_norm` reroute, `test_gather`) and, via the
-metadata half, the runtime's residency scaling cost.
+**Status 31 Aug: part one landed.** Single-aggregate capture packs (the
+TileTensor shape of nn/index_tensor) now type constant: AirLowering stamps
+exported kernels and enables the byval kernel-argument hook upstream built
+for exactly this, and `legalizeKernel` types a byval-of-struct pointer
+parameter as constant AS(2) with constant metadata sized to match the
+launcher's packing. `test_index_tensor`: FAIL → PASS; full GPU-tree sweep
+shows zero new failures against the committed corpus baseline (the two
+`fail`s outside the baseline — differential and gated_group_rmsnorm — fail
+identically on the unmodified compiler at current HEAD; the fp8_gemv
+regression was this sprint's own reroute flip, reverted). The runtime needed
+no change: reflection-driven setBytes already existed.
+
+**The remaining sub-case is precise: param packs.** An adapter closure
+capturing MULTIPLE values arrives as a kgen param pack whose depth-0
+members take `Mut` convention in LowerArgConventions (conservatively — "we
+do not know if it holds an address that is potentially written to"), and
+the byval hook only fires for Owned/Deinit/ReadMem. rms_norm's adapter
+still dies with "unknown device address" at arg 4; the reroute flip was
+tried, reproduced exactly that, and is reverted with a note naming the
+cause. Fixing it means either typing pack members by their pointee at the
+pack-expansion site or extending the hook — decided where the member types
+still exist, same discipline as part one.
+
+1. ✅ Plumb the pack/constant distinction to `legalizeKernel` via the
+   byval hook (done, single-aggregate case; see F16 for why this lives at
+   the MLIR boundary).
+2. Param packs (above) — then flip `reroute_gpu_to_rms_norm_gpu`; the gate
+   is `test_cpu_gpu_differential` green at every width.
+3. Emit `air.indirect_buffer` / `air.struct_type_info` argument metadata
+   for capture-struct parameters, so residency narrows from
+   `markAllResident()` to the reachable set. The golden-sampled target
+   shape, including the flat per-field tuple and the nested
+   `location_index` namespace, is recorded in the comment at
+   `AirBackend.cpp` (the TODO(air-indirect) block); re-sample under the
+   current toolchain before trusting it. Unchanged from the original plan.
+4. Runtime half, after the metadata exists: residency narrows; keep
+   `APPLEGPU_COARSE_RESIDENCY=1` as the fallback switch and re-measure
+   dispatch overhead against unrelated allocation count (review doc P0
+   exit criterion). The runtime's constant-binding path already works —
+   part one needed zero runtime changes.
+
+Verification so far: `test_index_tensor` passes; the AIR compile tests,
+`test_apple_mma_8x8` and `compute_smoke` all green; the full
+`//max/kernels/test/gpu/...` sweep's failure set matches the committed
+baseline. `test_gather` is the next expected conversion once param packs
+land (same "unknown device address" signature).
 
 1. Locate where a kernel's parameter list is classified before LLVM types
    exist (the MLIR signature), and plumb "this parameter is a capture pack"

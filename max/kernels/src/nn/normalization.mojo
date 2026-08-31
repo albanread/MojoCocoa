@@ -3007,8 +3007,15 @@ def rms_norm[
     # were obtained -- only this adapter layer does.
     #
     # Failing to LAUNCH is worse than returning wrong numbers, so this stays
-    # off until the address space of capture-pack arguments is fixed. Flip the
-    # alias to True at that point; test_cpu_gpu_differential is the gate.
+    # off a while longer. The 31 Aug capture-pack fix landed the FIRST half:
+    # single-aggregate packs (index_tensor's TileTensor shape) now type
+    # constant and test_index_tensor passes. But the adapter closure here
+    # captures MULTIPLE values, which arrive as a kgen param pack whose
+    # depth-0 members take Mut convention (LowerArgConventions) and so never
+    # receive the byval pack typing -- arg 4 is still typed device and the
+    # launch still dies with "unknown device address". Param packs are the
+    # remaining sub-case; test_cpu_gpu_differential remains this reroute's
+    # gate once they type correctly.
     comptime reroute_gpu_to_rms_norm_gpu = False
 
     comptime if (
