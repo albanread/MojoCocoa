@@ -1,5 +1,20 @@
 # Where this port stands — pick up here
 
+Rollout 31 August (night): the AIR capture-ABI campaign and the runtime
+lifetime repairs are in the dist. Headline deltas since the 25 Aug snapshot:
+test_index_tensor FAIL->PASS (capture packs typed constant, the priority-1
+keystone); copy-captured DevicePassable types cross the device boundary by
+value (MOCO-4045, previously an upstream TODO); three basics kernels with
+latent divergent barriers made sound; three compiler crash-to-behavior
+hardening fixes; destroyBuffer now drains in-flight dispatch (a real
+use-after-free under async launch) and test_gated_group_rmsnorm recovered
+with it; CLOCK_RATE no longer reports a Xeon clock for an Apple GPU.
+Measured against upstream on this machine: fma peak parity, we win the
+launch-bound one-chain case, matmul 2048-cubed ahead, every probe and bench
+shape numerically EXACT. The rms_norm reroute remains blocked (elaborator
+ordering, defects.md D13); the defect ledger at defects.md is the current
+map.
+
 Status snapshot: 25 August 2026, commit
 `d07673ce7202d19ab17d6cad41dfb2538c82e87b`, Apple M4.
 
