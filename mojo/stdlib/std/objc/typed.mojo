@@ -60,6 +60,16 @@ from std.sys._cocoakb import (
     cocoakb_p_selector_for_parts_5,
     cocoakb_p_ret_kind_for_parts_5,
     cocoakb_p_ret_class_for_parts_5_str,
+    cocoakb_p_init_form_for_parts_1,
+    cocoakb_p_init_selector_for_parts_1,
+    cocoakb_p_init_form_for_parts_2,
+    cocoakb_p_init_selector_for_parts_2,
+    cocoakb_p_init_form_for_parts_3,
+    cocoakb_p_init_selector_for_parts_3,
+    cocoakb_p_init_form_for_parts_4,
+    cocoakb_p_init_selector_for_parts_4,
+    cocoakb_p_init_form_for_parts_5,
+    cocoakb_p_init_selector_for_parts_5,
 )
 from std.memory import OpaquePointer
 from .runtime import ObjCObject, ObjCClass, msg_send
@@ -837,6 +847,177 @@ struct Obj[cls: StringLiteral](Copyable, Movable):
     """
 
     var id: Int
+
+    # CONSTRUCTION, keyword form -- sprint P2. `NSWindow(contentRect=...,
+    # styleMask=...)` reaches these through the compiler's `__init_kw_param__`
+    # hook: the labels arrive as StringLiteral parameters, the values
+    # positionally. The database decides which constructor the labels name --
+    # a FACTORY (a class method whose selector parts are the labels verbatim,
+    # one send) or an INIT (`alloc` plus an initialiser whose first part is
+    # 'initWith' with the first label capitalised onto it, two sends) -- and
+    # the branch is a comptime `if` on the form's integer, which folds. The
+    # result is the receiver's own class by construction, so it is `Self`
+    # with no query.
+    #
+    # The plain spelling is a user-written alias, not library privilege:
+    #     comptime NSWindow = Obj["NSWindow"]
+    #     let win = NSWindow(contentRect=..., ...)
+    # three lines any user can write for any class the database knows.
+
+    @staticmethod
+    def __init_kw_param__[
+        p1: StringLiteral, T0: AnyType
+    ](a0: T0) -> Self:
+        comptime form = cocoakb_p_init_form_for_parts_1[Self.cls, p1]
+        comptime assert form != 0, (
+            "no constructor for these labels on this class: looked for a"
+            " class method whose selector's parts are the labels, and an"
+            " initialiser 'initWith<First>:...' with the remaining labels."
+            " Check each label against the class's constructors"
+        )
+        comptime sel = cocoakb_p_init_selector_for_parts_1[Self.cls, p1]
+        var class_id = (
+            ObjCClass.lookup[StaticString(Self.cls.value)]().as_object().addr()
+        )
+        comptime if form == 1:
+            return Self(
+                msg_send[ObjCObject, Self.cls, sel, is_class=True](
+                    ObjCObject(class_id), a0
+                ).addr()
+            )
+        var instance = msg_send[
+            ObjCObject, Self.cls, "alloc", is_class=True
+        ](ObjCObject(class_id))
+        return Self(msg_send[ObjCObject, Self.cls, sel](instance, a0).addr())
+
+    @staticmethod
+    def __init_kw_param__[
+        p1: StringLiteral, p2: StringLiteral, T0: AnyType, T1: AnyType
+    ](a0: T0, a1: T1) -> Self:
+        comptime form = cocoakb_p_init_form_for_parts_2[Self.cls, p1, p2]
+        comptime assert form != 0, (
+            "no constructor for these labels on this class: looked for a"
+            " class method whose selector's parts are the labels, and an"
+            " initialiser 'initWith<First>:...' with the remaining labels."
+            " Check each label against the class's constructors"
+        )
+        comptime sel = cocoakb_p_init_selector_for_parts_2[Self.cls, p1, p2]
+        var class_id = (
+            ObjCClass.lookup[StaticString(Self.cls.value)]().as_object().addr()
+        )
+        comptime if form == 1:
+            return Self(
+                msg_send[ObjCObject, Self.cls, sel, is_class=True](
+                    ObjCObject(class_id), a0, a1
+                ).addr()
+            )
+        var instance = msg_send[
+            ObjCObject, Self.cls, "alloc", is_class=True
+        ](ObjCObject(class_id))
+        return Self(
+            msg_send[ObjCObject, Self.cls, sel](instance, a0, a1).addr()
+        )
+
+    @staticmethod
+    def __init_kw_param__[
+        p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+        T0: AnyType, T1: AnyType, T2: AnyType,
+    ](a0: T0, a1: T1, a2: T2) -> Self:
+        comptime form = cocoakb_p_init_form_for_parts_3[Self.cls, p1, p2, p3]
+        comptime assert form != 0, (
+            "no constructor for these labels on this class: looked for a"
+            " class method whose selector's parts are the labels, and an"
+            " initialiser 'initWith<First>:...' with the remaining labels."
+            " Check each label against the class's constructors"
+        )
+        comptime sel = cocoakb_p_init_selector_for_parts_3[
+            Self.cls, p1, p2, p3
+        ]
+        var class_id = (
+            ObjCClass.lookup[StaticString(Self.cls.value)]().as_object().addr()
+        )
+        comptime if form == 1:
+            return Self(
+                msg_send[ObjCObject, Self.cls, sel, is_class=True](
+                    ObjCObject(class_id), a0, a1, a2
+                ).addr()
+            )
+        var instance = msg_send[
+            ObjCObject, Self.cls, "alloc", is_class=True
+        ](ObjCObject(class_id))
+        return Self(
+            msg_send[ObjCObject, Self.cls, sel](instance, a0, a1, a2).addr()
+        )
+
+    @staticmethod
+    def __init_kw_param__[
+        p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+        p4: StringLiteral,
+        T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType,
+    ](a0: T0, a1: T1, a2: T2, a3: T3) -> Self:
+        comptime form = cocoakb_p_init_form_for_parts_4[
+            Self.cls, p1, p2, p3, p4
+        ]
+        comptime assert form != 0, (
+            "no constructor for these labels on this class: looked for a"
+            " class method whose selector's parts are the labels, and an"
+            " initialiser 'initWith<First>:...' with the remaining labels."
+            " Check each label against the class's constructors"
+        )
+        comptime sel = cocoakb_p_init_selector_for_parts_4[
+            Self.cls, p1, p2, p3, p4
+        ]
+        var class_id = (
+            ObjCClass.lookup[StaticString(Self.cls.value)]().as_object().addr()
+        )
+        comptime if form == 1:
+            return Self(
+                msg_send[ObjCObject, Self.cls, sel, is_class=True](
+                    ObjCObject(class_id), a0, a1, a2, a3
+                ).addr()
+            )
+        var instance = msg_send[
+            ObjCObject, Self.cls, "alloc", is_class=True
+        ](ObjCObject(class_id))
+        return Self(
+            msg_send[ObjCObject, Self.cls, sel](instance, a0, a1, a2, a3).addr()
+        )
+
+    @staticmethod
+    def __init_kw_param__[
+        p1: StringLiteral, p2: StringLiteral, p3: StringLiteral,
+        p4: StringLiteral, p5: StringLiteral,
+        T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType, T4: AnyType,
+    ](a0: T0, a1: T1, a2: T2, a3: T3, a4: T4) -> Self:
+        comptime form = cocoakb_p_init_form_for_parts_5[
+            Self.cls, p1, p2, p3, p4, p5
+        ]
+        comptime assert form != 0, (
+            "no constructor for these labels on this class: looked for a"
+            " class method whose selector's parts are the labels, and an"
+            " initialiser 'initWith<First>:...' with the remaining labels."
+            " Check each label against the class's constructors"
+        )
+        comptime sel = cocoakb_p_init_selector_for_parts_5[
+            Self.cls, p1, p2, p3, p4, p5
+        ]
+        var class_id = (
+            ObjCClass.lookup[StaticString(Self.cls.value)]().as_object().addr()
+        )
+        comptime if form == 1:
+            return Self(
+                msg_send[ObjCObject, Self.cls, sel, is_class=True](
+                    ObjCObject(class_id), a0, a1, a2, a3, a4
+                ).addr()
+            )
+        var instance = msg_send[
+            ObjCObject, Self.cls, "alloc", is_class=True
+        ](ObjCObject(class_id))
+        return Self(
+            msg_send[ObjCObject, Self.cls, sel](
+                instance, a0, a1, a2, a3, a4
+            ).addr()
+        )
 
     def __getattr_param__[name: StringLiteral](self) -> Bound[Self.cls, name]:
         """`obj.anything` -- the name arrives as a PARAMETER, which is what

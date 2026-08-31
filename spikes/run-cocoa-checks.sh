@@ -69,7 +69,7 @@ for f in check.mojo objc_smoke.mojo foundation_demo.mojo typecheck_test.mojo \
          objc_decorator_test.mojo dealloc_test.mojo field_init_test.mojo \
          inherit_test.mojo class_method_test.mojo box_ref_test.mojo \
          call_direction_test.mojo typed_result_test.mojo typed_call_test.mojo \
-         kwargs_call_test.mojo; do run_ok "$f"; done
+         kwargs_call_test.mojo kwargs_init_test.mojo; do run_ok "$f"; done
 
 # The one test with clang on the other end. Everything above has Mojo at both
 # ends and so proves only self-consistency; this links a dylib built by the
@@ -96,7 +96,7 @@ fi
 
 echo
 echo "must be rejected at compile time:"
-for f in must_fail.mojo must_fail_argcount.mojo must_fail_fn_raises.mojo must_fail_let_assign.mojo must_fail_kwarg_label.mojo; do run_mustfail "$f"; done
+for f in must_fail.mojo must_fail_argcount.mojo must_fail_fn_raises.mojo must_fail_let_assign.mojo must_fail_kwarg_label.mojo must_fail_kwarg_init.mojo; do run_mustfail "$f"; done
 
 echo
 echo "$pass passed, $fail failed"

@@ -287,6 +287,65 @@ COCOAKB_PARTS_QUERIES(
 #undef COCOAKB_PARTS_COALESCE_CTE
 #undef COCOAKB_PARTS_CTE
 
+// Construction, sprint P2: `NSWindow(contentRect=..., styleMask=...)` with
+// no wrapper written down. Two spellings name a constructor, and the labels
+// decide which:
+//
+//   the FACTORY form -- a class method whose selector's parts are the
+//   labels verbatim (`buttonWithTitle:target:action:` for
+//   `NSButton(buttonWithTitle=..., target=..., action=...)`). One send.
+//
+//   the INIT form -- `alloc` plus an initialiser whose FIRST part is
+//   'initWith' with the first label capitalised onto it
+//   (`initWithContentRect:styleMask:backing:defer:` for
+//   `NSWindow(contentRect=..., styleMask=..., backing=..., defer=...)`),
+//   the remaining labels the selector's remaining parts. Two sends.
+//
+// Factory wins when both exist: one send instead of two, and the labels
+// matching a class method verbatim is the stronger signal. Existence rides
+// rt_methods, NOT ret_class: the '@self' instancetype marker is recorded on
+// whichever class the ingest resolved it to -- NSWindow's own
+// initWithContentRect: carries none, its subclasses do -- so requiring it
+// would refuse the most standard constructor in AppKit.
+#define COCOAKB_INIT_STATEMENT(f_branch, i_branch, else_branch, exact, init)    \
+  "WITH RECURSIVE chain(c, depth) AS ("                                         \
+  "  SELECT ?1, 0"                                                              \
+  "  UNION ALL"                                                                 \
+  "  SELECT rc.superclass, chain.depth + 1 FROM rt_classes rc, chain"           \
+  "    WHERE rc.name = chain.c AND rc.superclass IS NOT NULL)"                  \
+  " SELECT CASE"                                                                \
+  "  WHEN EXISTS (SELECT 1 FROM chain JOIN rt_methods m ON m.class = chain.c"   \
+  "    AND m.is_class = 1 AND m.selector = (" exact ")) THEN " f_branch         \
+  "  WHEN EXISTS (SELECT 1 FROM chain JOIN rt_methods m ON m.class = chain.c"   \
+  "    AND m.is_class = 0 AND m.selector = (" init ")) THEN " i_branch          \
+  "  ELSE " else_branch " END"
+
+#define COCOAKB_INIT_QUERIES(suffix, argcount, exact, init)                     \
+  constexpr StringRef kInitForm##suffix##SQL =                                  \
+      COCOAKB_INIT_STATEMENT("1", "2", "0", exact, init);                       \
+  constexpr StringRef kInitSelector##suffix##SQL =                              \
+      COCOAKB_INIT_STATEMENT("(" exact ")", "(" init ")", "''", exact, init);
+
+COCOAKB_INIT_QUERIES(1, 2, "?2 || ':'",
+                     "'initWith' || upper(substr(?2, 1, 1)) || substr(?2, 2)"
+                     " || ':'")
+COCOAKB_INIT_QUERIES(2, 3, "?2 || ':' || ?3 || ':'",
+                     "'initWith' || upper(substr(?2, 1, 1)) || substr(?2, 2)"
+                     " || ':' || ?3 || ':'")
+COCOAKB_INIT_QUERIES(3, 4, "?2 || ':' || ?3 || ':' || ?4 || ':'",
+                     "'initWith' || upper(substr(?2, 1, 1)) || substr(?2, 2)"
+                     " || ':' || ?3 || ':' || ?4 || ':'")
+COCOAKB_INIT_QUERIES(
+    4, 5, "?2 || ':' || ?3 || ':' || ?4 || ':' || ?5 || ':'",
+    "'initWith' || upper(substr(?2, 1, 1)) || substr(?2, 2)"
+    " || ':' || ?3 || ':' || ?4 || ':' || ?5 || ':'")
+COCOAKB_INIT_QUERIES(
+    5, 6, "?2 || ':' || ?3 || ':' || ?4 || ':' || ?5 || ':' || ?6 || ':'",
+    "'initWith' || upper(substr(?2, 1, 1)) || substr(?2, 2)"
+    " || ':' || ?3 || ':' || ?4 || ':' || ?5 || ':' || ?6 || ':'")
+#undef COCOAKB_INIT_QUERIES
+#undef COCOAKB_INIT_STATEMENT
+
 constexpr StringRef kSelectorVariantSQL =
     "SELECT CASE WHEN ret_class = '?' OR arg_classes LIKE '%?%' THEN '?' "
     "ELSE 'objc_msgSend' END FROM method_abi WHERE selector = ?1 "
@@ -353,6 +412,19 @@ const CocoaKBQueryDef kCocoaQueries[] = {
     {"selector_for_parts_5", 8, kSelectorForParts5SQL},
     {"ret_kind_for_parts_5", 8, kRetKindForParts5SQL},
     {"ret_class_for_parts_5", 8, kRetClassForParts5SQL},
+    // Construction, keyword form: (class, label...). Form answers 1 factory,
+    // 2 alloc+init, 0 neither; selector answers the text ('' when neither).
+    // Argument count is 1 + label count.
+    {"init_form_for_parts_1", 2, kInitForm1SQL},
+    {"init_selector_for_parts_1", 2, kInitSelector1SQL},
+    {"init_form_for_parts_2", 3, kInitForm2SQL},
+    {"init_selector_for_parts_2", 3, kInitSelector2SQL},
+    {"init_form_for_parts_3", 4, kInitForm3SQL},
+    {"init_selector_for_parts_3", 4, kInitSelector3SQL},
+    {"init_form_for_parts_4", 5, kInitForm4SQL},
+    {"init_selector_for_parts_4", 5, kInitSelector4SQL},
+    {"init_form_for_parts_5", 6, kInitForm5SQL},
+    {"init_selector_for_parts_5", 6, kInitSelector5SQL},
     {"selector_variant", 1, kSelectorVariantSQL},
     {"selector_arg_classes", 1, kSelectorArgClassesSQL},
     {"selector_ret_class", 1, kSelectorRetClassSQL},

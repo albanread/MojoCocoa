@@ -187,6 +187,37 @@ std.objc: no class in the metadata implements selector 'newTextureWithDesc:',
 so its dispatch ABI is unknown. Check the selector spelling.
 ```
 
+## Constructing
+
+Keyword labels name a constructor, and the database decides which one — for
+every class, with nothing written down per class anywhere:
+
+```mojo
+comptime NSWindow = Obj["NSWindow"]        # three lines, any class
+let win = NSWindow(
+    contentRect=CGRect(CGPoint(100.0, 100.0), CGSize(1080.0, 720.0)),
+    styleMask=Int(15),
+    backing=Int(2),
+    defer=False,
+)
+```
+
+Two spellings exist and the labels decide. When they name an initialiser —
+first label `contentRect`, remaining labels the selector's remaining parts —
+the compiler sends `alloc` then `initWithContentRect:styleMask:backing:defer:`.
+When the labels are a class method's selector parts verbatim —
+`NSButton(buttonWithTitle=title, target=self, action=sel["beep:"]().ptr())` —
+it sends `+buttonWithTitle:target:action:` directly. Both are checked before
+the program runs: labels no constructor answers are a compile error naming
+the class and the labels, not a runtime `doesNotRecognizeSelector:`.
+
+The alias line is yours to write, not the library's: every class the
+database knows is the same one line away, which is the point — see
+`cocoa_improvements_design.md` for the principle.
+
+Strings still cross by hand for now — `nsstring(String("Click")).ptr()` —
+until the call path absorbs the bridging itself.
+
 ## Selectors
 
 `sel[...]` registers a selector and caches it:

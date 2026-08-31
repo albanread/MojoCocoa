@@ -739,3 +739,117 @@ comptime cocoakb_p_ret_class_for_parts_5_str[
         `, `, p2.value, `, `, p3.value, `, `, p4.value, `, `, p5.value,
     `> : !kgen.string`,
 ]
+
+
+# Construction, keyword form (sprint P2): which constructor the labels name,
+# and its selector. Two spellings exist and the labels decide: a FACTORY is
+# a class method whose selector's parts are the labels verbatim
+# (buttonWithTitle:target:action:); an INIT is `alloc` plus an initialiser
+# whose first part is 'initWith' with the first label capitalised onto it
+# (initWithContentRect:styleMask:backing:defer:). The FORM answers 1
+# factory, 2 init, 0 neither -- an integer, because that is what a comptime
+# branch can decide on. The selector answers the text, '' when neither.
+
+
+comptime cocoakb_p_init_form_for_parts_1[
+    cls: StringLiteral, p1: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "init_form_for_parts_1" : !kgen.string, `,
+        cls.value, `, `, p1.value,
+        `> : index`,
+    ]
+)
+comptime cocoakb_p_init_selector_for_parts_1[
+    cls: StringLiteral, p1: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "init_selector_for_parts_1" : !kgen.string, `,
+        cls.value, `, `, p1.value,
+        `> : !kgen.string`,
+    ]
+)
+
+comptime cocoakb_p_init_form_for_parts_2[
+    cls: StringLiteral, p1: StringLiteral, p2: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "init_form_for_parts_2" : !kgen.string, `,
+        cls.value, `, `, p1.value, `, `, p2.value,
+        `> : index`,
+    ]
+)
+comptime cocoakb_p_init_selector_for_parts_2[
+    cls: StringLiteral, p1: StringLiteral, p2: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "init_selector_for_parts_2" : !kgen.string, `,
+        cls.value, `, `, p1.value, `, `, p2.value,
+        `> : !kgen.string`,
+    ]
+)
+
+comptime cocoakb_p_init_form_for_parts_3[
+    cls: StringLiteral, p1: StringLiteral, p2: StringLiteral,
+    p3: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "init_form_for_parts_3" : !kgen.string, `,
+        cls.value, `, `, p1.value, `, `, p2.value, `, `, p3.value,
+        `> : index`,
+    ]
+)
+comptime cocoakb_p_init_selector_for_parts_3[
+    cls: StringLiteral, p1: StringLiteral, p2: StringLiteral,
+    p3: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "init_selector_for_parts_3" : !kgen.string, `,
+        cls.value, `, `, p1.value, `, `, p2.value, `, `, p3.value,
+        `> : !kgen.string`,
+    ]
+)
+
+comptime cocoakb_p_init_form_for_parts_4[
+    cls: StringLiteral, p1: StringLiteral, p2: StringLiteral,
+    p3: StringLiteral, p4: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "init_form_for_parts_4" : !kgen.string, `,
+        cls.value, `, `, p1.value, `, `, p2.value, `, `, p3.value, `, `, p4.value,
+        `> : index`,
+    ]
+)
+comptime cocoakb_p_init_selector_for_parts_4[
+    cls: StringLiteral, p1: StringLiteral, p2: StringLiteral,
+    p3: StringLiteral, p4: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "init_selector_for_parts_4" : !kgen.string, `,
+        cls.value, `, `, p1.value, `, `, p2.value, `, `, p3.value, `, `, p4.value,
+        `> : !kgen.string`,
+    ]
+)
+
+comptime cocoakb_p_init_form_for_parts_5[
+    cls: StringLiteral, p1: StringLiteral, p2: StringLiteral,
+    p3: StringLiteral, p4: StringLiteral, p5: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "init_form_for_parts_5" : !kgen.string, `,
+        cls.value, `, `, p1.value, `, `, p2.value, `, `, p3.value, `, `, p4.value,
+        `, `, p5.value,
+        `> : index`,
+    ]
+)
+comptime cocoakb_p_init_selector_for_parts_5[
+    cls: StringLiteral, p1: StringLiteral, p2: StringLiteral,
+    p3: StringLiteral, p4: StringLiteral, p5: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "init_selector_for_parts_5" : !kgen.string, `,
+        cls.value, `, `, p1.value, `, `, p2.value, `, `, p3.value, `, `, p4.value,
+        `, `, p5.value,
+        `> : !kgen.string`,
+    ]
+)

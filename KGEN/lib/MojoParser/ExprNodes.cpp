@@ -2930,83 +2930,89 @@ AnyValue CallNode::emitIR(ExprDest &dest, IREmitter &emitter) const {
     return {};
 
   // cocoa-mojo: keyword arguments can only bind to names a callee DECLARED,
-  // which a generic one never did. If the callee is a VALUE whose type
-  // declares `__call_kw_param__`, re-dispatch the call onto it: the keyword
-  // names arrive as StringLiteral parameters in source order (so they reach
-  // the database at compile time), and every operand passes positionally in
-  // source order with its keyword-ness stripped. This is the call-site
-  // sibling of `__getattr_param__` and is built the same way -- a synthetic
-  // `callee.__call_kw_param__["kw", ...](a0, v1, ...)` emitted in place --
-  // with one deliberate difference: the synthesized call's operands are
-  // positional, so the hook cannot re-enter itself.
+  // which a generic one never did. Two hooks re-dispatch a keyword call onto
+  // one that can receive the names as parameters -- the call-site sibling of
+  // `__getattr_param__`, built the same way (a synthetic
+  // `callee.HOOK["kw", ...](a0, v1, ...)` emitted in place), with one
+  // deliberate difference: the synthesized call's operands are positional,
+  // so the hook cannot re-enter itself:
   //
-  // The guard is deliberately narrow. A plain function (whose declared
-  // parameter names should receive the keywords), a parametric function
-  // mid-binding (`_format_int[radix=16](value, prefix=p)`), and a type value
-  // (a constructor) all carry keyword operands legitimately and must keep
-  // the ordinary path -- only a struct instance that opted in redirects.
+  //   `__call_kw_param__`, on a struct INSTANCE, for calls --
+  //     `win.setFrame(aRect, display=True)`. Sprint P1.
+  //   `__init_kw_param__`, on a struct TYPE, for construction --
+  //     `NSWindow(contentRect=..., styleMask=...)`. Sprint P2. The hook is a
+  //     static: there is no self yet, there is only the class.
+  //
+  // The guard is deliberately narrow in both arms. A plain function (whose
+  // declared parameter names should receive the keywords), a parametric
+  // function mid-binding (`_format_int[radix=16](value, prefix=p)`), and a
+  // constructor without the hook all carry keyword operands legitimately and
+  // must keep the ordinary path -- only a callee that opted in redirects.
+  auto emitKwParamHook = [&](StringRef hookName) -> AnyValue {
+    // Quoted spellings so StringLiteralNode::getValue() sees what the lexer
+    // would have produced for a real literal. The bytes live in a deque
+    // (which never moves an element) and each node's ArrayRef points into a
+    // reserved slot -- ArrayRef's single-element constructor binds to a
+    // temporary and dangles, so the slots are built out before any node
+    // references them.
+    size_t numKeywords = llvm::count_if(
+        operands, [](const Operand &op) { return op.isKeyword(); });
+    std::deque<std::string> nameStorage;
+    SmallVector<StringRef, 4> spellingSlots;
+    spellingSlots.reserve(numKeywords);
+    SmallVector<StringLiteralNode *, 4> nameNodes;
+    nameNodes.reserve(numKeywords);
+    SmallVector<Operand, 4> paramOperands;
+    paramOperands.reserve(numKeywords);
+    size_t slot = 0;
+    for (const Operand &operand : operands) {
+      if (!operand.isKeyword())
+        continue;
+      nameStorage.push_back(("\"" + operand.name.getValue() + "\"").str());
+      spellingSlots.push_back(nameStorage.back());
+      nameNodes.push_back(new StringLiteralNode(
+          ArrayRef<StringRef>(spellingSlots.data() + slot, 1)));
+      paramOperands.emplace_back(nameNodes.back(), operand.getLoc(),
+                                 ArgUnpackStyle::kPositional);
+      ++slot;
+    }
+    llvm::scope_exit freeNodes(
+        [&] { for (auto *node : nameNodes) delete node; });
+
+    SmallVector<Operand, 8> valueOperands;
+    for (const Operand &operand : operands) {
+      // A '*'/'**' unpack cannot carry keyword names to a parameter list;
+      // leave it to the callee below to reject it by name.
+      valueOperands.emplace_back(
+          operand.expr, operand.getLoc(),
+          operand.isKeyword() ? ArgUnpackStyle::kPositional
+                              : operand.unpackStyle);
+    }
+
+    SyntheticNode baseNode(getLoc(), calleeVal);
+    AttributeRefNode hookNode(
+        &baseNode, getLoc(),
+        StringAttr::get(emitter.getContext(), hookName));
+    SubscriptNode paramNode(&hookNode, getLoc(), paramOperands, getLoc());
+    CallNode callNode(&paramNode, lparenLoc, valueOperands, rparenLoc);
+    return emitter.emitExpr(&callNode, dest);
+  };
+
   if (llvm::any_of(operands,
                    [](const Operand &op) { return op.isKeyword(); })) {
     if (auto calleeCVal = calleeVal.getIfCValue()) {
       ASTType calleeType = calleeCVal.getRValueType();
       if (emitter.shared.typeHasMember(calleeType, "__call_kw_param__",
-                                       getLoc())) {
-        auto hookSet =
-            OverloadSet::lookup(emitter.getDeclScope(), calleeType,
-                                "__call_kw_param__", callee,
-                                CallSyntax::kMethodCallSynthetic);
-        assert(!hookSet.isNull() &&
-               "typeHasMember agreed the hook exists; where did it go?");
-        // Quoted spellings so StringLiteralNode::getValue() sees what the
-        // lexer would have produced for a real literal. The bytes live in a
-        // deque (which never moves an element) and each node's ArrayRef
-        // points into a reserved slot -- ArrayRef's single-element
-        // constructor binds to a temporary and dangles, so the slots are
-        // built out before any node references them.
-        size_t numKeywords = llvm::count_if(
-            operands, [](const Operand &op) { return op.isKeyword(); });
-        std::deque<std::string> nameStorage;
-        SmallVector<StringRef, 4> spellingSlots;
-        spellingSlots.reserve(numKeywords);
-        SmallVector<StringLiteralNode *, 4> nameNodes;
-        nameNodes.reserve(numKeywords);
-        SmallVector<Operand, 4> paramOperands;
-        paramOperands.reserve(numKeywords);
-        size_t slot = 0;
-        for (const Operand &operand : operands) {
-          if (!operand.isKeyword())
-            continue;
-          nameStorage.push_back(
-              ("\"" + operand.name.getValue() + "\"").str());
-          spellingSlots.push_back(nameStorage.back());
-          nameNodes.push_back(new StringLiteralNode(
-              ArrayRef<StringRef>(spellingSlots.data() + slot, 1)));
-          paramOperands.emplace_back(nameNodes.back(), operand.getLoc(),
-                                     ArgUnpackStyle::kPositional);
-          ++slot;
-        }
-        llvm::scope_exit freeNodes(
-            [&] { for (auto *node : nameNodes) delete node; });
-
-        SmallVector<Operand, 8> valueOperands;
-        for (const Operand &operand : operands) {
-          // A '*'/'**' unpack cannot carry keyword names to a parameter
-          // list; leave it to the callee below to reject it by name.
-          valueOperands.emplace_back(
-              operand.expr, operand.getLoc(),
-              operand.isKeyword() ? ArgUnpackStyle::kPositional
-                                  : operand.unpackStyle);
-        }
-
-        SyntheticNode baseNode(getLoc(), calleeVal);
-        AttributeRefNode hookNode(
-            &baseNode, getLoc(),
-            StringAttr::get(emitter.getContext(), "__call_kw_param__"));
-        SubscriptNode paramNode(&hookNode, getLoc(), paramOperands,
-                                getLoc());
-        CallNode callNode(&paramNode, lparenLoc, valueOperands, rparenLoc);
-        return emitter.emitExpr(&callNode, dest);
-      }
+                                       getLoc()))
+        return emitKwParamHook("__call_kw_param__");
+    }
+    // Independent, not `else if`: a type value can present as several
+    // AnyValue shapes at once, and one arm failing its member check must
+    // not hide the other.
+    if (ASTType calledType = calleeVal.getIfTypeValue()) {
+      if (emitter.shared.typeHasMember(calledType, "__init_kw_param__",
+                                       getLoc()))
+        return emitKwParamHook("__init_kw_param__");
     }
   }
 

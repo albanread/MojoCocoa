@@ -23,19 +23,25 @@ throws the change away.
 
 **Files:** `std/objc/typed.mojo`, `std/sys/_cocoakb.mojo`
 
-**What and why.** Sprint P1 of `cocoa_improvements_design.md`: the call
-direction grew its keyword form. `win.setFrame(aRect, display=True)` now
-means `setFrame:display:` — the labels are the selector's trailing parts,
-assembled into a selector INSIDE the SQL (`?2 || ':' || ?4 || ':'`), because
-joining them in Mojo would be string surgery, which does not fold, and a
-result type conditioned on it would stay symbolic. Three queries per label
-count (selector, kind, class), five label counts, mirroring the name-keyed
-tier; `Bound` and `BoundClass` gained `__call_kw_param__` overloads that the
-compiler's new call hook re-dispatches onto (names as StringLiteral
-parameters, values positional). Verified by `spikes/s5-cocoakb/
-kwargs_call_test.mojo` (fold canary, instance, class side, two labels) and
-`must_fail_kwarg_label.mojo` (a misspelled label is a compile error naming
-the class, the method and the label).
+**What and why.** Sprints P1 and P2 of `cocoa_improvements_design.md`: the
+call direction grew its keyword form, for calls and for construction.
+`win.setFrame(aRect, display=True)` now means `setFrame:display:`, and
+`NSWindow(contentRect=..., styleMask=...)` constructs a window — the labels
+are the selector's trailing parts (or, for construction, name an initialiser
+or a factory class method), assembled into selectors INSIDE the SQL
+(`?2 || ':' || ?4 || ':'`; `'initWith' || upper(substr(?2,1,1)) ||
+substr(?2,2) || ...`), because joining them in Mojo would be string surgery,
+which does not fold, and a result type conditioned on it would stay
+symbolic. Three queries per label count for calls (selector, kind, class)
+and two for construction (form, selector), five label counts, mirroring the
+name-keyed tier; `Bound`/`BoundClass` gained `__call_kw_param__` overloads
+and `Obj` gained static `__init_kw_param__` overloads, both re-dispatched to
+by the compiler's new call hooks (names as StringLiteral parameters, values
+positional). Verified by `spikes/s5-cocoakb/kwargs_call_test.mojo` and
+`kwargs_init_test.mojo` (fold canary, instance/class/two-label calls,
+init-form and factory-form construction against live objects) plus
+`must_fail_kwarg_label.mojo` and `must_fail_kwarg_init.mojo` (a bad label of
+either kind is a compile error naming the class and the labels).
 
 **Carry forward:** yes — this is the fork's own surface, like the rest of
 `std.objc`. On an upstream sync, the whole file moves aside rather than

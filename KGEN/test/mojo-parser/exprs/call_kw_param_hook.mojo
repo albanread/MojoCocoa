@@ -68,6 +68,21 @@ def positional_stays(r: Recorder) -> StaticString:
     # No keywords, no hook: the type's own __call__ serves the call.
     return r(11)
 
+struct Made:
+    """Construction through the hook: `__init_kw_param__` is a STATIC --
+    there is no self yet, only the class -- and the type call re-dispatches
+    onto it exactly as a value call re-dispatches onto __call_kw_param__."""
+    @staticmethod
+    def __init_kw_param__[
+        label: StringLiteral
+    ](a0: Int) -> StaticString:
+        return label
+
+
+def construction() -> StaticString:
+    var made = Made(spelled=3)
+    return made
+
 # The keyword name arrives as a PARAMETER (`<:string "by"` before the call's
 # operand list) and the values pass positionally -- the callee is
 # __call_kw_param__, never __call__.
@@ -81,3 +96,11 @@ def positional_stays(r: Recorder) -> StaticString:
 # CHECK-NOT: __call_kw_param__
 # A positional call is untouched too: the type's own __call__ serves it.
 # CHECK: lit.call tail @{{.*}}@Recorder::@"__call__{{.*}}
+
+# The construction hook: the bodies emit in the module's own order and
+# construction's call comes last in the dump. Names as parameters, values
+# positional, the callee is the static on the TYPE.
+# CHECK: lit.call tail @{{.*}}Made{{.*}}@"__init_kw_param__{{.*}}<:string "spelled"
+
+# A type WITHOUT the hook keeps the ordinary constructor path: its keyword
+# call fails the usual binding error, unchanged from before the hook existed.
