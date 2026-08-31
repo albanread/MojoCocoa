@@ -132,13 +132,17 @@ size.
 
 If a name you believe is real fails, work through these in order.
 
-**Is the database built?** `python3 ../CocoaBaseMCP/build.py`.
+**Is the database built?** On an installed toolchain the installer built it;
+if it is missing or was interrupted, run the installer again and press
+*Reinstall*. From a source tree: `python3 ../CocoaBaseMCP/build.py`.
 
-**Is the compiler pointed at it?** `MODULAR_MOJO_MAX_COCOAKB_PATH` must name
-an existing `cocoa.sqlite`.
+**Is the compiler pointed at it?** An installed toolchain carries its own copy
+and needs no variable — `bin/cocoamojo` exports it before every build. From a
+source tree, `MODULAR_MOJO_MAX_COCOAKB_PATH` must name an existing
+`cocoa.sqlite`.
 
-**Is it stale?** Rebuild after a macOS update. `cocoakb_db_hash()` tells you
-which revision a compilation used.
+**Is it stale?** Rebuild after a macOS update — *Reinstall*, or `build.py`
+again. `cocoakb_db_hash()` tells you which revision a compilation used.
 
 **Is the spelling the runtime's?** The database is built from the live
 Objective-C runtime and BridgeSupport, so it holds the runtime's names, not a

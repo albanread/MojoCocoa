@@ -1,17 +1,17 @@
 # CocoaMojo Programmer's Guide
 
-This guide teaches CocoaMojo in the order you meet it: get a compiler running,
-learn what the language actually is at this frozen version, understand the
-object model Mojo has on its own, then send your first message to Cocoa, get
-memory right, let Cocoa call back into your code, and finally assemble and read
-a real windowed application. A final chapter reads the fork's own IDE — the
-largest cocoa-mojo program there is — for the shapes that appear at scale.
+This guide teaches CocoaMojo in the order you meet it: install it and run a
+program, learn what the language actually is at this frozen version, understand
+the object model Mojo has on its own, then send your first message to Cocoa,
+get memory right, let Cocoa call back into your code, and finally assemble and
+read a real windowed application. A final chapter reads the fork's own IDE —
+the largest cocoa-mojo program there is — for the shapes that appear at scale.
 
 Read it in order the first time. Each chapter assumes the one before it.
 
 | Chapter | What you will be able to do |
 |:---|:---|
-| [1. Getting started](01-getting-started.md) | Build the compiler, build the SDK database, compile and run a program |
+| [1. Getting started](01-getting-started.md) | Install the toolchain, find where everything lives, and run your first Cocoa program |
 | [2. The language, as it is now](02-the-language.md) | Write code this compiler accepts, and recognise the constructs it rejects |
 | [3. Mojo's own object model](03-objects.md) | Structs, traits, generics and lifetimes — what Mojo gives you before any Cocoa appears |
 | [4. Calling Cocoa](04-calling-cocoa.md) | Look up classes, send messages, pass arguments, get results back |
@@ -21,6 +21,7 @@ Read it in order the first time. Each chapter assumes the one before it.
 | [8. Concurrency and blocks](08-concurrency.md) | Dispatch work across GCD queues, and call block-only Cocoa APIs |
 | [9. A demo, walked through](09-walkthrough.md) | Read Conway's Life — a complete 644-line Cocoa application — and see how little of it is Cocoa |
 | [10. Roast: the IDE, read as a program](10-roast.md) | Read the fork's own 9,000-line IDE and learn the shapes a large cocoa-mojo program settles into |
+| [Appendix A. Building from source](11-building-from-source.md) | Build the compiler, the IDE and an installer — for working on the fork, not for using it |
 
 When you want to look something up rather than learn it, use the
 [Reference Manual](../reference/).

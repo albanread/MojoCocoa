@@ -20,11 +20,27 @@ var s = msg_send[
 ](cls.as_object(), text.as_c_string_slice())
 ```
 
+## Getting it
+
+CocoaMojo installs from a signed, notarized disk image published at
+[CocoaMojoInstaller](https://github.com/albanread/CocoaMojoInstaller) — one for
+Apple Silicon, one for the 2019 Intel Mac Pro. Open it, double-click *Install
+Roast*, press Install.
+
+You get the compiler, the standard library, the language server, the debugger,
+the examples, and **Roast**, a Mac IDE for Mojo written in Mojo. The installer
+also builds the SDK database from the machine it lands on, which takes about
+twelve seconds and is the reason none of this is downloaded prebuilt.
+
+[Chapter 1](guide/01-getting-started.md) takes it from there. Building the fork
+from source is [Appendix A](guide/11-building-from-source.md), and you do not
+need it to write anything.
+
 ## These documents
 
 | Document | What it is |
 |:---|:---|
-| [Programmer's Guide](guide/) | Read this first. Ten chapters: the frozen dialect, Mojo's own object model, Cocoa from the first message to a walked-through Life implementation, and the fork's own IDE read as a program. |
+| [Programmer's Guide](guide/) | Read this first. Ten chapters and an appendix: installing the toolchain, the frozen dialect, Mojo's own object model, Cocoa from the first message to a walked-through Life implementation, and the fork's own IDE read as a program. |
 | [Reference Manual](reference/) | Look things up here. The frozen language dialect, every `std.objc` entry point, every `cocoakb` query, and every diagnostic. |
 | [GPU programming](gpu/) | Writing Mojo functions that run on the Apple GPU: the execution model, threads and memory, and how to build, run and verify them. |
 | [The examples](examples/) | A walkthrough of all seventeen example projects, and an honest statement of what each one teaches — including the ones that teach nothing. |
