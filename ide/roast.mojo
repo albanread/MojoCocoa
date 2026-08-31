@@ -601,6 +601,13 @@ def _ensure_python(after: Int, spec: String = String()) -> Bool:
         return True
     if python_env.environment_ready(project, root):
         return True
+    # Run (1) and Debug (2) are IMPLICIT: nobody asked for Python, so a
+    # venv is built only when the project demonstrably uses it. The pip
+    # actions (3, 4) asked for Python by name and create unconditionally.
+    if (after == 1 or after == 2) and not python_env.project_uses_python(
+        project
+    ):
+        return True
     _ = _start_python_environment(after, spec)
     return False
 
