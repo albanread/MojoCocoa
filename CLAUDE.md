@@ -217,36 +217,47 @@ the square was legal, and the move still vanished one line later. Every
 observable signal says the code works, because the only thing wrong is a
 read that happens after a write nobody thought of as a write.
 
-#### Three more ways this compiler bites
+#### The other `let` trap: naming a slot that is then written
 
-Found while porting a parser; none of them produced a useful diagnostic.
-
-**`+=` through a List subscript updates a temporary.** `voices[i].tick += n`
-compiles and does nothing at all. Read it out, add, write it back:
+The aliasing rule above is not only about globals. A `let` bound to a **list
+slot** names that slot, so any write to it changes what the `let` reads. An
+ordinary insertion sort is enough to trigger it:
 
 ```mojo
-var t = voices[i].tick
-voices[i].tick = t + n
+for a in range(1, len(times)):
+    let t = times[a]        # names the slot; the shift below writes over it
+    var b = a - 1
+    while b >= 0 and times[b] > t:
+        times[b + 1] = times[b]
 ```
 
-This is the same rule as `let` binding by reference, seen from the other side:
-the subscript yields a value, and a compound assignment has nowhere to put the
-result. It cost an afternoon because rests silently occupied no time, and
-every note after them simply arrived early -- nothing in the parse looked
-wrong.
+Sorting `5 3 9 1` this way gives `5 5 9 9`. `var t = times[a]` is correct and
+is the only difference. There is no diagnostic; this is `let` working as
+designed.
 
-**Passing `mut Struct` on to a second function crashes at the call.** A
-function that holds a struct mutably cannot hand that borrow to another
-function; the process dies inside the caller with a stack in the Mojo runtime
-and no source location. Methods on the struct are fine -- `tune.ensure_voice()`
-works everywhere -- so the workaround is either a method or writing the callee
-out inline.
+A `let` bound into a list that is then **grown** is a different case and the
+compiler does catch it -- but it says `error: failed to run the pass manager`,
+which names nothing. If you see that message, look for a `let` into a
+container you mutate.
 
-**A `fn` returning a heap-owning type crashes the compiler.** `fn f() ->
-List[Int]`, or a `fn` returning a struct with a `String` field, fails in
-`DialectConversion` with "incorrect # of replacement values" before any of the
-code runs. `def` is fine for the same signature. The same assertion fires for
-a struct with about ten `List` fields.
+#### Traps that no longer reproduce (retested August 2026)
+
+These were real while porting the ABC parser and are still annotated in
+`examples/abcplayer/`, whose workarounds remain in place. **All four were
+retested against the shipped compiler and none reproduces.** Do not write new
+code around them, and do not cite them as current:
+
+- **`+=` through a List subscript.** `voices[i].tick += n` works. Verified in
+  the real program too: reverting the workaround in `music.mojo` produces a
+  byte-identical MIDI file.
+- **Passing `mut Struct` on to a second function.** Works.
+- **A `fn` returning a heap-owning type.** No longer a `DialectConversion`
+  crash; it is now a clean diagnostic asking for `.copy()`, and works with it.
+- **Reading `self` in the same expression that appends to a `List` `self`
+  owns.** Works.
+
+Before writing a workaround for anything in this section, write the four-line
+reproducer and run it. That is how this list shrank.
 
 ### MAX Kernel Development
 

@@ -106,6 +106,14 @@ These are separate work streams, not one GPU defect:
   external LLVM declarations need a fail-closed pre-driver gate.
   (`llvm.vector.reduce.*` lowering landed 24 Aug; `spikes/air-gates.sh`
   sketches the gate.)
+- `llvm.scmp`/`llvm.ucmp` **fixed 31 Aug**: AIR has no three-way compare, and
+  InstCombine synthesises one from ordinary comparison code, so a kernel
+  acquired it without the author writing anything unusual — it then reached the
+  reader as `Undefined symbols: llvm.scmp.i32.i32`. `lowerThreeWayCompares`
+  expands both into selects during legalisation (and again after the inliner),
+  and the `three-way-compare` rule fails closed on survivors. This is one
+  instance of the class the first bullet describes; the general gate is still
+  wanted.
 - One MHA case still causes `XPC_ERROR_CONNECTION_INTERRUPTED` at Metal
   pipeline creation and needs reduction from retained AIR artifacts.
 - Metal printing references undefined `__mojo_metal_os_log_64`.

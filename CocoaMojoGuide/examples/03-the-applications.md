@@ -268,6 +268,15 @@ return Int(b > w) * 2 - Int(b != w)
 Note that the *obvious rewrite is also wrong*. Both the branch and the
 subtraction fold into the same intrinsic; only the third form survives.
 
+> **This has since been fixed in the backend.** AIR legalisation now expands
+> `llvm.scmp` and `llvm.ucmp` into selects, so the obvious three-way branch
+> compiles and runs, and a surviving intrinsic fails the build by rule rather
+> than reaching the reader as an undefined symbol. The workaround is still in
+> othello's source and still correct — it is simply no longer required. The
+> lesson that outlives the bug is the shape of the failure: a legal construct
+> the optimiser *introduced*, invisible to a target-agnostic verifier, and
+> named only at pipeline creation.
+
 **A struct return that needs the typed `msg_send`.** An `NSPoint` comes back in
 two registers, and the dynamic path does not describe that to the ABI:
 

@@ -207,34 +207,51 @@ were findable by reading:
 The first two meant the original played most folk tunes wrong from the opening
 bar.
 
-### An inadvertent catalogue of compiler traps
+### A catalogue of compiler traps — most of them now historical
 
-This is the most transferable content in the example, and possibly in the whole
-distribution. Each of the fork's known failure modes appears here annotated
-with its *symptom* rather than just its rule:
+`abcplayer` records six failure modes it hit during the port, each annotated at
+the line that works around it, and each with its *symptom* rather than just its
+rule. That made it the most useful bug catalogue in the distribution.
 
-- **`+=` through a `List` subscript updates a temporary.** Symptom: rests
-  occupied no time and every note after them arrived early, "with nothing to
-  show for it in the parse."
-- **A `let` bound into a `List` that later grows will dangle**, and a `let`
-  naming a list slot breaks an insertion sort — the value being placed changes
-  underneath the comparison, and "the sort quietly loses entries."
-- **A `fn` returning a heap-owning type crashes the compiler** in
-  `DialectConversion` with "incorrect # of replacement values". This is why the
-  whole pipeline mutates in place — `parse_abc(text, tune)` rather than
-  returning a tune.
-- **Passing a `mut` struct on to a second function crashes at the call site**,
-  with no diagnostic. This is why the chord emitter and the bar mirror are
-  written out inline, and why helpers return `List[Int]` out-vectors instead of
-  editing the tune.
-- **Reading `self` in the same expression that appends to a `List` `self` owns**
-  crashes rather than diagnosing. Read the defaults into locals first.
-- **Rebuilding a string with `chr()` mangles UTF-8** — slice instead, or a
-  title with an accent in it comes out as mojibake.
+**Every one was retested against the shipped compiler in August 2026, and four
+no longer reproduce.** The workarounds are still in the source, so the examples
+below describe code that is no longer necessary. They are kept here because the
+comments are still in the files, and a reader who meets one deserves to know it
+is a fossil.
 
-It is worth being clear about the cost: `music.mojo` is 823 lines *partly
-because* of these workarounds. The design is shaped by compiler bugs, and the
-file says so rather than pretending the shape was chosen.
+| What the source says | Retested |
+|:---|:---|
+| `+=` through a `List` subscript updates a temporary — rests occupied no time | **Fixed.** Reverting the workaround produces a byte-identical MIDI file |
+| A `fn` returning a heap-owning type crashes in `DialectConversion` | **Fixed.** Now a clean diagnostic asking for `.copy()` |
+| Passing a `mut` struct on to a second function crashes at the call site | **Fixed.** Works |
+| Reading `self` while appending to a `List` `self` owns crashes | **Fixed.** Works |
+| A `let` bound into a `List` that later *grows* dangles | **Caught** — but reported as `error: failed to run the pass manager`, which says nothing |
+| A `let` naming a list slot that is later *written* breaks an insertion sort | **Still real, still silent** |
+
+That last row is the one to carry away, because it is not a bug — it is
+[`let` binding by reference](#the-bug-worth-keeping), working exactly as
+designed, in its most damaging form. The insertion sort in `midi.mojo` is four
+lines of ordinary code:
+
+```mojo
+for a in range(1, len(times)):
+    let t = times[a]        # names the slot; the shift below writes over it
+    var b = a - 1
+    while b >= 0 and times[b] > t:
+        times[b + 1] = times[b]
+```
+
+Sorting `5 3 9 1` that way yields `5 5 9 9`. No error, no warning, and the
+comment in the source telling you to write `var` is the only thing standing
+between you and a sort that quietly loses entries.
+
+One non-compiler caveat also stands: **rebuilding a string with `chr()` mangles
+UTF-8** — slice instead, or a title with an accent comes out as mojibake.
+
+The cost of the historical traps was real: `music.mojo` is 823 lines *partly
+because* the chord emitter, bar mirror and broken-rhythm handler had to be
+written out inline. That shape is now a scar rather than a requirement, and the
+workarounds could be unwound with a test at each site.
 
 **The lesson: exact timing is a representation problem, not a scheduling
 problem.** Pick an integer clock that divides by everything the input can ask
