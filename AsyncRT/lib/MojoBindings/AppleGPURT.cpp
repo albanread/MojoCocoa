@@ -93,9 +93,13 @@ template <typename T> void vrRelease(T *obj) {
 
 struct VRContext;
 
+// Out-of-line dtor: the release helper is declared below, after the
+// using-aliases exist (same pattern VRBuffer uses).
 struct VRStream : RefCounted {
-  VRContext *ctx; // not retained: default stream is owned by the context
+  VRContext *ctx; // retained at creation; released in the destructor
   int priority = 0;
+
+  ~VRStream();
 };
 
 struct VRContext : RefCounted {
@@ -157,6 +161,8 @@ using DeviceFunction = VRFunction;
 extern "C" void AsyncRT_DeviceContext_release(const DeviceContext *ctx);
 
 namespace {
+VRStream::~VRStream() { AsyncRT_DeviceContext_release(ctx); }
+
 VRBuffer::~VRBuffer() {
   if (mtl)
     AppleGPUMetal_destroyBuffer(mtl);
@@ -285,6 +291,17 @@ AsyncRT_DeviceContext_getAttribute(int *result, const DeviceContext *ctx,
     return VR_OK;
   }
   case 13: { // CLOCK_RATE, in kHz
+    // A Metal context whose backend refused CLOCK_RATE (no public API
+    // reports the GPU clock; inventing a number licenses callers to scale
+    // real work by a fiction) must not fall through to the host-CPU answer
+    // below -- that path returned a Xeon W's base clock for an Apple GPU.
+    // Refuse for GPU contexts; the CPU answer below stands for CPU ones.
+    if (ctx->metal) {
+      *result = 0;
+      return vrErrorf("AppleGPURT: CLOCK_RATE is not reported for Metal "
+                      "devices; scaling work by an invented clock was "
+                      "measured to mislead");
+    }
     uint64_t hz = 0;
     size_t len = sizeof(hz);
 #if defined(__APPLE__)
@@ -685,6 +702,11 @@ extern "C" const char *
 AsyncRT_DeviceContext_createStream(const DeviceStream **stream, int priority,
                                    const DeviceContext *ctx) {
   auto *s = new VRStream();
+  // Non-default streams outlive the call that made them and hold a raw
+  // `ctx`. The default stream needs no retain (the context owns it), but a
+  // user-created stream released after its context left every `ctx` use on
+  // it dangling. Retain here; the destructor below releases.
+  AsyncRT_DeviceContext_retain(ctx);
   s->ctx = const_cast<VRContext *>(ctx);
   s->priority = priority;
   *stream = s;

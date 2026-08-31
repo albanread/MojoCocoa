@@ -944,6 +944,17 @@ const char *AppleGPUMetal_createSubBuffer(AGMetalBuf **out, void **devAddr,
 void AppleGPUMetal_destroyBuffer(AGMetalBuf *buf) {
   if (!buf)
     return;
+  // Metal requires an app to keep resources alive until every encoded use
+  // has completed. Every host-observation path drains first (hostPtr, the
+  // copy family), but destruction IS an observation of the buffer by the
+  // host and skipped the drain: under asynchronous launch a committed but
+  // unwaited dispatch could still be reading this buffer when it was
+  // released and its registry/residency entries torn down. Drain here so
+  // the release and the unregisterRoot below happen only once the GPU is
+  // done. Deferred errors surface at the next synchronize, as elsewhere.
+  if (buf->ownsBuffer && buf->ctx)
+    if (const char *e = drainPending(buf->ctx))
+      deferError(buf->ctx, e);
   if (buf->ownsBuffer) {
     unregisterRoot(buf);
     objcRelease(buf->buffer);
@@ -1100,6 +1111,10 @@ const char *AppleGPUMetal_copyRawHtoD(AGMetalCtx *ctx, uint64_t dstAddr,
                      (unsigned long long)dstAddr);
   id staging = msg<id>(ctx->device, "newBufferWithBytes:length:options:",
                        src, static_cast<unsigned long>(bytes), kStorageShared);
+  if (!staging)
+    return agmErrorf(
+        "AppleGPURT[metal]: raw HtoD staging alloc of %zu bytes failed",
+        bytes);
   BlitOp op;
   op.src = staging;
   op.dst = target;
@@ -1126,6 +1141,10 @@ const char *AppleGPUMetal_copyRawDtoH(AGMetalCtx *ctx, void *dst,
                      (unsigned long long)srcAddr);
   id staging = msg<id>(ctx->device, "newBufferWithLength:options:",
                        static_cast<unsigned long>(bytes), kStorageShared);
+  if (!staging)
+    return agmErrorf(
+        "AppleGPURT[metal]: raw DtoH staging alloc of %zu bytes failed",
+        bytes);
   BlitOp op;
   op.src = source;
   op.srcOff = off;
