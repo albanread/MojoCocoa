@@ -207,11 +207,20 @@ difference:
 The SAME resolved type as a concrete instantiation reference on one side
 and a parametric generator reference on the other. The closure-storage
 struct's element type expressions are built through two paths that
-canonicalize differently, and comparison is structural. FIX: canonicalize
-at the emission site — rebind the genref against its bindings where the
-capture field type attr is built (ClosureEmitter's
-`captureTypeAttr = TypeParamAttr::get(mlirType, anyType)` path, and/or
-the evaluator's getReboundAttribute as ParamMatcher already does). A
-second symptom in the same repro ('value defined outside the region')
-may be separate; re-check after the canonicalization lands. Repro:
-rms_crash.mojo against the widened dist kernels.
+canonicalize differently, and comparison is structural.
+
+Fix status: rebinding via ParameterEvaluator::getReboundAttribute at the
+capture-field construction is a NO-OP (replace() substitutes parameter
+bindings; the genref's inner bindings need full evaluation), tried and
+reverted. The fold that produces instref lives on the signature side —
+ParametricElaborator.cpp ~480-498 constructs TypeInstanceRefAttr when
+bindings resolve, and ParserEvaluationContext::getAndFold does the same
+at attr-construction time (but only for attrs implementing
+ContextuallyEvaluatedAttrInterface, and only when built through it).
+THE FIX: construct the pack-member TypeParamAttrs through the evaluation
+context's fold — either route the closure pack member construction
+through getAndFold-style evaluation, or add the genref-with-concrete-
+bindings → instref fold as a canonicalization applied where the pack
+struct type is built for the call. A second symptom in the same repro
+('value defined outside the region') may be separate; re-check after.
+Repro: rms_crash.mojo against the widened dist kernels.
