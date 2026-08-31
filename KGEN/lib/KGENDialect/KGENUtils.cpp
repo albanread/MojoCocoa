@@ -2498,6 +2498,82 @@ LogicalResult KGEN::verifyCallOperands(Operation *op, ValueRange args,
   for (auto [i, arg, type] :
        llvm::enumerate(args, callee.getArguments().drop_back(numByRef))) {
     if (arg.getType() != type) {
+      // Diagnostic aid (env-gated): the KGEN type printer elides
+      // isMemoryOnly unless it is a *true* BoolAttr, so a struct whose
+      // memory-ness is still an unresolved conformance proposition prints
+      // identically to one whose folded. Show the unprinted parameters.
+      if (::getenv("KGEN_DUMP_CALL_TYPES")) {
+        // Printers elide enough that two structurally-different KGEN
+        // structs can print identically (D13). Walk both types and print
+        // the FIRST differing parameter instead of trusting the printer.
+        std::function<void(mlir::Type, mlir::Type, int)> diffTypes =
+            [&](mlir::Type exp, mlir::Type act, int depth) {
+              if (exp == act || depth > 8)
+                return;
+              llvm::errs().indent(depth * 2)
+                  << "[call-types] DIFFERS at depth " << depth
+                  << ":\n  expected: " << exp << "\n  actual:   " << act
+                  << "\n";
+              auto expSt = mlir::dyn_cast<KGEN::StructType>(exp);
+              auto actSt = mlir::dyn_cast<KGEN::StructType>(act);
+              if (expSt && actSt) {
+                if (expSt.getIsMemoryOnly() != actSt.getIsMemoryOnly())
+                  llvm::errs().indent(depth * 2 + 2)
+                      << "isMemoryOnly: " << expSt.getIsMemoryOnly()
+                      << " vs " << actSt.getIsMemoryOnly() << "\n";
+                if (expSt.getMinAlignment() != actSt.getMinAlignment())
+                  llvm::errs().indent(depth * 2 + 2)
+                      << "minAlignment: " << expSt.getMinAlignment() << " vs "
+                      << actSt.getMinAlignment() << "\n";
+                if (expSt.getIsParamPack() != actSt.getIsParamPack())
+                  llvm::errs().indent(depth * 2 + 2)
+                      << "isParamPack differs\n";
+                auto expEl =
+                    mlir::dyn_cast<KGEN::ParamListAttr>(
+                        expSt.getElementTypesVariadic());
+                auto actEl =
+                    mlir::dyn_cast<KGEN::ParamListAttr>(
+                        actSt.getElementTypesVariadic());
+                if (expEl && actEl) {
+                  auto ev = expEl.getValues();
+                  auto av = actEl.getValues();
+                  if (ev.size() != av.size())
+                    llvm::errs().indent(depth * 2 + 2)
+                        << "element count: " << ev.size() << " vs "
+                        << av.size() << "\n";
+                  for (size_t k = 0; k < std::min(ev.size(), av.size()); ++k)
+                    if (ev[k] != av[k]) {
+                      llvm::errs().indent(depth * 2 + 2)
+                          << "element " << k << " attr: " << ev[k]
+                          << "  vs  " << av[k] << "\n";
+                      // TypeParamAttr carries typeValue AND mlirType and
+                      // prints the latter only when it differs -- another
+                      // elision. Compare both fields explicitly.
+                      if (auto e2 =
+                              mlir::dyn_cast<KGEN::TypeParamAttr>(ev[k]))
+                        if (auto a2 =
+                                mlir::dyn_cast<KGEN::TypeParamAttr>(av[k])) {
+                          diffTypes(e2.getTypeValue(), a2.getTypeValue(),
+                                    depth + 1);
+                          diffTypes(e2.getMlirType(), a2.getMlirType(),
+                                    depth + 1);
+                        }
+                    }
+                } else if (expSt.getElementTypesVariadic() !=
+                           actSt.getElementTypesVariadic()) {
+                  llvm::errs().indent(depth * 2 + 2)
+                      << "elements attr: " << expSt.getElementTypesVariadic()
+                      << "  vs  " << actSt.getElementTypesVariadic() << "\n";
+                }
+                return;
+              }
+              llvm::errs().indent(depth * 2 + 2)
+                  << "(different type kinds or not structs)\n";
+            };
+        llvm::errs() << "[call-types] expected : " << type << "\n"
+                     << "[call-types] actual   : " << arg.getType() << "\n";
+        diffTypes(type, arg.getType(), 1);
+      }
       return op->emitOpError("callee argument #")
              << i << " expected type " << type
              << " but operation argument has type " << arg.getType();
