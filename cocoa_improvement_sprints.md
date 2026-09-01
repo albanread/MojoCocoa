@@ -168,7 +168,7 @@ Verification: a property round-trip (read, write, read back) through the
 runtime, in the `spikes/s5-cocoakb` style; an unknown property name is a
 compile error; reads keep working unchanged through `__getattr_param__`.
 
-## Sprint P4 — bridging by argument class (NOT STARTED, size S)
+## Sprint P4 — bridging by argument class (SAFETY HALF LANDED 2026-09-01)
 
 1. The generic call path already knows each argument's ABI class from the
    database; it should accept the Mojo value and do the crossing itself:
@@ -181,10 +181,56 @@ compile error; reads keep working unchanged through `__getattr_param__`.
    type: a `String` offered where the database says `q` remains a type
    error.
 
-Verification: the existing tier tests re-run with bridged spellings; the
-`nsstring(` and `.ptr()` counts under `examples/` and `ide/` drop (the
-ratchet in P6 starts counting after this lands); the `String`-where-`q`
-error fires.
+**Status: the safety half landed; the conversion half is blocked at the
+language level, and the blocker is worth more than the feature.**
+
+What landed: every argument position of every call shape — the keyword call
+tier, the construction tier, and the positional tier, 27 methods — now knows
+its `@encode` kind at compile time. The kinds are parsed out of the method
+encoding by the compiler (CocoaKB, beside the SQL — Mojo cannot parse the
+string because string surgery does not fold, and SQL should not) and packed
+into one integer, seven bits per argument, so a comptime `(kinds >> 7*i) &
+127` decomposes them where any string operation would stay symbolic. A
+`String` argument is then REFUSED wherever it cannot legally cross, in both
+directions: where the selector takes a non-object ("pass an object or the
+type the selector declares") and, for now, where it takes an object too
+("wrap it as nsstring(s).ptr() -- automatic bridging is designed but blocked
+on comptime value narrowing"). The first is the crash class P2's probe met
+live; the second is honest about what is not built rather than letting a
+String reach `objc_msgSend` as itself.
+
+**The blocker, stated so the language work can take it:** inside a generic
+method, a value of parameter type `T` cannot be narrowed to `String` even
+under `comptime if T == String` — the branch does not refine the value's
+type; implicit conversion from `T` to `String` is refused; overload
+selection cannot cross the symbolic boundary; `T` has no methods, so no
+trait dispatch and no explicit cast reach it; and this tree has no
+`__mlir_expr` laundering builtin. All five were probed (2026-09-01,
+probe files in the session log). Bridging needs one of: a language witness
+(a cast legal under a comptime type equality), a `__cocoa_bridge__`-style
+protocol consulted by the call hook where operand types are concrete, or
+the narrowing rule. Until one exists, strings cross by hand and every other
+type was never at risk — `ObjCObject`, scalars and structs already pass
+correctly, which is why only the String guard fires.
+
+One process scar: the scripted edit that wired the guards into 27 methods
+corrupted `typed.mojo` twice (a paren eaten by an unwrap regex; a `comptime`
+alias landing between imports) and each corruption surfaced as a swallowed
+module error — "module 'typed' does not contain 'Obj'" with no note. The
+recovery was `git checkout` of the file and one careful re-apply; the lesson
+is that a stdlib edit this wide wants the guard insertion generated from
+the method signatures, not regexed over bodies, and wants an import probe
+(`from std.objc.typed import Obj`) run before any dist staging.
+
+Verification: `must_fail_kwarg_string.mojo` in `spikes/run-cocoa-checks.sh`
+(**37 passed, 0 failed**); `tools/check-parser.sh` 332 pass / 1 known-stale
+fail; the committed IDE builds clean against the new compiler and stdlib
+(the working tree's `ide/dap.mojo` and `ide/lsp.mojo` carry in-flight
+debugger work of their own and are not this sprint's to gate).
+
+(The original exit criteria — the `.ptr()` count dropping — wait on the
+bridging half and its language unblock; the `String`-where-`q` error fires
+today.)
 
 ## Sprint P5 — the `let` warning, and hygiene (NOT STARTED, size S)
 
