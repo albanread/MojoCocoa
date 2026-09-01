@@ -57,7 +57,14 @@ compile time, and checks what you wrote against it:
 comptime assert size_of[CGRect]() == cocoakb_struct_size["CGRect"]()
 comptime assert offset_of[CGRect, "size"]() == cocoakb_field_offset["CGRect", "size"]()
 
-var s = msg_send[ObjCObject, "NSString", "stringWithUTF8String:", is_class=True](cls, p)
+let wnd = Obj["NSWindow"](                      # the constructor is found by
+    contentRect=rect(0.0, 0.0, 800.0, 500.0),   # its keyword labels, in the
+    styleMask=nsenum["NSWindowStyleMaskTitled"](),  # database, at compile time
+    backing=nsenum["NSBackingStoreBuffered"](),
+    defer=False,
+)
+wnd.title = "Roast"                             # setTitle:, checked and typed
+print(wnd.frame().size.width)                   # CGRect, laid out by the SDK
 ```
 
 A struct that drifts from the SDK fails to build. A selector typo is a compile
@@ -234,13 +241,17 @@ The standing proof is that the desktop story is used daily, on itself.
 [`ide/roast.mojo`](ide/roast.mojo) is **Roast**, an IDE written in cocoa-mojo
 — a real Mac application window with menu bar, toolbar, a scrolling tab
 strip, a project sidebar, a build-and-run console, and a language-server
-client giving completions and diagnostics — about nine thousand lines whose
-every Cocoa callback lands on a `class` declaration. This repository's own
-IDE work is edited in it. Beside it, [`examples/`](examples/) holds thirteen
-projects it can open and run: windowed applications (`life`, `fluid`,
-`mandelbrot`, `ferns`, `fernwind` — the last three GPU-composited or
-GPU-computed), and five of Modular's own examples carried over **unmodified**,
-including their GPU kernels, which run on the Apple GPU as written.
+client giving completions and diagnostics, and a debugger — about eighteen
+thousand lines whose every Cocoa callback lands on a `class` declaration. This repository's own
+IDE work is edited in it. Beside it, [`examples/`](examples/) holds eighteen
+projects it can open and run — about 13,000 lines: windowed applications
+(`window`, `life`, `fluid`, `mandelbrot`, `othello`), sound and real time
+(`chip`, and `abcplayer`, the largest at 4,650 lines), the three-fern GPU
+argument, Python used deliberately (`life-python`, `bifurcation`), and five
+of Modular's own examples carried over **unmodified**, including their GPU
+kernels, which run on the Apple GPU as written. Every Cocoa call site in the
+examples and the IDE is on the typed surface — the only raw `msg_send` left
+in the tree is in the test that tests `msg_send`.
 
 96 of 119 in-scope GPU tests pass; the rest is triaged, named, and written
 down in [`STATUS.md`](STATUS.md). `cocoamojo --run` JITs GPU code as happily as
@@ -302,9 +313,12 @@ Stated plainly, so that nothing here is taken for more than it is:
   by one person, and is reported as observed. The reference numbers in
   `STATUS.md` come from Modular's own wheel compiler and are a target to match,
   not a result achieved here.
-- **It is not supported and will not be.** No releases, no roadmap, no
-  packages, no obligation to keep working — and by design, no tracking of
-  upstream after the fork point.
+- **It is not supported and will not be.** Signed, notarized disk images
+  are published at
+  [CocoaMojoInstaller](https://github.com/albanread/CocoaMojoInstaller) when
+  it is convenient — with no cadence, no roadmap, and no obligation to keep
+  working — and by design there is no tracking of upstream after the fork
+  point.
 
 Reading it, building it, or taking ideas from it is exactly what the licence
 permits and you are welcome to all three. Just don't mistake it for a product,
@@ -359,7 +373,8 @@ and why some of it got *simpler*.
 |---|---|
 | Cocoa compiler hook (`cocoakb`) | working — 9/9 spikes |
 | `std.objc` — dispatch, ownership, runtime class definition | working |
-| Cocoa example apps | building |
+| Typed surface — `Obj`/`Cls`, keyword construction, property assignment, `nsenum` | working — the IDE and all eighteen examples are on it |
+| Cocoa example apps | eighteen projects, built and run by [`tools/check-examples.sh`](tools/check-examples.sh) |
 | Apple Silicon GPU stack (AIR + runtime) | validated end-to-end smoke and Apple MMA coverage; broader MAX surface in triage |
 
 `STATUS.md` is the honest, current picture. `COCOA_ARM64.md` and
@@ -386,6 +401,13 @@ There are two ways in, and which one you want depends on whether you are
 changing the compiler or using it.
 
 ### Using it
+
+Most people want the installer, not the build:
+[**CocoaMojoInstaller**](https://github.com/albanread/CocoaMojoInstaller)
+publishes a signed, notarized disk image — open it, press Install, and the
+toolchain, the Roast IDE, the examples and the guide arrive together.
+
+To build it from source instead:
 
 ```bash
 ./tools/release.sh                                    # builds the toolchain, once
@@ -443,11 +465,13 @@ This README is the summary, and [`STATUS.md`](STATUS.md) is the honest current
 picture — read that before relying on anything here.
 
 **To learn the language and the API, start with the
-[CocoaMojo Programmer's Guide and Reference Manual](CocoaMojoGuide/)** — nine
-guide chapters from first program to a walked-through windowed demo, a
-reference covering the cocoa-mojo dialect, every `std.objc` entry point, every
-`cocoakb` query and every diagnostic, and a section on writing Mojo functions
-that run on the Apple GPU. A built PDF sits beside the source.
+[CocoaMojo Programmer's Guide and Reference Manual](CocoaMojoGuide/)** — the
+guide from first program to a walked-through windowed demo, a reference
+covering the cocoa-mojo dialect, every `std.objc` entry point, every
+`cocoakb` query and every diagnostic, a walkthrough of all eighteen examples
+with an honest verdict on each, chapters on every deviation from upstream
+and every patch applied to the compiler, and a section on writing Mojo
+functions that run on the Apple GPU. A built PDF sits beside the source.
 
 | Document | What it covers |
 | --- | --- |
