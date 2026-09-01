@@ -29,9 +29,9 @@
 # be tested with no window, which session_test.mojo does.
 from json import JSON, parse
 from std.objc import (
-    ObjCClass,
+    Cls,
+    Obj,
     ObjCObject,
-    msg_send,
     nsstring,
     ns_to_string,
     autoreleasepool,
@@ -64,23 +64,21 @@ def support_dir() -> String:
             Int(14), Int(1), Bool(True)  # ApplicationSupport, UserDomain, expand
         )
         var base = String()
-        if dirs.addr() != 0 and msg_send[Int, "NSArray", "count"](dirs) > 0:
-            base = ns_to_string(
-                msg_send[ObjCObject, "NSArray", "objectAtIndex:"](dirs, 0)
-            )
+        var dirs_arr = Obj["NSArray"](dirs.addr())
+        if dirs_arr.count() > 0:
+            base = ns_to_string(ObjCObject(dirs_arr.objectAtIndex(0).id))
         if base == "":
             return String()
         let dir = base + String("/Roast")
-        let NSFileManager = ObjCClass.lookup["NSFileManager"]()
-        let fm = msg_send[
-            ObjCObject, "NSFileManager", "defaultManager", is_class=True
-        ](NSFileManager.as_object())
         var d = dir
-        _ = msg_send[
-            Bool,
-            "NSFileManager",
-            "createDirectoryAtPath:withIntermediateDirectories:attributes:error:",
-        ](fm, nsstring(d).ptr(), True, ObjCObject(0).ptr(), ObjCObject(0).ptr())
+        _ = Obj["NSFileManager"](
+            Cls["NSFileManager"]().defaultManager().id
+        ).createDirectoryAtPath(
+            nsstring(d).ptr(),
+            withIntermediateDirectories=True,
+            attributes=ObjCObject(0),
+            error=ObjCObject(0),
+        )
         return dir^
 
 
