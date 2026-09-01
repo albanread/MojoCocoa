@@ -120,6 +120,10 @@ comptime g_build_began = named_global["roast.build.began", Int]
 # write-only in this code, and an agent asking "what is happening" has
 # to be answered from somewhere.
 comptime g_status_text = named_global["roast.status.text", List[String]]
+# The toolchain tag this process last acted on. One element once seen;
+# the tick handler compares it against the `current` symlink so an install
+# under a running Roast is noticed rather than discovered.
+comptime g_toolchain_seen = named_global["roast.toolchain.seen", List[String]]
 comptime g_ticks = named_global["roast.ticks", Int]
 comptime g_autoclose = named_global["roast.autoclose", Int]
 comptime g_actions = named_global["roast.actions", Int]
@@ -2635,6 +2639,14 @@ class RoastActions:
     def timerTick_(self, timer: ObjCObject):
         g_ticks()[] += 1
 
+        # Ticks are 0.1 s apart: every 50th is a five-second look at the
+        # `current` symlink, which is what an install moves.
+        if g_ticks()[] % 50 == 0:
+            try:
+                check_toolchain_change()
+            except:
+                pass
+
         # Read whatever the server has said. This is the whole reason the client
         # reads without blocking: a language server thinking hard must not be an
         # editor that has stopped responding.
@@ -4734,6 +4746,45 @@ def _refresh_changed_examples(bundle: String, user: String, tag: String) -> Int:
     return moved
 
 
+def _flat_dir_matches(bundle: String, user: String) -> Bool:
+    """Same files, dotfiles aside. `_dir_entries` skips dotfiles, so the
+    `.seeded` marker and the `.superseded/` attic living inside the user
+    copy do not make an untouched copy look edited -- which the strict
+    whole-tree comparison would."""
+    let shipped = _dir_entries(bundle)
+    let mine = _dir_entries(user)
+    if len(mine) != len(shipped):
+        return False
+    for i in range(len(shipped)):
+        let name = shipped[i]
+        let dst = user + String("/") + name
+        if not file_exists(dst):
+            return False
+        if not _trees_equal(bundle + String("/") + name, dst):
+            return False
+    return True
+
+
+def _refresh_flat_dir(bundle: String, user: String, tag: String) -> Bool:
+    """Displace every visible entry to `.superseded/<tag>/` and copy the
+    shipped set in. The unit is the whole folder: a stale file beside a
+    new one is a mixture that never existed and does not build."""
+    let attic = user + String("/.superseded/") + tag
+    _ = build.ensure_dir(attic)
+    let mine = _dir_entries(user)
+    for i in range(len(mine)):
+        let name = mine[i]
+        _ = _move_tree(user + String("/") + name, attic + String("/") + name)
+    var copied = False
+    let shipped = _dir_entries(bundle)
+    for i in range(len(shipped)):
+        let name = shipped[i]
+        copied = _copy_tree(
+            bundle + String("/") + name, user + String("/") + name
+        ) or copied
+    return copied
+
+
 def _read_marker(path: String) -> String:
     try:
         with open(path, "r") as f:
@@ -4827,13 +4878,36 @@ def migrate_user_space(force: Bool = False) -> Bool:
     if root == "":
         return False
     var did = False
+    let tag = _toolchain_tag(tc)
     let lib_dst_parent = root + String("/Standard Library")
     let lib_dst = user_stdlib_dir()
+    let lib_src = tc + String("/lib/mojo/stdlib")
+    let lib_marker = lib_dst_parent + String("/.seeded")
     if force and file_exists(lib_dst):
         _ = _remove_tree(lib_dst)
     if not file_exists(lib_dst + String("/std")):
         _ = build.ensure_dir(lib_dst_parent)
-        did = _copy_tree(tc + String("/lib/mojo/stdlib"), lib_dst) or did
+        did = _copy_tree(lib_src, lib_dst) or did
+        _write_marker(lib_marker, tag)
+    elif _read_marker(lib_marker) != tag:
+        # The seed above runs once, and builds and the language server read
+        # THIS copy -- so a toolchain whose stdlib moved on otherwise leaves
+        # every project failing on names the new toolchain's own examples
+        # use. `package 'objc' does not contain 'nsenum'` was the proof.
+        # Once per toolchain, like the examples; an edited stdlib is put
+        # aside whole, because half an stdlib does not build.
+        if not _trees_equal(lib_src, lib_dst):
+            let attic = lib_dst_parent + String("/.superseded/") + tag
+            _ = build.ensure_dir(attic)
+            if _move_tree(lib_dst, attic + String("/stdlib")):
+                if _copy_tree(lib_src, lib_dst):
+                    did = True
+                    print(
+                        "roast: refreshed the standard library the toolchain"
+                        " changed; the previous copy is in"
+                        " Standard Library/.superseded/" + tag
+                    )
+        _write_marker(lib_marker, tag)
     let ex_dst = user_examples_dir()
     if force and file_exists(ex_dst):
         _ = _remove_tree(ex_dst)
@@ -4860,7 +4934,6 @@ def migrate_user_space(force: Bool = False) -> Bool:
         # that never existed and does not build. Done once per toolchain,
         # keyed on the version the install symlink names, so editing an
         # example does not mean finding it moved aside on every launch.
-        let tag = _toolchain_tag(tc)
         if _read_marker(ex_marker) != tag:
             var replaced = _refresh_changed_examples(ex_src, ex_dst, tag)
             if replaced > 0:
@@ -4870,16 +4943,68 @@ def migrate_user_space(force: Bool = False) -> Bool:
                       "are in Examples/.superseded/" + tag)
             _write_marker(ex_marker, tag)
     let ide_dst = user_ide_source_dir()
+    let ide_src = tc + String("/share/ide-source")
+    let ide_marker = ide_dst + String("/.seeded")
     if force and file_exists(ide_dst):
         _ = _remove_tree(ide_dst)
     if not file_exists(ide_dst + String("/roast.mojo")):
-        did = _copy_tree(tc + String("/share/ide-source"), ide_dst) or did
+        did = _copy_tree(ide_src, ide_dst) or did
+        _write_marker(ide_marker, tag)
+    elif _read_marker(ide_marker) != tag:
+        # Open IDE Source promises the source of the editor being run. The
+        # folder is flat, and the dotfile-blind comparison reads `.seeded`
+        # and `.superseded/` as furniture rather than as edits.
+        if not _flat_dir_matches(ide_src, ide_dst):
+            if _refresh_flat_dir(ide_src, ide_dst, tag):
+                did = True
+                print(
+                    "roast: refreshed the IDE source the toolchain changed;"
+                    " the previous copy is in IDE Source/.superseded/" + tag
+                )
+        _write_marker(ide_marker, tag)
     if did or force:
         print(
             "roast: user space at", root,
             "(stdlib + examples, yours to edit)",
         )
     return True
+
+
+def check_toolchain_change():
+    """Notice `current` moving under a running Roast.
+
+    An install flips one symlink, and nothing tells a running editor. The
+    language server keeps answering from the toolchain it was started with,
+    so every symbol the new stdlib added is an error until someone thinks
+    to restart the app -- a configuration error wearing a source error's
+    clothes. Watch the tag instead: the moment the flip is seen, refresh
+    user space (marker-keyed, so it is cheap when nothing moved) and
+    restart the server against the new roots.
+    """
+    let tc = toolchain_root()
+    if tc == "":
+        return
+    let tag = _toolchain_tag(tc)
+    if tag == "":
+        return
+    let slot = g_toolchain_seen()
+    if len(slot[]) == 0:
+        slot[].append(tag)
+        return
+    if slot[][0] == tag:
+        return
+    var previous = slot[][0]
+    slot[][0] = tag
+    print("roast: toolchain changed", previous, "->", tag)
+    _ = migrate_user_space()
+    # start_lsp alone would answer "already rooted here"; the root has not
+    # changed, the world under it has.
+    lsp.stop()
+    _ = start_lsp()
+    set_status(
+        String("Toolchain ") + tag
+        + String(" — library refreshed, language server restarted")
+    )
 
 
 def examples_root() -> String:
