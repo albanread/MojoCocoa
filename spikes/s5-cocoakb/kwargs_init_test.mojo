@@ -13,8 +13,10 @@
 #   verbatim (buttonWithTitle:target:action:).
 #
 # Three different classes exercise three different shapes, so the check
-# proves the machinery is not NSWindow-shaped. Strings still cross by hand
-# here -- absorbing `nsstring(...).ptr()` into the call path is sprint P4.
+# proves the machinery is not NSWindow-shaped. The BARE String crosses to
+# NSString automatically: the hook bridges it where the metadata says the
+# argument is an object, at the call site where the type is still concrete
+# -- the compiler-side unblock of sprint P4's blocked half.
 from std.objc import (
     Obj,
     ObjCObject,
@@ -57,7 +59,7 @@ def main() raises:
         # The FACTORY form, three labels, on a third class:
         # +buttonWithTitle:target:action:
         let btn = NSButton(
-            buttonWithTitle=nsstring(String("Click")).ptr(),
+            buttonWithTitle="Click",
             target=ObjCObject(0),
             action=sel["beep:"]().ptr(),
         )

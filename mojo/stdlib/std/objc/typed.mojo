@@ -91,6 +91,7 @@ from std.sys._cocoakb import (
 )
 from std.memory import OpaquePointer
 from .runtime import ObjCObject, ObjCClass, msg_send
+from .foundation import nsstring
 from .geometry import CGRect, CGPoint, CGSize, NSRange
 
 
@@ -152,6 +153,19 @@ comptime _Result[
 # selector is assembled in SQL (`name || ':' || part || ':' ...`), so a
 # mislabelled call answers _NOSUCH and becomes a sentence, not a symbolic
 # type. One alias per label count because the queries are keyed that way.
+
+
+@always_inline
+def __bridge_string(s: String) -> ObjCObject:
+    """The compiler's keyword hooks resolve THIS name, in THIS module's
+    scope, to bridge a String argument where the metadata says the selector
+    takes an object -- the bridging that comptime value narrowing blocks
+    inside a generic callee, done at the call site where the type is still
+    concrete (sprint P4's blocked half, unblocked; see the sprint notes).
+    It lives here rather than as a method on String because String's module
+    must not import std.objc, and under a dunder name because it is the
+    hooks' contract, like __call_kw_param__ itself -- not API."""
+    return nsstring(s)
 
 
 comptime _AT = 64  # '@' -- an object

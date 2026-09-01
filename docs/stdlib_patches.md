@@ -52,8 +52,11 @@ a compile error). Sprint P4 added the argument kinds: the compiler parses each m
 `@encode` string (in `CocoaKBDatabase.cpp`, beside the SQL, because Mojo
 cannot -- string surgery does not fold) and packs one kind character per
 argument into an integer, seven bits each, so comptime shifts decompose
-them. A `String` argument is refused where it cannot legally cross, in both
-directions, until comptime value narrowing exists to convert it.
+them. A `String` argument is refused where it cannot legally cross — and where
+the selector DOES take an object, the keyword hooks bridge it
+compiler-side (`__bridge_string` in typed.mojo, resolved from the hooks'
+own module scope), so bare Strings cross on the keyword and construction
+surface without the narrowing the language does not yet have.
 
 **Carry forward:** yes — this is the fork's own surface, like the rest of
 `std.objc`. On an upstream sync, the whole file moves aside rather than

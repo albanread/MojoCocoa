@@ -38,6 +38,7 @@
 #include "KGEN/Interpreter/InterpreterAttrs.h"
 #include "KGEN/KGENDialect/KGENAttrs.h"
 #include "KGEN/KGENDialect/KGENOps.h"
+#include "KGEN/CocoaKB/CocoaKBDatabase.h"
 #include "llvm/ADT/ScopeExit.h"
 #include <deque>
 #include "KGEN/KGENDialect/KGENTypes.h"
@@ -2948,7 +2949,103 @@ AnyValue CallNode::emitIR(ExprDest &dest, IREmitter &emitter) const {
   // function mid-binding (`_format_int[radix=16](value, prefix=p)`), and a
   // constructor without the hook all carry keyword operands legitimately and
   // must keep the ordinary path -- only a callee that opted in redirects.
-  auto emitKwParamHook = [&](StringRef hookName) -> AnyValue {
+  ASTDecl *calleeTypeDecl = nullptr;
+  if (auto calleeCVal = calleeVal.getIfCValue())
+    calleeTypeDecl = calleeCVal.getRValueType().getDecl(emitter.shared);
+  if (!calleeTypeDecl)
+    if (ASTType calledType = calleeVal.getIfTypeValue())
+      calleeTypeDecl = calledType.getDecl(emitter.shared);
+  ASTDecl *hookDeclScope =
+      calleeTypeDecl ? calleeTypeDecl->getParentDecl() : nullptr;
+
+  auto emitKwParamHook = [&](StringRef hookName,
+                             std::optional<int64_t> argKinds) -> AnyValue {
+    // Sprint P4's blocked half, unblocked: where the metadata says an
+    // argument is an OBJECT and the operand is a String, bridge it through
+    // `nsstring(...)` HERE, at the call site, where the operand's type is
+    // still concrete. Inside the generic callee the narrowing wall stands
+    // (a comptime `if T == String` does not refine the value), which is
+    // exactly why the bridge happens before the call and not within it.
+    // A String where the selector takes a NON-object is left unwrapped on
+    // purpose: it enters the callee symbolically and the callee's own guard
+    // refuses it with the teaching diagnostic.
+    //
+    // `nsstring` is resolved against the declaration scope of the callee's
+    // type -- the std.objc module that declares these hooks -- never
+    // against user scope, so the bridge works in any file regardless of
+    // its imports. That name is part of the hooks' contract, the same way
+    // `__call_kw_param__` itself is.
+    auto operandIsString = [&](const AnyValue &value) {
+      ASTType ty = value.getRValueTypeIfResolvable();
+      if (!ty)
+        return false;
+      auto structType = sugarDynCast<LIT::StructType>(ty);
+      if (!structType)
+        return false;
+      StringRef leaf = structType.getSymbol().getLeafReference().strref();
+      // A literal emits as the StringLiteral struct and converts to String
+      // only at parameter binding -- both spellings reach an NSString, so
+      // both bridge.
+      return leaf == "String" || leaf == "StringLiteral";
+    };
+    auto argKindsQueryIsObjectAt = [&](size_t position) {
+      if (!argKinds)
+        return false;
+      return ((uint64_t(*argKinds) >> (7 * position)) & 127) == '@';
+    };
+
+    // Pre-emit every operand once. The inner call's operands become
+    // synthetic nodes over these values, so nothing is emitted twice.
+    SmallVector<Operand, 8> valueOperands;
+    SmallVector<std::unique_ptr<SyntheticNode>> operandNodes;
+    SmallVector<std::unique_ptr<CallNode>> bridgeNodes;
+    operandNodes.reserve(operands.size());
+    valueOperands.reserve(operands.size());
+    size_t position = 0;
+    for (const Operand &operand : operands) {
+      auto emitted =
+          emitter.emitExpr(operand.expr, ExprContext::EC_CallArgValue);
+      if (!emitted)
+        return {};
+      if (operandIsString(emitted) && argKindsQueryIsObjectAt(position)) {
+        // value = __bridge_string(value), emitted now against the hook's
+        // own module scope, where that name is a declaration.
+        ExprDest fnDest(ExprContext::EC_CallCalleeValue);
+        if (!hookDeclScope)
+          return {};
+        auto nsFn = DeclRefNode::emitUnqualLookup(
+            "__bridge_string", operand.expr, *hookDeclScope, fnDest, emitter,
+            /*isSpeculative=*/false);
+        if (nsFn.isFailure() || nsFn.getIfExprNode())
+          return {};
+        AnyValue fnValue = nsFn.getIfValue();
+        if (!fnValue)
+          return {};
+        SyntheticNode fnNode(operand.getLoc(), std::move(fnValue));
+        SyntheticNode argNode(operand.getLoc(), emitted);
+        Operand callOperand(&argNode, operand.getLoc(),
+                            ArgUnpackStyle::kPositional);
+        CallNode nsCall(&fnNode, operand.getLoc(), callOperand,
+                        operand.getLoc());
+        AnyValue bridged = emitter.emitExpr(&nsCall, EC_CallArgValue);
+        if (!bridged)
+          return {};
+        operandNodes.push_back(std::make_unique<SyntheticNode>(
+            operand.getLoc(), std::move(bridged)));
+      } else {
+        operandNodes.push_back(std::make_unique<SyntheticNode>(
+            operand.getLoc(), std::move(emitted)));
+      }
+      valueOperands.emplace_back(operandNodes.back().get(), operand.getLoc(),
+                                 // A '*'/'**' unpack cannot carry keyword
+                                 // names to a parameter list; the callee
+                                 // rejects it by name.
+                                 operand.isKeyword()
+                                     ? ArgUnpackStyle::kPositional
+                                     : operand.unpackStyle);
+      ++position;
+    }
+
     // Quoted spellings so StringLiteralNode::getValue() sees what the lexer
     // would have produced for a real literal. The bytes live in a deque
     // (which never moves an element) and each node's ArrayRef points into a
@@ -2979,16 +3076,6 @@ AnyValue CallNode::emitIR(ExprDest &dest, IREmitter &emitter) const {
     llvm::scope_exit freeNodes(
         [&] { for (auto *node : nameNodes) delete node; });
 
-    SmallVector<Operand, 8> valueOperands;
-    for (const Operand &operand : operands) {
-      // A '*'/'**' unpack cannot carry keyword names to a parameter list;
-      // leave it to the callee below to reject it by name.
-      valueOperands.emplace_back(
-          operand.expr, operand.getLoc(),
-          operand.isKeyword() ? ArgUnpackStyle::kPositional
-                              : operand.unpackStyle);
-    }
-
     SyntheticNode baseNode(getLoc(), calleeVal);
     AttributeRefNode hookNode(
         &baseNode, getLoc(),
@@ -2998,21 +3085,93 @@ AnyValue CallNode::emitIR(ExprDest &dest, IREmitter &emitter) const {
     return emitter.emitExpr(&callNode, dest);
   };
 
+  // The callee's parameter values (Bound["NSWindow", "setFrame"] carries
+  // its class and method name; Obj["NSWindow"] carries its class) are where
+  // the argument kinds come from -- the same metadata the callee itself
+  // will consult, read here so the bridge can be decided before the call.
+  auto paramStrings = [&](ASTType type) {
+    SmallVector<StringRef, 4> values;
+    // A value's type (Bound["NSWindow", "setFrame"]) carries its parameter
+    // values on the struct type; a TYPE value (Obj["NSWindow"]) carries
+    // them behind the meta layer, which getParamBindings strips.
+    ArrayRef<TypedAttr> params = type.getParamBindings();
+    if (params.empty())
+      if (auto structType = sugarDynCast<LIT::StructType>(type))
+        params = structType.getParamValues();
+    for (TypedAttr param : params)
+      if (auto str = dyn_cast<StringAttr>(param))
+        values.push_back(str.getValue());
+    return values;
+  };
+  auto argKindsFor = [&](StringRef queryPrefix, size_t labelCount,
+                         ArrayRef<StringRef> params) -> std::optional<int64_t> {
+    if (params.empty() || labelCount + 2 > 9)
+      return {};
+    SmallString<40> query(queryPrefix);
+    query += std::to_string(labelCount);
+    auto kinds = M::KGEN::CocoaKB::CocoaKBDatabase::get().queryInt(
+        query.str(), params);
+    if (!kinds) {
+      llvm::consumeError(kinds.takeError());
+      return {}; // No selector: the callee's own assert reports the miss.
+    }
+    return *kinds;
+  };
+
   if (llvm::any_of(operands,
                    [](const Operand &op) { return op.isKeyword(); })) {
+    size_t labelCount = llvm::count_if(
+        operands, [](const Operand &op) { return op.isKeyword(); });
     if (auto calleeCVal = calleeVal.getIfCValue()) {
       ASTType calleeType = calleeCVal.getRValueType();
       if (emitter.shared.typeHasMember(calleeType, "__call_kw_param__",
-                                       getLoc()))
-        return emitKwParamHook("__call_kw_param__");
+                                       getLoc())) {
+        auto params = paramStrings(calleeType);
+        // Bound[cls, name] -> instance side; BoundClass[cls, name] -> class.
+        auto structType = sugarDynCast<LIT::StructType>(calleeType);
+        bool isClass =
+            structType &&
+            structType.getSymbol().getLeafReference().strref() == "BoundClass";
+        for (auto *kw : {&operands}) {
+          (void)kw;
+        }
+        SmallVector<StringRef, 9> queryArgs;
+        if (params.size() == 2) {
+          queryArgs.push_back(params[0]);
+          queryArgs.push_back(params[1]);
+          queryArgs.push_back(isClass ? "1" : "0");
+          for (const Operand &operand : operands)
+            if (operand.isKeyword())
+              queryArgs.push_back(operand.name.getValue());
+        }
+        return emitKwParamHook(
+            "__call_kw_param__",
+            queryArgs.size() == 3 + labelCount
+                ? argKindsFor("arg_kinds_for_parts_", labelCount, queryArgs)
+                : std::optional<int64_t>{});
+      }
     }
     // Independent, not `else if`: a type value can present as several
     // AnyValue shapes at once, and one arm failing its member check must
     // not hide the other.
     if (ASTType calledType = calleeVal.getIfTypeValue()) {
       if (emitter.shared.typeHasMember(calledType, "__init_kw_param__",
-                                       getLoc()))
-        return emitKwParamHook("__init_kw_param__");
+                                       getLoc())) {
+        auto params = paramStrings(calledType);
+        SmallVector<StringRef, 9> queryArgs;
+        if (params.size() == 1) {
+          queryArgs.push_back(params[0]);
+          for (const Operand &operand : operands)
+            if (operand.isKeyword())
+              queryArgs.push_back(operand.name.getValue());
+        }
+        return emitKwParamHook(
+            "__init_kw_param__",
+            queryArgs.size() == 1 + labelCount
+                ? argKindsFor("arg_kinds_for_init_parts_", labelCount,
+                              queryArgs)
+                : std::optional<int64_t>{});
+      }
     }
   }
 

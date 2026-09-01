@@ -215,8 +215,12 @@ The alias line is yours to write, not the library's: every class the
 database knows is the same one line away, which is the point — see
 `cocoa_improvements_design.md` for the principle.
 
-Strings still cross by hand for now — `nsstring(String("Click")).ptr()` —
-until the call path absorbs the bridging itself.
+Strings cross automatically: a bare `String` argument is bridged to
+`NSString` wherever the metadata says the argument is an object —
+`NSButton(buttonWithTitle="Click")` needs no wrapping. Where the selector
+takes a NON-object, a String is a compile error rather than corruption.
+The positional spelling (`w.setTitle(...)` without labels) still crosses by
+hand with `nsstring(...).ptr()`.
 
 ## Selectors
 

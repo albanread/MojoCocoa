@@ -673,7 +673,13 @@ llvm::Expected<int64_t> CocoaKBDatabase::queryInt(StringRef query,
     // The initialiser form decides the side: a factory selector is class
     // side, an initWith... one is instance side. The name family states its
     // side directly.
-    StringRef isClass = isName ? args.back() : "0";
+    // The name family states its side as its last argument; the parts
+    // family carries it third (class, name, is_class, part...).
+    StringRef isClass = "0";
+    if (isName)
+      isClass = args.back();
+    else if (!isInit && args.size() >= 3)
+      isClass = args[2];
     if (isInit) {
       SmallString<32> formTarget("init_form_for_parts_");
       formTarget.append(argKindsSuffix);
