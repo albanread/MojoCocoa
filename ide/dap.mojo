@@ -44,9 +44,9 @@ from json import parse
 from pipeutf8 import take_chunk, sanitized
 from lsp import readable, posix_read
 from std.objc import (
-    ObjCClass,
+    Cls,
+    Obj,
     ObjCObject,
-    msg_send,
     nsstring,
     ns_to_string,
     autoreleasepool,
@@ -222,9 +222,7 @@ def adapter_pid() -> Int:
     if g_task()[] == 0:
         return 0
     with autoreleasepool():
-        return msg_send[Int, "NSTask", "processIdentifier"](
-            ObjCObject(g_task()[])
-        )
+        return Obj["NSTask"](g_task()[]).processIdentifier()
 
 
 def is_configured() -> Bool:
@@ -698,7 +696,7 @@ def _adapter_alive() -> Bool:
     if g_task()[] == 0 or g_phase()[] == 0:
         return True
     with autoreleasepool():
-        if msg_send[Bool, "NSTask", "isRunning"](ObjCObject(g_task()[])):
+        if Obj["NSTask"](g_task()[]).isRunning():
             return True
     _reap(String("the debug adapter exited"))
     return False
@@ -720,12 +718,10 @@ def _send(var body: JSON) -> Bool:
         framed += "\r\n\r\n"
         framed += text
         var local = framed
-        let data = msg_send[ObjCObject, "NSString", "dataUsingEncoding:"](
-            nsstring(local), Int(4)
-        )
-        _ = msg_send[ObjCObject, "NSFileHandle", "writeData:"](
-            ObjCObject(g_in()[]), data.ptr()
-        )
+        let data = Obj["NSString"](
+            nsstring(local).addr()
+        ).dataUsingEncoding(Int(4))
+        _ = Obj["NSFileHandle"](g_in()[]).writeData(ObjCObject(data.id))
     return True
 
 
@@ -824,36 +820,26 @@ def start_with_environment(
     if is_running():
         return True
     with autoreleasepool():
-        let NSTask = ObjCClass.lookup["NSTask"]()
-        var task = msg_send[ObjCObject, "NSTask", "alloc", is_class=True](
-            NSTask.as_object()
-        )
-        task = msg_send[ObjCObject, "NSObject", "init"](task)
+        var task = Obj["NSTask"](Cls["NSTask"]().alloc().id).init()
         var path = adapter
-        _ = msg_send[ObjCObject, "NSTask", "setLaunchPath:"](
-            task, nsstring(path).ptr()
-        )
-        let NSPipe = ObjCClass.lookup["NSPipe"]()
-        let inp = msg_send[ObjCObject, "NSPipe", "pipe", is_class=True](
-            NSPipe.as_object()
-        )
-        let outp = msg_send[ObjCObject, "NSPipe", "pipe", is_class=True](
-            NSPipe.as_object()
-        )
-        _ = msg_send[ObjCObject, "NSTask", "setStandardInput:"](task, inp.ptr())
-        _ = msg_send[ObjCObject, "NSTask", "setStandardOutput:"](
-            task, outp.ptr()
-        )
-        let writer = msg_send[ObjCObject, "NSPipe", "fileHandleForWriting"](inp)
-        let reader = msg_send[ObjCObject, "NSPipe", "fileHandleForReading"](outp)
-        let fd = msg_send[Int, "NSFileHandle", "fileDescriptor"](reader)
+        _ = task.setLaunchPath(nsstring(path).ptr())
+        # +pipe's result class is not in the metadata, so it arrives as
+        # NSObject; NSPipe is stated once here and the accessors below are
+        # then checked against the class that was meant.
+        let inp = Obj["NSPipe"](Cls["NSPipe"]().pipe().id)
+        let outp = Obj["NSPipe"](Cls["NSPipe"]().pipe().id)
+        _ = task.setStandardInput(ObjCObject(inp.id))
+        _ = task.setStandardOutput(ObjCObject(outp.id))
+        let writer = ObjCObject(inp.fileHandleForWriting().id)
+        let reader = ObjCObject(outp.fileHandleForReading().id)
+        let fd = Obj["NSFileHandle"](reader.addr()).fileDescriptor()
         _ = external_call["objc_retain", P](task.ptr())
         _ = external_call["objc_retain", P](writer.ptr())
         _ = external_call["objc_retain", P](reader.ptr())
         g_task()[] = task.addr()
         g_in()[] = writer.addr()
         g_read_fd()[] = fd
-        _ = msg_send[ObjCObject, "NSTask", "launch"](task)
+        _ = task.launch()
 
     g_trace()[] = 1 if getenv("ROAST_DAP_TRACE") != "" else 0
     g_disconnected()[] = 0
@@ -956,9 +942,7 @@ def stop():
         spins += 1
     if g_task()[] != 0:
         with autoreleasepool():
-            _ = msg_send[ObjCObject, "NSTask", "terminate"](
-                ObjCObject(g_task()[])
-            )
+            _ = Obj["NSTask"](g_task()[]).terminate()
     g_task()[] = 0
     g_in()[] = 0
     g_read_fd()[] = 0

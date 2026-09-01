@@ -15,6 +15,7 @@ from std.objc import (
     ObjCClass,
     ObjCObject,
     msg_send,
+    nsenum,
     nsstring,
     autoreleasepool,
     IMP1,
@@ -6719,43 +6720,42 @@ def main() raises:
 
         build_menu_bar(app, actions.addr())
 
-        # Window. Titled|Closable|Miniaturizable|Resizable = 15.
-        let NSWindow = ObjCClass.lookup["NSWindow"]()
-        var win = Cls["NSWindow"]().alloc()
         # Start at a readable fraction of the main screen instead of a frame
         # typed into the source, which is wrong on every display but one.
-        let NSScreen = ObjCClass.lookup["NSScreen"]()
         let screen = Cls["NSScreen"]().mainScreen()
         var vis = rect(0.0, 0.0, 1440.0, 900.0)
         if screen.addr() != 0:
             vis = Obj["NSScreen"](screen.addr()).visibleFrame()
         let init_w = min(1400.0, vis.size.width * 0.78)
         let init_h = min(900.0, vis.size.height * 0.84)
-        win = Obj["NSWindow"](win.addr()).initWithContentRect_styleMask_backing_defer(
-            rect(0.0, 0.0, init_w, init_h),
-            Int(15),
-            Int(2),
-            Bool(False),
+        # The labels name the initialiser, and the flags carry the names the
+        # SDK gives them -- this was `Int(15)` with the four flags spelled out
+        # in a comment above it, which is a comment that cannot be checked.
+        let wnd = Obj["NSWindow"](
+            contentRect=rect(0.0, 0.0, init_w, init_h),
+            styleMask=(
+                nsenum["NSWindowStyleMaskTitled"]()
+                | nsenum["NSWindowStyleMaskClosable"]()
+                | nsenum["NSWindowStyleMaskMiniaturizable"]()
+                | nsenum["NSWindowStyleMaskResizable"]()
+            ),
+            backing=nsenum["NSBackingStoreBuffered"](),
+            defer=False,
         )
+        var win = ObjCObject(wnd.id)
         # Below which the layout stops meaning anything.
-        Obj["NSWindow"](win.addr()).setMinSize(CGSize(640.0, 400.0))
-        Obj["NSWindow"](win.addr()).setTitle(nsstring(String("Roast")).ptr())
+        wnd.setMinSize(CGSize(640.0, 400.0))
+        wnd.setTitle(nsstring(String("Roast")).ptr())
         # Native tabbing: windows sharing an identifier tab together, and the
         # Window menu gets the tab commands automatically.
-        Obj["NSWindow"](win.addr()).setTabbingIdentifier(
-            nsstring(String("roast.editor")).ptr()
-        )
-        Obj["NSWindow"](win.addr()).setTabbingMode(Int(0))
+        wnd.setTabbingIdentifier(nsstring(String("roast.editor")).ptr())
+        wnd.setTabbingMode(nsenum["NSWindowTabbingModeAutomatic"]())
         # Remember where the user put it. AppKit restores the saved frame
         # here if there is one, so centring only applies to a first run.
-        let restored = Obj["NSWindow"](win.addr()).setFrameUsingName(
-            nsstring(String("roast.main")).ptr()
-        )
+        let restored = wnd.setFrameUsingName(nsstring(String("roast.main")).ptr())
         if not restored:
-            Obj["NSWindow"](win.addr()).center()
-        _ = Obj["NSWindow"](win.addr()).setFrameAutosaveName(
-            nsstring(String("roast.main")).ptr()
-        )
+            wnd.center()
+        _ = wnd.setFrameAutosaveName(nsstring(String("roast.main")).ptr())
         g_window()[] = win.addr()
 
         let content = Obj["NSWindow"](win.addr()).contentView()

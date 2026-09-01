@@ -296,7 +296,8 @@ def start_with_environment(
         var e = exe
         _ = task.setLaunchPath(nsstring(e).ptr())
 
-        var argv = Cls["NSMutableArray"]().array()
+        # +array answers `@` and nothing more, so the class is stated here.
+        var argv = Obj["NSMutableArray"](Cls["NSMutableArray"]().array().id)
         for a in args:
             var s = a
             _ = argv.addObject(nsstring(s).ptr())
@@ -313,16 +314,21 @@ def start_with_environment(
         # directory settings inherited by Roast.
         apply_environment(task, environment)
 
-        let pipe = Cls["NSPipe"]().pipe()
+        # +pipe's result class is not in the metadata -- a method's own
+        # encoding says `@` and nothing more -- so it arrives as NSObject and
+        # NSPipe is stated once here. Every call after this is checked against
+        # the class that was meant, which is the same shape life/ uses for
+        # CAMetalLayer.
+        let pipe = Obj["NSPipe"](Cls["NSPipe"]().pipe().id)
         # One pipe for both: diagnostics come out of stderr and program output
         # out of stdout, and interleaving them is what a console is.
         _ = task.setStandardOutput(ObjCObject(pipe.id))
         _ = task.setStandardError(ObjCObject(pipe.id))
-        let reader = pipe.fileHandleForReading()
-        let fd = Obj["NSFileHandle"](reader.id).fileDescriptor()
+        let reader = Obj["NSFileHandle"](pipe.fileHandleForReading().id)
+        let fd = reader.fileDescriptor()
 
         _ = external_call["objc_retain", P](task.ptr())
-        _ = external_call["objc_retain", P](reader.ptr())
+        _ = external_call["objc_retain", P](ObjCObject(reader.id).ptr())
         g_task()[] = task.addr()
         g_fd()[] = fd
         g_exit()[] = 0

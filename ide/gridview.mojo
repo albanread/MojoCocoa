@@ -1298,7 +1298,9 @@ def _dragged_paths() -> List[String]:
         )
         if pb.addr() == 0:
             return out^
-        let url_class = Cls["NSURL"]().as_object()
+        # The CLASS object itself, as an argument. Cls carries its address;
+        # as_object() belongs to ObjCClass, which this is not.
+        let url_class = ObjCObject(Cls["NSURL"]().cls_id)
         let classes = Cls["NSArray"]().arrayWithObject(url_class)
         let urls = Obj["NSPasteboard"](pb.addr()).readObjectsForClasses_options(
             classes, ObjCObject(0)
