@@ -55,6 +55,7 @@ from std.objc import (
 from std.memory import OpaquePointer, Pointer
 from std.ffi import external_call, c_char
 from std.os import getenv
+from std.time import sleep
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -71,6 +72,13 @@ comptime g_phase = named_global["dap.phase", Int]
 # for it.
 comptime MAX_MESSAGE = 64 * 1024 * 1024
 comptime MAX_INBOX = 96 * 1024 * 1024
+
+# How deep to walk the stack: pages of 32, up to 96. The walk used to stop
+# at eight, which truncated recursion silently -- and recursion is exactly
+# the shape of program someone brings to a debugger. Bounded, because an
+# unbounded walk of a runaway stack is its own kind of hang.
+comptime STACK_PAGE = 32
+comptime STACK_LIMIT = 96
 
 comptime g_pending = named_global["dap.inbox.pending", List[UInt8]]
 comptime g_inbox = named_global["dap.inbox", List[String]]
@@ -91,6 +99,16 @@ comptime g_bp_file = named_global["dap.bp.file", List[String]]
 comptime g_bp_line = named_global["dap.bp.line", List[Int]]
 comptime g_bp_bound = named_global["dap.bp.bound", List[Int]]
 comptime g_bp_verified = named_global["dap.bp.verified", List[Int]]
+# What a breakpoint is ASKED to be, beyond its line: a condition to satisfy,
+# a hit count to count to, and whether it is in the request at all. Disabled
+# is omitting the row from setBreakpoints -- the protocol has no other
+# spelling -- which is why `g_bp_slot` exists: a reply is positional against
+# what was SENT, and a skipped row must not consume a reply position meant
+# for a later one.
+comptime g_bp_cond = named_global["dap.bp.cond", List[String]]
+comptime g_bp_hit = named_global["dap.bp.hit", List[Int]]
+comptime g_bp_enabled = named_global["dap.bp.enabled", List[Int]]
+comptime g_bp_slot = named_global["dap.bp.slot", List[Int]]
 # Set when the breakpoint list changes while the adapter is up, so the tick
 # resends it rather than every caller remembering to.
 comptime g_bp_dirty = named_global["dap.bp.dirty", Int]
@@ -133,6 +151,53 @@ comptime g_eval_fresh = named_global["dap.eval.fresh", Int]
 comptime g_frame_names = named_global["dap.frame.names", List[String]]
 comptime g_frame_files = named_global["dap.frame.files", List[String]]
 comptime g_frame_lines = named_global["dap.frame.lines", List[Int]]
+# The adapter's own frame ids, aligned with the lists above, and which frame
+# the person is READING (variables, evaluate). The top of the stack stays
+# where the program is -- the gutter's line is the truth about the program
+# counter, not about which frame is under inspection.
+comptime g_frame_ids = named_global["dap.frame.ids", List[Int]]
+comptime g_frame_sel = named_global["dap.frame.sel", Int]
+# Set by the stopped event, cleared by the first stackTrace reply: a stop
+# replaces the stack, a later page of the same stack appends to it.
+comptime g_stack_fresh = named_global["dap.stack.fresh", Int]
+# The stopped thread's peers, asked for once per stop. Listed and reported;
+# selecting one is deliberately not here -- resume and pause already key on
+# the thread the stopped event named, which is the thread that matters.
+comptime g_thread_ids = named_global["dap.thread.ids", List[Int]]
+comptime g_thread_names = named_global["dap.thread.names", List[String]]
+# A pause asked for before any thread id was known, waiting on the threads
+# reply to name one.
+comptime g_pause_pending = named_global["dap.pause.pending", Int]
+
+# What the adapter said it can do, read off the initialize response rather
+# than assumed from lldb-dap's behaviour. configurationDone defaults to yes
+# only until the response lands -- which it does before the initialized
+# event that would use the answer, so the truth always arrives in time.
+comptime g_cap_config_done = named_global["dap.cap.cfgdone", Int]
+comptime g_cap_conditional = named_global["dap.cap.conditional", Int]
+comptime g_cap_filters = named_global["dap.cap.filters", List[String]]
+
+# Why the session ended without being asked to -- set by _reap, read by the
+# app for the status line, cleared by the next start.
+comptime g_dead = named_global["dap.dead.why", List[String]]
+
+# The last launch, kept so Restart can relaunch without rebuilding. The
+# environment rides as serialized JSON: it is one opaque value to relaunch
+# and one parse away from being a dictionary again.
+comptime g_last_adapter = named_global["dap.last.adapter", List[String]]
+comptime g_last_program = named_global["dap.last.program", List[String]]
+comptime g_last_cwd = named_global["dap.last.cwd", List[String]]
+comptime g_last_init = named_global["dap.last.init", List[String]]
+comptime g_last_pre = named_global["dap.last.pre", List[String]]
+comptime g_last_env = named_global["dap.last.env", List[String]]
+
+# The evaluate request currently in flight, matched against the reply's
+# request_seq: a second ask before the first answer used to overwrite the
+# expression slot and leave the first answer attributed to the second ask.
+comptime g_eval_seq = named_global["dap.eval.seq", Int]
+# How many replies were dropped by that match, so a test can assert the
+# mechanism rather than a timing window.
+comptime g_eval_stale = named_global["dap.eval.stale", Int]
 
 
 def _slot(list_ptr: Pointer[List[String], MutUntrackedOrigin]) -> String:
@@ -148,6 +213,18 @@ def _put(list_ptr: Pointer[List[String], MutUntrackedOrigin], var s: String):
 
 def is_running() -> Bool:
     return g_task()[] != 0
+
+
+def adapter_pid() -> Int:
+    """The adapter's pid, for the one caller that needs to kill it on
+    purpose: the test that proves a killed adapter is reaped rather than
+    left looking alive. 0 when there is no session."""
+    if g_task()[] == 0:
+        return 0
+    with autoreleasepool():
+        return msg_send[Int, "NSTask", "processIdentifier"](
+            ObjCObject(g_task()[])
+        )
 
 
 def is_configured() -> Bool:
@@ -176,6 +253,13 @@ def serial() -> Int:
 
 def exited() -> Bool:
     return g_exited()[] != 0
+
+
+def dead_why() -> String:
+    """Why the session died on its own, or empty if it did not. The app shows
+    this in the status line: a debugger that vanished is confusing enough
+    without the editor saying nothing about it."""
+    return _slot(g_dead())
 
 
 def output() -> String:
@@ -215,7 +299,7 @@ def evaluate(var expr: String) -> Bool:
     # "watch" forces expression evaluation; "repl" would let the adapter
     # mistake an expression for an lldb command when it looks like one.
     args.set(String("context"), JSON(String("watch")))
-    _ = request(String("evaluate"), args^)
+    g_eval_seq()[] = request(String("evaluate"), args^)
     return True
 
 
@@ -224,6 +308,10 @@ def take_eval_fresh() -> Bool:
         return False
     g_eval_fresh()[] = 0
     return True
+
+
+def stale_evals_dropped() -> Int:
+    return g_eval_stale()[]
 
 
 def eval_expr() -> String:
@@ -338,6 +426,8 @@ def _clear_stop():
     g_frame_names()[] = List[String]()
     g_frame_files()[] = List[String]()
     g_frame_lines()[] = List[Int]()
+    g_frame_ids()[] = List[Int]()
+    g_frame_sel()[] = 0
 
 
 def breakpoint_count() -> Int:
@@ -381,30 +471,119 @@ def breakpoint_at(path: String, line: Int) -> Int:
 
 
 def toggle_breakpoint(path: String, line: Int) -> Bool:
-    """Add or remove one. True if it is now set."""
+    """Add or remove one. True if it is now set. The path is stored as
+    given: the compile unit's spelling is whatever absolute path the
+    compiler was handed (realpath only for relative arguments), so the
+    client's filesystem truth can disagree with the CU's, and guessing one
+    spelling over another breaks whichever environment spells the other
+    way. Spellings must flow from one source -- how the file was opened --
+    and this store is not that source."""
     let at = breakpoint_at(path, line)
     if at >= 0:
         let f = g_bp_file()
         let l = g_bp_line()
         let b = g_bp_bound()
         let v = g_bp_verified()
+        let c = g_bp_cond()
+        let h = g_bp_hit()
+        let e = g_bp_enabled()
+        let s = g_bp_slot()
         let last = breakpoint_count() - 1
         f[].swap_elements(at, last)
         l[].swap_elements(at, last)
         b[].swap_elements(at, last)
         v[].swap_elements(at, last)
+        c[].swap_elements(at, last)
+        h[].swap_elements(at, last)
+        e[].swap_elements(at, last)
+        s[].swap_elements(at, last)
         _ = f[].pop()
         _ = l[].pop()
         _ = b[].pop()
         _ = v[].pop()
+        _ = c[].pop()
+        _ = h[].pop()
+        _ = e[].pop()
+        _ = s[].pop()
         g_bp_dirty()[] = 1
         return False
     g_bp_file()[].append(path)
     g_bp_line()[].append(line)
     g_bp_bound()[].append(0)
     g_bp_verified()[].append(0)
+    g_bp_cond()[].append(String())
+    g_bp_hit()[].append(0)
+    g_bp_enabled()[].append(1)
+    g_bp_slot()[].append(-1)
     g_bp_dirty()[] = 1
     return True
+
+
+def breakpoint_condition(i: Int) -> String:
+    return g_bp_cond()[][i] if i >= 0 and i < breakpoint_count() else String()
+
+
+def breakpoint_hit(i: Int) -> Int:
+    return g_bp_hit()[][i] if i >= 0 and i < breakpoint_count() else 0
+
+
+def breakpoint_enabled(i: Int) -> Bool:
+    return (
+        i >= 0 and i < breakpoint_count() and g_bp_enabled()[][i] != 0
+    )
+
+
+def set_breakpoint_condition(path: String, line: Int, var cond: String) -> Bool:
+    """A condition on an existing breakpoint: stop only when it holds. Sent
+    as the row's `condition`, honoured only by adapters that said they would
+    -- `capabilities()` tells the caller whether to offer the gesture."""
+    let at = breakpoint_at(path, line)
+    if at < 0:
+        return False
+    g_bp_cond()[][at] = cond^
+    g_bp_dirty()[] = 1
+    return True
+
+
+def set_breakpoint_hit(path: String, line: Int, hits: Int) -> Bool:
+    """Stop on the Nth hit rather than the first. `hitCondition` in the
+    request, an lldb-style expression; a bare number is the spelling both
+    ends agree on."""
+    let at = breakpoint_at(path, line)
+    if at < 0:
+        return False
+    g_bp_hit()[][at] = hits
+    g_bp_dirty()[] = 1
+    return True
+
+
+def set_breakpoint_enabled(index: Int, on: Bool) -> Bool:
+    """In or out of the next request, without losing the row. Omission IS
+    the protocol's disabling; the row survives locally with its condition
+    and hit count intact."""
+    if index < 0 or index >= breakpoint_count():
+        return False
+    g_bp_enabled()[][index] = 1 if on else 0
+    g_bp_dirty()[] = 1
+    return True
+
+
+def capabilities() -> String:
+    """The adapter's exception filters, one per line -- the honest answer to
+    'can this session break on raise', read from the handshake rather than
+    guessed."""
+    var out = String()
+    var i = 0
+    while i < len(g_cap_filters()[]):
+        if i > 0:
+            out += String("\n")
+        out += g_cap_filters()[][i]
+        i += 1
+    return out
+
+
+def supports_conditions() -> Bool:
+    return g_cap_conditional()[] != 0
 
 
 def clear_breakpoints():
@@ -412,12 +591,53 @@ def clear_breakpoints():
     let l = g_bp_line()
     let b = g_bp_bound()
     let v = g_bp_verified()
+    let c = g_bp_cond()
+    let h = g_bp_hit()
+    let e = g_bp_enabled()
+    let s = g_bp_slot()
     while len(l[]) > 0:
         _ = f[].pop()
         _ = l[].pop()
         _ = b[].pop()
         _ = v[].pop()
+        _ = c[].pop()
+        _ = h[].pop()
+        _ = e[].pop()
+        _ = s[].pop()
     g_bp_dirty()[] = 1
+
+
+def shift_breakpoints(path: String, first_line: Int, delta: Int, span_to: Int):
+    """An edit replaced the lines [first_line, span_to] (zero-based) with
+    first_line + 1 + delta lines. Breakpoints strictly below the edit move
+    with the text; ones inside the replaced span collapse to the line the
+    edit starts on -- a breakpoint cannot sit on lines that no longer exist,
+    and keeping it on the nearest surviving one preserves the intention.
+    Bindings reset: they were facts about the old text, and the resend that
+    `dirty` requests will re-establish them where the adapter now binds.
+
+    Called by the editor's edit path, which knows the span; the line math is
+    here because the store is."""
+    var i = 0
+    var moved = False
+    while i < breakpoint_count():
+        if g_bp_file()[][i] != path:
+            i += 1
+            continue
+        let zero_based = g_bp_line()[][i] - 1
+        if zero_based > span_to:
+            g_bp_line()[][i] += delta
+            g_bp_bound()[][i] = 0
+            g_bp_verified()[][i] = 0
+            moved = True
+        elif zero_based > first_line:
+            g_bp_line()[][i] = first_line + 1
+            g_bp_bound()[][i] = 0
+            g_bp_verified()[][i] = 0
+            moved = True
+        i += 1
+    if moved:
+        g_bp_dirty()[] = 1
 
 
 def _files_with_breakpoints() -> List[String]:
@@ -437,8 +657,61 @@ def _files_with_breakpoints() -> List[String]:
 
 
 # ── The wire ────────────────────────────────────────────────────────────────
+def _reap(var reason: String):
+    """The adapter process is gone. Everything the session claimed was a fact
+    about that process, so it all goes: the task handles, the phase, the stop,
+    the bindings -- a marker sitting on the line the LAST run bound is a
+    marker about nothing. The asked-for lines survive, as intentions for the
+    next session, exactly as they survive `stop`.
+
+    A session that ends this way must not look alive afterwards:
+    `is_running()` gates every entry point, so a reaped session is what lets
+    Debug start a fresh one instead of answering 'already debugging' about a
+    corpse."""
+    if g_task()[] == 0:
+        return
+    _put(g_dead(), reason^)
+    g_task()[] = 0
+    g_in()[] = 0
+    g_read_fd()[] = 0
+    g_phase()[] = 0
+    g_stop_line()[] = 0
+    g_stop_thread()[] = 0
+    g_pause_pending()[] = 0
+    _clear_stop()
+    _put(g_stop_file(), String())
+    _put(g_stop_reason(), String())
+    _put(g_inbox(), String())
+    g_pending()[] = List[UInt8]()
+    var i = 0
+    while i < breakpoint_count():
+        g_bp_bound()[][i] = 0
+        g_bp_verified()[][i] = 0
+        i += 1
+    g_serial()[] += 1
+
+
+def _adapter_alive() -> Bool:
+    """False when the adapter task has died, reaping it on the way. The
+    phase guard is because `g_task` is set just before `launch`, and asking
+    an unlaunched NSTask anything is one of its raisers."""
+    if g_task()[] == 0 or g_phase()[] == 0:
+        return True
+    with autoreleasepool():
+        if msg_send[Bool, "NSTask", "isRunning"](ObjCObject(g_task()[])):
+            return True
+    _reap(String("the debug adapter exited"))
+    return False
+
+
 def _send(var body: JSON) -> Bool:
     if g_in()[] == 0:
+        return False
+    # Writing into a dead adapter's pipe raises an Objective-C exception --
+    # EPIPE surfacing through NSFileHandle -- and nothing in Mojo can catch
+    # that. The liveness check is not an optimisation; it is the only guard
+    # between a crashed adapter and a crashed editor.
+    if not _adapter_alive():
         return False
     with autoreleasepool():
         let text = body.serialize()
@@ -459,6 +732,14 @@ def _send(var body: JSON) -> Bool:
 def request(var command: String, var args: JSON) -> Int:
     g_seq()[] += 1
     let id = g_seq()[]
+    if g_trace()[] != 0:
+        # Requests too, not just replies: "what did we send" is the first
+        # question a desynchronised session asks, and the answer should not
+        # require a proxy between us and the adapter.
+        if command == "setBreakpoints":
+            print("  dap request: setBreakpoints", args.serialize())
+        else:
+            print("  dap request:", command)
     var msg = JSON.object()
     msg.set(String("seq"), JSON(id))
     msg.set(String("type"), JSON(String("request")))
@@ -471,17 +752,34 @@ def request(var command: String, var args: JSON) -> Int:
 def send_breakpoints():
     """One setBreakpoints per file, which is what the protocol takes: the
     request REPLACES every breakpoint in the file it names, so a file that
-    has lost its last breakpoint still has to be told, with an empty list."""
+    has lost its last breakpoint still has to be told, with an empty list.
+
+    Disabled rows are omitted, which is the protocol's only spelling of
+    "off", and each sent row's position is recorded in `g_bp_slot` so the
+    positional reply can be laid back onto the right rows -- a skipped row
+    that consumed a reply position would verify the breakpoint after it."""
     if g_phase()[] < 2:
         return
     for path in _files_with_breakpoints():
         var lines = JSON.array()
+        var nth = 0
         var i = 0
         while i < breakpoint_count():
             if g_bp_file()[][i] == path:
-                var one = JSON.object()
-                one.set(String("line"), JSON(g_bp_line()[][i]))
-                lines.push(one^)
+                if g_bp_enabled()[][i] != 0:
+                    var one = JSON.object()
+                    one.set(String("line"), JSON(g_bp_line()[][i]))
+                    let cond = g_bp_cond()[][i]
+                    if cond != "":
+                        one.set(String("condition"), JSON(cond))
+                    let hits = g_bp_hit()[][i]
+                    if hits > 1:
+                        one.set(String("hitCondition"), JSON(String(hits)))
+                    lines.push(one^)
+                    g_bp_slot()[][i] = nth
+                    nth += 1
+                else:
+                    g_bp_slot()[][i] = -1
             i += 1
         var src = JSON.object()
         src.set(String("path"), JSON(path))
@@ -562,9 +860,19 @@ def start_with_environment(
     g_phase()[] = 1
     g_exited()[] = 0
     g_stop_line()[] = 0
+    g_pause_pending()[] = 0
     _put(g_stop_file(), String())
     _put(g_stop_reason(), String())
     _put(g_output(), String())
+    _put(g_dead(), String())
+    # The launch, kept for `relaunch`: Restart is relaunch-not-rebuild, and
+    # the config it needs is exactly what was just handed over.
+    _put(g_last_adapter(), adapter)
+    _put(g_last_program(), program)
+    _put(g_last_cwd(), cwd)
+    _put(g_last_init(), init_command)
+    _put(g_last_pre(), pre_run_command)
+    _put(g_last_env(), environment.serialize() if environment.count() > 0 else String())
 
     var init_args = JSON.object()
     init_args.set(String("adapterID"), JSON(String("lldb")))
@@ -634,21 +942,30 @@ def stop():
     args.set(String("terminateDebuggee"), JSON(True))
     _ = request(String("disconnect"), args^)
     # Drained rather than slept through: the adapter answers, and reading the
-    # answer is how we know it got as far as killing the inferior.
+    # answer is how we know it got as far as killing the inferior. The sleep
+    # is the other half of that sentence -- without it these spins finish in
+    # microseconds, long before the adapter can have read the disconnect, and
+    # termination quietly does all the work the drain was taking credit for.
+    # 400 x 5ms: two seconds of patience, then the adapter goes.
     var spins = 0
-    while spins < 200:
+    while spins < 400:
         _ = poll()
-        if g_disconnected()[] != 0:
+        if g_disconnected()[] != 0 or g_task()[] == 0:
             break
+        sleep(0.005)
         spins += 1
-    with autoreleasepool():
-        _ = msg_send[ObjCObject, "NSTask", "terminate"](ObjCObject(g_task()[]))
+    if g_task()[] != 0:
+        with autoreleasepool():
+            _ = msg_send[ObjCObject, "NSTask", "terminate"](
+                ObjCObject(g_task()[])
+            )
     g_task()[] = 0
     g_in()[] = 0
     g_read_fd()[] = 0
     g_phase()[] = 0
     g_stop_line()[] = 0
     g_stop_thread()[] = 0
+    g_pause_pending()[] = 0
     _put(g_stop_file(), String())
     _put(g_stop_reason(), String())
     _put(g_inbox(), String())
@@ -658,6 +975,28 @@ def stop():
         g_bp_verified()[][i] = 0
         i += 1
     g_serial()[] += 1
+
+
+def relaunch() -> Bool:
+    """Stop, then start again on the same binary with the same config -- no
+    rebuild, no re-derivation. The person pressed Restart, not Debug: they
+    know what is on disk and want the two-second turn. The console naming
+    the binary it is debugging is what makes that honest."""
+    if len(g_last_program()[]) == 0 or g_last_program()[][0] == "":
+        return False
+    stop()
+    var env = JSON.object()
+    let raw_env = _slot(g_last_env())
+    if raw_env != "":
+        env = parse(raw_env)
+    return start_with_environment(
+        _slot(g_last_adapter()),
+        _slot(g_last_program()),
+        _slot(g_last_cwd()),
+        _slot(g_last_init()),
+        _slot(g_last_pre()),
+        env,
+    )
 
 
 # ── Driving it ──────────────────────────────────────────────────────────────
@@ -693,13 +1032,24 @@ def step_out():
 
 
 def pause():
+    """Interrupt the running program.
+
+    The protocol wants a thread id, and before the first stop there is none
+    -- thread 0 is not "whatever is running" to this adapter, it is a
+    refusal (measured: `pause success False`, nothing stops). So with no
+    stop to learn from, the threads request supplies one: the flag is
+    answered by the reply, which pauses the first thread it names -- the
+    main thread of a program that is running is the program."""
     if not is_running() or is_stopped():
         return
-    var args = JSON.object()
-    # Thread 0 means "whatever is running" to this adapter; a real id is only
-    # known once something has stopped, which is the case this is for.
-    args.set(String("threadId"), JSON(g_stop_thread()[]))
-    _ = request(String("pause"), args^)
+    if g_stop_thread()[] != 0:
+        var args = JSON.object()
+        args.set(String("threadId"), JSON(g_stop_thread()[]))
+        _ = request(String("pause"), args^)
+        return
+    g_pause_pending()[] = 1
+    var empty = JSON.object()
+    _ = request(String("threads"), empty^)
 
 
 # ── Reading ─────────────────────────────────────────────────────────────────
@@ -769,6 +1119,11 @@ def poll() -> Int:
             _put(g_inbox(), String(acc[byte = body_at + length : acc.byte_length()]))
             _handle(parse(body))
             handled += 1
+    # The adapter can die between messages as well as after its last one.
+    # The task is the authority -- a read of zero alone can race with what
+    # the pipe still holds -- and reaping here is what keeps a later tick
+    # from curating a dead session's state instead of reporting it.
+    _ = _adapter_alive()
     return handled
 
 
@@ -791,10 +1146,14 @@ def _handle(var msg: JSON):
                 "success", msg.get("success")[].as_bool(),
                 repr(msg.get("message")[].as_string()),
             )
-        if command == "disconnect":
+        if command == "initialize":
+            _take_capabilities(msg.get("body")[])
+        elif command == "disconnect":
             g_disconnected()[] = 1
         elif command == "setBreakpoints":
             _take_breakpoints(msg.get("body")[])
+        elif command == "threads":
+            _take_threads(msg.get("body")[])
         elif command == "stackTrace":
             _take_stack(msg.get("body")[])
         elif command == "scopes":
@@ -802,6 +1161,15 @@ def _handle(var msg: JSON):
         elif command == "variables":
             _take_variables(msg.get("body")[])
         elif command == "evaluate":
+            # A reply to an ask we have already replaced is not an answer;
+            # without the seq check it lands under whatever expression is in
+            # the slot now, attributed to a question it was never asked.
+            let rseq = msg.get("request_seq")[].as_int()
+            if rseq > 0 and rseq != g_eval_seq()[]:
+                g_eval_stale()[] += 1
+                if g_trace()[] != 0:
+                    print("  dap: dropping stale evaluate reply", rseq)
+                return
             # Failure carries its explanation in `message`, success its
             # answer in `body.result`; either way the asker hears back.
             if msg.get("success")[].as_bool():
@@ -846,8 +1214,12 @@ def _event(name: String, body: JSON):
         # ready to be configured, and nothing may be configured before it.
         g_phase()[] = 2
         send_breakpoints()
-        var empty = JSON.object()
-        _ = request(String("configurationDone"), empty^)
+        # Asked for only when the adapter said it wanted it. lldb-dap always
+        # does; a client that sends it anyway to an adapter that does not is
+        # the one protocol mistake that stalls a session at launch.
+        if g_cap_config_done()[] != 0:
+            var empty = JSON.object()
+            _ = request(String("configurationDone"), empty^)
         g_phase()[] = 3
         return
     if name == "breakpoint":
@@ -863,11 +1235,17 @@ def _event(name: String, body: JSON):
         # The event says a thread stopped, not where. The line comes from the
         # stack, which is a second round trip -- so the line is set when that
         # reply lands, not here.
+        g_stack_fresh()[] = 1
         var args = JSON.object()
         args.set(String("threadId"), JSON(g_stop_thread()[]))
         args.set(String("startFrame"), JSON(0))
-        args.set(String("levels"), JSON(8))
+        args.set(String("levels"), JSON(STACK_PAGE))
         _ = request(String("stackTrace"), args^)
+        # The stopped thread's peers, on the same stop: listed for the status
+        # line and the agent, one request, no selection semantics -- resume
+        # and pause already key on the thread the stop named.
+        var targs = JSON.object()
+        _ = request(String("threads"), targs^)
         return
     if name == "exited" or name == "terminated":
         g_exited()[] = 1
@@ -878,7 +1256,19 @@ def _event(name: String, body: JSON):
         return
     if name == "output":
         let category = body.get("category")[].as_string()
-        if category == "" or category == "stdout" or category == "stderr":
+        # The program's streams, and the adapter's own console. `console` and
+        # `important` are where lldb puts its warnings -- including the one
+        # that explains an empty locals pane when no Mojo plugin rode beside
+        # the adapter. Dropping them meant the check script knew why the
+        # variables were missing and the person at the keyboard did not.
+        # `telemetry` stays excluded: nobody debugging wants to read metrics.
+        if (
+            category == ""
+            or category == "stdout"
+            or category == "stderr"
+            or category == "console"
+            or category == "important"
+        ):
             var acc = _slot(g_output())
             acc += body.get("output")[].as_string()
             _put(g_output(), acc^)
@@ -891,9 +1281,11 @@ def _take_breakpoints(body: JSON):
     """Record where each breakpoint actually bound.
 
     The reply is positional against the request, and the request was one
-    file's breakpoints in the order they sit in our lists. So this walks our
-    breakpoints for that file in the same order -- which is why the file is
-    read back out of the reply's `source` rather than assumed.
+    file's breakpoints in the order they sit in our lists -- minus any rows
+    disabled out of it, whose positions nobody sent. `g_bp_slot` is that
+    subtraction written down: the rows with a slot are the ones the reply
+    speaks for, in order. The file is read back out of the reply's `source`
+    rather than assumed, as before.
     """
     let list = body.get("breakpoints")[]
     if list.count() == 0:
@@ -905,7 +1297,7 @@ def _take_breakpoints(body: JSON):
     var nth = 0
     var i = 0
     while i < breakpoint_count() and nth < list.count():
-        if g_bp_file()[][i] == path or path == "":
+        if (g_bp_file()[][i] == path or path == "") and g_bp_slot()[][i] >= 0:
             let b = list.at(nth)[]
             let line = b.get("line")[].as_int()
             if line > 0:
@@ -948,11 +1340,16 @@ def _take_breakpoint_event(body: JSON):
 
 def _take_stack(body: JSON):
     let frames = body.get("stackFrames")[]
-    if frames.count() == 0:
-        return
-    g_frame_names()[] = List[String]()
-    g_frame_files()[] = List[String]()
-    g_frame_lines()[] = List[Int]()
+    # A stop REPLACES the stack; a later page of the same stop appends to it.
+    # The flag is set by the stopped event, so the first reply to arrive
+    # after it is always the first page.
+    var first_page = g_stack_fresh()[] != 0
+    if first_page:
+        g_stack_fresh()[] = 0
+        g_frame_names()[] = List[String]()
+        g_frame_files()[] = List[String]()
+        g_frame_lines()[] = List[Int]()
+        g_frame_ids()[] = List[Int]()
     var i = 0
     while i < frames.count():
         let f = frames.at(i)[]
@@ -961,16 +1358,167 @@ def _take_stack(body: JSON):
             _display(f.get("source")[].get("path")[].as_string())
         )
         g_frame_lines()[].append(f.get("line")[].as_int())
+        g_frame_ids()[].append(f.get("id")[].as_int())
         i += 1
+    # Paging: while the adapter says there is more stack than we have, ask
+    # for the next page -- bounded, because a runaway recursion is exactly
+    # the program someone might debug, and the pages are 32 frames each.
+    let total = body.get("totalFrames")[].as_int()
+    var got = frame_count()
+    if total > got and got < STACK_LIMIT and frames.count() > 0:
+        var args = JSON.object()
+        args.set(String("threadId"), JSON(g_stop_thread()[]))
+        args.set(String("startFrame"), JSON(got))
+        args.set(String("levels"), JSON(STACK_PAGE))
+        _ = request(String("stackTrace"), args^)
+    if not first_page:
+        return
+    if frame_count() == 0:
+        return
     let top = frames.at(0)[]
     g_stop_line()[] = top.get("line")[].as_int()
     _put(g_stop_file(), top.get("source")[].get("path")[].as_string())
     g_serial()[] += 1
+    # The frame the person reads resets to the top on every stop: a frame
+    # selected at the previous stop describes that stop, not this one.
+    g_frame_sel()[] = 0
     # Third leg of the stop chain: the frame's scopes, then its variables.
     g_frame_id()[] = top.get("id")[].as_int()
     var args = JSON.object()
     args.set(String("frameId"), JSON(g_frame_id()[]))
     _ = request(String("scopes"), args^)
+
+
+def select_frame(i: Int) -> Bool:
+    """Make frame `i` the one variables and evaluate speak for.
+
+    The gutter's stop line stays with the TOP frame -- it is where the
+    program counter is, not a view setting -- and this only moves the
+    reading position: the scopes request for the chosen frame, which the
+    existing scopes-variables chain answers. Selecting past the stack, or
+    with no stack in hand, refuses rather than guessing."""
+    if i < 0 or i >= frame_count():
+        return False
+    g_frame_sel()[] = i
+    g_frame_id()[] = g_frame_ids()[][i]
+    _clear_variables()
+    var args = JSON.object()
+    args.set(String("frameId"), JSON(g_frame_id()[]))
+    _ = request(String("scopes"), args^)
+    g_serial()[] += 1
+    return True
+
+
+def selected_frame() -> Int:
+    return g_frame_sel()[]
+
+
+def thread_count() -> Int:
+    return len(g_thread_names()[])
+
+
+def thread_name(i: Int) -> String:
+    if i < 0 or i >= thread_count():
+        return String()
+    return g_thread_names()[][i]
+
+
+def thread_id_at(i: Int) -> Int:
+    if i < 0 or i >= thread_count():
+        return 0
+    return g_thread_ids()[][i]
+
+
+def _take_capabilities(body: JSON):
+    """Read what the adapter says it can do, once, at the only moment it
+    says so. Everything downstream that varies by adapter -- whether
+    configurationDone is welcome, whether conditions exist, which exception
+    filters there are -- consults these instead of assuming lldb-dap.
+
+    configurationDone defaults to yes until this lands; the initialize
+    response always precedes the initialized event that would act on it, so
+    the truth arrives in time and the default only ever covers a reply that
+    never comes."""
+    g_cap_config_done()[] = (
+        1 if body.get("supportsConfigurationDoneRequest")[].as_bool() else 0
+    )
+    g_cap_conditional()[] = (
+        1 if body.get("supportsConditionalBreakpoints")[].as_bool() else 0
+    )
+    g_cap_filters()[] = List[String]()
+    let filters = body.get("exceptionBreakpointFilters")[]
+    var i = 0
+    while i < filters.count():
+        let f = filters.at(i)[].get("filter")[].as_string()
+        if f != "":
+            g_cap_filters()[].append(f)
+        i += 1
+    if g_trace()[] != 0:
+        var names = String()
+        var j = 0
+        while j < len(g_cap_filters()[]):
+            if j > 0:
+                names += String(", ")
+            names += g_cap_filters()[][j]
+            j += 1
+        print(
+            "  dap capabilities: cfgdone", g_cap_config_done()[],
+            "conditional", g_cap_conditional()[],
+            "filters [", names, "]",
+        )
+
+
+def raise_filter() -> String:
+    """The exception filter that means Mojo's break-on-raise, if the adapter
+    advertised one. Matched on 'mojo' or 'raise' in the name rather than an
+    exact string: the plugin's filter and lldb's own spellings differ, and
+    the adapter's list is the truth, not our guess at it."""
+    var i = 0
+    while i < len(g_cap_filters()[]):
+        let f = g_cap_filters()[][i]
+        if f.find("mojo") >= 0 or f.find("raise") >= 0:
+            return f
+        i += 1
+    return String()
+
+
+def set_exception_breakpoints(on: Bool) -> Bool:
+    """Toggle the adapter's own exception filter, live, mid-session. This is
+    what retires 'takes effect on the next debug session' for every adapter
+    that speaks it; the preRunCommands path stays as the fallback for ones
+    that do not, and `raise_filter() == \"\"` is how the caller tells them
+    apart."""
+    if g_phase()[] < 3:
+        return False
+    let which = raise_filter()
+    if which == "":
+        return False
+    var filters = JSON.array()
+    if on:
+        filters.push(JSON(which))
+    var args = JSON.object()
+    args.set(String("filters"), filters^)
+    _ = request(String("setExceptionBreakpoints"), args^)
+    return True
+
+
+def _take_threads(body: JSON):
+    g_thread_names()[] = List[String]()
+    g_thread_ids()[] = List[Int]()
+    let threads = body.get("threads")[]
+    var i = 0
+    while i < threads.count():
+        let t = threads.at(i)[]
+        g_thread_names()[].append(_display(t.get("name")[].as_string()))
+        g_thread_ids()[].append(t.get("id")[].as_int())
+        i += 1
+    # A pause with no thread id to name asked for this list; answer it with
+    # the first thread the adapter reports.
+    if g_pause_pending()[] != 0 and thread_count() > 0:
+        g_pause_pending()[] = 0
+        var args = JSON.object()
+        args.set(String("threadId"), JSON(g_thread_ids()[][0]))
+        _ = request(String("pause"), args^)
 
 
 def _take_scopes(body: JSON):
