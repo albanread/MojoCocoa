@@ -361,7 +361,7 @@ def console_sync():
     with autoreleasepool():
         let tv = ObjCObject(g_console()[])
         let text = build.output()
-        let have = g_console_shown()[]
+        var have = g_console_shown()[]
         if text.byte_length() < have:
             Obj["NSTextView"](tv.addr()).setString(nsstring(text).ptr())
         elif text.byte_length() > have:
@@ -1156,7 +1156,7 @@ def _debug_changed():
 
     let agent_steps = getenv("ROAST_AGENT_STEPS")
     if agent_steps != "":
-        let aidx = g_dbg_step_i()[]
+        var aidx = g_dbg_step_i()[]
         let averb = _nth_csv(agent_steps, aidx)
         if averb != "":
             g_dbg_step_i()[] = aidx + 1
@@ -1177,7 +1177,7 @@ def _debug_changed():
 
     let steps = getenv("ROAST_DEBUG_STEPS")
     if steps != "":
-        let idx = g_dbg_step_i()[]
+        var idx = g_dbg_step_i()[]
         let name = _nth_csv(steps, idx)
         if name != "":
             g_dbg_step_i()[] = idx + 1
@@ -1591,7 +1591,7 @@ def _apply_rename():
         # order has to be exact rather than fast.
         var a = 1
         while a < len(idx):
-            let key = idx[a]
+            var key = idx[a]
             var b = a - 1
             while b >= 0 and (
                 lsp.rename_start_line(idx[b]) > lsp.rename_start_line(key)
