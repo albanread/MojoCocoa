@@ -978,7 +978,7 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
 
 
 struct Cls[cls: StringLiteral](Copyable, Movable):
-    """The class object itself, for `+` methods: `Cls["NSColor"].blackColor()`.
+    """The class object itself, for `+` methods: `Cls["NSColor"]().blackColor()`.
 
     Constructed by looking the class up, which is why it takes no argument --
     a class is one thing in the process, not a value anyone holds.

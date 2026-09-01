@@ -121,6 +121,31 @@ enum class DeclResolvedness : uint8_t {
 /// which are always shared across them.
 class SharedState {
 public:
+  /// cocoa-mojo (sprint P5): `let` bindings whose right-hand side is a
+  /// PLACE, recorded so a later write through the same root can warn. A
+  /// `let` binds, it does not copy -- the revived keyword's semantics --
+  /// so `let start = i` reads whatever `i` holds NOW, silently, which is
+  /// the trap AGENTS.md documents three times over. The record names the
+  /// binding, the root place it aliases, and where; scope is approximated
+  /// by the enclosing function, liveness by nothing at all (the accepted
+  /// limits are in the sprint notes).
+  struct LetAliasRecord {
+    const ASTDecl *enclosingFn;
+    StringRef rootName;
+    StringRef bindingName;
+    llvm::SMLoc bindLoc;
+  };
+  SmallVector<LetAliasRecord, 0> letAliasRecords;
+
+  /// Sprint P5: does a live `let` alias this root in this function?
+  /// Returns the record to name in the warning, or null.
+  const LetAliasRecord *findLetAliasFor(const ASTDecl *enclosingFn,
+                                        StringRef rootName) const {
+    for (const auto &record : letAliasRecords)
+      if (record.rootName == rootName && record.enclosingFn == enclosingFn)
+        return &record;
+    return nullptr;
+  }
   SharedState(llvm::SourceMgr &sourceMgr, ParserConfig &config);
   ~SharedState();
 
@@ -929,6 +954,8 @@ private:
   std::string docsBasePath;
 
   std::unique_ptr<Impl> impl;
+
+
 };
 
 /// This class is intended to be used as a convenience base class for subsystems

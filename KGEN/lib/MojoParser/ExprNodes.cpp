@@ -3988,7 +3988,80 @@ static AnyValue emitBinOpCall(ASTExprAnd<AnyValue> lhs,
 ///
 /// The walrus := operator in Python requires the left side to be a simple
 /// identifier, but Mojo allows arbitrary lvalues like the assign stmt.
+/// cocoa-mojo (sprint P5): the ROOT place an expression names, if it names
+/// one. `i` is rooted at i; `times[a]` at times; `self.count` at self;
+/// `g_click()[]` at g_click -- the named_global accessor shape, whose write
+/// side (`g_click()[] = 0`) resolves to the same root. An expression that
+/// computes (`i + 1`, `f(x)`) names nothing, and a `let` bound to it has no
+/// aliasing hazard. Name-based by necessity -- the AST carries spellings,
+/// not resolved decls, this early -- which is sound within one function
+/// and is the documented approximation of the sprint.
+static StringRef letAliasRootOf(const ExprNode *expr) {
+  expr = expr->getWithoutParens();
+  if (auto *declRef = dyn_cast<DeclRefNode>(expr))
+    return declRef->spelling;
+  if (auto *sub = dyn_cast<SubscriptNode>(expr))
+    return letAliasRootOf(sub->base);
+  if (auto *attr = dyn_cast<AttributeRefNode>(expr))
+    return letAliasRootOf(attr->base);
+  if (auto *call = dyn_cast<CallNode>(expr))
+    if (auto *callee = dyn_cast<DeclRefNode>(call->callee->getWithoutParens()))
+      return callee->spelling;
+  return {};
+}
+
+/// Sprint P5: the enclosing function declaration an emitter sits in, the
+/// alias table's scope approximation.
+static const ASTDecl *enclosingFnOf(IREmitter &emitter) {
+  return emitter.declScope.getNearestDeclOfType<FnOp>();
+}
+
+/// Sprint P5: warn when a write goes through a place a live `let` aliases.
+/// The write nobody thought of as a write is the whole trap -- AGENTS.md's
+/// words -- so the warning lands on the write, naming the binding that will
+/// read through it.
+static void warnIfWriteChangesLet(IREmitter &emitter, const ExprNode *lhs,
+                                  llvm::SMLoc writeLoc) {
+  StringRef root = letAliasRootOf(lhs);
+  if (root.empty())
+    return;
+  const ASTDecl *fn = enclosingFnOf(emitter);
+  if (!fn)
+    return;
+  const auto *record =
+      emitter.shared.findLetAliasFor(fn, root);
+  if (!record)
+    return;
+  auto diag = emitter.shared.emitWarning(writeLoc);
+  diag << "this write changes what '" << record->bindingName
+       << "' reads: 'let " << record->bindingName << "' is bound to a place"
+       << " rooted at '" << record->rootName
+       << "' and reads through it live; for a snapshot use `var "
+       << record->bindingName << " = ...`";
+  diag.attachNote(record->bindLoc)
+      << "'" << record->bindingName << "' bound here";
+}
+
 AnyValue BinOpNode::emitAssign(ExprDest &dest, IREmitter &emitter) const {
+  // cocoa-mojo (sprint P5): a `let name = place` records the place it will
+  // read through live, and a plain write through the same place warns --
+  // the binding itself is immutable, so the alias can only ever be
+  // surprised by a write nobody thought of as a write.
+  if (auto *pattern = dyn_cast<UnaryOpNode>(lhs->getWithoutParens())) {
+    if (pattern->kind == ExprNode::kLetPat) {
+      StringRef root = letAliasRootOf(rhs);
+      if (!root.empty()) {
+        auto *name = dyn_cast<DeclRefNode>(pattern->subExpr->getWithoutParens());
+        if (name && enclosingFnOf(emitter))
+          emitter.shared.letAliasRecords.push_back(
+              {enclosingFnOf(emitter), root, name->spelling,
+               pattern->getLoc()});
+      }
+    }
+  } else {
+    warnIfWriteChangesLet(emitter, lhs, lhs->getLoc());
+  }
+
   // cocoa-mojo: property WRITES through `__setattr_param__` -- the
   // assignment-shaped sibling of `__getattr_param__` and the P1 call hooks.
   // `win.title = x` on a type that declares the hook re-dispatches onto
@@ -4129,6 +4202,11 @@ AnyValue BinOpNode::emitAssign(ExprDest &dest, IREmitter &emitter) const {
 ///    a[test1()] += test2()
 ///  ==> test1; test2
 AnyValue BinOpNode::emitInplace(ExprDest &dest, IREmitter &emitter) const {
+  // cocoa-mojo (sprint P5): `|=` and friends are writes too -- the flag
+  // trap in AGENTS.md is `g_click()[] = 0`, but the status-line one is a
+  // compound update.
+  warnIfWriteChangesLet(emitter, lhs, lhs->getLoc());
+
   AnyValue lhsRep;
   RValue rhsRep;
 
@@ -4168,6 +4246,7 @@ ExprNode::ELVIITResult BinOpNode::emitLValueIfImplicitlyTyped(
     return AnyValue(lv);
   return {}; // Failure emitting the LValue.
 }
+
 
 AnyValue BinOpNode::emitIR(ExprDest &dest, IREmitter &emitter) const {
   // Handle weird binary operators specially if we have them.
