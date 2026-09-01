@@ -91,6 +91,16 @@ comptime P = OpaquePointer[MutUntrackedOrigin]
 # See the IMP*Obj note in std/objc/classes.mojo.
 comptime NIL = 0
 
+# Key-equivalent modifier masks. These were spelled 0x20000 | 0x100000 at nine
+# menu items; the SDK has names for them and nsenum reads them from it.
+comptime KEY_SHIFT_CMD = nsenum["NSEventModifierFlagShift"]() | nsenum[
+    "NSEventModifierFlagCommand"
+]()
+comptime KEY_CTRL = nsenum["NSEventModifierFlagControl"]()
+comptime KEY_CTRL_CMD = nsenum["NSEventModifierFlagControl"]() | nsenum[
+    "NSEventModifierFlagCommand"
+]()
+
 
 # Geometry comes from gridview, which needs the same structs to do its
 # arithmetic. One declaration, not two that can drift.
@@ -224,7 +234,6 @@ comptime TB_FIND = "roast.find"
 
 def toolbar_ids() -> ObjCObject:
     """The toolbar's item identifiers, in bar order."""
-    let NSMutableArray = ObjCClass.lookup["NSMutableArray"]()
     let ids = Cls["NSMutableArray"]().array()
     for name in [
         String(TB_BUILD),
@@ -300,27 +309,27 @@ class RoastAppDelegate:
         try:
             var any = False
             with autoreleasepool():
-                let n = msg_send[Int, "NSArray", "count"](paths)
+                let list = Obj["NSArray"](paths.addr())
+                let n = list.count()
                 var i = 0
                 while i < n:
                     let one = ns_to_string(
-                        msg_send[ObjCObject, "NSArray", "objectAtIndex:"](
-                            paths, i
-                        )
+                        ObjCObject(list.objectAtIndex(i).id)
                     )
                     if open_path(one):
                         any = True
                     i += 1
             if any:
                 bring_to_front()
-            _ = msg_send[ObjCObject, "NSApplication", "replyToOpenOrPrint:"](
-                app, Int(0) if any else Int(2)
-            )
+            var reply = nsenum["NSApplicationDelegateReplyFailure"]()
+            if any:
+                reply = nsenum["NSApplicationDelegateReplySuccess"]()
+            _ = Obj["NSApplication"](app.addr()).replyToOpenOrPrint(reply)
         except:
             try:
-                _ = msg_send[
-                    ObjCObject, "NSApplication", "replyToOpenOrPrint:"
-                ](app, Int(2))
+                _ = Obj["NSApplication"](app.addr()).replyToOpenOrPrint(
+                    nsenum["NSApplicationDelegateReplyFailure"]()
+                )
             except:
                 pass
 
@@ -439,13 +448,10 @@ def _bundle_toolchain() -> String:
     """
     try:
         with autoreleasepool():
-            let NSBundle = ObjCClass.lookup["NSBundle"]()
-            let main = msg_send[
-                ObjCObject, "NSBundle", "mainBundle", is_class=True
-            ](NSBundle.as_object())
-            if main.addr() == 0:
+            let main = Cls["NSBundle"]().mainBundle()
+            if main.id == 0:
                 return String()
-            let res = msg_send[ObjCObject, "NSBundle", "resourcePath"](main)
+            let res = Obj["NSBundle"](main.id).resourcePath()
             if res.addr() == 0:
                 return String()
             return ns_to_string(res) + String("/CocoaMojo")
@@ -1662,46 +1668,30 @@ def ask_new_name(old: String) -> String:
     """The rename prompt. An alert with a text field in it, which is what a
     Mac app uses when it needs one short string and nothing else."""
     with autoreleasepool():
-        let NSAlert = ObjCClass.lookup["NSAlert"]()
-        var alert = msg_send[ObjCObject, "NSAlert", "alloc", is_class=True](
-            NSAlert.as_object()
-        )
-        alert = msg_send[ObjCObject, "NSObject", "init"](alert)
-        _ = msg_send[ObjCObject, "NSAlert", "setMessageText:"](
-            alert, nsstring(String("Rename")).ptr()
-        )
-        _ = msg_send[ObjCObject, "NSAlert", "setInformativeText:"](
-            alert,
+        # alloc answers `@` and nothing more, so the class is stated at the
+        # wrap; init then keeps it, and every line below is checked.
+        let alert = Obj["NSAlert"](Cls["NSAlert"]().alloc().id).init()
+        _ = alert.setMessageText(nsstring(String("Rename")).ptr())
+        _ = alert.setInformativeText(
             nsstring(
                 String("Every use in the project is renamed with it.")
-            ).ptr(),
+            ).ptr()
         )
-        _ = msg_send[ObjCObject, "NSAlert", "addButtonWithTitle:"](
-            alert, nsstring(String("Rename")).ptr()
+        _ = alert.addButtonWithTitle(nsstring(String("Rename")).ptr())
+        _ = alert.addButtonWithTitle(nsstring(String("Cancel")).ptr())
+
+        let field = Obj["NSTextField"](
+            Cls["NSTextField"]().alloc().id
+        ).initWithFrame(rect(0.0, 0.0, 260.0, 24.0))
+        _ = field.setStringValue(nsstring(old).ptr())
+        _ = alert.setAccessoryView(ObjCObject(field.id))
+        _ = Obj["NSWindow"](alert.window().id).makeFirstResponder(
+            ObjCObject(field.id)
         )
-        _ = msg_send[ObjCObject, "NSAlert", "addButtonWithTitle:"](
-            alert, nsstring(String("Cancel")).ptr()
-        )
-        let NSTextField = ObjCClass.lookup["NSTextField"]()
-        var field = msg_send[
-            ObjCObject, "NSTextField", "alloc", is_class=True
-        ](NSTextField.as_object())
-        field = msg_send[ObjCObject, "NSView", "initWithFrame:"](
-            field, rect(0.0, 0.0, 260.0, 24.0)
-        )
-        _ = msg_send[ObjCObject, "NSControl", "setStringValue:"](
-            field, nsstring(old).ptr()
-        )
-        _ = msg_send[ObjCObject, "NSAlert", "setAccessoryView:"](
-            alert, field.ptr()
-        )
-        let win = msg_send[ObjCObject, "NSAlert", "window"](alert)
-        _ = msg_send[Bool, "NSWindow", "makeFirstResponder:"](win, field.ptr())
-        if msg_send[Int, "NSAlert", "runModal"](alert) != 1000:
+        # 1000 was NSAlertFirstButtonReturn, which is a name the SDK has.
+        if alert.runModal() != nsenum["NSAlertFirstButtonReturn"]():
             return String()
-        return ns_to_string(
-            msg_send[ObjCObject, "NSControl", "stringValue"](field)
-        )
+        return ns_to_string(ObjCObject(field.stringValue().id))
 
 
 def ask_python_requirement() -> String:
@@ -1712,47 +1702,32 @@ def ask_python_requirement() -> String:
     form; the Python manager resolves a relative path against the project.
     """
     with autoreleasepool():
-        let NSAlert = ObjCClass.lookup["NSAlert"]()
-        var alert = msg_send[ObjCObject, "NSAlert", "alloc", is_class=True](
-            NSAlert.as_object()
+        let alert = Obj["NSAlert"](Cls["NSAlert"]().alloc().id).init()
+        _ = alert.setMessageText(
+            nsstring(String("Install Python package")).ptr()
         )
-        alert = msg_send[ObjCObject, "NSObject", "init"](alert)
-        _ = msg_send[ObjCObject, "NSAlert", "setMessageText:"](
-            alert, nsstring(String("Install Python package")).ptr()
-        )
-        _ = msg_send[ObjCObject, "NSAlert", "setInformativeText:"](
-            alert,
+        _ = alert.setInformativeText(
             nsstring(
                 String(
                     "Enter one package requirement, for example numpy==2.3, "
                     "or -r requirements-dev.txt. pip installs it into this "
                     "project's managed environment."
                 )
-            ).ptr(),
+            ).ptr()
         )
-        _ = msg_send[ObjCObject, "NSAlert", "addButtonWithTitle:"](
-            alert, nsstring(String("Install")).ptr()
+        _ = alert.addButtonWithTitle(nsstring(String("Install")).ptr())
+        _ = alert.addButtonWithTitle(nsstring(String("Cancel")).ptr())
+
+        let field = Obj["NSTextField"](
+            Cls["NSTextField"]().alloc().id
+        ).initWithFrame(rect(0.0, 0.0, 360.0, 24.0))
+        _ = alert.setAccessoryView(ObjCObject(field.id))
+        _ = Obj["NSWindow"](alert.window().id).makeFirstResponder(
+            ObjCObject(field.id)
         )
-        _ = msg_send[ObjCObject, "NSAlert", "addButtonWithTitle:"](
-            alert, nsstring(String("Cancel")).ptr()
-        )
-        let NSTextField = ObjCClass.lookup["NSTextField"]()
-        var field = msg_send[
-            ObjCObject, "NSTextField", "alloc", is_class=True
-        ](NSTextField.as_object())
-        field = msg_send[ObjCObject, "NSView", "initWithFrame:"](
-            field, rect(0.0, 0.0, 360.0, 24.0)
-        )
-        _ = msg_send[ObjCObject, "NSAlert", "setAccessoryView:"](
-            alert, field.ptr()
-        )
-        let win = msg_send[ObjCObject, "NSAlert", "window"](alert)
-        _ = msg_send[Bool, "NSWindow", "makeFirstResponder:"](win, field.ptr())
-        if msg_send[Int, "NSAlert", "runModal"](alert) != 1000:
+        if alert.runModal() != nsenum["NSAlertFirstButtonReturn"]():
             return String()
-        return ns_to_string(
-            msg_send[ObjCObject, "NSControl", "stringValue"](field)
-        )
+        return ns_to_string(ObjCObject(field.stringValue().id))
 
 
 def word_under_caret() -> String:
@@ -2155,7 +2130,6 @@ class RoastActions:
         agent's `run-script` verb uses -- one path, two ways in."""
         try:
             with autoreleasepool():
-                let NSOpenPanel = ObjCClass.lookup["NSOpenPanel"]()
                 let panel = Cls["NSOpenPanel"]().openPanel()
                 Obj["NSOpenPanel"](panel.addr()).setCanChooseFiles(True)
                 Obj["NSOpenPanel"](panel.addr()).setCanChooseDirectories(
@@ -2209,7 +2183,6 @@ class RoastActions:
         them away deserves a question."""
         try:
             with autoreleasepool():
-                let NSAlert = ObjCClass.lookup["NSAlert"]()
                 var alert = Cls["NSAlert"]().alloc()
                 alert = Obj["NSAlert"](alert.addr()).init()
                 Obj["NSAlert"](alert.addr()).setMessageText(
@@ -2243,7 +2216,6 @@ class RoastActions:
     def roastOpenFolder_(self, sender: ObjCObject):
         try:
             with autoreleasepool():
-                let NSOpenPanel = ObjCClass.lookup["NSOpenPanel"]()
                 let panel = Cls["NSOpenPanel"]().openPanel()
                 Obj["NSOpenPanel"](panel.addr()).setCanChooseFiles(False)
                 Obj["NSOpenPanel"](panel.addr()).setCanChooseDirectories(True)
@@ -2261,7 +2233,6 @@ class RoastActions:
         other open panel on the machine."""
         try:
             with autoreleasepool():
-                let NSOpenPanel = ObjCClass.lookup["NSOpenPanel"]()
                 let panel = Cls["NSOpenPanel"]().openPanel()
                 Obj["NSOpenPanel"](panel.addr()).setCanChooseFiles(True)
                 Obj["NSOpenPanel"](panel.addr()).setCanChooseDirectories(False)
@@ -3033,7 +3004,6 @@ class RoastActions:
                 let name = String(Obj["NSString"](key.addr()).length())
                 _ = name  # length forces a real NSString; the compare is below
 
-                let NSToolbarItem = ObjCClass.lookup["NSToolbarItem"]()
                 var item = Cls["NSToolbarItem"]().alloc()
                 item = Obj["NSToolbarItem"](item.addr()).initWithItemIdentifier(
                     ident
@@ -3041,7 +3011,6 @@ class RoastActions:
 
                 # Search is a view item, not a button: it carries an NSSearchField.
                 if Obj["NSString"](key.addr()).isEqualToString(nsstring(String(TB_FIND)).ptr()):
-                    let NSSearchField = ObjCClass.lookup["NSSearchField"]()
                     var field = Cls["NSSearchField"]().alloc()
                     field = Obj["NSSearchField"](field.addr()).initWithFrame(
                         rect(0.0, 0.0, 240.0, 24.0)
@@ -3120,7 +3089,6 @@ class RoastActions:
                 # An SF Symbol, or the item renders as an empty bordered circle.
                 # The accessibility description doubles as the tooltip source, so
                 # the title serves for both rather than passing nil.
-                let NSImage = ObjCClass.lookup["NSImage"]()
                 let image = Cls["NSImage"]().imageWithSystemSymbolName_accessibilityDescription(
                     nsstring(symbol).ptr(),
                     nsstring(title).ptr(),
@@ -3305,18 +3273,11 @@ def bring_to_front():
     at it, and macOS does not activate an already-running app for us."""
     try:
         with autoreleasepool():
-            let NSApplication = ObjCClass.lookup["NSApplication"]()
-            let app = msg_send[
-                ObjCObject, "NSApplication", "sharedApplication", is_class=True
-            ](NSApplication.as_object())
-            _ = msg_send[
-                ObjCObject, "NSApplication", "activateIgnoringOtherApps:"
-            ](app, True)
+            _ = Cls["NSApplication"]().sharedApplication(
+            ).activateIgnoringOtherApps(True)
             if g_window()[] != 0:
-                let win = ObjCObject(g_window()[])
-                _ = msg_send[ObjCObject, "NSWindow", "makeKeyAndOrderFront:"](
-                    win, win.ptr()
-                )
+                let win = Obj["NSWindow"](g_window()[])
+                _ = win.makeKeyAndOrderFront(ObjCObject(win.id))
     except:
         pass
 
@@ -3380,9 +3341,7 @@ def capture_session() -> JSON:
 
     if g_window()[] != 0:
         with autoreleasepool():
-            let f = msg_send[CGRect, "NSWindow", "frame"](
-                ObjCObject(g_window()[])
-            )
+            let f = Obj["NSWindow"](g_window()[]).frame()
             var frame = JSON.array()
             frame.push(JSON(Int(f.origin.x)))
             frame.push(JSON(Int(f.origin.y)))
@@ -3422,17 +3381,13 @@ def apply_window_frame(doc: JSON):
         Float64(f.at(0)[].as_int()), Float64(f.at(1)[].as_int()), w, h
     )
     with autoreleasepool():
-        let NSScreen = ObjCClass.lookup["NSScreen"]()
-        let screens = msg_send[
-            ObjCObject, "NSScreen", "screens", is_class=True
-        ](NSScreen.as_object())
-        let n = msg_send[Int, "NSArray", "count"](screens)
+        # +screens answers `@`, so the array class is stated once here.
+        let screens = Obj["NSArray"](Cls["NSScreen"]().screens().id)
+        let n = screens.count()
         var visible = False
         var i = 0
         while i < n:
-            let sf = msg_send[CGRect, "NSScreen", "frame"](
-                msg_send[ObjCObject, "NSArray", "objectAtIndex:"](screens, i)
-            )
+            let sf = Obj["NSScreen"](screens.objectAtIndex(i).id).frame()
             # The title bar has to be reachable: a generous overlap of the
             # window's top edge with some screen is the whole test.
             let top = want.origin.y + want.size.height
@@ -3448,9 +3403,7 @@ def apply_window_frame(doc: JSON):
         if not visible:
             print("roast: saved window frame is off screen, ignoring it")
             return
-        _ = msg_send[ObjCObject, "NSWindow", "setFrame:display:"](
-            ObjCObject(g_window()[]), want, True
-        )
+        _ = Obj["NSWindow"](g_window()[]).setFrame_display(want, True)
 
 
 def restore_session() -> Int:
@@ -3675,7 +3628,6 @@ class RoastTabBar(NSView):
             self._attrs = 0
             self._dim = 0
         let system = current_theme() == "System"
-        let NSMutableDictionary = ObjCClass.lookup["NSMutableDictionary"]()
         var ta = Cls["NSMutableDictionary"]().dictionary()
         Obj["NSMutableDictionary"](ta.addr()).setObject_forKey(
             Cls["NSFont"]().systemFontOfSize(Float64(12.0)).ptr(),
@@ -3715,7 +3667,6 @@ class RoastTabBar(NSView):
             with autoreleasepool():
                 let view = ObjCObject(self.__objc_id)
                 let bounds = Obj["NSView"](view.addr()).bounds()
-                let NSColorT = ObjCClass.lookup["NSColor"]()
 
                 # The bar, a shade back from the editor so the active tab can
                 # be the one that matches it. Under a theme the bar takes the
@@ -3929,7 +3880,6 @@ def ask_save_close(name: String) -> Int:
     -1 cancel. Buttons in Cocoa's own order, so the dialog reads like every
     other editor's."""
     with autoreleasepool():
-        let NSAlert = ObjCClass.lookup["NSAlert"]()
         var alert = Cls["NSAlert"]().alloc()
         alert = Obj["NSAlert"](alert.addr()).init()
         Obj["NSAlert"](alert.addr()).setMessageText(nsstring(
@@ -4182,7 +4132,6 @@ def children_of(dir: String) -> ObjCObject:
     files someone wrote.
     """
     if g_tree_cache()[] == 0:
-        let NSMutableDictionary = ObjCClass.lookup["NSMutableDictionary"]()
         let d = Cls["NSMutableDictionary"]().dictionary()
         _ = external_call["objc_retain", P](d.ptr())
         g_tree_cache()[] = d.addr()
@@ -4194,14 +4143,12 @@ def children_of(dir: String) -> ObjCObject:
     if hit.addr() != 0:
         return hit
 
-    let NSFileManager = ObjCClass.lookup["NSFileManager"]()
     let fm = Cls["NSFileManager"]().defaultManager()
     var dirpath = dir
     let names = Obj["NSFileManager"](fm.addr()).contentsOfDirectoryAtPath_error(
         nsstring(dirpath).ptr(), ObjCObject(0).ptr()
     )
 
-    let NSMutableArray = ObjCClass.lookup["NSMutableArray"]()
     var out = Cls["NSMutableArray"]().array()
     if names.addr() != 0:
         let count = Obj["NSArray"](names.addr()).count()
@@ -4237,7 +4184,6 @@ def children_of(dir: String) -> ObjCObject:
 
 def is_directory(path: String) -> Bool:
     with autoreleasepool():
-        let NSFileManager = ObjCClass.lookup["NSFileManager"]()
         let fm = Cls["NSFileManager"]().defaultManager()
         var p2 = path
         # A bool out-parameter would be better; asking the URL is simpler and
@@ -4558,7 +4504,6 @@ def save_current() -> Bool:
         with autoreleasepool():
             var path = document.path_at(document.current_index())
             if path == "":
-                let NSSavePanel = ObjCClass.lookup["NSSavePanel"]()
                 let panel = Cls["NSSavePanel"]().savePanel()
                 if Obj["NSSavePanel"](panel.addr()).runModal() != 1:
                     return False
@@ -4621,7 +4566,6 @@ def add_item(
     items were disabled and did nothing at all. Anything named roast* names its
     target.
     """
-    let NSMenuItem = ObjCClass.lookup["NSMenuItem"]()
     var item = Cls["NSMenuItem"]().alloc()
     item = Obj["NSMenuItem"](item.addr()).initWithTitle_action_keyEquivalent(
         nsstring(title).ptr(), sel_named(selector).ptr(), nsstring(key).ptr()
@@ -4688,7 +4632,6 @@ def _dir_entries(path: String) -> List[String]:
     var out = List[String]()
     try:
         with autoreleasepool():
-            let NSFileManager = ObjCClass.lookup["NSFileManager"]()
             let fm = Cls["NSFileManager"]().defaultManager()
             var local = path
             let names = Obj["NSFileManager"](fm.addr()).contentsOfDirectoryAtPath_error(
@@ -4837,7 +4780,6 @@ def _copy_tree(source: String, destination: String) -> Bool:
     """NSFileManager's copy, whole-tree, refusing to overwrite."""
     try:
         with autoreleasepool():
-            let NSFileManager = ObjCClass.lookup["NSFileManager"]()
             let fm = Cls["NSFileManager"]().defaultManager()
             var err = ObjCObject(0)
             return Obj["NSFileManager"](fm.addr()).copyItemAtPath_toPath_error(
@@ -4852,7 +4794,6 @@ def _copy_tree(source: String, destination: String) -> Bool:
 def _remove_tree(path: String) -> Bool:
     try:
         with autoreleasepool():
-            let NSFileManager = ObjCClass.lookup["NSFileManager"]()
             let fm = Cls["NSFileManager"]().defaultManager()
             var err = ObjCObject(0)
             return Obj["NSFileManager"](fm.addr()).removeItemAtPath_error(
@@ -4970,7 +4911,6 @@ def example_projects() -> List[String]:
         return out^
     try:
         with autoreleasepool():
-            let NSFileManager = ObjCClass.lookup["NSFileManager"]()
             let fm = Cls["NSFileManager"]().defaultManager()
             var dirpath = base
             let names = Obj["NSFileManager"](fm.addr()).contentsOfDirectoryAtPath_error(
@@ -4998,7 +4938,6 @@ def example_projects() -> List[String]:
 def file_exists(path: String) -> Bool:
     try:
         with autoreleasepool():
-            let NSFileManager = ObjCClass.lookup["NSFileManager"]()
             let fm = Cls["NSFileManager"]().defaultManager()
             var local = path
             return Obj["NSFileManager"](fm.addr()).fileExistsAtPath(
@@ -5093,8 +5032,6 @@ def add_submenu(
     parent: ObjCObject, title: String
 ) -> ObjCObject:
     """A titled submenu hung off the main menu bar; returns the submenu."""
-    let NSMenu = ObjCClass.lookup["NSMenu"]()
-    let NSMenuItem = ObjCClass.lookup["NSMenuItem"]()
 
     var holder = Cls["NSMenuItem"]().alloc()
     holder = Obj["NSMenuItem"](holder.addr()).init()
@@ -5345,7 +5282,6 @@ def install_theme_menu():
 
 def build_menu_bar(app: ObjCObject, actions: Int):
     """The menu bar. AppKit fills in Window and Services if we point it there."""
-    let NSMenu = ObjCClass.lookup["NSMenu"]()
     var bar = Cls["NSMenu"]().alloc()
     bar = Obj["NSMenu"](bar.addr()).initWithTitle(
         nsstring(String("MainMenu")).ptr()
@@ -5371,7 +5307,7 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         actions,
     )
     Obj["NSMenuItem"](folder_item.addr()).setKeyEquivalentModifierMask(
-        Int(0x20000 | 0x100000)
+        KEY_SHIFT_CMD
     )
     _ = add_item(file, String("Save"), String("roastSave:"), String("s"), actions)
     let save_all = add_item(
@@ -5400,7 +5336,7 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         String("roastResetUserSpace:"), String(""), actions,
     )
     Obj["NSMenuItem"](save_all.addr()).setKeyEquivalentModifierMask(
-        Int(0x20000 | 0x100000)
+        KEY_SHIFT_CMD
     )
     _ = add_item(
         file, String("Close Tab"), String("roastCloseTab:"), String("w"), actions
@@ -5421,7 +5357,7 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     let comp = add_item(
         edit, String("Complete"), String("roastComplete:"), String(" "), actions
     )
-    Obj["NSMenuItem"](comp.addr()).setKeyEquivalentModifierMask(Int(0x40000))
+    Obj["NSMenuItem"](comp.addr()).setKeyEquivalentModifierMask(KEY_CTRL)
     _ = add_item(edit, String("Find…"), String("roastFind:"), String("f"), actions)
     _ = add_item(edit, String("Find Next"), String("roastFindNext:"), String("g"), actions)
     let prev_item = add_item(
@@ -5433,7 +5369,7 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     )
     # Shift is implied by the capital, but AppKit wants it said.
     Obj["NSMenuItem"](prev_item.addr()).setKeyEquivalentModifierMask(
-        Int(0x20000 | 0x100000)
+        KEY_SHIFT_CMD
     )
     _ = add_item(edit, String("Hide Find"), String("roastHideFind:"), String("\u001b"), actions)
 
@@ -5450,8 +5386,9 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         nav, String("Find All References"), String("roastFindReferences:"),
         String("F"), actions,
     )
-    _ = msg_send[ObjCObject, "NSMenuItem", "setKeyEquivalentModifierMask:"](
-        refs, Int(0x20000 | 0x100000)
+    _ = Obj["NSMenuItem"](refs.addr()).setKeyEquivalentModifierMask(
+        nsenum["NSEventModifierFlagShift"]()
+        | nsenum["NSEventModifierFlagCommand"]()
     )
     _ = add_item(
         nav, String("Next Reference"), String("roastNextReference:"),
@@ -5461,11 +5398,8 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         nav, String("Signature Help"), String("roastSignature:"),
         String("k"), actions,
     )
-    _ = msg_send[ObjCObject, "NSMenu", "addItem:"](
-        nav,
-        msg_send[ObjCObject, "NSMenuItem", "separatorItem", is_class=True](
-            ObjCClass.lookup["NSMenuItem"]().as_object()
-        ).ptr(),
+    _ = Obj["NSMenu"](nav.addr()).addItem(
+        ObjCObject(Cls["NSMenuItem"]().separatorItem().id)
     )
     # Control-Command-E, which is Xcode's rename, NOT Command-R. Build > Run
     # asks for Command-R too, and AppKit resolves a duplicate key equivalent
@@ -5475,7 +5409,7 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         nav, String("Rename…"), String("roastRename:"), String("e"), actions,
     )
     Obj["NSMenuItem"](rename_item.addr()).setKeyEquivalentModifierMask(
-        Int(0x40000 | 0x100000)
+        KEY_CTRL_CMD
     )
 
     # Debug. Xcode's key equivalents, because the muscle memory of anyone
@@ -5502,10 +5436,10 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         String("y"), actions,
     )
     Obj["NSMenuItem"](restart_item.addr()).setKeyEquivalentModifierMask(
-        Int(0x40000 | 0x100000)
+        KEY_CTRL_CMD
     )
     Obj["NSMenuItem"](pause_item.addr()).setKeyEquivalentModifierMask(
-        Int(0x40000 | 0x100000)
+        KEY_CTRL_CMD
     )
     let bor = add_item(
         debug_menu, String("Break on Raise"), String("roastBreakOnRaise:"),
@@ -5517,11 +5451,8 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         debug_menu, String("Evaluate Selection"), String("roastEvaluate:"),
         String("E"), actions,
     )
-    _ = msg_send[ObjCObject, "NSMenu", "addItem:"](
-        debug_menu,
-        msg_send[ObjCObject, "NSMenuItem", "separatorItem", is_class=True](
-            ObjCClass.lookup["NSMenuItem"]().as_object()
-        ).ptr(),
+    _ = Obj["NSMenu"](debug_menu.addr()).addItem(
+        ObjCObject(Cls["NSMenuItem"]().separatorItem().id)
     )
     _ = add_item(
         debug_menu, String("Continue"), String("roastContinue:"),
@@ -5542,11 +5473,8 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         debug_menu, String("Step Out"), String("roastStepOut:"),
         String("\uf70b"), actions,
     )
-    _ = msg_send[ObjCObject, "NSMenu", "addItem:"](
-        debug_menu,
-        msg_send[ObjCObject, "NSMenuItem", "separatorItem", is_class=True](
-            ObjCClass.lookup["NSMenuItem"]().as_object()
-        ).ptr(),
+    _ = Obj["NSMenu"](debug_menu.addr()).addItem(
+        ObjCObject(Cls["NSMenuItem"]().separatorItem().id)
     )
     _ = add_item(
         debug_menu, String("Toggle Breakpoint"),
@@ -5624,14 +5552,14 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         String("]"), actions,
     )
     Obj["NSMenuItem"](nxt.addr()).setKeyEquivalentModifierMask(
-        Int(0x20000 | 0x100000)
+        KEY_SHIFT_CMD
     )
     let prv = add_item(
         window_menu, String("Previous Tab"), String("roastPrevTab:"),
         String("["), actions,
     )
     Obj["NSMenuItem"](prv.addr()).setKeyEquivalentModifierMask(
-        Int(0x20000 | 0x100000)
+        KEY_SHIFT_CMD
     )
     Obj["NSApplication"](app.addr()).setWindowsMenu(window_menu.ptr())
 
@@ -6694,7 +6622,6 @@ def main() raises:
         g_autoclose()[] = Int(env)
 
     with autoreleasepool():
-        let NSApplication = ObjCClass.lookup["NSApplication"]()
         let app = Cls["NSApplication"]().sharedApplication()
         # Regular -- a Dock icon and a menu bar, like any Mac app -- unless
         # this is an unattended run. A harness launch is still a real GUI
@@ -6766,7 +6693,6 @@ def main() raises:
         # existed laid the whole window out against a height the content view
         # never had: the tab strip sat 32 points below the top of the content
         # and the gap between it and the toolbar was the error, made visible.
-        let NSToolbar = ObjCClass.lookup["NSToolbar"]()
         var toolbar = Cls["NSToolbar"]().alloc()
         toolbar = Obj["NSToolbar"](toolbar.addr()).initWithIdentifier(
             nsstring(String("roast.toolbar")).ptr()
@@ -6785,7 +6711,6 @@ def main() raises:
 
         # Status bar: a label pinned to the bottom, and a hairline above it.
         comptime STATUS_H = 22.0
-        let NSTextField = ObjCClass.lookup["NSTextField"]()
         let status = Cls["NSTextField"]().labelWithString(
             nsstring(String("Ready")).ptr()
         )
@@ -6803,7 +6728,6 @@ def main() raises:
 
         # The hairline the comment above always promised. Without it the
         # status text reads as a stray caption floating under the editor.
-        let NSBox = ObjCClass.lookup["NSBox"]()
         var hairline = Cls["NSBox"]().alloc()
         hairline = Obj["NSBox"](hairline.addr()).initWithFrame(
             rect(0.0, STATUS_H, w, 1.0)
@@ -6833,7 +6757,6 @@ def main() raises:
         # The compiler-is-running spinner, sitting just left of the status
         # text. Small, indeterminate, and hidden whenever it is stopped --
         # so idle costs nothing and nobody asks what a frozen spinner means.
-        let NSProgressIndicator = ObjCClass.lookup["NSProgressIndicator"]()
         var spin = Cls["NSProgressIndicator"]().alloc()
         spin = Obj["NSProgressIndicator"](spin.addr()).initWithFrame(
             rect(w - 26.0, 3.0, 16.0, 16.0)
@@ -6849,7 +6772,6 @@ def main() raises:
         g_spinner()[] = spin.addr()
 
         # Split view: sidebar on the left, editor area on the right.
-        let NSSplitView = ObjCClass.lookup["NSSplitView"]()
         var split = Cls["NSSplitView"]().alloc()
         split = Obj["NSSplitView"](split.addr()).initWithFrame(
             rect(0.0, STATUS_H, w, h - STATUS_H - TAB_H)
@@ -6862,13 +6784,11 @@ def main() raises:
 
         # Sidebar: a scrolling outline view. Milestone 1 gives it a data source
         # over a real project tree; for now it is the shape, not the content.
-        let NSScrollView = ObjCClass.lookup["NSScrollView"]()
         var side_scroll = Cls["NSScrollView"]().alloc()
         side_scroll = Obj["NSScrollView"](side_scroll.addr()).initWithFrame(
             rect(0.0, 0.0, 240.0, h - STATUS_H - TAB_H)
         )
         Obj["NSScrollView"](side_scroll.addr()).setHasVerticalScroller(True)
-        let NSOutlineView = ObjCClass.lookup["NSOutlineView"]()
         var outline = Cls["NSOutlineView"]().alloc()
         outline = Obj["NSOutlineView"](outline.addr()).initWithFrame(
             rect(0.0, 0.0, 240.0, h - STATUS_H - TAB_H)
@@ -6877,7 +6797,6 @@ def main() raises:
         Obj["NSTableView"](outline.addr()).setStyle(Int(1))
         # A column, or the view has nowhere to draw. One column, no header:
         # this is a file list, not a table.
-        let NSTableColumn = ObjCClass.lookup["NSTableColumn"]()
         var column = Cls["NSTableColumn"]().alloc()
         column = Obj["NSTableColumn"](column.addr()).initWithIdentifier(
             nsstring(String("name")).ptr()
@@ -6889,7 +6808,6 @@ def main() raises:
         # that lacks one. The view is cell-based because the delegate does not
         # implement outlineView:viewForTableColumn:item:, which is what AppKit
         # looks for to decide.
-        let NSTextFieldCell = ObjCClass.lookup["NSTextFieldCell"]()
         var cell = Cls["NSTextFieldCell"]().alloc()
         cell = Obj["NSTextFieldCell"](cell.addr()).initTextCell(
             nsstring(String("")).ptr()
@@ -6984,7 +6902,6 @@ def main() raises:
             rect(0.0, 0.0, w - 240.0, 160.0 - CONSOLE_INPUT_H)
         )
         Obj["NSScrollView"](out_scroll.addr()).setHasVerticalScroller(True)
-        let NSTextView = ObjCClass.lookup["NSTextView"]
         var console = Cls["NSTextView"]().alloc()
         console = Obj["NSTextView"](console.addr()).initWithFrame(
             rect(0.0, 0.0, w - 240.0, 160.0 - CONSOLE_INPUT_H)
@@ -7051,7 +6968,6 @@ def main() raises:
         # now -- fields, built lazily on first draw. Nothing to set up here.
 
         # A tick, only so the autoclose path exists for CI.
-        let NSTimer = ObjCClass.lookup["NSTimer"]()
         _ = Cls["NSTimer"]().scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
             Float64(0.1),
             actions.ptr(),
@@ -7219,11 +7135,11 @@ def main() raises:
             # selector_arg_classes for application:openFile:".)
             print(
                 "roast: openFile responds:",
-                msg_send[Bool, "NSObject", "respondsToSelector:"](
-                    delegate, sel["application:openFile:"]().ptr()
+                Obj["NSObject"](delegate.addr()).respondsToSelector(
+                    sel["application:openFile:"]().ptr()
                 ),
-                msg_send[Bool, "NSObject", "respondsToSelector:"](
-                    delegate, sel["application:openFiles:"]().ptr()
+                Obj["NSObject"](delegate.addr()).respondsToSelector(
+                    sel["application:openFiles:"]().ptr()
                 ),
             )
             print("roast: openFile:", open_path(dropped))
@@ -7336,7 +7252,6 @@ def main() raises:
     register_agent_events()
     print("roast: entering [NSApp run]")
     with autoreleasepool():
-        let NSApplication2 = ObjCClass.lookup["NSApplication"]()
         let app2 = Cls["NSApplication"]().sharedApplication()
         Obj["NSApplication"](app2.addr()).run()
     print("roast: exited run loop")

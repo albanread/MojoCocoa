@@ -831,7 +831,6 @@ def start_with_environment(
     if is_running():
         return True
     with autoreleasepool():
-        let NSTask = ObjCClass.lookup["NSTask"]()
         var task = Cls["NSTask"]().alloc()
         task = Obj["NSTask"](task.addr()).init()
         var path = server
@@ -853,7 +852,6 @@ def start_with_environment(
             )
         apply_environment(task, environment)
 
-        let NSPipe = ObjCClass.lookup["NSPipe"]()
         let inp = Cls["NSPipe"]().pipe()
         let outp = Cls["NSPipe"]().pipe()
         Obj["NSTask"](task.addr()).setStandardInput(inp.ptr())
