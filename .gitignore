@@ -24,6 +24,9 @@ local.bazelrc
 # rather than as a bare `build/`, for the reason above.
 /examples/*/build/
 /examples/fern/fern.png
+# fern writes beside its working directory, so running it from the repo
+# root drops one here too.
+/fern.png
 develop-eggs/
 dist/
 downloads/
