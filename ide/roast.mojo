@@ -4559,36 +4559,126 @@ def _dir_entries(path: String) -> List[String]:
 
 
 def _merge_new_examples(bundle: String, user: String) -> Bool:
-    """Bring across everything the bundle has and the user copy lacks.
+    """Copy every example folder the bundle has and the user copy lacks.
 
-    Additive and non-destructive, PER FILE rather than per folder. Skipping a
-    folder whole was the obvious reading of "do not touch what someone has
-    edited", and it meant an example could never gain a file: a release that
-    added ui.mojo and a new tune to abcplayer changed nothing for anyone who
-    already had abcplayer, while a brand-new example appeared normally. The
-    example was in the image, in the payload, and in the bundle, and still
-    did not reach the person who installed it.
+    Whole folders, and that is the point. Merging FILE by file was tried and
+    is worse than either alternative: abcplayer gained a new ui.mojo while
+    keeping the seven older files beside it, and that combination -- which
+    has never existed anywhere -- does not compile. An example is a unit. A
+    stale example is merely old; a mixed one is broken.
 
-    A file that already exists is still left exactly as it is, so edits
-    survive. A file that was deleted comes back, which is the right trade for
-    a folder that is meant to be a copy of what shipped.
+    Refreshing an example that changed is a separate job, done once per
+    toolchain by _refresh_changed_examples, because doing it on every launch
+    would fight anyone editing one.
     """
     var brought = False
+    let entries = _dir_entries(bundle)
+    for i in range(len(entries)):
+        let name = entries[i]
+        let dst = user + String("/") + name
+        if file_exists(dst):
+            continue
+        if _copy_tree(bundle + String("/") + name, dst):
+            brought = True
+    return brought
+
+
+def _trees_equal(a: String, b: String) -> Bool:
+    """NSFileManager's recursive content comparison."""
+    try:
+        with autoreleasepool():
+            let fm = Cls["NSFileManager"]().defaultManager()
+            return Obj["NSFileManager"](fm.addr()).contentsEqualAtPath_andPath(
+                nsstring(a).ptr(), nsstring(b).ptr()
+            )
+    except:
+        return False
+
+
+def _move_tree(source: String, destination: String) -> Bool:
+    try:
+        with autoreleasepool():
+            let fm = Cls["NSFileManager"]().defaultManager()
+            var err = ObjCObject(0)
+            return Obj["NSFileManager"](fm.addr()).moveItemAtPath_toPath_error(
+                nsstring(source).ptr(),
+                nsstring(destination).ptr(),
+                Pointer(to=err).unsafe_bitcast[P]()[],
+            )
+    except:
+        return False
+
+
+def _refresh_changed_examples(bundle: String, user: String, tag: String) -> Int:
+    """Replace examples the toolchain has changed, keeping what was there.
+
+    Run once per toolchain rather than on every launch, so that editing an
+    example does not mean finding it moved aside the next time Roast starts.
+
+    An example whose folder differs from the shipped one is put aside under
+    `.superseded/<tag>/` and replaced. Nothing is deleted: an edit survives
+    in a folder named after the toolchain that displaced it, which is more
+    use than a backup named after the day.
+    """
+    var moved = 0
     let entries = _dir_entries(bundle)
     for i in range(len(entries)):
         let name = entries[i]
         let src = bundle + String("/") + name
         let dst = user + String("/") + name
         if not file_exists(dst):
-            if _copy_tree(src, dst):
-                brought = True
+            _ = _copy_tree(src, dst)
             continue
-        # Present already: recurse, so a folder can gain files without
-        # losing the ones beside them.
-        if is_directory(src) and is_directory(dst):
-            if _merge_new_examples(src, dst):
-                brought = True
-    return brought
+        if _trees_equal(src, dst):
+            continue
+        let attic = user + String("/.superseded/") + tag
+        _ = build.ensure_dir(attic)
+        if _move_tree(dst, attic + String("/") + name):
+            if _copy_tree(src, dst):
+                moved += 1
+    return moved
+
+
+def _read_marker(path: String) -> String:
+    try:
+        with open(path, "r") as f:
+            return f.read()
+    except:
+        return String()
+
+
+def _write_marker(path: String, var text: String):
+    try:
+        with open(path, "w") as f:
+            f.write(text)
+    except:
+        pass
+
+
+def _toolchain_tag(tc: String) -> String:
+    """What names this toolchain, for deciding whether it has changed.
+
+    The install puts each version in its own directory with `current` a
+    symlink to it, so the link's target IS the version. A development
+    distribution has no such link, and its path stands in -- which never
+    changes, so a dev tree is left alone and Reset covers it.
+    """
+    if tc.endswith("/current"):
+        try:
+            with autoreleasepool():
+                let fm = Cls["NSFileManager"]().defaultManager()
+                let target = Obj["NSFileManager"](
+                    fm.addr()
+                ).destinationOfSymbolicLinkAtPath_error(
+                    nsstring(tc).ptr(), ObjCObject(0).ptr()
+                )
+                if not target.is_nil():
+                    let t = ns_to_string(target)
+                    if len(t.as_bytes()) > 0:
+                        return t^
+        except:
+            pass
+    return tc
 
 
 def _copy_tree(source: String, destination: String) -> Bool:
@@ -4654,8 +4744,11 @@ def migrate_user_space(force: Bool = False) -> Bool:
     let ex_dst = user_examples_dir()
     if force and file_exists(ex_dst):
         _ = _remove_tree(ex_dst)
+    let ex_src = tc + String("/share/examples")
+    let ex_marker = ex_dst + String("/.seeded")
     if not file_exists(ex_dst + String("/README.md")):
-        did = _copy_tree(tc + String("/share/examples"), ex_dst) or did
+        did = _copy_tree(ex_src, ex_dst) or did
+        _write_marker(ex_marker, _toolchain_tag(tc))
     else:
         # The copy above runs once, on first launch. A later release that
         # ships a NEW example (chip, abcplayer) would never reach the user's
@@ -4668,7 +4761,21 @@ def migrate_user_space(force: Bool = False) -> Bool:
         # for anyone who already had abcplayer. _copy_tree refuses to
         # overwrite, so a file the user has edited is left exactly as they
         # left it.
-        did = _merge_new_examples(tc + String("/share/examples"), ex_dst) or did
+        did = _merge_new_examples(ex_src, ex_dst) or did
+        # A new toolchain brings CHANGED examples as well as new ones, and a
+        # stale file beside a new one is not a compromise -- it is a mixture
+        # that never existed and does not build. Done once per toolchain,
+        # keyed on the version the install symlink names, so editing an
+        # example does not mean finding it moved aside on every launch.
+        let tag = _toolchain_tag(tc)
+        if _read_marker(ex_marker) != tag:
+            var replaced = _refresh_changed_examples(ex_src, ex_dst, tag)
+            if replaced > 0:
+                did = True
+                print("roast: refreshed", replaced,
+                      "example(s) the toolchain changed; the previous copies",
+                      "are in Examples/.superseded/" + tag)
+            _write_marker(ex_marker, tag)
     let ide_dst = user_ide_source_dir()
     if force and file_exists(ide_dst):
         _ = _remove_tree(ide_dst)
