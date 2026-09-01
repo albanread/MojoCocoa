@@ -16,7 +16,7 @@
 # between events. Either way a note begins on the sample it was written for.
 
 from std.objc import (
-    Obj, Cls, load_framework, ObjCClass, ObjCObject, msg_send, nsstring,
+    Obj, Cls, load_framework, ObjCObject, nsenum, nsstring, ns_to_string,
     autoreleasepool, named_global, extern_object, CGPoint, CGSize, CGRect,
 )
 from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
@@ -314,43 +314,31 @@ class AbcView(NSView):
         return True
 
     def keyDown_(self, event: ObjCObject):
-        let repeat = msg_send[Bool, "NSEvent", "isARepeat"](event)
-        let chars = msg_send[
-            ObjCObject, "NSEvent", "charactersIgnoringModifiers"
-        ](event)
-        if chars.is_nil():
-            return
-        let p = msg_send[P, "NSString", "UTF8String"](chars)
-        if Int(p) == 0:
-            return
-        let text = String(unsafe_from_utf8_ptr=p.unsafe_bitcast[c_char]())
+        let repeat = Obj["NSEvent"](event.addr()).isARepeat()
+        let text = ns_to_string(ObjCObject(
+            Obj["NSEvent"](event.addr()).charactersIgnoringModifiers().id
+        ))
         if len(text.as_bytes()) == 0:
             return
         key_down(Int(text.as_bytes()[0]), repeat)
 
     def keyUp_(self, event: ObjCObject):
-        let chars = msg_send[
-            ObjCObject, "NSEvent", "charactersIgnoringModifiers"
-        ](event)
-        if chars.is_nil():
-            return
-        let p = msg_send[P, "NSString", "UTF8String"](chars)
-        if Int(p) == 0:
-            return
-        let text = String(unsafe_from_utf8_ptr=p.unsafe_bitcast[c_char]())
+        let text = ns_to_string(ObjCObject(
+            Obj["NSEvent"](event.addr()).charactersIgnoringModifiers().id
+        ))
         if len(text.as_bytes()) == 0:
             return
         key_up(Int(text.as_bytes()[0]))
 
     def mouseDown_(self, event: ObjCObject):
-        # The TYPED msg_send: an NSPoint comes back in two registers, and the
-        # dynamic path does not describe that to the ABI -- every click would
-        # land on the same wrong pixel, silently.
-        let at = msg_send[CGPoint, "NSEvent", "locationInWindow"](event)
+        # The point comes back typed: locationInWindow's @encode says
+        # NSPoint, mapped to CGPoint through the kind ladder -- two doubles
+        # in registers, described to the ABI by the database.
+        let at = Obj["NSEvent"](event.addr()).locationInWindow()
         click(at.x, at.y)
 
     def mouseDragged_(self, event: ObjCObject):
-        let at = msg_send[CGPoint, "NSEvent", "locationInWindow"](event)
+        let at = Obj["NSEvent"](event.addr()).locationInWindow()
         drag(at.x, at.y)
 
     def mouseUp_(self, event: ObjCObject):
@@ -364,26 +352,24 @@ def write_shot(view: ObjCObject, var path: String):
     screen, which is the same reason mandelbrot has MANDEL_FRAMES: a layout
     nobody can capture is a layout nobody reviews.
     """
+    from std.objc import autoreleasepool
+
     with autoreleasepool():
         let r = CGRect(CGPoint(0.0, 0.0), CGSize(WIN_W, WIN_H))
-        let rep = msg_send[
-            ObjCObject, "NSView", "bitmapImageRepForCachingDisplayInRect:"
-        ](view, r)
-        if rep.is_nil():
+        let view_t = Obj["NSView"](view.addr())
+        let rep = view_t.bitmapImageRepForCachingDisplayInRect(r)
+        if rep.id == 0:
             return
-        _ = msg_send[
-            ObjCObject, "NSView", "cacheDisplayInRect:toBitmapImageRep:"
-        ](view, r, rep.ptr())
+        _ = view_t.cacheDisplayInRect(r, toBitmapImageRep=rep.ptr())
         let empty = Cls["NSMutableDictionary"]().dictionary()
-        let data = msg_send[
-            ObjCObject, "NSBitmapImageRep",
-            "representationUsingType:properties:",
-        ](rep, Int(4), empty.ptr())      # NSBitmapImageFileTypePNG
-        if data.is_nil():
+        let data = Obj["NSBitmapImageRep"](rep.id).representationUsingType(
+            nsenum["NSBitmapImageFileTypePNG"](), properties=empty.ptr()
+        )
+        if data.id == 0:
             return
         var pth = path
-        _ = msg_send[Bool, "NSData", "writeToFile:atomically:"](
-            data, nsstring(pth).ptr(), Bool(True)
+        _ = Obj["NSData"](data.id).writeToFile(
+            nsstring(pth).ptr(), atomically=True
         )
 
 
@@ -431,25 +417,17 @@ def scan_tunes() raises:
     """Whatever is in tunes/ beside the project, so the list is never empty."""
     let dir = String(cwd()) + String("/tunes")
     with autoreleasepool():
-        let NSFileManager = ObjCClass.lookup["NSFileManager"]()
-        let fm = msg_send[
-            ObjCObject, "NSFileManager", "defaultManager", is_class=True
-        ](NSFileManager.as_object())
+        let fm = Cls["NSFileManager"]().defaultManager()
         var d = dir
-        let names = msg_send[
-            ObjCObject, "NSFileManager", "contentsOfDirectoryAtPath:error:"
-        ](fm, nsstring(d).ptr(), ObjCObject(0).ptr())
-        if names.addr() == 0:
+        let names = fm.contentsOfDirectoryAtPath(
+            nsstring(d).ptr(), error=ObjCObject(0)
+        )
+        if names.id == 0:
             return
-        let n = msg_send[Int, "NSArray", "count"](names)
+        let arr = Obj["NSArray"](names.id)
+        let n = arr.count()
         for i in range(n):
-            let item = msg_send[ObjCObject, "NSArray", "objectAtIndex:"](
-                names, i
-            )
-            let cp = msg_send[P, "NSString", "UTF8String"](item)
-            if Int(cp) == 0:
-                continue
-            let nm = String(unsafe_from_utf8_ptr=cp.unsafe_bitcast[c_char]())
+            let nm = ns_to_string(ObjCObject(arr.objectAtIndex(i).id))
             if nm.endswith(".abc"):
                 add_tune(dir + String("/") + nm)
 
@@ -457,32 +435,23 @@ def scan_tunes() raises:
 def open_panel():
     """NSOpenPanel, run modally from the pump."""
     with autoreleasepool():
-        let cls = ObjCClass.lookup["NSOpenPanel"]()
-        let panel = msg_send[
-            ObjCObject, "NSOpenPanel", "openPanel", is_class=True
-        ](cls.as_object())
-        _ = msg_send[
-            ObjCObject, "NSOpenPanel", "setAllowsMultipleSelection:"
-        ](panel, Bool(True))
-        _ = msg_send[ObjCObject, "NSOpenPanel", "setCanChooseFiles:"](
-            panel, Bool(True)
-        )
-        _ = msg_send[ObjCObject, "NSOpenPanel", "setCanChooseDirectories:"](
-            panel, Bool(False)
-        )
-        let resp = msg_send[Int, "NSOpenPanel", "runModal"](panel)
-        if resp != 1:                    # NSModalResponseOK
+        # +openPanel's result class is not in the metadata (the NSObject
+        # upper bound), so NSOpenPanel is stated once at the wrap.
+        let panel = Obj["NSOpenPanel"](Cls["NSOpenPanel"]().openPanel().id)
+        _ = panel.setAllowsMultipleSelection(True)
+        _ = panel.setCanChooseFiles(True)
+        _ = panel.setCanChooseDirectories(False)
+        let resp = panel.runModal()
+        if resp != nsenum["NSModalResponseOK"]():
             return
-        let urls = msg_send[ObjCObject, "NSOpenPanel", "URLs"](panel)
-        if urls.is_nil():
+        var urls = panel.URLs()
+        if urls.id == 0:
             return
-        let n = msg_send[Int, "NSArray", "count"](urls)
+        let arr = urls
+        let n = arr.count()
         for i in range(n):
-            let url = msg_send[ObjCObject, "NSArray", "objectAtIndex:"](urls, i)
-            let ps = msg_send[ObjCObject, "NSURL", "path"](url)
-            let cp = msg_send[P, "NSString", "UTF8String"](ps)
-            if Int(cp) != 0:
-                add_tune(String(unsafe_from_utf8_ptr=cp.unsafe_bitcast[c_char]()))
+            let ps = Obj["NSURL"](arr.objectAtIndex(i).id).path()
+            add_tune(ns_to_string(ObjCObject(ps.id)))
 
 
 def set_header(var title: String, var sub: String):
@@ -661,75 +630,61 @@ def main() raises:
         play_tune(iget(I_SEL))
 
     with autoreleasepool():
-        let NSApplication = ObjCClass.lookup["NSApplication"]()
-        let app = msg_send[
-            ObjCObject, "NSApplication", "sharedApplication", is_class=True
-        ](NSApplication.as_object())
-        _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
+        let app = Cls["NSApplication"]().sharedApplication()
+        _ = app.setActivationPolicy(
+            nsenum["NSApplicationActivationPolicyRegular"]()
+        )
 
-        let NSWindow = ObjCClass.lookup["NSWindow"]()
-        var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
-            NSWindow.as_object()
+        var win = Obj["NSWindow"](
+            contentRect=CGRect(CGPoint(160.0, 160.0), CGSize(WIN_W, WIN_H)),
+            styleMask=(
+                nsenum["NSWindowStyleMaskTitled"]()
+                | nsenum["NSWindowStyleMaskClosable"]()
+                | nsenum["NSWindowStyleMaskMiniaturizable"]()
+                | nsenum["NSWindowStyleMaskResizable"]()
+            ),
+            backing=nsenum["NSBackingStoreBuffered"](),
+            defer=False,
         )
-        win = msg_send[
-            ObjCObject, "NSWindow",
-            "initWithContentRect:styleMask:backing:defer:",
-        ](
-            win, CGRect(CGPoint(160.0, 160.0), CGSize(WIN_W, WIN_H)),
-            Int(15), Int(2), Bool(False),
-        )
-        _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
-            win, nsstring(String("ABC player")).ptr()
-        )
+        _ = win.setTitle(nsstring("ABC player").ptr())
         # An NSWindow made this way is RELEASED WHEN CLOSED by default, so
         # closing it deallocates the object this loop is about to ask whether
         # it is still visible. The answer then comes from freed memory: often
         # the app exits as if quit, sometimes it runs on with no window at
         # all, frontmost and drawing nothing. Own the window instead.
-        _ = msg_send[ObjCObject, "NSWindow", "setReleasedWhenClosed:"](
-            win, Bool(False)
-        )
+        _ = win.setReleasedWhenClosed(False)
         _ = external_call["objc_retain", P](win.ptr())
 
         let view = ObjCObject(AbcView().__objc_id)
-        _ = msg_send[ObjCObject, "NSView", "setFrame:"](
-            view, CGRect(CGPoint(0.0, 0.0), CGSize(WIN_W, WIN_H))
+        _ = Obj["NSView"](view.addr()).setFrame(
+            CGRect(CGPoint(0.0, 0.0), CGSize(WIN_W, WIN_H))
         )
         _ = external_call["objc_retain", P](view.ptr())
         g_view()[] = view.addr()
-        _ = msg_send[ObjCObject, "NSWindow", "setContentView:"](win, view.ptr())
-        _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
-            win, view.ptr()
-        )
-        _ = msg_send[ObjCObject, "NSWindow", "makeKeyAndOrderFront:"](
-            win, win.ptr()
-        )
-        _ = msg_send[ObjCObject, "NSApplication", "activateIgnoringOtherApps:"](
-            app, Bool(True)
-        )
+        _ = win.setContentView(view)
+        _ = win.makeFirstResponder(view)
+        _ = win.makeKeyAndOrderFront(ObjCObject(win.id))
+        _ = app.activateIgnoringOtherApps(True)
 
-        let NSDate = ObjCClass.lookup["NSDate"]()
-        var mode = nsstring(String("kCFRunLoopDefaultMode"))
+        var mode = nsstring("kCFRunLoopDefaultMode")
         var running = True
         while running:
             while True:
-                var past = msg_send[
-                    ObjCObject, "NSDate", "distantPast", is_class=True
-                ](NSDate.as_object())
-                var ev = msg_send[
-                    ObjCObject, "NSApplication",
-                    "nextEventMatchingMask:untilDate:inMode:dequeue:",
-                ](app, UInt64.MAX, past.ptr(), mode.ptr(), Bool(True))
-                if ev.is_nil():
-                    break
-                _ = msg_send[ObjCObject, "NSApplication", "sendEvent:"](
-                    app, ev.ptr()
+                var past = Cls["NSDate"]().distantPast()
+                var ev = app.nextEventMatchingMask(
+                    UInt64.MAX,
+                    untilDate=ObjCObject(past.id),
+                    inMode=mode,
+                    dequeue=True,
                 )
+                if ev.id == 0:
+                    break
+                _ = app.sendEvent(ObjCObject(ev.id))
             # `isVisible` is NO for a MINIATURISED window as well as a closed
             # one, so testing it alone makes the yellow button quit the app.
             # A window in the Dock is still a window.
-            if not msg_send[Bool, "NSWindow", "isVisible"](win):
-                if not msg_send[Bool, "NSWindow", "isMiniaturized"](win):
+            if not win.isVisible():
+                if not win.isMiniaturized():
                     break
 
             # Read the flags out BEFORE clearing them. `let` names the global
