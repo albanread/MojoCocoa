@@ -13,6 +13,60 @@ SDK, where it is traditionally transcribed by hand, once, wrongly.
 
 `msg_send` gets those facts from the database while your program compiles.
 
+## Built in layers, and every one of them still works
+
+This is worth understanding before the syntax, because it explains why there
+appear to be several ways to do the same thing. There are, and the choice
+between them is not stylistic.
+
+Cocoa support was added from the bottom up, and **nothing was replaced**. Each
+layer is still there, still supported, and still the thing the layer above it
+is made of.
+
+| | Layer | Where it lives | What it added |
+|---:|:---|:---|:---|
+| 1 | `msg_send`, `send`, `ObjCClass`, `ObjCObject` | `std.objc.runtime` | One C call, bound by hand. No compiler involvement at all |
+| 2 | `ObjCRef`, `autoreleasepool` | `std.objc.ownership` | Retain and release that cannot be forgotten |
+| 3 | `NSString`, `CGRect`, `NSError` → `raises` | `std.objc.foundation`, `.geometry`, `.error` | The types that cross the boundary constantly |
+| 4 | `ObjCClassBuilder` | `std.objc.classes` | Assembling a class at run time, method by method |
+| 5 | **`cocoakb`** | the compiler | The compiler can ask the SDK questions *while compiling* |
+| 6 | **`class`** | the compiler | Declaring an Objective-C class is a declaration |
+| 7 | `Obj[...]`, `Cls[...]` | `std.objc.typed` | Calling one is a call, and the SDK types the result |
+| 8 | keyword construction, `nsenum`, `String` bridging | the compiler | The labels name the initialiser; constants have names |
+
+The first four are **ordinary library code**. They were written before the
+compiler knew anything about Objective-C, and a program using only those still
+compiles and runs today — that is what `spikes/` proves on every build.
+
+Layer 5 is the hinge. Once the compiler can query the SDK during elaboration,
+a selector can be *checked* rather than hoped for, and everything above it
+follows: `class` (6) is that checking pointed at declarations, the typed call
+surface (7) is it pointed at calls, and construction (8) is it pointed at
+initialisers.
+
+**Why the lower layers are not legacy.** Three reasons, all of which you will
+meet:
+
+- **The database does not know every class.** The concrete types behind
+  `MTLDevice` are private, so `mandelbrot` and `life` reach them with `send` —
+  layer 1 — and that is the correct answer, not a fallback.
+- **Sometimes the mechanism is the point.** Chapter 5 shows `alloc` and `init`
+  as two raw sends, because the +1 ownership chain is what is being taught and
+  the constructor hides it.
+- **A layer you cannot drop into is a wall.** Every generated-binding approach
+  eventually meets a call it did not generate. Here the floor is always one
+  `msg_send` away, and it is the same `msg_send` the layer above compiles to.
+
+The design documents put the principle as *all Cocoa classes are equal, and the
+surface is data*: macOS carries roughly 28,814 Objective-C classes, and a
+surface that hand-covers forty of them is a privileged front tier over an
+assembly back tier. There is no such tier here. `Obj["NSView"]` is a
+*parameter*, so the surface is whatever the database knows — which is all of
+it.
+
+The rest of this chapter teaches layer 7 and 8, because that is what you should
+write, and names the layer underneath whenever it is the better answer.
+
 ## First: load the framework
 
 Foundation arrives free — something in every process drags it in. **AppKit does
@@ -75,9 +129,9 @@ selector, and a name neither knows is a compile error rather than a
 
 ### The primitive underneath
 
-`msg_send` is the call the typed surface is built on, and it is still there
-for the cases the surface does not cover — a private class the database has
-no name for, or a signature you want to spell out exactly:
+`msg_send` is layer 1: the call the typed surface compiles to, and the answer
+whenever the surface cannot help — a private class the database has no name
+for, or a signature you want to spell out exactly:
 
 ```mojo
 var n = msg_send[Int, "NSString", "length"](s)
@@ -196,6 +250,8 @@ which is 32 bytes. On x86-64 that is a `_stret` call. Here it classifies as
 `v0`–`v3` from a plain `objc_msgSend`.
 
 ## Protocol-typed receivers: `send`
+
+Layer 1 again, and the case that shows why it is not legacy.
 
 `msg_send` needs a class name to look the selector up on. Sometimes you do not
 have one. Every Metal object is declared as a protocol — `id<MTLDevice>`,

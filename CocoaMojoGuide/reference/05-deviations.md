@@ -224,16 +224,35 @@ per-rule permit/log/fail and recorded evidence for each rule — see
 
 ## `std.objc`
 
-About 9,800 lines of standard library that upstream has no reason to carry:
-class lookup, message dispatch in its typed and dynamic forms, autorelease
-pools, ownership through `ObjCRef`, selectors, framework loading, named
-globals, and the typed calling layer.
+About 3,300 lines of standard library that upstream has no reason to carry,
+and it is built in layers rather than as one surface:
+
+| | | |
+|---:|:---|:---|
+| `runtime.mojo` | 455 | `objc_msgSend` bound once; `ObjCClass`, `ObjCObject`, `SEL`, `msg_send`, `send` |
+| `ownership.mojo` | 154 | `ObjCRef`, `ObjCWeakRef` — retain and release that cannot be forgotten |
+| `foundation`, `geometry`, `error` | 460 | `NSString`, the CG structs, `NSError` becoming `raises` |
+| `classes.mojo` | 760 | `ObjCClassBuilder`, for a class assembled at run time |
+| `dispatch.mojo` | 154 | GCD queues, built on `fn` because a block is what they want |
+| `typed.mojo` | 1,247 | `Obj[...]`, `Cls[...]` — calling Cocoa as a call |
 
 **Why this is right.** The compiler deviations above give you a *checked* way
 to reach Cocoa; this package is the surface you actually write against. Keeping
 it in the standard library rather than a side package means the compiler and
 the library are versioned together, which matters when half the guarantees are
 enforced at compile time.
+
+**Why it is layered rather than replaced.** The first four rows predate the
+compiler knowing anything about Objective-C, and they still work on their own.
+That is deliberate: the database does not describe every class — the concrete
+types behind `MTLDevice` are private — so a program has to be able to drop to
+the raw call without leaving the language. `typed.mojo` compiles to
+`runtime.mojo`, and the floor is always one `msg_send` away.
+
+**What it costs.** Two spellings for the same call, and a reader who does not
+know which to write. That is what
+[Guide, chapter 4](../guide/04-calling-cocoa.md#built-in-layers-and-every-one-of-them-still-works)
+opens with.
 
 ## One host, one CPU, one accelerator
 

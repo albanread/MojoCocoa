@@ -3,9 +3,18 @@
 **Writing native macOS applications in Mojo, on a compiler that reads the SDK.**
 
 CocoaMojo is the Cocoa layer of [MojoCocoa](https://github.com/albanread/MojoCocoa),
-an unofficial fork of Mojo frozen at one commit. It is two things at once: a
-small standard-library package, `std.objc`, and a compiler hook, `cocoakb`,
-that answers questions about macOS *while your program is being compiled*.
+an unofficial fork of Mojo frozen at one commit. It is a standard-library
+package, `std.objc`, and a compiler hook, `cocoakb`, that answers questions
+about macOS *while your program is being compiled*.
+
+It was built from the bottom up and **nothing was replaced along the way**.
+The first layers are ordinary library code — one hand-bound C call, then
+ownership, then the types that cross the boundary constantly — and they still
+work exactly as they did. What the later layers add is the compiler knowing
+what the SDK knows: first to *check* a call, then to let you declare an
+Objective-C class, then to let you write one as a call rather than a
+transcription. Every layer is still reachable, and each is what the one above
+it is made of. [Chapter 4](guide/04-calling-cocoa.md) lays them out.
 
 The result is that a Cocoa binding states a name and the compiler supplies
 everything else. A selector typo is a compile error. A struct that has drifted

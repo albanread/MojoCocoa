@@ -51,11 +51,13 @@ def make_array() -> ObjCRef:
 caller cannot forget to release, because there is nothing to forget: the
 `ObjCRef` releases when it dies.
 
-The raw sends are deliberate here: the two halves of the chain are the lesson,
-and the keyword form hides them. Ordinary code writes
-`Obj["NSMutableArray"](...)`, which does the `alloc` and the `init` for you —
-but it is worth knowing once what that line is standing in for, because the
-ownership rule it obeys is the one every Cocoa API answers to.
+The raw sends are deliberate here. This is layer 1 and layer 2 of
+[the stack](04-calling-cocoa.md#built-in-layers-and-every-one-of-them-still-works),
+and the two halves of the chain are the lesson — the constructor at layer 8
+does the `alloc` and the `init` for you and shows you neither. Ordinary code
+writes `Obj["NSMutableArray"](...)`. It is worth knowing once what that line
+stands for, because the ownership rule it obeys is the one every Cocoa API
+answers to, including the ones the database has never heard of.
 
 The fork's ownership test cycles a million of these and watches memory stay
 flat.
