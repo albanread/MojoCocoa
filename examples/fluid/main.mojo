@@ -39,14 +39,18 @@
 # ===----------------------------------------------------------------------=== #
 
 from std.objc import (
-    ObjCClass,
+    Cls,
+    Obj,
     ObjCObject,
-    msg_send,
     send,
+    nsenum,
     nsstring,
     autoreleasepool,
     named_global,
     sel,
+    CGPoint,
+    CGSize,
+    CGRect,
 )
 from std.ffi import external_call, _get_kgen_string, c_char
 from std.memory import OpaquePointer, Pointer
@@ -91,29 +95,6 @@ comptime PIX_GRID = (PIXELS + BLOCK - 1) // BLOCK
 
 comptime F32 = Pointer[Float32, MutAnyOrigin]
 comptime U32 = Pointer[UInt32, MutAnyOrigin]
-
-
-# ===----------------------------------------------------------------------=== #
-# Cocoa structs, by value across the ABI.
-# ===----------------------------------------------------------------------=== #
-
-
-@fieldwise_init
-struct CGPoint(Copyable, Movable):
-    var x: Float64
-    var y: Float64
-
-
-@fieldwise_init
-struct CGSize(Copyable, Movable):
-    var width: Float64
-    var height: Float64
-
-
-@fieldwise_init
-struct CGRect(Copyable, Movable):
-    var origin: CGPoint
-    var size: CGSize
 
 
 @fieldwise_init
@@ -482,9 +463,7 @@ comptime g_cmd = named_global["fluid.cmd", Int]
 
 def _ae_event_id(event: P) -> Int:
     """The four-char event ID out of the descriptor."""
-    return msg_send[Int, "NSAppleEventDescriptor", "eventID"](
-        ObjCObject(Int(event))
-    )
+    return Obj["NSAppleEventDescriptor"](Int(event)).eventID()
 
 
 class FluidAEHandler:
@@ -521,24 +500,18 @@ def install_apple_events():
     var handler = ObjCObject(FluidAEHandler().__objc_id)
     _ = external_call["objc_retain", P](handler.ptr())
 
-    var mgr = msg_send[
-        ObjCObject,
-        "NSAppleEventManager",
-        "sharedAppleEventManager",
-        is_class=True,
-    ](ObjCClass.lookup["NSAppleEventManager"]().as_object())
+    # +sharedAppleEventManager's result class is not in the metadata either,
+    # so the manager is stated once at the wrap.
+    var mgr = Obj["NSAppleEventManager"](
+        Cls["NSAppleEventManager"]().sharedAppleEventManager().id
+    )
 
     for eid in [AE_SNAP, AE_CLEAR, AE_RAIN, AE_PAUSE, AE_QUIT]:
-        _ = msg_send[
-            ObjCObject,
-            "NSAppleEventManager",
-            "setEventHandler:andSelector:forEventClass:andEventID:",
-        ](
-            mgr,
-            handler.ptr(),
-            sel["handleEvent:withReplyEvent:"]().ptr(),
-            UInt32(AE_CLASS),
-            UInt32(eid),
+        _ = mgr.setEventHandler(
+            handler,
+            andSelector=sel["handleEvent:withReplyEvent:"]().ptr(),
+            forEventClass=UInt32(AE_CLASS),
+            andEventID=UInt32(eid),
         )
 
 
@@ -603,32 +576,27 @@ def main() raises:
     )
 
     with autoreleasepool():
-        var NSApplication = ObjCClass.lookup["NSApplication"]()
-        var app = msg_send[
-            ObjCObject, "NSApplication", "sharedApplication", is_class=True
-        ](NSApplication.as_object())
-        _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
-
-        var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
-            ObjCClass.lookup["NSWindow"]().as_object()
-        )
-        win = msg_send[
-            ObjCObject,
-            "NSWindow",
-            "initWithContentRect:styleMask:backing:defer:",
-        ](
-            win,
-            CGRect(CGPoint(100.0, 100.0), CGSize(Float64(WIN_W), Float64(WIN_H))),
-            Int(15),
-            Int(2),
-            Bool(False),
+        var app = Cls["NSApplication"]().sharedApplication()
+        _ = app.setActivationPolicy(
+            nsenum["NSApplicationActivationPolicyRegular"]()
         )
 
-        var view = msg_send[ObjCObject, "NSView", "alloc", is_class=True](
-            ObjCClass.lookup["NSView"]().as_object()
+        var win = Obj["NSWindow"](
+            contentRect=CGRect(
+                CGPoint(100.0, 100.0), CGSize(Float64(WIN_W), Float64(WIN_H))
+            ),
+            styleMask=(
+                nsenum["NSWindowStyleMaskTitled"]()
+                | nsenum["NSWindowStyleMaskClosable"]()
+                | nsenum["NSWindowStyleMaskMiniaturizable"]()
+                | nsenum["NSWindowStyleMaskResizable"]()
+            ),
+            backing=nsenum["NSBackingStoreBuffered"](),
+            defer=False,
         )
-        view = msg_send[ObjCObject, "NSView", "initWithFrame:"](
-            view, CGRect(CGPoint(0.0, 0.0), CGSize(Float64(WIN_W), Float64(WIN_H)))
+
+        var view = Obj["NSView"](Cls["NSView"]().alloc().id).initWithFrame(
+            CGRect(CGPoint(0.0, 0.0), CGSize(Float64(WIN_W), Float64(WIN_H)))
         )
 
         var display_dev = ObjCObject(
@@ -637,38 +605,31 @@ def main() raises:
         var queue = send[ObjCObject, "newCommandQueue"](display_dev)
         _ = external_call["objc_retain", P](queue.ptr())
 
-        var CAMetalLayer = ObjCClass.lookup["CAMetalLayer"]()
-        var layer = msg_send[ObjCObject, "CAMetalLayer", "layer", is_class=True](
-            CAMetalLayer.as_object()
-        )
+        # +layer's result class is not in the metadata, so CAMetalLayer is
+        # stated once at the wrap and every call after it checks the class
+        # that was meant.
+        var layer = ObjCObject(Cls["CAMetalLayer"]().layer().id)
+        var mlayer = Obj["CAMetalLayer"](layer.addr())
         _ = send[ObjCObject, "setDevice:"](layer, display_dev.ptr())
-        _ = msg_send[ObjCObject, "CAMetalLayer", "setPixelFormat:"](layer, Int(80))
-        _ = msg_send[ObjCObject, "CAMetalLayer", "setFramebufferOnly:"](
-            layer, Bool(False)
-        )
-        _ = msg_send[ObjCObject, "CAMetalLayer", "setDrawableSize:"](
-            layer, CGSize(Float64(WIN_W), Float64(WIN_H))
-        )
+        _ = mlayer.setPixelFormat(nsenum["MTLPixelFormatBGRA8Unorm"]())
+        _ = mlayer.setFramebufferOnly(False)
+        _ = mlayer.setDrawableSize(CGSize(Float64(WIN_W), Float64(WIN_H)))
         _ = external_call["objc_retain", P](layer.ptr())
 
-        _ = msg_send[ObjCObject, "NSView", "setWantsLayer:"](view, True)
-        _ = msg_send[ObjCObject, "NSView", "setLayer:"](view, layer.ptr())
-        _ = msg_send[ObjCObject, "NSWindow", "setContentView:"](win, view.ptr())
-        _ = msg_send[ObjCObject, "NSWindow", "makeKeyAndOrderFront:"](
-            win, app.ptr()
-        )
-        _ = msg_send[ObjCObject, "NSApplication", "activateIgnoringOtherApps:"](
-            app, Bool(True)
-        )
+        var view_t = Obj["NSView"](view.addr())
+        _ = view_t.setWantsLayer(True)
+        _ = view_t.setLayer(layer)
+        _ = win.setContentView(view)
+        _ = win.makeKeyAndOrderFront(ObjCObject(app.id))
+        _ = app.activateIgnoringOtherApps(True)
         # -[NSApplication run] would call this for us; a hand-rolled pump must
         # do it explicitly. Among other things it is where AppKit attaches the
         # Apple Event Mach port to the run loop -- without it the handlers
         # registered below are never reached, however well-formed the event.
-        _ = msg_send[ObjCObject, "NSApplication", "finishLaunching"](app)
+        _ = app.finishLaunching()
 
         var region = MTLRegion(MTLOrigin(0, 0, 0), MTLSize(WIN_W, WIN_H, 1))
-        var NSDate = ObjCClass.lookup["NSDate"]()
-        var mode = nsstring(String("kCFRunLoopDefaultMode"))
+        var mode = nsstring("kCFRunLoopDefaultMode")
 
         # A puff to start with, so the window is never blank.
         var c0 = hue_rgb(Float32(0.05))
@@ -722,21 +683,20 @@ def main() raises:
             # and the compiler rightly noticed the assignment was dead --
             # the pump never let the outer loop read it.
             while running:
-                var past = msg_send[
-                    ObjCObject, "NSDate", "distantPast", is_class=True
-                ](NSDate.as_object())
-                var ev = msg_send[
-                    ObjCObject,
-                    "NSApplication",
-                    "nextEventMatchingMask:untilDate:inMode:dequeue:",
-                ](app, UInt64.MAX, past.ptr(), mode.ptr(), Bool(True))
-                if ev.is_nil():
+                var past = Cls["NSDate"]().distantPast()
+                var ev = app.nextEventMatchingMask(
+                    UInt64.MAX,
+                    untilDate=ObjCObject(past.id),
+                    inMode=mode,
+                    dequeue=True,
+                )
+                if ev.id == 0:
                     break
 
-                var etype = msg_send[Int, "NSEvent", "type"](ev)
+                var etype = Obj["NSEvent"](ev.id).type()
                 # 1 = LeftMouseDown, 6 = LeftMouseDragged, 2 = LeftMouseUp
                 if etype == 1 or etype == 6:
-                    var pt = msg_send[CGPoint, "NSEvent", "locationInWindow"](ev)
+                    var pt = Obj["NSEvent"](ev.id).locationInWindow()
                     # Cocoa's origin is bottom-left; the grid's row 0 is the top.
                     var mx = Float32(pt.x) / Float32(SCALE)
                     var my = Float32(Float64(WIN_H) - pt.y) / Float32(SCALE)
@@ -766,7 +726,7 @@ def main() raises:
                 elif etype == 2:
                     last_x = Float32(-1)
                 elif etype == 10:  # KeyDown
-                    var kc = msg_send[Int, "NSEvent", "keyCode"](ev)
+                    var kc = Obj["NSEvent"](ev.id).keyCode()
                     # Keys set the same flags the Apple Events do, so there is
                     # one implementation of each verb rather than two.
                     if kc == 49:  # space
@@ -778,9 +738,7 @@ def main() raises:
                     elif kc == 15:  # r
                         g_cmd()[] |= CMD_RAIN
 
-                _ = msg_send[ObjCObject, "NSApplication", "sendEvent:"](
-                    app, ev.ptr()
-                )
+                _ = app.sendEvent(ObjCObject(ev.id))
 
             # Spin the run loop briefly. `nextEventMatchingMask:` with
             # distantPast polls the event queue and returns at once -- it never
@@ -826,7 +784,7 @@ def main() raises:
                 if (pending & CMD_SNAP) != 0:
                     shot_wanted = True
 
-            if not msg_send[Bool, "NSWindow", "isVisible"](win):
+            if not win.isVisible():
                 # `break` leaves the outer loop directly; a flag nobody will
                 # read again is not worth writing.
                 break
@@ -884,13 +842,9 @@ def main() raises:
                     print("could not save", path)
                 shots += 1
 
-            var drawable = msg_send[ObjCObject, "CAMetalLayer", "nextDrawable"](
-                layer
-            )
-            if not drawable.is_nil():
-                var tex = msg_send[ObjCObject, "CAMetalDrawable", "texture"](
-                    drawable
-                )
+            var drawable = mlayer.nextDrawable()
+            if drawable.id != 0:
+                var tex = Obj["CAMetalDrawable"](drawable.addr()).texture()
                 _ = send[
                     ObjCObject,
                     "replaceRegion:mipmapLevel:withBytes:bytesPerRow:",
@@ -911,8 +865,7 @@ def main() raises:
                 # Also to stdout: the title bar is invisible to a run captured
                 # in a log, which is every run that is not a person watching.
                 print("  frame", frames, "—", fps, "fps")
-                _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
-                    win,
+                _ = win.setTitle(
                     nsstring(
                         String("Fluid — ") + String(Int(fps)) + " fps"
                         + "   [space] pause  [c] clear  [r] rain"
