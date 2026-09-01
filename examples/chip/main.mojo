@@ -23,10 +23,10 @@ from std.objc import (
     Obj,
     Cls,
     load_framework,
-    ObjCClass,
     ObjCObject,
-    msg_send,
+    nsenum,
     nsstring,
+    ns_to_string,
     autoreleasepool,
     named_global,
     extern_object,
@@ -493,15 +493,9 @@ class SidView(NSView):
         # The handler only edits chip registers, which is the same thing the
         # player routine does -- so there is nothing here the audio thread is
         # not already prepared for.
-        let chars = msg_send[
-            ObjCObject, "NSEvent", "charactersIgnoringModifiers"
-        ](event)
-        if chars.is_nil():
-            return
-        let p = msg_send[P, "NSString", "UTF8String"](chars)
-        if Int(p) == 0:
-            return
-        let text = String(unsafe_from_utf8_ptr=p.unsafe_bitcast[c_char]())
+        let text = ns_to_string(ObjCObject(
+            Obj["NSEvent"](event.addr()).charactersIgnoringModifiers().id
+        ))
         if len(text.as_bytes()) == 0:
             return
         let c = Int(text.as_bytes()[0])
@@ -606,34 +600,26 @@ def main() raises:
     print("CHIP.  SPACE pause · 1 2 3 mute · < > cutoff · - + resonance · F filter · Q quit")
 
     with autoreleasepool():
-        let NSApplication = ObjCClass.lookup["NSApplication"]()
-        let app = msg_send[
-            ObjCObject, "NSApplication", "sharedApplication", is_class=True
-        ](NSApplication.as_object())
-        _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
+        let app = Cls["NSApplication"]().sharedApplication()
+        _ = app.setActivationPolicy(
+            nsenum["NSApplicationActivationPolicyRegular"]()
+        )
 
-        let NSWindow = ObjCClass.lookup["NSWindow"]()
-        var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
-            NSWindow.as_object()
+        var win = Obj["NSWindow"](
+            contentRect=CGRect(CGPoint(200.0, 200.0), CGSize(WIN_W, WIN_H)),
+            styleMask=(
+                nsenum["NSWindowStyleMaskTitled"]()
+                | nsenum["NSWindowStyleMaskClosable"]()
+                | nsenum["NSWindowStyleMaskMiniaturizable"]()
+                | nsenum["NSWindowStyleMaskResizable"]()
+            ),
+            backing=nsenum["NSBackingStoreBuffered"](),
+            defer=False,
         )
-        win = msg_send[
-            ObjCObject, "NSWindow",
-            "initWithContentRect:styleMask:backing:defer:",
-        ](
-            win,
-            CGRect(CGPoint(200.0, 200.0), CGSize(WIN_W, WIN_H)),
-            Int(15),
-            Int(2),
-            Bool(False),
-        )
-        _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
-            win, nsstring(String("CHIP")).ptr()
-        )
+        _ = win.setTitle(nsstring("CHIP").ptr())
 
         let view = ObjCObject(SidView().__objc_id)
-        _ = msg_send[ObjCObject, "NSView", "setFrame:"](
-            view, rect(0.0, 0.0, WIN_W, WIN_H)
-        )
+        _ = Obj["NSView"](view.addr()).setFrame(rect(0.0, 0.0, WIN_W, WIN_H))
         # The retain is not optional. The Mojo wrapper owns the only reference
         # until this line, and it releases at the end of the statement that
         # made it -- after which AppKit is holding a freed object and the
@@ -641,21 +627,12 @@ def main() raises:
         # that says nothing about ownership.
         _ = external_call["objc_retain", P](view.ptr())
         g_view()[] = view.addr()
-        _ = msg_send[ObjCObject, "NSWindow", "setContentView:"](
-            win, view.ptr()
-        )
-        _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
-            win, view.ptr()
-        )
-        _ = msg_send[ObjCObject, "NSWindow", "makeKeyAndOrderFront:"](
-            win, win.ptr()
-        )
-        _ = msg_send[ObjCObject, "NSApplication", "activateIgnoringOtherApps:"](
-            app, Bool(True)
-        )
+        _ = win.setContentView(view)
+        _ = win.makeFirstResponder(view)
+        _ = win.makeKeyAndOrderFront(ObjCObject(win.id))
+        _ = app.activateIgnoringOtherApps(True)
 
-        let NSDate = ObjCClass.lookup["NSDate"]()
-        var mode = nsstring(String("kCFRunLoopDefaultMode"))
+        var mode = nsstring("kCFRunLoopDefaultMode")
 
         # The loop is hand-rolled rather than [NSApp run] for the same reason
         # the other examples give: the thing that owns the resource has to be
@@ -665,19 +642,17 @@ def main() raises:
         var running = True
         while running:
             while True:
-                var past = msg_send[
-                    ObjCObject, "NSDate", "distantPast", is_class=True
-                ](NSDate.as_object())
-                var ev = msg_send[
-                    ObjCObject, "NSApplication",
-                    "nextEventMatchingMask:untilDate:inMode:dequeue:",
-                ](app, UInt64.MAX, past.ptr(), mode.ptr(), Bool(True))
-                if ev.is_nil():
-                    break
-                _ = msg_send[ObjCObject, "NSApplication", "sendEvent:"](
-                    app, ev.ptr()
+                var past = Cls["NSDate"]().distantPast()
+                var ev = app.nextEventMatchingMask(
+                    UInt64.MAX,
+                    untilDate=ObjCObject(past.id),
+                    inMode=mode,
+                    dequeue=True,
                 )
-            if not msg_send[Bool, "NSWindow", "isVisible"](win):
+                if ev.id == 0:
+                    break
+                _ = app.sendEvent(ObjCObject(ev.id))
+            if not win.isVisible():
                 break
             if (g_cmd()[] & CMD_QUIT) != 0:
                 running = False
