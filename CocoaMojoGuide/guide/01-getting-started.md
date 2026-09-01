@@ -46,8 +46,8 @@ The installed toolchain:
 ```text
 /Applications/Roast/
     CocoaMojo/
-        2026.08.31/          one directory per installed version
-        current -> 2026.08.31
+        2026.08.31.2/        one directory per installed version
+        current -> 2026.08.31.2
     Roast.app
 ```
 
@@ -90,26 +90,17 @@ That proves the toolchain. Now one that proves the *point* of it. **File ▸ New
 Folder**, save this as `main.mojo` inside it, and press ⌘R:
 
 ```mojo
-from std.objc import ObjCClass, ObjCObject, msg_send, autoreleasepool
+from std.objc import Obj, Cls, nsstring, autoreleasepool
 from std.ffi import c_char
-from std.memory import OpaquePointer
 
 
 def main():
     with autoreleasepool():
-        var cls = ObjCClass.lookup["NSString"]()
-        var text = String("Hello from Cocoa, via Mojo")
+        let s = Obj["NSString"](nsstring("Hello from Cocoa, via Mojo").addr())
 
-        var s = msg_send[
-            ObjCObject, "NSString", "stringWithUTF8String:", is_class=True
-        ](cls.as_object(), text.as_c_string_slice())
+        print("length:", s.length())
 
-        var n = msg_send[Int, "NSString", "length"](s)
-        print("length:", n)
-
-        var back = msg_send[
-            OpaquePointer[MutUntrackedOrigin], "NSString", "UTF8String"
-        ](s)
+        let back = s.UTF8String()
         print("round trip:", String(unsafe_from_utf8_ptr=back.bitcast[c_char]()))
 ```
 

@@ -95,7 +95,7 @@ This is the part that changes how the code reads:
 class ExampleActions:
     def buttonClicked_(self, sender: ObjCObject):
         with autoreleasepool():
-            _ = msg_send[ObjCObject, "NSTextField", "setStringValue:"](...)
+            _ = Obj["NSTextField"](label_addr()[]).setStringValue(...)
 ```
 
 No `try`, and no `fn`. A `class` method body is a `def` and **may raise**; the
@@ -302,7 +302,7 @@ class LifeDelegate:
 
 # ...
 let delegate = ObjCObject(LifeDelegate().__objc_id)
-_ = msg_send[ObjCObject, "NSApplication", "setDelegate:"](app, delegate.ptr())
+_ = app.setDelegate(delegate)
 ```
 
 Because the selector is a real AppKit one, its encoding comes from the database
@@ -324,29 +324,28 @@ Callback arguments arrive as raw pointers. Wrap and send:
 
 ```mojo
 def event_has_shift(event: ObjCObject) -> Bool:
-    var flags = msg_send[Int, "NSEvent", "modifierFlags"](event)
-    return (flags & 131072) != 0    # NSEventModifierFlagShift
+    let flags = Obj["NSEvent"](event.addr()).modifierFlags()
+    return (flags & nsenum["NSEventModifierFlagShift"]()) != 0
 ```
 
 Arguments arrive typed now — a `class` method declares `event: ObjCObject`
 rather than a raw `P` — so most of the wrapping the old callbacks needed is
 gone.
 
-That magic number should be `cocoakb_enum_value["NSEventModifierFlagShift"]()`.
-The example applications hardcode several of these, and it is the one habit in
-them worth not copying.
+The flag is named rather than remembered. An earlier version of this chapter
+wrote `131072` with the name in a comment beside it and told you the examples
+did the same; they do not any more, and neither should you. A comment saying
+which constant a number is cannot be checked, and `nsenum` can.
 
 Reading a keystroke is the same pattern with a string on the end:
 
 ```mojo
 class LifeView(NSView):
   def keyDown_(self, event: ObjCObject):
-    var chars = msg_send[
-        ObjCObject, "NSEvent", "charactersIgnoringModifiers"
-    ](ObjCObject(Int(event)))
+    let chars = Obj["NSEvent"](event.addr()).charactersIgnoringModifiers()
     if chars.is_nil():
         return
-    var p = msg_send[P, "NSString", "UTF8String"](chars)
+    let p = Obj["NSString"](chars.addr()).UTF8String()
     if Int(p) == 0:
         return
     var s = String(unsafe_from_utf8_ptr=p.unsafe_bitcast[c_char]())

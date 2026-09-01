@@ -110,11 +110,25 @@ def isFlipped(self) -> Bool:
 
 `life` does the same conversion by hand. This is better.
 
-**`send` rather than `msg_send` for Metal.** The concrete classes behind
-`MTLDevice` and friends are private, so there is no public class name for
-`cocoakb` to check a selector against. That is the rule for choosing between
-the two dispatch helpers: typed `msg_send` when the database knows the class,
-dynamic `send` when it cannot.
+**`send` rather than the typed surface, for Metal.** The concrete classes
+behind `MTLDevice` and friends are private, so there is no public class name
+for `cocoakb` to check a selector against. That is the rule for choosing: the
+typed form — `Obj["NSWindow"](...)`, `Cls["NSApplication"]()` — whenever the
+database knows the class, and dynamic `send` when it cannot.
+
+`life` shows the seam directly. `+layer`'s result class is not in the
+metadata, so `CAMetalLayer` is named once at the wrap and every call after it
+is checked against the class that was meant:
+
+```mojo
+var layer = ObjCObject(Cls["CAMetalLayer"]().layer().id)
+var mlayer = Obj["CAMetalLayer"](layer.addr())
+_ = send[ObjCObject, "setDevice:"](layer, display_dev.ptr())
+_ = mlayer.setPixelFormat(nsenum["MTLPixelFormatBGRA8Unorm"]())
+```
+
+One dynamic call, because the device is private; the rest checked, because
+the layer is not.
 
 **A headless mode that does not steal focus.** `MANDEL_FRAMES=N` renders N
 frames and exits, with the window brought up as an Accessory and unfocused so a
@@ -277,15 +291,23 @@ subtraction fold into the same intrinsic; only the third form survives.
 > the optimiser *introduced*, invisible to a target-agnostic verifier, and
 > named only at pipeline creation.
 
-**A struct return that needs the typed `msg_send`.** An `NSPoint` comes back in
-two registers, and the dynamic path does not describe that to the ABI:
+**A struct return, and a trap that has since been closed.** An `NSPoint` comes
+back in two registers, and for a while the hand-typed `msg_send` was the only
+shape that described that to the ABI — the dynamic path returned nothing
+usable, and every click landed on the same wrong square, silently. The example
+now reads:
 
 ```mojo
-# The point comes back through the TYPED msg_send. ... the dynamic `Obj[...]`
-# path does not describe that to the ABI -- the call returns nothing usable
-# and every click lands on the same wrong square, silently.
-let at = msg_send[CGPoint, "NSEvent", "locationInWindow"](event)
+# The point comes back typed: locationInWindow's @encode says NSPoint, and
+# the call path maps that to CGPoint through the kind ladder -- two doubles
+# in registers, described to the ABI by the database rather than by anyone's
+# memory of it.
+let at = Obj["NSEvent"](event.addr()).locationInWindow()
 ```
+
+The lesson survives the fix, and it is the one this whole layer rests on: the
+thing that knows how a value crosses is the metadata, not the programmer. What
+changed is that you no longer have to say it twice.
 
 The move generator underneath all this is 121 lines of bitboard shifts with no
 struct at all — two bare `UInt64`s are the board — validated against published

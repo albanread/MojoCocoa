@@ -174,9 +174,7 @@ correct.
         # Instantiating a class is what registers it, so the delegate exists
         # in the runtime by the time it is handed over.
         var delegate = ObjCObject(LifeDelegate().__objc_id)
-        _ = msg_send[ObjCObject, "NSApplication", "setDelegate:"](
-            app, delegate.ptr()
-        )
+        _ = app.setDelegate(delegate.ptr())
 
         var view_instance = ObjCObject(LifeView().__objc_id)
         var actions = ObjCObject(LifeActions().__objc_id)
@@ -202,7 +200,7 @@ object that lives as long as the application.
         # instantiating a class does -- so the frame is set rather than passed
         # to initWithFrame:.
         var view = view_instance
-        _ = msg_send[ObjCObject, "NSView", "setFrame:"](view, frame)
+        _ = Obj["NSView"](view.addr()).setFrame(frame)
 ```
 
 Worth noticing because it changes the code you write. With `ObjCClassBuilder`
@@ -212,33 +210,36 @@ you got a class back and did `alloc` then `initWithFrame:` yourself.
 ### The timer
 
 ```mojo
-        _ = msg_send[
-            ObjCObject, "NSTimer",
-            "scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:",
-            is_class=True,
-        ](
-            ObjCClass.lookup["NSTimer"]().as_object(),
-            Float64(1.0 / 60.0),
-            actions.ptr(),
-            sel["lifeTick:"]().ptr(),
-            actions.ptr(),
-            Bool(True),
+        # The tick: a five-label factory, every part checked.
+        comptime NSTimer = Obj["NSTimer"]
+        _ = NSTimer(
+            scheduledTimerWithTimeInterval=Float64(1.0 / 60.0),
+            target=actions,
+            selector=sel["lifeTick:"]().ptr(),
+            userInfo=actions,
+            repeats=True,
         )
 ```
 
-`sel["lifeTick:"]()` is the one place the selector appears as a value rather
-than as a `msg_send` parameter — target/action wants the `SEL` itself.
+The five labels *are* the selector's five parts, so
+`+scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:` is
+resolved from them and never written down. Get one label wrong and the build
+fails naming the class and the labels you gave it — where the same mistake in
+Objective-C is a `doesNotRecognizeSelector:` at run time, if you are lucky
+enough to reach that line.
+
+`sel["lifeTick:"]()` is the one place a selector still appears as a value:
+target/action wants the `SEL` itself, not a call.
 
 `Float64(1.0 / 60.0)` and not `1.0 / 60.0`: the interval travels in a float
 register, and the register-file check would have caught an integer literal.
+`repeats=True` needs no `Bool(...)` — the label tells the compiler what the
+argument is, so the literal is enough.
 
 ### Into the run loop
 
 ```mojo
-    var app2 = msg_send[
-        ObjCObject, "NSApplication", "sharedApplication", is_class=True
-    ](ObjCClass.lookup["NSApplication"]().as_object())
-    _ = msg_send[ObjCObject, "NSApplication", "run"](app2)
+    _ = Cls["NSApplication"]().sharedApplication().run()
 ```
 
 Outside the `with` block, so the setup pool drains before the loop begins; the

@@ -55,43 +55,52 @@ the first frame.
 
 ```mojo
     with autoreleasepool():
-        var NSApplication = ObjCClass.lookup["NSApplication"]()
-        var app = msg_send[
-            ObjCObject, "NSApplication", "sharedApplication", is_class=True
-        ](NSApplication.as_object())
-        _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
+        var app = Cls["NSApplication"]().sharedApplication()
+        _ = app.setActivationPolicy(
+            nsenum["NSApplicationActivationPolicyRegular"]()
+        )
 ```
 
-`setActivationPolicy:` with `0` is `NSApplicationActivationPolicyRegular` — the
-difference between a real application with a Dock icon and menu bar, and a
-process that puts a window on screen that cannot be focused. Skipping it is the
-most common reason a first CocoaMojo window appears dead.
+`NSApplicationActivationPolicyRegular` is the difference between a real
+application with a Dock icon and menu bar, and a process that puts a window on
+screen that cannot be focused. Skipping it is the most common reason a first
+CocoaMojo window appears dead — which is a good argument for the name over the
+`0` it stands for.
 
 ## Step 3 — classes
 
-The delegate:
+They are `class` declarations, written once at the top of the file:
 
 ```mojo
-        var db = ObjCClassBuilder("LifeDelegate")
-        db.add_method["applicationShouldTerminateAfterLastWindowClosed:"](
-            should_terminate
-        )
-        var delegate = new_instance(db^.register())
-        _ = msg_send[ObjCObject, "NSApplication", "setDelegate:"](
-            app, delegate.ptr()
-        )
+class LifeDelegate:
+    def applicationShouldTerminateAfterLastWindowClosed_(
+        self, sender: ObjCObject
+    ) -> Bool:
+        return True
+
+
+class LifeView(NSView):
+    def drawRect_(self, dirty: CGRect): ...
+    def acceptsFirstResponder(self) -> Bool: return True
+    def mouseDown_(self, event: ObjCObject): ...
+    def keyDown_(self, event: ObjCObject): ...
 ```
 
-The view, whose event handlers are Mojo functions:
+and instantiated where they are needed:
 
 ```mojo
-        var vb = ObjCClassBuilder["NSView"]("LifeView")
-        vb.add_method["mouseDown:"](on_mouse_down)
-        vb.add_method["mouseDragged:"](on_mouse_dragged)
-        vb.add_method["keyDown:"](on_key_down)
-        vb.add_method["acceptsFirstResponder"](accepts_first_responder)
-        var LifeView = vb^.register()
+        # Instantiating a class is what registers it, so the delegate exists
+        # in the runtime by the time it is handed over.
+        var delegate = ObjCObject(LifeDelegate().__objc_id)
+        _ = app.setDelegate(delegate)
+
+        var view_instance = ObjCObject(LifeView().__objc_id)
 ```
+
+An earlier version of this chapter built both with `ObjCClassBuilder` and
+`add_method`, which is the library the `class` keyword replaced. That path
+still exists for a class you assemble at run time; nothing writes it by hand
+any more.
 
 `acceptsFirstResponder` returning `True` is what makes the view eligible to
 receive key events at all. Without it `keyDown:` never fires and the view looks
@@ -100,50 +109,56 @@ broken in a way that gives no clue.
 ## Step 4 — window and view
 
 ```mojo
-        var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
-            ObjCClass.lookup["NSWindow"]().as_object()
-        )
-        win = msg_send[
-            ObjCObject,
-            "NSWindow",
-            "initWithContentRect:styleMask:backing:defer:",
-        ](
-            win,
-            CGRect(CGPoint(100.0, 100.0), CGSize(1080.0, 720.0)),
-            Int(15),
-            Int(2),
-            Bool(False),
+        var win = Obj["NSWindow"](
+            contentRect=CGRect(CGPoint(100.0, 100.0), CGSize(1080.0, 720.0)),
+            styleMask=(
+                nsenum["NSWindowStyleMaskTitled"]()
+                | nsenum["NSWindowStyleMaskClosable"]()
+                | nsenum["NSWindowStyleMaskMiniaturizable"]()
+                | nsenum["NSWindowStyleMaskResizable"]()
+            ),
+            backing=nsenum["NSBackingStoreBuffered"](),
+            defer=False,
         )
         g_window()[] = win.addr()
 ```
 
-The `15` is a style mask — titled, closable, miniaturisable, resizable — and
-should really be four `cocoakb_enum_value` lookups combined. The `2` is
-`NSBackingStoreBuffered`.
+No `alloc`, and no `initWithContentRect:styleMask:backing:defer:` written
+down: the labels are the selector's parts and the database resolves which
+initialiser they name. The style is four flags by the names the SDK gives
+them, which is the difference between a line you can read and the `15` this
+chapter used to print.
+
+**A window is released when closed**, which is the `NSWindow` default and a
+trap if the loop that drives the app later asks whether it is still visible —
+the answer then comes from freed memory. Either retain it, or say
+`setReleasedWhenClosed(False)`.
 
 Then the view, and making the window visible:
 
 ```mojo
-        var view = msg_send[ObjCObject, "NSView", "alloc", is_class=True](
-            LifeView.as_object()
-        )
-        view = msg_send[ObjCObject, "NSView", "initWithFrame:"](view, frame)
-        _ = msg_send[ObjCObject, "NSWindow", "setContentView:"](win, view.ptr())
-        _ = msg_send[ObjCObject, "NSWindow", "makeKeyAndOrderFront:"](
-            win, ObjCObject(0).ptr()
-        )
-        _ = msg_send[
-            ObjCObject, "NSApplication", "activateIgnoringOtherApps:"
-        ](app, Bool(True))
+        # `LifeView()` is already allocated and initialised -- that is what
+        # instantiating a class does -- so the frame is set rather than
+        # passed to initWithFrame:.
+        var view = view_instance
+        _ = Obj["NSView"](view.addr()).setFrame(frame)
+        _ = external_call["objc_retain", P](view.ptr())
+
+        _ = win.setContentView(view)
+        _ = win.makeFirstResponder(view)
+        _ = win.makeKeyAndOrderFront(ObjCObject(0))
+        _ = app.activateIgnoringOtherApps(True)
 ```
+
+The retain is not optional: the Mojo wrapper owns the only reference until
+that line, and releases at the end of the statement that made it — after which
+AppKit is drawing into a freed object, and the first `drawRect:` traps inside
+`_NSViewDrawRect` with a stack that says nothing about ownership.
 
 ## Step 5 — the run loop
 
 ```mojo
-    var app2 = msg_send[
-        ObjCObject, "NSApplication", "sharedApplication", is_class=True
-    ](ObjCClass.lookup["NSApplication"]().as_object())
-    _ = msg_send[ObjCObject, "NSApplication", "run"](app2)
+    _ = Cls["NSApplication"]().sharedApplication().run()
 ```
 
 `run` does not return until the application terminates. Note that it is
