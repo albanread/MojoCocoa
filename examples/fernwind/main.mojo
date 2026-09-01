@@ -42,11 +42,13 @@ from std.time import perf_counter_ns
 from std.os import getenv
 from std.objc import (
     load_framework,
-    ObjCClass,
+    Cls,
+    Obj,
     ObjCObject,
-    msg_send,
     send,
+    nsenum,
     nsstring,
+    ns_to_string,
     autoreleasepool,
     named_global,
     CGPoint,
@@ -455,23 +457,21 @@ class FernwindView(NSView):
         return True
 
     def mouseDown_(self, event: ObjCObject):
-        var at = msg_send[CGPoint, "NSEvent", "locationInWindow"](event)
+        var at = Obj["NSEvent"](event.addr()).locationInWindow()
         var view = ObjCObject(self.__objc_id)
-        var local = msg_send[CGPoint, "NSView", "convertPoint:fromView:"](
-            view, at, ObjCObject(0).ptr()
+        var local = Obj["NSView"](view.addr()).convertPoint(
+            at, fromView=ObjCObject(0)
         )
         g_click_x()[] = Int(local.x)
         g_click_y()[] = Int(local.y)
         g_cmd()[] |= CMD_CLICK
 
     def keyDown_(self, event: ObjCObject):
-        var chars = msg_send[
-            ObjCObject, "NSEvent", "charactersIgnoringModifiers"
-        ](event)
-        var p = msg_send[P, "NSString", "UTF8String"](chars)
-        if Int(p) == 0:
+        var key = ns_to_string(ObjCObject(
+            Obj["NSEvent"](event.addr()).charactersIgnoringModifiers().id
+        ))
+        if len(key.as_bytes()) == 0:
             return
-        var key = String(unsafe_from_utf8_ptr=p.unsafe_bitcast[c_char]())
         if key == " ":
             g_cmd()[] |= CMD_PAUSE
         elif key == "r":
@@ -521,34 +521,31 @@ def main() raises:
     )
 
     with autoreleasepool():
-        var app = msg_send[
-            ObjCObject, "NSApplication", "sharedApplication", is_class=True
-        ](ObjCClass.lookup["NSApplication"]().as_object())
-        _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](
-            app, Int(1) if frame_limit != 0 else Int(0)
+        var app = Cls["NSApplication"]().sharedApplication()
+        _ = app.setActivationPolicy(
+            nsenum["NSApplicationActivationPolicyAccessory"]()
+            if frame_limit != 0
+            else nsenum["NSApplicationActivationPolicyRegular"]()
         )
 
-        var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
-            ObjCClass.lookup["NSWindow"]().as_object()
+        var win = Obj["NSWindow"](
+            contentRect=CGRect(
+                CGPoint(160.0, 160.0), CGSize(Float64(W), Float64(H))
+            ),
+            styleMask=(
+                nsenum["NSWindowStyleMaskTitled"]()
+                | nsenum["NSWindowStyleMaskClosable"]()
+                | nsenum["NSWindowStyleMaskMiniaturizable"]()
+                | nsenum["NSWindowStyleMaskResizable"]()
+            ),
+            backing=nsenum["NSBackingStoreBuffered"](),
+            defer=False,
         )
-        win = msg_send[
-            ObjCObject,
-            "NSWindow",
-            "initWithContentRect:styleMask:backing:defer:",
-        ](
-            win,
-            CGRect(CGPoint(160.0, 160.0), CGSize(Float64(W), Float64(H))),
-            Int(15),
-            Int(2),
-            Bool(False),
-        )
-        _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
-            win, nsstring(String("Fernwind — the GPU, swaying")).ptr()
-        )
+        _ = win.setTitle(nsstring("Fernwind — the GPU, swaying").ptr())
 
         var view = ObjCObject(FernwindView().__objc_id)
-        _ = msg_send[ObjCObject, "NSView", "setFrame:"](
-            view, CGRect(CGPoint(0.0, 0.0), CGSize(Float64(W), Float64(H)))
+        _ = Obj["NSView"](view.addr()).setFrame(
+            CGRect(CGPoint(0.0, 0.0), CGSize(Float64(W), Float64(H)))
         )
 
         var display_dev = ObjCObject(
@@ -557,37 +554,29 @@ def main() raises:
         var queue = send[ObjCObject, "newCommandQueue"](display_dev)
         _ = external_call["objc_retain", P](queue.ptr())
 
-        var layer = msg_send[ObjCObject, "CAMetalLayer", "layer", is_class=True](
-            ObjCClass.lookup["CAMetalLayer"]().as_object()
-        )
+        # +layer's result class is not in the metadata, so CAMetalLayer is
+        # stated once at the wrap and every call after it checks the class
+        # that was meant.
+        var layer = ObjCObject(Cls["CAMetalLayer"]().layer().id)
+        var mlayer = Obj["CAMetalLayer"](layer.addr())
         _ = send[ObjCObject, "setDevice:"](layer, display_dev.ptr())
-        _ = msg_send[ObjCObject, "CAMetalLayer", "setPixelFormat:"](
-            layer, Int(80)
-        )
-        _ = msg_send[ObjCObject, "CAMetalLayer", "setFramebufferOnly:"](
-            layer, Bool(False)
-        )
-        _ = msg_send[ObjCObject, "CAMetalLayer", "setDrawableSize:"](
-            layer, CGSize(Float64(W), Float64(H))
-        )
+        _ = mlayer.setPixelFormat(nsenum["MTLPixelFormatBGRA8Unorm"]())
+        _ = mlayer.setFramebufferOnly(False)
+        _ = mlayer.setDrawableSize(CGSize(Float64(W), Float64(H)))
         _ = external_call["objc_retain", P](layer.ptr())
 
-        _ = msg_send[ObjCObject, "NSView", "setWantsLayer:"](view, True)
-        _ = msg_send[ObjCObject, "NSView", "setLayer:"](view, layer.ptr())
-        _ = msg_send[ObjCObject, "NSWindow", "setContentView:"](win, view.ptr())
-        _ = msg_send[Bool, "NSWindow", "makeFirstResponder:"](win, view.ptr())
-        _ = msg_send[ObjCObject, "NSWindow", "makeKeyAndOrderFront:"](
-            win, app.ptr()
-        )
+        var view_t = Obj["NSView"](view.addr())
+        _ = view_t.setWantsLayer(True)
+        _ = view_t.setLayer(layer)
+        _ = win.setContentView(view)
+        _ = win.makeFirstResponder(view)
+        _ = win.makeKeyAndOrderFront(ObjCObject(app.id))
         if frame_limit == 0:
-            _ = msg_send[
-                ObjCObject, "NSApplication", "activateIgnoringOtherApps:"
-            ](app, Bool(True))
-        _ = msg_send[ObjCObject, "NSApplication", "finishLaunching"](app)
+            _ = app.activateIgnoringOtherApps(True)
+        _ = app.finishLaunching()
 
         var region = MTLRegion(MTLOrigin(0, 0, 0), MTLSize(W, H, 1))
-        var NSDate = ObjCClass.lookup["NSDate"]()
-        var mode = nsstring(String("kCFRunLoopDefaultMode"))
+        var mode = nsstring("kCFRunLoopDefaultMode")
 
         print("Fernwind. click plants · space stills the air · r reseeds · q quits")
         var frames = 0
@@ -598,20 +587,17 @@ def main() raises:
 
         while running:
             while True:
-                var past = msg_send[
-                    ObjCObject, "NSDate", "distantPast", is_class=True
-                ](NSDate.as_object())
-                var ev = msg_send[
-                    ObjCObject,
-                    "NSApplication",
-                    "nextEventMatchingMask:untilDate:inMode:dequeue:",
-                ](app, UInt64.MAX, past.ptr(), mode.ptr(), Bool(True))
-                if ev.is_nil():
-                    break
-                _ = msg_send[ObjCObject, "NSApplication", "sendEvent:"](
-                    app, ev.ptr()
+                var past = Cls["NSDate"]().distantPast()
+                var ev = app.nextEventMatchingMask(
+                    UInt64.MAX,
+                    untilDate=ObjCObject(past.id),
+                    inMode=mode,
+                    dequeue=True,
                 )
-            if not msg_send[Bool, "NSWindow", "isVisible"](win):
+                if ev.id == 0:
+                    break
+                _ = app.sendEvent(ObjCObject(ev.id))
+            if not win.isVisible():
                 break
 
             var pending = g_cmd()[]
@@ -735,13 +721,9 @@ def main() raises:
                 for k in range(PIXELS):
                     bgra[unsafe_offset=k] = src[unsafe_offset=k]
 
-            var drawable = msg_send[ObjCObject, "CAMetalLayer", "nextDrawable"](
-                layer
-            )
-            if not drawable.is_nil():
-                var tex = msg_send[ObjCObject, "CAMetalDrawable", "texture"](
-                    drawable
-                )
+            var drawable = mlayer.nextDrawable()
+            if drawable.id != 0:
+                var tex = Obj["CAMetalDrawable"](drawable.addr()).texture()
                 _ = send[
                     ObjCObject,
                     "replaceRegion:mipmapLevel:withBytes:bytesPerRow:",
