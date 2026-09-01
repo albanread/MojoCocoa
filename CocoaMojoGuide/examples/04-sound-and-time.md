@@ -12,7 +12,7 @@ the line that obeys it.
 
 ## `chip`
 
-2,159 lines across four files. A chip-tune synthesiser in the spirit of the
+2,176 lines across four files. A chip-tune synthesiser in the spirit of the
 6581: three voices with sawtooth, triangle, pulse and noise, ring modulation,
 hard sync, ADSR envelopes and a shared resonant filter — driven by a 50 Hz
 player routine, with an oscilloscope on a C64 palette.
@@ -117,7 +117,7 @@ failure mode that makes you blame the audio system instead of your code.
 
 ## `abcplayer`
 
-3,344 lines across nine files — the largest example in the distribution. It
+4,650 lines across ten files — much the largest example in the distribution. It
 reads ABC notation, parses it fully (repeats, first and second endings,
 tuplets, broken rhythm, ties, grace notes, chord symbols, key signatures and
 modes), schedules it to the sample, and plays it through either the chip
@@ -170,6 +170,36 @@ One ordering detail carries real musical weight. The schedule sorts NOTE_OFF
 before NOTE_ON at the same sample, "because releasing first leaves the voice
 free for the new note. The other order steals a voice that is about to be freed
 and drops a note."
+
+### The window
+
+`ui.mojo` is 1,018 of those lines and is the only interface in the example set
+that edits something while it is running. Three voices side by side — the four
+waveform toggles, the envelope as vertical bars, pulse width — with the shared
+filter in its own block, because cutoff and resonance belong to the one filter
+all three voices pass through and a control that looks per-voice and is not
+would be worse than no label at all.
+
+The keyboard uses Logic Pro's and GarageBand's *Musical Typing* layout, which
+is the mapping a Mac musician already has in their fingers: the home row is the
+white keys from C, and the row above holds the black keys where a piano puts
+them, so `R` and `I` are gaps. `Z` `X` shift the octave, `C` `V` the level and
+`Tab` latches sustain — those four are free for the job precisely because they
+are not note keys, which is why Logic chose them.
+
+Two things about it are worth taking:
+
+**The panel reads the chip, not its own copy of the chip.** A tune carrying
+`[I:chip ...]` directives moves those registers while it plays, and a panel
+drawn from what the user last set would show one thing while the hardware did
+another.
+
+**Live notes never touch the schedule.** They are register writes — a
+frequency, a gate — and the render callback reads them on its own clock, the
+same unsynchronised trade the meters make. Which is also where the bug was: a
+gate is *two* registers, the gate bit and the envelope phase, and setting only
+the bit leaves the envelope idle. The oscillator runs, the envelope multiplies
+it to nothing, and every register looks right while the key is silent.
 
 ### Two backends from one model
 

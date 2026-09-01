@@ -1,6 +1,6 @@
 # The examples, and what each one is for
 
-The distribution ships eighteen example projects, about 12,100 lines of Mojo.
+The distribution ships eighteen example projects, about 13,200 lines of Mojo.
 They are not a gallery. Most of them were written to answer a question, and a
 few were carried in from elsewhere to prove that they still run. This section
 walks through every one and says what it teaches.
@@ -14,23 +14,23 @@ section ends with a plain verdict, and some of those verdicts are "none".
 | Example | Size | The lesson |
 |:---|:---|:---|
 | [`hello`](01-the-small-ones.md#hello) | 7 lines | **None.** It proves the toolchain works. |
-| [`window`](01-the-small-ones.md#window) | 134 lines | The fork's whole thesis, at the smallest size it can be stated |
+| [`window`](01-the-small-ones.md#window) | 97 lines | The fork's whole thesis, at the smallest size it can be stated |
 | [`operators`](01-the-small-ones.md#operators) | 544 lines | **None specific to this fork** — upstream's example, running unmodified |
 | [`process`](01-the-small-ones.md#process) | 128 lines | **None specific to this fork** — same, for child processes |
 | [`life-python`](01-the-small-ones.md#life-python) | 231 lines | **No code lesson** — the source is upstream's. The Python workflow is the lesson |
 | [`vector-add`](02-the-gpu-primers.md#vector-add) | 80 lines | The canonical first kernel: one thread, one element |
 | [`grayscale`](02-the-gpu-primers.md#grayscale) | 115 lines | Two-dimensional indexing. Little else beyond `vector-add` |
 | [`tiled-matmul`](02-the-gpu-primers.md#tiled-matmul) | 345 lines | Shared memory, and the *second* barrier everyone omits |
-| [`life`](03-the-applications.md#life) | 643 lines | A real application, and a program right to use no GPU at all |
-| [`mandelbrot`](03-the-applications.md#mandelbrot) | 488 lines | One dispatch per frame, computing *and* colouring, with no shader |
-| [`fluid`](03-the-applications.md#fluid) | 911 lines | Thirty-five dependent dispatches per step, where launch cost dominates |
-| [`othello`](03-the-applications.md#othello) | 1,024 lines | The honest answer about game trees: one search suits a GPU, one does not |
-| [`chip`](04-sound-and-time.md#chip) | 2,159 lines | A Mojo `fn` serving as a C function pointer on a real-time thread |
-| [`abcplayer`](04-sound-and-time.md#abcplayer) | 3,344 lines | The largest example: a real parser, and exact timing without floats |
-| [`bifurcation`](05-python-used-well.md#bifurcation) | 246 lines | What Python is genuinely better at, measured rather than assumed |
+| [`life`](03-the-applications.md#life) | 592 lines | A real application, and a program right to use no GPU at all |
+| [`mandelbrot`](03-the-applications.md#mandelbrot) | 469 lines | One dispatch per frame, computing *and* colouring, with no shader |
+| [`fluid`](03-the-applications.md#fluid) | 873 lines | Thirty-five dependent dispatches per step, where launch cost dominates |
+| [`othello`](03-the-applications.md#othello) | 1,000 lines | The honest answer about game trees: one search suits a GPU, one does not |
+| [`chip`](04-sound-and-time.md#chip) | 2,176 lines | A Mojo `fn` serving as a C function pointer on a real-time thread |
+| [`abcplayer`](04-sound-and-time.md#abcplayer) | 4,650 lines | The largest example: a real parser, and exact timing without floats |
+| [`bifurcation`](05-python-used-well.md#bifurcation) | 250 lines | What Python is genuinely better at, measured rather than assumed |
 | [`fern`](../gpu/04-three-ferns.md) | 289 lines | Wide work with no deadline — correctly on the CPU |
-| [`ferns`](../gpu/04-three-ferns.md) | 659 lines | A deadline, but work too narrow to move |
-| [`fernwind`](../gpu/04-three-ferns.md) | 778 lines | Wide *and* out of time — the crossing, measured at 104× |
+| [`ferns`](../gpu/04-three-ferns.md) | 641 lines | A deadline, but work too narrow to move |
+| [`fernwind`](../gpu/04-three-ferns.md) | 760 lines | Wide *and* out of time — the crossing, measured at 104× |
 
 The last three have a chapter of their own, [Three ferns](../gpu/04-three-ferns.md),
 because together they make an argument no single example can.

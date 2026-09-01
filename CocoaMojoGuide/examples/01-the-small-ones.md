@@ -31,7 +31,7 @@ five seconds it takes.
 
 ## `window`
 
-134 lines, and the most important small file in the distribution. A window, a
+97 lines, and the most important small file in the distribution. A window, a
 label, a button; click the button and the label counts. In any other
 language-to-Cocoa bridge this is a chapter about generated headers. Here it is
 one `class` declaration:

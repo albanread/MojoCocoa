@@ -15,7 +15,7 @@ drives the application. Neither file teaches that alone. The pair does.
 
 ## `life`
 
-643 lines. Conway's Life at 180×120, cells coloured by age, mouse drawing,
+592 lines. Conway's Life at 180×120, cells coloured by age, mouse drawing,
 keyboard control, a 60 Hz timer, presented through a `CAMetalLayer`.
 
 This chapter will not walk it line by line, because
@@ -70,7 +70,7 @@ demonstration that declining a GPU is a legitimate answer.
 
 ## `mandelbrot`
 
-488 lines. A live-zooming fractal at 60 fps, every pixel computed *and*
+469 lines. A live-zooming fractal at 60 fps, every pixel computed *and*
 coloured by one Mojo kernel. There is no shader anywhere in the pipeline.
 
 One dispatch per frame does everything: `mandelbrot_color_kernel` computes the
@@ -149,7 +149,7 @@ honest CPU-versus-GPU timing harness in the distribution.
 
 ## `fluid`
 
-911 lines. Stable Fluids — drag the mouse, dye swirls through a velocity field
+873 lines. Stable Fluids — drag the mouse, dye swirls through a velocity field
 that is advected along itself and then made divergence-free by a Jacobi
 pressure solve. Six kernels, all Mojo, no shader.
 
@@ -227,7 +227,7 @@ silently drops any input channel it does not explicitly service.
 
 ## `othello`
 
-1,024 lines across `board.mojo`, `ai.mojo` and `main.mojo`. The board game on a
+1,000 lines across `board.mojo`, `ai.mojo` and `main.mojo`. The board game on a
 green felt board, with four computer players — and the only example in the
 distribution that makes a falsifiable engineering argument and then declines to
 take the flattering side of it.

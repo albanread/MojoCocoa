@@ -91,6 +91,23 @@ receiver, and the colons in the selector say how many to expect.
 Prefer the method form. It is checked the same way, and it does not make you
 write the selector twice — once as a string and once in your head.
 
+It is also shorter, which is not the argument for it but is worth knowing.
+Every Cocoa example in the distribution was migrated one file at a time, and
+each commit is a straight before-and-after on the same program:
+
+| file | added | removed | net |
+|:---|---:|---:|---:|
+| `window/main.mojo` | 52 | 89 | **−37** |
+| `fluid/main.mojo` | 68 | 115 | **−47** |
+| `chip/main.mojo` | 36 | 61 | **−25** |
+| `othello/main.mojo` | 46 | 70 | **−24** |
+| `mandelbrot/main.mojo` | 64 | 85 | **−21** |
+
+`window` lost 28% of itself and gained the SDK's own names for four style
+flags. Nothing was removed from any of these programs; what went was the
+`alloc`, the selector strings, the receiver repeated in every call, and the
+integers standing in for constants.
+
 ## What gets checked, and when
 
 ```mermaid
