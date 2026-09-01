@@ -155,6 +155,9 @@ comptime EDITOR_SHARE = 0.68
 comptime TAB_H = 28.0
 comptime TAB_MIN = 90.0
 comptime TAB_MAX = 200.0
+# The console's REPL input line, stacked above the output inside the
+# console's split pane.
+comptime CONSOLE_INPUT_H = 24.0
 # The close box, and the gutter the strip reserves at each end for the overflow
 # arrows. Both are in points; the scroll offset is whole points in an Int
 # because an app-lifetime global has to survive zero-initialisation.
@@ -750,6 +753,9 @@ def _start_build(then_run: Bool):
 # debug info before launching it, and moving the caret to wherever the
 # program stopped.
 comptime g_dap_seen = named_global["roast.dap.seen", Int]
+# Whether the app has already spoken about the current adapter death; the
+# status line says it once, not every tick until the next session.
+comptime g_dead_seen = named_global["roast.dap.dead.seen", Int]
 comptime g_def_seen = named_global["roast.def.seen", Int]
 # The ROAST_DEFINE door's target, and whether it has fired.
 comptime g_define_line = named_global["roast.define.line", Int]
@@ -1287,12 +1293,22 @@ def _show_variables():
             if i > 0 and file.find("_startup.mojo") >= 0:
                 break
             block += String("    ") + dap.frame_name(i)
+            # The reading position, when a frame other than the top is
+            # selected: `frame <n>` moved it, and the eye needs to see where
+            # the locals below came from.
+            if i == dap.selected_frame():
+                block += String("   *")
             if file != "":
                 block += (
                     String("  ·  ") + _basename(file) + String(":")
                     + String(dap.frame_line(i))
                 )
             block += String("\n")
+    # Peers, when there are any: one line naming the stopped thread's
+    # company. A program the person did not thread themselves still gets it
+    # right by saying nothing.
+    if dap.thread_count() > 1:
+        block += String("  threads: ") + String(dap.thread_count()) + String("\n")
     build.append_output(block^)
     console_sync()
 
@@ -2397,10 +2413,42 @@ class RoastActions:
         except:
             pass
 
+    def roastConsoleEval_(self, sender: ObjCObject):
+        """The console's input line: type Mojo, press Return, the answer
+        lands in the flow above -- the same `evaluate` ⇧⌘E and the agent's
+        `eval` use, so there is one evaluation path and three doors into
+        it. The ask is echoed too: a console that printed only answers is
+        a console you cannot read back."""
+        try:
+            var expr = ns_to_string(
+                Obj["NSControl"](sender.addr()).stringValue()
+            )
+            let trimmed = String(expr.strip())
+            expr = trimmed
+            if expr == "":
+                return
+            Obj["NSTextField"](sender.addr()).setStringValue(
+                nsstring(String("")).ptr()
+            )
+            build.append_output(String("» ") + expr + String("\n"))
+            console_sync()
+            if not dap.is_stopped():
+                build.append_output(
+                    String("  — not stopped; evaluation needs a frame\n")
+                )
+                console_sync()
+                return
+            if dap.evaluate(expr):
+                set_status(String("Evaluating…"))
+        except:
+            pass
+
     def roastBreakOnRaise_(self, sender: ObjCObject):
-        """Stop where an error is RAISED, not where it lands. Takes effect on
-        the next debug session: the resolver is installed at launch, and
-        rewiring a live target is more machinery than the toggle is worth."""
+        """Stop where an error is RAISED, not where it lands. Live when the
+        adapter advertised an exception filter (DAP's own toggle,
+        mid-session); otherwise the resolver is installed at the next launch
+        -- rewiring a live target without the protocol's help is more
+        machinery than the toggle is worth."""
         try:
             let on = session.setting(String("debug.break_on_raise")) != "1"
             session.set_setting(
@@ -2408,12 +2456,51 @@ class RoastActions:
                 String("1") if on else String("0"),
             )
             Obj["NSMenuItem"](sender.addr()).setState(Int(1) if on else Int(0))
-            if on:
+            if dap.is_running() and dap.set_exception_breakpoints(on):
+                set_status(
+                    String("Break on raise: ")
+                    + (String("on") if on else String("off"))
+                    + String(" (live)")
+                )
+            elif on:
                 set_status(
                     String("Break on raise: on (next debug session)")
                 )
             else:
                 set_status(String("Break on raise: off"))
+        except:
+            pass
+
+    def roastPause_(self, sender: ObjCObject):
+        """Interrupt the running debuggee -- the transport control that was
+        missing: without it, a runaway loop could only be killed, position
+        and all."""
+        try:
+            if not dap.is_running():
+                set_status(String("Not debugging"))
+                return
+            if dap.is_stopped():
+                set_status(String("Already stopped"))
+                return
+            dap.pause()
+            set_status(String("Pausing…"))
+        except:
+            pass
+
+    def roastRestart_(self, sender: ObjCObject):
+        """Relaunch the debugged binary as it stands -- no rebuild. The
+        person pressed Restart, not Debug: the iterate loop is a two-second
+        turn this way, and the console already names the binary it runs."""
+        try:
+            if not dap.is_running() and dap.breakpoint_count() == 0:
+                set_status(String("Nothing to restart"))
+                return
+            if dap.relaunch():
+                g_dap_seen()[] = dap.serial()
+                set_status(String("Restarting…"))
+                refresh_grid()
+            else:
+                set_status(String("Nothing to restart"))
         except:
             pass
 
@@ -2788,6 +2875,21 @@ class RoastActions:
                 # has to remember.
                 if dap.g_bp_dirty()[] != 0 and dap.is_configured():
                     dap.send_breakpoints()
+            # poll() is also the reaper: a session whose adapter died
+            # mid-tick goes quiet above, and this is how the app says so --
+            # once, with words, instead of looking busy forever.
+            if dap.dead_why() != "" and g_dead_seen()[] == 0:
+                g_dead_seen()[] = 1
+                build.append_output(
+                    String("\n─── debug adapter exited (")
+                    + dap.dead_why()
+                    + String(") ───\n")
+                )
+                console_sync()
+                set_status(String("Debug adapter exited — session ended"))
+                refresh_grid()
+            elif dap.dead_why() == "":
+                g_dead_seen()[] = 0
         except:
             pass
 
@@ -3253,6 +3355,28 @@ def capture_session() -> JSON:
     doc.set(String("tabs"), tabs^)
     doc.set(String("current"), JSON(current))
 
+    # Breakpoints, as intentions: `path:line` rows, restored unverified --
+    # the bindings are facts about a process that will not exist when the
+    # next launch reads this, and the lines are what the person meant.
+    # Conditions, hit counts and the off state ride along; the paths are
+    # already canonical (the store canonicalises on the way in), so they
+    # survive symlink spellings across machines and mounts.
+    var bps = JSON.array()
+    var bi = 0
+    while bi < dap.breakpoint_count():
+        var row = JSON.object()
+        row.set(String("path"), JSON(dap.breakpoint_file(bi)))
+        row.set(String("line"), JSON(dap.breakpoint_line(bi)))
+        if dap.breakpoint_hit(bi) > 1:
+            row.set(String("hit"), JSON(dap.breakpoint_hit(bi)))
+        if dap.breakpoint_condition(bi) != "":
+            row.set(String("condition"), JSON(dap.breakpoint_condition(bi)))
+        if not dap.breakpoint_enabled(bi):
+            row.set(String("enabled"), JSON(False))
+        bps.push(row^)
+        bi += 1
+    doc.set(String("breakpoints"), bps^)
+
     if g_window()[] != 0:
         with autoreleasepool():
             let f = msg_send[CGRect, "NSWindow", "frame"](
@@ -3347,6 +3471,33 @@ def restore_session() -> Int:
         let proj = doc.get("project")[].as_string()
         if proj != "" and is_directory(proj):
             open_folder(proj)
+
+    # Breakpoints come back as intentions, the state they have before any
+    # adapter exists -- which is exactly the state the pre-`start` path
+    # already knows how to hold. Skipped for files that have gone the way of
+    # all files: a session is a memory, not a claim.
+    if doc.has("breakpoints"):
+        let rows = doc.get("breakpoints")[]
+        var ri = 0
+        while ri < rows.count():
+            let row = rows.at(ri)[]
+            let bp_path = row.get("path")[].as_string()
+            let bp_line = row.get("line")[].as_int()
+            if bp_path != "" and bp_line > 0 and file_exists(bp_path):
+                _ = dap.toggle_breakpoint(bp_path, bp_line)
+                if row.get("hit")[].as_int() > 1:
+                    _ = dap.set_breakpoint_hit(
+                        bp_path, bp_line, row.get("hit")[].as_int()
+                    )
+                if row.get("condition")[].as_string() != "":
+                    _ = dap.set_breakpoint_condition(
+                        bp_path, bp_line, row.get("condition")[].as_string()
+                    )
+                if row.has("enabled") and not row.get("enabled")[].as_bool():
+                    let at = dap.breakpoint_at(bp_path, bp_line)
+                    if at >= 0:
+                        _ = dap.set_breakpoint_enabled(at, False)
+            ri += 1
 
     if not doc.has("tabs"):
         return 0
@@ -5337,6 +5488,24 @@ def build_menu_bar(app: ObjCObject, actions: Int):
         debug_menu, String("Stop Debugging"), String("roastDebugStop:"),
         String("Y"), actions,
     )
+    # Restart relaunches the binary without rebuilding; Pause interrupts a
+    # running debuggee. ⌃⌘R and ⌃⌘Y are Xcode's chords for exactly these,
+    # and neither was claimed -- the ⌘Y/⇧⌘Y pair above and the F5-F8 row
+    # below stay as they are.
+    let restart_item = add_item(
+        debug_menu, String("Restart"), String("roastRestart:"),
+        String("r"), actions,
+    )
+    let pause_item = add_item(
+        debug_menu, String("Pause"), String("roastPause:"),
+        String("y"), actions,
+    )
+    Obj["NSMenuItem"](restart_item.addr()).setKeyEquivalentModifierMask(
+        Int(0x40000 | 0x100000)
+    )
+    Obj["NSMenuItem"](pause_item.addr()).setKeyEquivalentModifierMask(
+        Int(0x40000 | 0x100000)
+    )
     let bor = add_item(
         debug_menu, String("Break on Raise"), String("roastBreakOnRaise:"),
         String(""), actions,
@@ -5499,8 +5668,11 @@ comptime AGENT_HELP = (
     " · tabs · tab <n> · type <text> · find <text>"
     " · views · sidebar <pt> · console-size <pct> · setting <key> [value]"
     " · run-script <path>"
-    " · debug · break <line> · continue · step-over · step-in · step-out"
+    " · debug · restart · break <line|path:line> [if <expr> | hit <n>]"
+    " · bps · bp-on <n> · bp-off <n>"
+    " · continue · pause · step-over · step-in · step-out"
     " · stopped · variables · eval <expr> · eval?"
+    " · frames · frame <n> · threads"
 )
 
 
@@ -5657,24 +5829,123 @@ def agent_command(text: String) -> String:
             return String("error: could not read locals")
 
     if cmd.startswith("break"):
+        # `break <line>` is the entry point; `break <path>:<line>` names any
+        # file -- an imported file is the common debugging case and was
+        # unreachable from the agent before. `if`/`hit` ride the same row:
+        # one command, the whole breakpoint grammar.
         let arg = String(cmd[byte=5 : cmd.byte_length()])
         let where = String(arg.strip())
         if where == "":
-            return String("usage: break <line>")
+            return String("usage: break <line|path:line> [if <expr> | hit <n>]")
         try:
-            let entry = build.entry_point(project_root(), String())
-            if entry == "":
-                return String("error: no entry point in this project")
-            let on = dap.toggle_breakpoint(entry, Int(where))
-            return (
-                (String("set") if on else String("cleared"))
-                + String(" ")
-                + _basename(entry)
+            var target = where
+            var cond = String()
+            var hits = 0
+            let if_at = target.find(" if ")
+            let hit_at = target.find(" hit ")
+            if if_at >= 0:
+                cond = String(target[byte = if_at + 4 : target.byte_length()])
+                let head = String(target[byte=:if_at])
+                target = head
+            elif hit_at >= 0:
+                let n = String(target[byte = hit_at + 5 : target.byte_length()])
+                hits = Int(String(n.strip()))
+                let head = String(target[byte=:hit_at])
+                target = head
+            let trimmed = String(target.strip())
+            target = trimmed
+            var path = String()
+            var line_s = target
+            let colon = target.rfind(":")
+            if colon > 0:
+                let p = String(target[byte=:colon])
+                let restl = String(target[byte = colon + 1 : target.byte_length()])
+                path = p
+                line_s = restl
+            let line = Int(String(line_s.strip()))
+            if path == "":
+                let entry = build.entry_point(project_root(), String())
+                if entry == "":
+                    return String("error: no entry point in this project")
+                path = entry^
+            elif not file_exists(path) and project_root() != "":
+                # Project-relative is the friendly spelling; absolute always
+                # works; try the join before refusing.
+                let joined = project_root() + String("/") + path
+                path = joined if file_exists(joined) else path
+            if not file_exists(path):
+                return String("error: no such file: ") + path
+            let on = dap.toggle_breakpoint(path, line)
+            if not on:
+                return (
+                    String("cleared ")
+                    + _basename(path)
+                    + String(":")
+                    + String(line)
+                )
+            var reply = (
+                String("set ")
+                + _basename(path)
                 + String(":")
-                + where
+                + String(line)
+            )
+            if cond != "":
+                if dap.supports_conditions():
+                    _ = dap.set_breakpoint_condition(path, line, cond)
+                    reply += String(" if ") + cond
+                else:
+                    reply += String(" (this adapter takes no conditions)")
+            if hits > 1:
+                _ = dap.set_breakpoint_hit(path, line, hits)
+                reply += String(" hit ") + String(hits)
+            return reply^
+        except:
+            return String("error: could not set a breakpoint at ") + where
+
+    if cmd == "bps":
+        try:
+            let n = dap.breakpoint_count()
+            if n == 0:
+                return String("(no breakpoints)")
+            var out = String()
+            var i = 0
+            while i < n:
+                if i > 0:
+                    out += String(" · ")
+                out += (
+                    String(i) + String(": ") + _basename(dap.breakpoint_file(i))
+                    + String(":") + String(dap.breakpoint_line(i))
+                )
+                if dap.breakpoint_hit(i) > 1:
+                    out += String(" hit ") + String(dap.breakpoint_hit(i))
+                if dap.breakpoint_condition(i) != "":
+                    out += String(" if ") + dap.breakpoint_condition(i)
+                if not dap.breakpoint_enabled(i):
+                    out += String(" (off)")
+                elif not dap.is_verified(i) and dap.is_running():
+                    out += String(" (unverified)")
+                i += 1
+            return out
+        except:
+            return String("error: could not list breakpoints")
+
+    if cmd.startswith("bp-on") or cmd.startswith("bp-off"):
+        let tail = String(cmd[byte=6 : cmd.byte_length()])
+        if String(tail.strip()) == "":
+            return String("usage: bp-on <n> | bp-off <n>")
+        try:
+            let n = Int(String(tail.strip()))
+            if not dap.set_breakpoint_enabled(n, cmd.startswith("bp-on")):
+                return String("error: no breakpoint ") + String(n)
+            return (
+                (String("on") if cmd.startswith("bp-on") else String("off"))
+                + String(": ")
+                + _basename(dap.breakpoint_file(n))
+                + String(":")
+                + String(dap.breakpoint_line(n))
             )
         except:
-            return String("error: could not toggle a breakpoint at ") + where
+            return String("error: bp-on/bp-off want a breakpoint number")
 
     if cmd.startswith("eval"):
         let expr_raw = String(cmd[byte=4 : cmd.byte_length()])
@@ -5703,6 +5974,87 @@ def agent_command(text: String) -> String:
             return out
         except:
             return String("error: could not read the last evaluation")
+
+    if cmd == "pause":
+        try:
+            if not dap.is_running():
+                return String("error: not debugging")
+            if dap.is_stopped():
+                return String("already stopped")
+            dap.pause()
+            return String("pause: requested")
+        except:
+            return String("error: pause raised")
+
+    if cmd == "restart":
+        try:
+            if not dap.relaunch():
+                return String("error: nothing to relaunch")
+            return String("restart: requested")
+        except:
+            return String("error: restart raised")
+
+    if cmd == "frames":
+        try:
+            let n = dap.frame_count()
+            if n == 0:
+                return String("(no stack)")
+            var out = String()
+            var i = 0
+            while i < n:
+                if i > 0:
+                    out += String(" · ")
+                var one = String(i) + String(": ") + dap.frame_name(i)
+                if dap.frame_file(i) != "":
+                    one += (
+                        String("  ·  ") + _basename(dap.frame_file(i))
+                        + String(":") + String(dap.frame_line(i))
+                    )
+                if i == dap.selected_frame():
+                    one += String(" *")
+                out += one
+                i += 1
+            return out
+        except:
+            return String("error: could not read the stack")
+
+    if cmd.startswith("frame"):
+        let tail = String(cmd[byte=5 : cmd.byte_length()])
+        let want = String(tail.strip())
+        if want == "":
+            return String("usage: frame <n>")
+        try:
+            if not dap.is_stopped():
+                return String("error: not stopped")
+            let n = Int(want)
+            if not dap.select_frame(n):
+                return String("error: no frame ") + want
+            # The locals pane follows the selection on the next tick, the
+            # same way a stop's do; an agent confirms with `variables`.
+            return (
+                String("frame ")
+                + String(n)
+                + String(": ")
+                + dap.frame_name(n)
+            )
+        except:
+            return String("error: could not select frame ") + want
+
+    if cmd == "threads":
+        try:
+            let n = dap.thread_count()
+            if n == 0:
+                return String("(no thread list yet)")
+            var out = String()
+            var i = 0
+            while i < n:
+                if i > 0:
+                    out += String(" · ")
+                out += String(i) + String(": ") + dap.thread_name(i)
+                i += 1
+            return out
+        except:
+            return String("error: could not read threads")
 
     if cmd.startswith("screenshot"):
         let tail = String(cmd[byte=10 : cmd.byte_length()])
@@ -6619,16 +6971,23 @@ def main() raises:
         Obj["NSSplitView"](vsplit.addr()).setDividerStyle(Int(2))
         Obj["NSSplitView"](vsplit.addr()).addSubview(edit_scroll.ptr())
 
-        # The console: a plain text view, the editor's face, not editable.
-        var out_scroll = Cls["NSScrollView"]().alloc()
-        out_scroll = Obj["NSScrollView"](out_scroll.addr()).initWithFrame(
+        # The console: a plain text view, the editor's face, not editable --
+        # with an input line above it. The stack container exists so the
+        # field and the output can share the split's pane: field on top,
+        # scroll below, one pane to the divider.
+        var console_stack = Cls["NSView"]().alloc()
+        console_stack = Obj["NSView"](console_stack.addr()).initWithFrame(
             rect(0.0, 0.0, w - 240.0, 160.0)
         )
+        var out_scroll = Cls["NSScrollView"]().alloc()
+        out_scroll = Obj["NSScrollView"](out_scroll.addr()).initWithFrame(
+            rect(0.0, 0.0, w - 240.0, 160.0 - CONSOLE_INPUT_H)
+        )
         Obj["NSScrollView"](out_scroll.addr()).setHasVerticalScroller(True)
-        let NSTextView = ObjCClass.lookup["NSTextView"]()
+        let NSTextView = ObjCClass.lookup["NSTextView"]
         var console = Cls["NSTextView"]().alloc()
         console = Obj["NSTextView"](console.addr()).initWithFrame(
-            rect(0.0, 0.0, w - 240.0, 160.0)
+            rect(0.0, 0.0, w - 240.0, 160.0 - CONSOLE_INPUT_H)
         )
         Obj["NSTextView"](console.addr()).setEditable(False)
         Obj["NSTextView"](console.addr()).setRichText(False)
@@ -6641,8 +7000,32 @@ def main() raises:
         Obj["NSScrollView"](out_scroll.addr()).setDocumentView(console.ptr())
         _ = external_call["objc_retain", P](console.ptr())
         g_console()[] = console.addr()
+        Obj["NSView"](console_stack.addr()).addSubview(out_scroll.ptr())
 
-        Obj["NSSplitView"](vsplit.addr()).addSubview(out_scroll.ptr())
+        # The input line: the REPL half of the debugger's console. Enter
+        # evaluates in the stopped frame through the same `evaluate` every
+        # other door uses, and the answer lands in the flow below, beside
+        # the locals. Same target/action wiring as the find field -- one
+        # class answers every control.
+        var repl = Cls["NSTextField"]().alloc()
+        repl = Obj["NSTextField"](repl.addr()).initWithFrame(
+            rect(0.0, 160.0 - CONSOLE_INPUT_H, w - 240.0, CONSOLE_INPUT_H)
+        )
+        Obj["NSTextField"](repl.addr()).setBezeled(True)
+        Obj["NSTextField"](repl.addr()).setPlaceholderString(
+            nsstring(String("Evaluate Mojo in the stopped frame ⏎")).ptr()
+        )
+        Obj["NSTextField"](repl.addr()).setFont(
+            Cls["NSFont"]().monospacedSystemFontOfSize_weight(Float64(11.0), Float64(0.0)).ptr(),
+        )
+        let console_owner = ObjCObject(g_actions()[])
+        Obj["NSControl"](repl.addr()).setTarget(console_owner.ptr())
+        Obj["NSControl"](repl.addr()).setAction(
+            sel["roastConsoleEval:"]().ptr()
+        )
+        Obj["NSView"](console_stack.addr()).addSubview(repl.ptr())
+
+        Obj["NSSplitView"](vsplit.addr()).addSubview(console_stack.ptr())
         _ = external_call["objc_retain", P](vsplit.ptr())
         g_vsplit()[] = vsplit.addr()
 

@@ -22,6 +22,7 @@ from dap import (
     breakpoint_count as dap_breakpoint_count,
     breakpoint_file as dap_breakpoint_file,
     toggle_breakpoint as dap_toggle_breakpoint,
+    shift_breakpoints as dap_shift_breakpoints,
     is_stopped as dap_is_stopped,
     stop_line as dap_stop_line,
     stop_file as dap_stop_file,
@@ -146,6 +147,57 @@ def set_rope(var r: Rope):
     else:
         buf[][0] = r^
     g_revision()[] += 1
+
+
+def _bp_note_edit(from_off: Int, upto_off: Int, var text: String):
+    """Tell the breakpoint store what an edit is about to do to the line
+    numbers, so markers follow the text instead of drifting.
+
+    Runs BEFORE the rope is replaced -- the old rope is where the old line
+    boundaries live -- and costs one count check when the shown file has no
+    breakpoints, which is the common case by far. Inserting or deleting
+    lines above a breakpoint and watching its marker stay put was the
+    papercut; this is the fix."""
+    if dap_breakpoint_count() == 0:
+        return
+    let path = shown_path()
+    if path == "":
+        return
+    let buf = g_buffer()[][0]
+    let first = buf.line_of_offset(from_off)
+    let last = buf.line_of_offset(max(from_off, upto_off))
+    var added = 0
+    let b = text.as_bytes()
+    var i = 0
+    while i < text.byte_length():
+        if Int(b[i]) == 0x0A:
+            added += 1
+        i += 1
+    dap_shift_breakpoints(path, first, added - (last - first), last)
+
+
+def _bp_shift_history(old_rope: Rope, new_rope: Rope, pivot_rope: Rope, pivot_caret: Int):
+    """Shift breakpoints across a wholesale rope swap -- undo and redo, the
+    two edits whose spans nobody recorded. The line-count delta between the
+    two ropes, applied below the line the remembered caret names, is the
+    same shift the recorded span would have given. The pivot rope is the
+    one the caret's offsets are valid in.
+
+    Accepted edge, named: a breakpoint toggled onto a line an undo is about
+    to remove, then redone, can end a line off. Interleaving breakpoint
+    toggles with undos of line-changing edits is rare enough that the
+    alternative -- a parallel pivot stack through the whole undo machinery
+    -- is not worth its complexity today."""
+    if dap_breakpoint_count() == 0:
+        return
+    let path = shown_path()
+    if path == "":
+        return
+    let d = new_rope.line_count() - old_rope.line_count()
+    if d == 0:
+        return
+    let line = pivot_rope.line_of_offset(pivot_caret)
+    dap_shift_breakpoints(path, line, d, line)
 
 
 def has_rope() -> Bool:
@@ -289,6 +341,7 @@ def popup_accept() -> Bool:
     if not has_rope():
         return False
     push_undo()
+    _bp_note_edit(from_, g_caret()[], text)
     set_rope(g_buffer()[][0].replace(from_, g_caret()[], text))
     set_caret(from_ + text.byte_length())
     return True
@@ -890,6 +943,7 @@ class RoastGridView(NSView, NSTextInputClient):
                     else sel_end()
                 )
                 if has_rope():
+                    _bp_note_edit(at, upto, str)
                     set_rope(g_buffer()[][0].replace(at, upto, str))
                 g_marked_at()[] = at
                 g_marked_len()[] = str.byte_length()
@@ -2041,8 +2095,14 @@ def undo() -> Bool:
         return False
     g_redo()[].append(g_buffer()[][0].copy())
     g_redo_caret()[].append(g_caret()[])
-    set_rope(g_undo()[].pop())
-    set_caret(g_undo_caret()[].pop())
+    var pre_rope = g_undo()[].pop()
+    let pre_caret = g_undo_caret()[].pop()
+    # The entry remembers the text BEFORE the edit and the caret that was
+    # about to make it, so the line delta between the ropes, applied below
+    # that caret, is exactly the lines this undo removes.
+    _bp_shift_history(g_buffer()[][0], pre_rope, pre_rope, pre_caret)
+    set_rope(pre_rope^)
+    set_caret(pre_caret)
     g_coalesce_at()[] = -1
     return True
 
@@ -2052,8 +2112,13 @@ def redo() -> Bool:
         return False
     g_undo()[].append(g_buffer()[][0].copy())
     g_undo_caret()[].append(g_caret()[])
-    set_rope(g_redo()[].pop())
-    set_caret(g_redo_caret()[].pop())
+    var post_rope = g_redo()[].pop()
+    let post_caret = g_redo_caret()[].pop()
+    # The mirror: the redo entry is the state the undo left behind -- the
+    # edit's AFTER -- so the delta is the lines this redo puts back.
+    _bp_shift_history(g_buffer()[][0], post_rope, post_rope, post_caret)
+    set_rope(post_rope^)
+    set_caret(post_caret)
     g_coalesce_at()[] = -1
     return True
 
@@ -2173,6 +2238,7 @@ def replace_selection(text: String):
     # an edit worth its own undo entry.
     let typing = a == b and text.byte_length() == 1 and text != "\n"
     push_undo(coalescing=typing)
+    _bp_note_edit(a, b, text)
     set_rope(g_buffer()[][0].replace(a, b, text))
     set_caret(a + text.byte_length())
     g_coalesce_at()[] = g_caret()[] if typing else -1
@@ -2486,6 +2552,7 @@ def apply_command(name: String, page_lines: Int = 40):
                 # how a buffer stops being valid UTF-8.
                 push_undo()
                 let back = _prev_codepoint(buf, g_caret()[])
+                _bp_note_edit(back, g_caret()[], String())
                 set_rope(buf.replace(back, g_caret()[], String()))
                 set_caret(back)
             return
@@ -2494,11 +2561,9 @@ def apply_command(name: String, page_lines: Int = 40):
                 replace_selection(String())
             elif g_caret()[] < n:
                 push_undo()
-                set_rope(
-                    buf.replace(
-                        g_caret()[], _next_codepoint(buf, g_caret()[]), String()
-                    )
-                )
+                let fwd = _next_codepoint(buf, g_caret()[])
+                _bp_note_edit(g_caret()[], fwd, String())
+                set_rope(buf.replace(g_caret()[], fwd, String()))
             return
         elif name == "deleteWordBackward:":
             # ⌥⌫. With a selection it is just delete; the word rule is for a
