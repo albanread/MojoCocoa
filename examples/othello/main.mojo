@@ -28,10 +28,10 @@ from std.objc import (
     Obj,
     Cls,
     load_framework,
-    ObjCClass,
     ObjCObject,
-    msg_send,
+    nsenum,
     nsstring,
+    ns_to_string,
     autoreleasepool,
     named_global,
     extern_object,
@@ -276,11 +276,12 @@ class OthelloView(NSView):
     def mouseDown_(self, event: ObjCObject):
         # Only a flag: the pump owns the game, and the GPU, and the redraw.
         #
-        # The point comes back through the TYPED msg_send. An NSPoint is two
-        # doubles returned in registers, and the dynamic `Obj[...]` path does
-        # not describe that to the ABI -- the call returns nothing usable and
-        # every click lands on the same wrong square, silently.
-        let at = msg_send[CGPoint, "NSEvent", "locationInWindow"](event)
+        # The point comes back typed: locationInWindow's @encode says
+        # NSPoint, and the call path maps that to CGPoint through the kind
+        # ladder -- two doubles in registers, described to the ABI by the
+        # database rather than by anyone's memory of it. (It was not always
+        # so: the hand-typed msg_send here used to be the only safe shape.)
+        let at = Obj["NSEvent"](event.addr()).locationInWindow()
         let col = Int((at.x - MARGIN) // CELL)
         let row = 7 - Int((at.y - MARGIN - STATUS_H) // CELL)
         if col >= 0 and col < 8 and row >= 0 and row < 8:
@@ -288,16 +289,11 @@ class OthelloView(NSView):
 
     def keyDown_(self, event: ObjCObject):
         # No pool: AppKit's dispatch already has one, and every object read
-        # here is autoreleased by the caller.
-        let chars = msg_send[
-            ObjCObject, "NSEvent", "charactersIgnoringModifiers"
-        ](event)
-        if chars.is_nil():
-            return
-        let p = msg_send[P, "NSString", "UTF8String"](chars)
-        if Int(p) == 0:
-            return
-        let text = String(unsafe_from_utf8_ptr=p.unsafe_bitcast[c_char]())
+        # here is autoreleased by the caller. ns_to_string answers "" for a
+        # nil string, so the two nil checks fold into the length check.
+        let text = ns_to_string(ObjCObject(
+            Obj["NSEvent"](event.addr()).charactersIgnoringModifiers().id
+        ))
         if len(text.as_bytes()) == 0:
             return
         let c = Int(text.as_bytes()[0])
@@ -400,53 +396,36 @@ def main() raises:
     g_gpu_ok()[] = 1 if have_gpu else 0
 
     with autoreleasepool():
-        var NSApplication = ObjCClass.lookup["NSApplication"]()
-        var app = msg_send[
-            ObjCObject, "NSApplication", "sharedApplication", is_class=True
-        ](NSApplication.as_object())
-        _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
+        let app = Cls["NSApplication"]().sharedApplication()
+        _ = app.setActivationPolicy(
+            nsenum["NSApplicationActivationPolicyRegular"]()
+        )
 
         var view = ObjCObject(OthelloView().__objc_id)
-        _ = msg_send[ObjCObject, "NSView", "setFrame:"](
-            view, rect(0.0, 0.0, WIN_W, WIN_H)
-        )
+        _ = Obj["NSView"](view.addr()).setFrame(rect(0.0, 0.0, WIN_W, WIN_H))
         _ = external_call["objc_retain", P](view.ptr())
         g_view()[] = view.addr()
 
-        var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
-            ObjCClass.lookup["NSWindow"]().as_object()
-        )
-        win = msg_send[
-            ObjCObject,
-            "NSWindow",
-            "initWithContentRect:styleMask:backing:defer:",
-        ](
-            win,
-            rect(120.0, 120.0, WIN_W, WIN_H),
-            Int(15),
-            Int(2),
-            Bool(False),
+        var win = Obj["NSWindow"](
+            contentRect=rect(120.0, 120.0, WIN_W, WIN_H),
+            styleMask=(
+                nsenum["NSWindowStyleMaskTitled"]()
+                | nsenum["NSWindowStyleMaskClosable"]()
+                | nsenum["NSWindowStyleMaskMiniaturizable"]()
+                | nsenum["NSWindowStyleMaskResizable"]()
+            ),
+            backing=nsenum["NSBackingStoreBuffered"](),
+            defer=False,
         )
         g_window()[] = win.addr()
-        _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
-            win, nsstring(String("Othello")).ptr()
-        )
-        _ = msg_send[ObjCObject, "NSWindow", "setContentView:"](
-            win, view.ptr()
-        )
-        _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
-            win, view.ptr()
-        )
-        _ = msg_send[ObjCObject, "NSWindow", "makeKeyAndOrderFront:"](
-            win, win.ptr()
-        )
-        _ = msg_send[
-            ObjCObject, "NSApplication", "activateIgnoringOtherApps:"
-        ](app, Bool(True))
-        _ = msg_send[ObjCObject, "NSApplication", "finishLaunching"](app)
+        _ = win.setTitle(nsstring("Othello").ptr())
+        _ = win.setContentView(view)
+        _ = win.makeFirstResponder(view)
+        _ = win.makeKeyAndOrderFront(ObjCObject(win.id))
+        _ = app.activateIgnoringOtherApps(True)
+        _ = app.finishLaunching()
 
-        var NSDate = ObjCClass.lookup["NSDate"]()
-        var mode = nsstring(String("kCFRunLoopDefaultMode"))
+        var mode = nsstring("kCFRunLoopDefaultMode")
         var rng = UInt64(perf_counter_ns()) | 1
         var running = True
 
@@ -455,20 +434,17 @@ def main() raises:
 
         while running:
             while True:
-                var past = msg_send[
-                    ObjCObject, "NSDate", "distantPast", is_class=True
-                ](NSDate.as_object())
-                var ev = msg_send[
-                    ObjCObject,
-                    "NSApplication",
-                    "nextEventMatchingMask:untilDate:inMode:dequeue:",
-                ](app, UInt64.MAX, past.ptr(), mode.ptr(), Bool(True))
-                if ev.is_nil():
-                    break
-                _ = msg_send[ObjCObject, "NSApplication", "sendEvent:"](
-                    app, ev.ptr()
+                var past = Cls["NSDate"]().distantPast()
+                var ev = app.nextEventMatchingMask(
+                    UInt64.MAX,
+                    untilDate=ObjCObject(past.id),
+                    inMode=mode,
+                    dequeue=True,
                 )
-            if not msg_send[Bool, "NSWindow", "isVisible"](win):
+                if ev.id == 0:
+                    break
+                _ = app.sendEvent(ObjCObject(ev.id))
+            if not win.isVisible():
                 break
 
             # Read the flag out BEFORE clearing it. `let` binds by reference
