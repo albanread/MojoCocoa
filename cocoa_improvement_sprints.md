@@ -278,7 +278,7 @@ debugger work of their own and are not this sprint's to gate).
 bridging half and its language unblock; the `String`-where-`q` error fires
 today.)
 
-## Sprint P5 — the `let` warning, and hygiene (NOT STARTED, size S)
+## Sprint P5 — the `let` warning, and hygiene (IMPLEMENTED 2026-09-01)
 
 1. **Root-place tracking at bind.** A `let` whose right-hand side is a place
    records its root: the local, the `self` field, the list a subscript rides
@@ -303,6 +303,40 @@ today.)
    `'fn' has been removed`, stale since the revival.
 6. Fix the `typed.mojo` docstring: `Cls["NSColor"].blackColor()` does not
    compile; the hook needs an instance, `Cls["NSColor"]()`.
+
+**Status.** Landed. The warning fires at the WRITE, naming the binding and
+the root it reads through, with a note at the bind site; all three trap
+shapes are caught — the bare name (`let start = i; i += 1`), the list slot
+(`let t = times[0]; times[1] = times[0]`), and the named_global accessor
+(`let clicked = g_flag()[]; g_flag()[] = 0`), the last against the real
+standard library where `named_global` exists. A value binding or an
+untouched source stays silent. The root is detected from the AST by
+spelling (the AST carries no resolved decls this early), which is sound
+within a function and is the documented approximation; scope is the
+enclosing function and liveness is not modelled at all — a write after the
+binding's last use still warns, deliberately over-broad rather than
+under-broad.
+
+The implementation is small by design: a `SmallVector` of alias records on
+SharedState, filled at `let`-bind time in `emitAssign` (a `let x = place`
+statement is an assignment with a pattern LHS, so one site covers every
+body binding), and consulted from `emitAssign` and `emitInplace` on the
+write side. No `kBind` semantics changed anywhere, so none of the copy
+route's blast radius on `for`-loop induction variables and destructuring.
+
+Hygiene: `let_decl.mojo` pins the language mechanism in verify mode
+(**334 pass / 0 fail** — the parser suite's first fully green run, because
+the stale `fn` assertions are fixed too); the `typed.mojo` docstring now
+spells the compiling form. Verification: `check-parser.sh` 334/0,
+`run-cocoa-checks.sh` 40/0, the committed IDE builds clean.
+
+Two harness lessons, recorded: the parser suite pipes stdout only and runs
+`pipefail`, so a warning can never reach FileCheck — warning tests want
+`-verify-diagnostics`, where unmatched diagnostics are failures and the
+silent cases police themselves; and the stub standard library differs from
+the real one in exactly the ways a warning test trips on (no `print`,
+immutable parameters), so the named_global shape lives in the spike suite
+against the real library instead.
 
 Verification: each of the four documented traps (flag, status line, Othello's
 mouse, insertion sort) warns at the write, as four small test files;
