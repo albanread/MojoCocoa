@@ -226,7 +226,7 @@ is a fossil.
 | Passing a `mut` struct on to a second function crashes at the call site | **Fixed.** Works |
 | Reading `self` while appending to a `List` `self` owns crashes | **Fixed.** Works |
 | A `let` bound into a `List` that later *grows* dangles | **Caught** — but reported as `error: failed to run the pass manager`, which says nothing |
-| A `let` naming a list slot that is later *written* breaks an insertion sort | **Still real, still silent** |
+| A `let` naming a list slot that is later *written* breaks an insertion sort | **Still real — but no longer silent** |
 
 That last row is the one to carry away, because it is not a bug — it is
 [`let` binding by reference](#the-bug-worth-keeping), working exactly as
@@ -241,9 +241,10 @@ for a in range(1, len(times)):
         times[b + 1] = times[b]
 ```
 
-Sorting `5 3 9 1` that way yields `5 5 9 9`. No error, no warning, and the
-comment in the source telling you to write `var` is the only thing standing
-between you and a sort that quietly loses entries.
+Sorting `5 3 9 1` that way yields `5 5 9 9`. The behaviour has not changed and
+`let` still binds by reference, but the compiler now warns at the write that
+invalidates the read, names the binding, and tells you to use `var` for a
+snapshot. The comment in `midi.mojo` predates that diagnostic.
 
 One non-compiler caveat also stands: **rebuilding a string with `chr()` mangles
 UTF-8** — slice instead, or a title with an accent comes out as mojibake.

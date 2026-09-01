@@ -13,12 +13,22 @@ from the SDK fails to build. An argument in the wrong register file is a
 compile error rather than a corrupted call.
 
 ```mojo
-comptime assert size_of[CGRect]() == cocoakb_struct_size["CGRect"]()
-
-var s = msg_send[
-    ObjCObject, "NSString", "stringWithUTF8String:", is_class=True
-](cls.as_object(), text.as_c_string_slice())
+let win = Obj["NSWindow"](
+    contentRect=CGRect(CGPoint(240.0, 240.0), CGSize(360.0, 140.0)),
+    styleMask=(
+        nsenum["NSWindowStyleMaskTitled"]()
+        | nsenum["NSWindowStyleMaskClosable"]()
+    ),
+    backing=nsenum["NSBackingStoreBuffered"](),
+    defer=False,
+)
+_ = win.setTitle(nsstring("Mojo").ptr())
 ```
+
+Nothing there writes a selector string, a type encoding, or a folklore
+integer. The keyword labels name the initialiser, and the database resolves
+which one they mean; `nsenum` fetches a constant by the name the SDK gives it,
+so a window style is `NSWindowStyleMaskTitled` rather than a remembered `1`.
 
 ## Getting it
 

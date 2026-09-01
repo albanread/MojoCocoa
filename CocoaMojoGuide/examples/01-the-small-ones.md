@@ -56,23 +56,28 @@ header. There is no `"v@:@"` typed out anywhere — the compiler derived it. And
 there is no `ObjCClassBuilder` call registering the class by hand, because
 `ExampleActions()` does that.
 
-The button is wired with the selector named as a string, checked at compile
-time:
+The button is made by naming what its arguments *are*, and the labels pick the
+constructor:
 
 ```mojo
-let button = msg_send[
-    ObjCObject, "NSButton", "buttonWithTitle:target:action:", is_class=True,
-](
-    NSButton.as_object(),
-    nsstring(String("Click me")).ptr(),
-    actions.ptr(),
-    sel["buttonClicked:"]().ptr(),
+let button = Obj["NSButton"](
+    buttonWithTitle="Click me",
+    target=actions,
+    action=sel["buttonClicked:"]().ptr(),
 )
+_ = button.setFrame(CGRect(CGPoint(20.0, 30.0), CGSize(160.0, 32.0)))
 ```
 
-Misspell `buttonWithTitle:target:action:` and the build fails. In Objective-C
-it would compile and crash at run time; here `cocoakb` is asked during
-elaboration whether `NSButton` responds to that selector.
+Three things are worth noticing in four lines. The labels are the selector's
+parts, so the database resolves `+buttonWithTitle:target:action:` without the
+selector being written out. `"Click me"` is a bare Mojo `String` and bridges
+to `NSString` because the metadata says that argument is an object — where a
+selector takes a non-object, the same `String` is a compile error rather than
+a corrupted call. And `setFrame` reads as the method it is.
+
+Get a label wrong and the build fails, naming the class and the labels. In
+Objective-C it would compile and crash at run time; here `cocoakb` is asked
+during elaboration whether `NSButton` answers anything of that shape.
 
 Two details in this file are load-bearing for every Cocoa program you write
 afterwards.
@@ -107,7 +112,9 @@ app.
 
 **The lesson: this is the fork's thesis at the smallest size it can be
 written.** A real Objective-C class, a selector you invented, an encoding
-nobody typed, and a compile error for a name that does not exist. Read this one
+nobody typed, a window style named rather than remembered, and a compile
+error for any of them that does not exist. Nothing in the file writes a
+selector string, a type encoding, or a folklore integer. Read this one
 even if you skip the rest of the section. The full treatment is
 [Guide, chapter 6](../guide/06-callbacks.md).
 

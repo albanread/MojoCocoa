@@ -94,8 +94,21 @@ for a in range(1, len(times)):
 ```
 
 That sorts `5 3 9 1` into `5 5 9 9`. `var t = times[a]` is correct and is the
-only difference. There is no diagnostic, because nothing is wrong — the
-binding is doing exactly what it is for.
+only difference.
+
+**The compiler now says so**, which it did not when this was first written:
+
+```text
+warning: this write changes what 't' reads: 'let t' is bound to a place rooted
+at 'times' and reads through it live; for a snapshot use `var t = ...`
+note: 't' bound here
+```
+
+It points at the *write* rather than the binding, because the write is what
+makes the binding wrong, and it names the fix. The semantics are unchanged --
+`let` still binds by reference, and this program still sorts incorrectly -- but
+the failure has moved from silent to announced, which is the difference
+between an afternoon and a second.
 
 Read the value **out** before touching the source, or bind a genuine copy with
 `var`. The compiler does catch the related case where the container is *grown*

@@ -54,25 +54,42 @@ var as_obj = cls.as_object()
 
 ## Sending a message
 
+A message reads as a method call. `Obj[...]` binds an object to a class the
+database knows, `Cls[...]` does the same for the class itself, and from there
+the selector is just the method name:
+
+```mojo
+let app = Cls["NSApplication"]().sharedApplication()
+_ = app.activateIgnoringOtherApps(True)
+
+let content = win.contentView()
+_ = content.addSubview(ObjCObject(label.id))
+```
+
+An underscore in a method name is a colon in the selector, the same rule
+`class` uses in the other direction, so `setStringValue` answers
+`setStringValue:`. The class in the brackets is what makes the check possible:
+the compiler asks the database whether *that* class responds to *that*
+selector, and a name neither knows is a compile error rather than a
+`doesNotRecognizeSelector:` at run time.
+
+### The primitive underneath
+
+`msg_send` is the call the typed surface is built on, and it is still there
+for the cases the surface does not cover — a private class the database has
+no name for, or a signature you want to spell out exactly:
+
 ```mojo
 var n = msg_send[Int, "NSString", "length"](s)
 ```
 
 Read the parameters left to right: the **return type**, the **class the
 selector is looked up on**, and the **selector**. Then the receiver in
-parentheses.
+parentheses. For a class method, add `is_class=True`. Arguments follow the
+receiver, and the colons in the selector say how many to expect.
 
-For a class method, add `is_class=True`:
-
-```mojo
-var s = msg_send[
-    ObjCObject, "NSString", "stringWithUTF8String:", is_class=True
-](cls.as_object(), text.as_c_string_slice())
-```
-
-Arguments follow the receiver. The colons in the selector tell you how many to
-expect — `stringWithUTF8String:` takes one, `length` takes none — and the
-compiler checks that you passed the right number.
+Prefer the method form. It is checked the same way, and it does not make you
+write the selector twice — once as a string and once in your head.
 
 ## What gets checked, and when
 
@@ -134,7 +151,7 @@ A `void` method still returns something as far as Mojo is concerned, so the
 idiom is:
 
 ```mojo
-_ = msg_send[ObjCObject, "NSApplication", "setDelegate:"](app, delegate.ptr())
+_ = app.setDelegate(delegate.ptr())
 ```
 
 You will write `_ =` constantly. It is not a wart; it is the compiler refusing
@@ -196,8 +213,13 @@ every class, with nothing written down per class anywhere:
 comptime NSWindow = Obj["NSWindow"]        # three lines, any class
 let win = NSWindow(
     contentRect=CGRect(CGPoint(100.0, 100.0), CGSize(1080.0, 720.0)),
-    styleMask=Int(15),
-    backing=Int(2),
+    styleMask=(
+        nsenum["NSWindowStyleMaskTitled"]()
+        | nsenum["NSWindowStyleMaskClosable"]()
+        | nsenum["NSWindowStyleMaskMiniaturizable"]()
+        | nsenum["NSWindowStyleMaskResizable"]()
+    ),
+    backing=nsenum["NSBackingStoreBuffered"](),
     defer=False,
 )
 ```
@@ -256,8 +278,14 @@ var s = msg_send[
 retain it:
 
 ```mojo
-_ = msg_send[ObjCObject, "NSWindow", "setTitle:"](win, nsstring("Life").ptr())
+_ = win.setTitle(nsstring("Life").ptr())
 ```
+
+A bare `String` crosses on its own wherever the labels name a constructor and
+the metadata says the argument is an object — `Obj["NSButton"](buttonWithTitle="Click")`
+needs no wrapping. The positional spelling above does not bridge, so it still
+takes `nsstring(...).ptr()`, and a `String` handed to a selector expecting a
+non-object is a compile error rather than a corrupted call.
 
 And `NSString`, a leak-safe owning wrapper, when the string outlives the
 statement:
@@ -335,17 +363,27 @@ crash.
 
 ## Enum constants
 
-Cocoa's named constants come from BridgeSupport, resolved at compile time:
+Cocoa's named constants come from BridgeSupport, resolved at compile time.
+`nsenum` is the spelling to reach for, and it lives in `std.objc` beside
+everything else you are already importing:
 
 ```mojo
-comptime titled = cocoakb_enum_value["NSWindowStyleMaskTitled"]()
-comptime utf8 = cocoakb_enum_value["NSUTF8StringEncoding"]()   # 4
+_ = win.setBackgroundColor(...)
+let mask = nsenum["NSWindowStyleMaskTitled"]() | nsenum["NSWindowStyleMaskClosable"]()
+let utf8 = nsenum["NSUTF8StringEncoding"]()      # 4
 ```
 
-Use these instead of typing the numbers. The one place you will be tempted to
-cheat is style masks, where `15` is quicker to write than four lookups — the
-example applications do exactly that, and it is the kind of shortcut that
-survives right up until Apple renumbers something.
+A name the metadata does not know is a compile error naming it, rather than a
+silently wrong mask — the same property every other call into the database
+has. `nsenum` is a thin wrapper over the raw query, `cocoakb_enum_value`,
+which is still there if you would rather import from `std.sys._cocoakb`
+directly; the wrapper exists so that reaching for a constant does not mean
+reaching into a private module.
+
+The place this matters most is style masks, where `15` is quicker to type
+than four lookups. That shortcut survives right up until Apple renumbers
+something, and it makes the line unreadable in the meantime: `Int(15)` says
+nothing, while four named flags say exactly which window you asked for.
 
 ## Extern object constants
 
@@ -391,16 +429,17 @@ timestamp. Most sample code you will find online quotes 32-bit offsets;
 build tells you.
 
 Once the assertions pass you can pass the struct by value straight through a
-send, and the C ABI does the register allocation:
+call, and the C ABI does the register allocation:
 
 ```mojo
-win = msg_send[
-    ObjCObject, "NSWindow", "initWithContentRect:styleMask:backing:defer:"
-](
-    win,
-    CGRect(CGPoint(100.0, 100.0), CGSize(1080.0, 720.0)),
-    Int(15),
-    Int(2),
-    Bool(False),
+let win = Obj["NSWindow"](
+    contentRect=CGRect(CGPoint(100.0, 100.0), CGSize(1080.0, 720.0)),
+    styleMask=nsenum["NSWindowStyleMaskTitled"](),
+    backing=nsenum["NSBackingStoreBuffered"](),
+    defer=False,
 )
 ```
+
+A `CGRect` is four doubles, so it goes in registers; an `MTLRegion` is 48
+bytes of `NSUInteger` and goes on the stack. Neither is your problem — the
+size assertion above is what makes the difference safe to ignore.

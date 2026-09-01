@@ -232,8 +232,12 @@ for a in range(1, len(times)):
 ```
 
 Sorting `5 3 9 1` this way gives `5 5 9 9`. `var t = times[a]` is correct and
-is the only difference. There is no diagnostic; this is `let` working as
-designed.
+is the only difference.
+
+The compiler warns about this now: *"this write changes what 't' reads"*,
+pointing at the write rather than the binding, with a note at the binding and
+the `var` fix spelled out. The semantics are unchanged -- `let` still binds by
+reference -- but you no longer have to know the rule in advance to find it.
 
 A `let` bound into a list that is then **grown** is a different case and the
 compiler does catch it -- but it says `error: failed to run the pass manager`,
