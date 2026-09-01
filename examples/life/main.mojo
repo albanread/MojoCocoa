@@ -18,11 +18,16 @@
 
 from std.objc import (
     load_framework,
-    ObjCClass,
+    Cls,
+    Obj,
     ObjCObject,
-    msg_send,
     send,
+    nsenum,
     nsstring,
+    ns_to_string,
+    CGPoint,
+    CGSize,
+    CGRect,
     autoreleasepool,
     named_global,
     sel,
@@ -43,24 +48,6 @@ comptime WIN_H = GRID_H * CELL  # 720
 comptime CELLS = GRID_W * GRID_H
 comptime PIXELS = WIN_W * WIN_H
 comptime MAX_AGE = 64
-
-
-@fieldwise_init
-struct CGPoint(Copyable, Movable):
-    var x: Float64
-    var y: Float64
-
-
-@fieldwise_init
-struct CGSize(Copyable, Movable):
-    var width: Float64
-    var height: Float64
-
-
-@fieldwise_init
-struct CGRect(Copyable, Movable):
-    var origin: CGPoint
-    var size: CGSize
 
 
 @fieldwise_init
@@ -353,16 +340,14 @@ def paint_at(win_x: Float64, win_y: Float64, erase: Bool):
 
 
 def event_point(event: P) -> CGPoint:
-    """-[NSEvent locationInWindow] -> NSPoint (16 bytes, returned in two SSE
-    registers, so the plain objc_msgSend path carries it)."""
-    return msg_send[CGPoint, "NSEvent", "locationInWindow"](ObjCObject(Int(event)))
+    """-[NSEvent locationInWindow] -> NSPoint, typed through the kind ladder
+    (two SSE registers, described to the ABI by the database)."""
+    return Obj["NSEvent"](Int(event)).locationInWindow()
 
 
 def event_has_shift(event: P) -> Bool:
-    var flags = msg_send[Int, "NSEvent", "modifierFlags"](
-        ObjCObject(Int(event))
-    )
-    return (flags & 131072) != 0  # NSEventModifierFlagShift
+    var flags = Obj["NSEvent"](Int(event)).modifierFlags()
+    return (flags & nsenum["NSEventModifierFlagShift"]()) != 0
 
 
 class LifeDelegate:
@@ -391,15 +376,9 @@ class LifeActions:
 def handle_key(event: P):
     # No pool here: this is called from AppKit's own event dispatch, which
     # already has one, and every object read is autoreleased by the caller.
-    var chars = msg_send[
-        ObjCObject, "NSEvent", "charactersIgnoringModifiers"
-    ](ObjCObject(Int(event)))
-    if chars.is_nil():
-        return
-    var p = msg_send[P, "NSString", "UTF8String"](chars)
-    if Int(p) == 0:
-        return
-    var s = String(unsafe_from_utf8_ptr=p.unsafe_bitcast[c_char]())
+    var s = ns_to_string(ObjCObject(
+        Obj["NSEvent"](Int(event)).charactersIgnoringModifiers().id
+    ))
     if len(s.as_bytes()) == 0:
         return
     var c = s.as_bytes()[0]
@@ -435,9 +414,7 @@ def update_title():
         + "   [space] pause  [drag] draw  [⇧drag] erase  [.] step  [r]"
         + " random  [c] clear  [ [ ] ] speed"
     )
-    _ = msg_send[ObjCObject, "NSWindow", "setTitle:"](
-        ObjCObject(g_window()[]), nsstring(title).ptr()
-    )
+    _ = Obj["NSWindow"](g_window()[]).setTitle(nsstring(title).ptr())
 
 
 def present():
@@ -446,10 +423,10 @@ def present():
     No early return: this runs inside the tick's autorelease pool, and
     returning out of a `with` block skips the pop.
     """
-    var layer = ObjCObject(g_layer()[])
-    var drawable = msg_send[ObjCObject, "CAMetalLayer", "nextDrawable"](layer)
-    if not drawable.is_nil():
-        var tex = msg_send[ObjCObject, "CAMetalDrawable", "texture"](drawable)
+    var mlayer = Obj["CAMetalLayer"](g_layer()[])
+    var drawable = mlayer.nextDrawable()
+    if drawable.id != 0:
+        var tex = Obj["CAMetalDrawable"](drawable.addr()).texture()
         var region = MTLRegion(
             MTLOrigin(0, 0, 0), MTLSize(WIN_W, WIN_H, 1)
         )
@@ -534,38 +511,32 @@ def main() raises:
     randomize()
 
     with autoreleasepool():
-        var NSApplication = ObjCClass.lookup["NSApplication"]()
-        var app = msg_send[
-            ObjCObject, "NSApplication", "sharedApplication", is_class=True
-        ](NSApplication.as_object())
-        _ = msg_send[Bool, "NSApplication", "setActivationPolicy:"](app, Int(0))
+        var app = Cls["NSApplication"]().sharedApplication()
+        _ = app.setActivationPolicy(
+            nsenum["NSApplicationActivationPolicyRegular"]()
+        )
 
         # Instantiating a class is what registers it, so the delegate exists
         # in the runtime by the time it is handed over.
         var delegate = ObjCObject(LifeDelegate().__objc_id)
-        _ = msg_send[ObjCObject, "NSApplication", "setDelegate:"](
-            app, delegate.ptr()
-        )
+        _ = app.setDelegate(delegate)
 
         var view_instance = ObjCObject(LifeView().__objc_id)
         var actions = ObjCObject(LifeActions().__objc_id)
         _ = external_call["objc_retain", P](actions.ptr())
 
-        var win = msg_send[ObjCObject, "NSWindow", "alloc", is_class=True](
-            ObjCClass.lookup["NSWindow"]().as_object()
-        )
-        win = msg_send[
-            ObjCObject,
-            "NSWindow",
-            "initWithContentRect:styleMask:backing:defer:",
-        ](
-            win,
-            CGRect(
+        var win = Obj["NSWindow"](
+            contentRect=CGRect(
                 CGPoint(100.0, 100.0), CGSize(Float64(WIN_W), Float64(WIN_H))
             ),
-            Int(15),
-            Int(2),
-            Bool(False),
+            styleMask=(
+                nsenum["NSWindowStyleMaskTitled"]()
+                | nsenum["NSWindowStyleMaskClosable"]()
+                | nsenum["NSWindowStyleMaskMiniaturizable"]()
+                | nsenum["NSWindowStyleMaskResizable"]()
+            ),
+            backing=nsenum["NSBackingStoreBuffered"](),
+            defer=False,
         )
         g_window()[] = win.addr()
 
@@ -573,11 +544,8 @@ def main() raises:
         # instantiating a class does -- so the frame is set rather than passed
         # to initWithFrame:.
         var view = view_instance
-        _ = msg_send[ObjCObject, "NSView", "setFrame:"](
-            view,
-            CGRect(
-                CGPoint(0.0, 0.0), CGSize(Float64(WIN_W), Float64(WIN_H))
-            ),
+        _ = Obj["NSView"](view.addr()).setFrame(
+            CGRect(CGPoint(0.0, 0.0), CGSize(Float64(WIN_W), Float64(WIN_H)))
         )
         _ = external_call["objc_retain", P](view.ptr())
 
@@ -588,56 +556,37 @@ def main() raises:
         _ = external_call["objc_retain", P](queue.ptr())
         g_queue()[] = queue.addr()
 
-        var CAMetalLayer = ObjCClass.lookup["CAMetalLayer"]()
-        var layer = msg_send[
-            ObjCObject, "CAMetalLayer", "layer", is_class=True
-        ](CAMetalLayer.as_object())
+        # +layer's result class is not in the metadata, so CAMetalLayer is
+        # stated once at the wrap and every call after it checks the class
+        # that was meant.
+        var layer = ObjCObject(Cls["CAMetalLayer"]().layer().id)
+        var mlayer = Obj["CAMetalLayer"](layer.addr())
         _ = send[ObjCObject, "setDevice:"](layer, display_dev.ptr())
-        _ = msg_send[ObjCObject, "CAMetalLayer", "setPixelFormat:"](
-            layer, Int(80)  # MTLPixelFormatBGRA8Unorm
-        )
-        _ = msg_send[ObjCObject, "CAMetalLayer", "setFramebufferOnly:"](
-            layer, Bool(False)
-        )
-        _ = msg_send[ObjCObject, "CAMetalLayer", "setDrawableSize:"](
-            layer, CGSize(Float64(WIN_W), Float64(WIN_H))
-        )
+        _ = mlayer.setPixelFormat(nsenum["MTLPixelFormatBGRA8Unorm"]())
+        _ = mlayer.setFramebufferOnly(False)
+        _ = mlayer.setDrawableSize(CGSize(Float64(WIN_W), Float64(WIN_H)))
         _ = external_call["objc_retain", P](layer.ptr())
         g_layer()[] = layer.addr()
 
-        _ = msg_send[ObjCObject, "NSView", "setWantsLayer:"](view, True)
-        _ = msg_send[ObjCObject, "NSView", "setLayer:"](view, layer.ptr())
-        _ = msg_send[ObjCObject, "NSWindow", "setContentView:"](
-            win, view.ptr()
-        )
-        _ = msg_send[ObjCObject, "NSWindow", "makeFirstResponder:"](
-            win, view.ptr()
-        )
+        var view_t = Obj["NSView"](view.addr())
+        _ = view_t.setWantsLayer(True)
+        _ = view_t.setLayer(layer)
+        _ = win.setContentView(view)
+        _ = win.makeFirstResponder(view)
 
-        _ = msg_send[
-            ObjCObject,
-            "NSTimer",
-            "scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:",
-            is_class=True,
-        ](
-            ObjCClass.lookup["NSTimer"]().as_object(),
-            Float64(1.0 / 60.0),
-            actions.ptr(),
-            sel["lifeTick:"]().ptr(),
-            actions.ptr(),
-            Bool(True),
+        # The tick: a five-label factory, every part checked.
+        comptime NSTimer = Obj["NSTimer"]
+        _ = NSTimer(
+            scheduledTimerWithTimeInterval=Float64(1.0 / 60.0),
+            target=actions,
+            selector=sel["lifeTick:"]().ptr(),
+            userInfo=actions,
+            repeats=True,
         )
 
         render()
         update_title()
-        _ = msg_send[ObjCObject, "NSWindow", "makeKeyAndOrderFront:"](
-            win, app.ptr()
-        )
-        _ = msg_send[
-            ObjCObject, "NSApplication", "activateIgnoringOtherApps:"
-        ](app, Bool(True))
+        _ = win.makeKeyAndOrderFront(ObjCObject(app.id))
+        _ = app.activateIgnoringOtherApps(True)
 
-    var app2 = msg_send[
-        ObjCObject, "NSApplication", "sharedApplication", is_class=True
-    ](ObjCClass.lookup["NSApplication"]().as_object())
-    _ = msg_send[ObjCObject, "NSApplication", "run"](app2)
+    _ = Cls["NSApplication"]().sharedApplication().run()
