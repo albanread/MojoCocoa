@@ -222,9 +222,32 @@ on comptime value narrowing"). The first is the crash class P2's probe met
 live; the second is honest about what is not built rather than letting a
 String reach `objc_msgSend` as itself.
 
-**The blocker, stated so the language work can take it:** inside a generic
-method, a value of parameter type `T` cannot be narrowed to `String` even
-under `comptime if T == String` — the branch does not refine the value's
+**UPDATE 2026-09-01: the blocked half is unblocked, compiler-side, without
+touching the language.** The narrowing wall stands -- inside a generic
+callee a value of parameter type `T` still cannot become a `String` -- but
+the bridge does not have to happen there. The keyword hooks run at the call
+site, where the operand's type is still concrete, so they now bridge it
+there: when the metadata says an argument position is an object and the
+emitted operand is a String (or a StringLiteral, which is what a bare
+string emits as), the hook wraps that operand in `__bridge_string(...)` --
+a dunder function declared in `std.objc.typed`, resolved against that
+module's scope (the module that declares the hooks; never user scope), so
+it works in any file regardless of imports. A String where the selector
+takes a non-object is deliberately left unwrapped so the guard still
+refuses it. Positional calls keep the hand crossing: the hook only engages
+keyword calls and construction, and intercepting every positional call to
+the tier is a bigger behavioural surface than the bridge is worth. Two
+bugs found on the way, both fixed: the parts-family argument-kinds lookup
+ignored its is_class operand (class methods answered as instance side, so
+no kinds, so no bridging), and the construction arm reads its parameters
+through the type-value's meta layer, which `ASTType::getParamBindings`
+strips. Verified: `bridge_string_test.mojo` (call side and construction
+side, bare Strings, live objects) in `run-cocoa-checks.sh` — **40 passed,
+0 failed**.
+
+**The blocker as originally stated, for the language work that remains
+interesting:** inside a generic method, a value of parameter type `T`
+cannot be narrowed to `String` even under `comptime if T == String` — the branch does not refine the value's
 type; implicit conversion from `T` to `String` is refused; overload
 selection cannot cross the symbolic boundary; `T` has no methods, so no
 trait dispatch and no explicit cast reach it; and this tree has no
