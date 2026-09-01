@@ -143,6 +143,22 @@ nonsense size deserves an abort that names itself.
 
 ---
 
+## 2026-09-01 — `nsenum`: enum values by their SDK names
+
+**Files:** `std/objc/foundation.mojo`, `std/objc/__init__.mojo`
+
+**What and why.** Sprint P6: the folklore integer leaves the examples.
+`nsenum["NSWindowStyleMaskTitled"]()` answers 1 from BridgeSupport, a name
+the metadata does not know is a compile error naming it -- the same
+property every other call into the database has. The query
+(`cocoakb_enum_value`) already existed; this is the public wrapper, and the
+function-local import keeps `std.sys._cocoakb` out of foundation's header
+surface.
+
+**Carry forward:** yes, with the rest of `std.objc`.
+
+---
+
 ## Prior stdlib work, from the history
 
 Most changes under `mojo/stdlib/` in this fork are not bug patches against

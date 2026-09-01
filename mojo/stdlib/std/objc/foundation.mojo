@@ -22,6 +22,7 @@ struct NSString(Movable):
     """A leak-safe handle on an `NSString`. Owns its object via `ObjCRef`, so
     it is released when the Mojo value dies."""
 
+
     var _ref: ObjCRef
 
     def __init__(out self, *, adopt: ObjCObject):
@@ -117,3 +118,27 @@ def ns_to_string(s: ObjCObject) -> String:
     if Int(p) == 0:
         return String("")
     return String(unsafe_from_utf8_ptr=p.unsafe_bitcast[c_char]())
+
+def nsenum[name: StaticString]() -> Int:
+    """An AppKit/Foundation enum value by its SDK name -- the database-backed
+    replacement for folklore integers.
+
+        win = Obj["NSWindow"](
+            contentRect=r,
+            styleMask=(
+                nsenum["NSWindowStyleMaskTitled"]()
+                | nsenum["NSWindowStyleMaskClosable"]()
+                | nsenum["NSWindowStyleMaskMiniaturizable"]()
+                | nsenum["NSWindowStyleMaskResizable"]()
+            ),
+            backing=nsenum["NSBackingStoreBuffered"](),
+            defer=False,
+        )
+
+    A name the metadata does not know is a compile error naming it, not a
+    silently wrong mask -- the same property every other call into the
+    database has. The value comes from BridgeSupport, which carries the
+    enum constants the live runtime cannot report."""
+    from std.sys._cocoakb import cocoakb_enum_value
+
+    return cocoakb_enum_value[name]()
