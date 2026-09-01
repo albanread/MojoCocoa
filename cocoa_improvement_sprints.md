@@ -151,18 +151,41 @@ gained the construction arm (`tools/check-parser.sh` 332 pass / 1
 known-stale fail); a full `make-dist.sh` including the IDE builds clean;
 guide chapter 4 documents the alias and both spellings.
 
-## Sprint P3 — `__setattr_param__`, property writes (NOT STARTED, size S)
+## Sprint P3 — `__setattr_param__`, property writes (IMPLEMENTED 2026-09-01)
 
 1. The hook, symmetric with `__getattr_param__`: assignment resolution
-   (`ExprNodes.cpp:1941`) consults a parametric setter so the name reaches
-   the database as a parameter. Without it `win.title = x` has no checked
-   path — a runtime-string `__setattr__` cannot reach `cocoakb`.
+   consults a parametric setter so the name reaches the database as a
+   parameter. Without it `win.title = x` has no checked path — a
+   runtime-string `__setattr__` cannot reach `cocoakb`.
 2. The setter query: by (class, name, setter-direction) — `title` →
    `setTitle:` — with the argument class checked exactly as calls are.
 3. **No KVC, ever, in this path**: `win.anything = x` is a selector the
-   database vouched for or a compile error. The design says so; a test pins
-   it — an unknown name must not fall back to a stringly-typed runtime
-   lookup.
+   database vouched for or a compile error.
+
+**Status.** Landed. The hook lives at the top of `BinOpNode::emitAssign`
+(the statement-level assignment, not the LValue machinery at 1941 — a
+property write CONSUMES the value, it cannot produce an address, so the
+interception has to happen where both sides of the `=` are in hand). It
+synthesizes `base.__setattr_param__["name"](value)` exactly as the P1/P2
+hooks synthesize their calls; the setter selector is assembled in SQL
+(`'set' || upper(first letter) || rest || ':'`) and its existence settles
+the write at compile time — a read-only property or a typo is *the Cocoa
+metadata has no 'selector_for_setter' for NSWindow, titel*. The value
+carries the P4 argument-kind guard, which is how a bare String to a
+`@`-taking setter asks to be wrapped rather than crashing.
+
+One deliberate restriction, recorded: the hook fires only when the base is
+a bare variable. The base must be emitted to learn its type, and if the
+hook does not apply the ordinary path emits it again — a second variable
+load is harmless, a second call with side effects is not. `f().prop = x`
+keeps the ordinary path until someone wants it enough to solve the
+double-emission.
+
+Verification: `property_write_test.mojo` (write, read back, write again,
+read back — through the real runtime) and `must_fail_property_ro.mojo` (the
+typo'd property refuses) in `spikes/run-cocoa-checks.sh` (**39 passed, 0
+failed**); `tools/check-parser.sh` 332 pass / 1 known-stale fail; the
+committed IDE builds clean against the new compiler.
 
 Verification: a property round-trip (read, write, read back) through the
 runtime, in the `spikes/s5-cocoakb` style; an unknown property name is a
