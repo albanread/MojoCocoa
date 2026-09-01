@@ -26,9 +26,9 @@
 # server -- for the same reason. A compiler thinking hard must not be an editor
 # that has stopped responding.
 from std.objc import (
-    ObjCClass,
+    Cls,
+    Obj,
     ObjCObject,
-    msg_send,
     nsstring,
     ns_to_string,
     autoreleasepool,
@@ -142,33 +142,25 @@ def _read_file(path: String) -> String:
 
 def _exists(path: String) -> Bool:
     with autoreleasepool():
-        let NSFileManager = ObjCClass.lookup["NSFileManager"]()
-        let fm = msg_send[
-            ObjCObject, "NSFileManager", "defaultManager", is_class=True
-        ](NSFileManager.as_object())
         var p = path
-        return msg_send[Bool, "NSFileManager", "fileExistsAtPath:"](
-            fm, nsstring(p).ptr()
-        )
+        return Obj["NSFileManager"](
+            Cls["NSFileManager"]().defaultManager().id
+        ).fileExistsAtPath(nsstring(p).ptr())
 
 
 def _root_mojo_files(root: String) -> List[String]:
     var out = List[String]()
     with autoreleasepool():
-        let NSFileManager = ObjCClass.lookup["NSFileManager"]()
-        let fm = msg_send[
-            ObjCObject, "NSFileManager", "defaultManager", is_class=True
-        ](NSFileManager.as_object())
         var r = root
-        let names = msg_send[
-            ObjCObject, "NSFileManager", "contentsOfDirectoryAtPath:error:"
-        ](fm, nsstring(r).ptr(), ObjCObject(0).ptr())
-        if names.addr() == 0:
+        let names = Obj["NSFileManager"](
+            Cls["NSFileManager"]().defaultManager().id
+        ).contentsOfDirectoryAtPath(nsstring(r).ptr(), error=ObjCObject(0))
+        if names.id == 0:
             return out^
-        let n = msg_send[Int, "NSArray", "count"](names)
+        let arr = Obj["NSArray"](names.id)
+        let n = arr.count()
         for i in range(n):
-            let nm = msg_send[ObjCObject, "NSArray", "objectAtIndex:"](names, i)
-            let name = ns_to_string(nm)
+            let name = ns_to_string(ObjCObject(arr.objectAtIndex(i).id))
             if name.endswith(".mojo") and not name.startswith("."):
                 out.append(root + String("/") + name)
     return out^
@@ -263,16 +255,15 @@ def binary_for(entry: String) -> String:
 
 def ensure_dir(path: String) -> Bool:
     with autoreleasepool():
-        let NSFileManager = ObjCClass.lookup["NSFileManager"]()
-        let fm = msg_send[
-            ObjCObject, "NSFileManager", "defaultManager", is_class=True
-        ](NSFileManager.as_object())
         var p = path
-        return msg_send[
-            Bool,
-            "NSFileManager",
-            "createDirectoryAtPath:withIntermediateDirectories:attributes:error:",
-        ](fm, nsstring(p).ptr(), True, ObjCObject(0).ptr(), ObjCObject(0).ptr())
+        return Obj["NSFileManager"](
+            Cls["NSFileManager"]().defaultManager().id
+        ).createDirectoryAtPath(
+            nsstring(p).ptr(),
+            withIntermediateDirectories=True,
+            attributes=ObjCObject(0),
+            error=ObjCObject(0),
+        )
 
 
 # ── Running it ──────────────────────────────────────────────────────────────
@@ -301,56 +292,34 @@ def start_with_environment(
 
     _put(g_label(), what^)
     with autoreleasepool():
-        let NSTask = ObjCClass.lookup["NSTask"]()
-        var task = msg_send[ObjCObject, "NSTask", "alloc", is_class=True](
-            NSTask.as_object()
-        )
-        task = msg_send[ObjCObject, "NSObject", "init"](task)
+        var task = Obj["NSTask"](Cls["NSTask"]().alloc().id).init()
         var e = exe
-        _ = msg_send[ObjCObject, "NSTask", "setLaunchPath:"](
-            task, nsstring(e).ptr()
-        )
+        _ = task.setLaunchPath(nsstring(e).ptr())
 
-        let NSMutableArray = ObjCClass.lookup["NSMutableArray"]()
-        var argv = msg_send[
-            ObjCObject, "NSMutableArray", "array", is_class=True
-        ](NSMutableArray.as_object())
+        var argv = Cls["NSMutableArray"]().array()
         for a in args:
             var s = a
-            _ = msg_send[ObjCObject, "NSMutableArray", "addObject:"](
-                argv, nsstring(s).ptr()
-            )
-        _ = msg_send[ObjCObject, "NSTask", "setArguments:"](task, argv.ptr())
+            _ = argv.addObject(nsstring(s).ptr())
+        _ = task.setArguments(ObjCObject(argv.id))
 
         # The working directory is the project, so a program that writes a file
         # writes it where its source lives rather than wherever Roast started.
         if cwd != "":
             var c = cwd
-            _ = msg_send[ObjCObject, "NSTask", "setCurrentDirectoryPath:"](
-                task, nsstring(c).ptr()
-            )
+            _ = task.setCurrentDirectoryPath(nsstring(c).ptr())
 
         # Merge only the settings the caller owns.  Python uses this to select
         # a project venv without losing the driver, loader, proxy, or temporary
         # directory settings inherited by Roast.
         apply_environment(task, environment)
 
-        let NSPipe = ObjCClass.lookup["NSPipe"]()
-        let pipe = msg_send[ObjCObject, "NSPipe", "pipe", is_class=True](
-            NSPipe.as_object()
-        )
+        let pipe = Cls["NSPipe"]().pipe()
         # One pipe for both: diagnostics come out of stderr and program output
         # out of stdout, and interleaving them is what a console is.
-        _ = msg_send[ObjCObject, "NSTask", "setStandardOutput:"](
-            task, pipe.ptr()
-        )
-        _ = msg_send[ObjCObject, "NSTask", "setStandardError:"](
-            task, pipe.ptr()
-        )
-        let reader = msg_send[ObjCObject, "NSPipe", "fileHandleForReading"](
-            pipe
-        )
-        let fd = msg_send[Int, "NSFileHandle", "fileDescriptor"](reader)
+        _ = task.setStandardOutput(ObjCObject(pipe.id))
+        _ = task.setStandardError(ObjCObject(pipe.id))
+        let reader = pipe.fileHandleForReading()
+        let fd = Obj["NSFileHandle"](reader.id).fileDescriptor()
 
         _ = external_call["objc_retain", P](task.ptr())
         _ = external_call["objc_retain", P](reader.ptr())
@@ -358,7 +327,7 @@ def start_with_environment(
         g_fd()[] = fd
         g_exit()[] = 0
 
-        _ = msg_send[ObjCObject, "NSTask", "launch"](task)
+        _ = task.launch()
     return True
 
 
@@ -393,10 +362,10 @@ def pump() -> Int:
     var total = _drain()
     with autoreleasepool():
         let task = ObjCObject(g_task()[])
-        if not msg_send[Bool, "NSTask", "isRunning"](task):
+        if not Obj["NSTask"](task.addr()).isRunning():
             # It has gone, but the pipe may still hold its last words.
             total += _drain()
-            g_exit()[] = msg_send[Int, "NSTask", "terminationStatus"](task)
+            g_exit()[] = Obj["NSTask"](task.addr()).terminationStatus()
             g_task()[] = 0
             g_fd()[] = 0
             g_serial()[] += 1
@@ -407,7 +376,7 @@ def stop():
     if g_task()[] == 0:
         return
     with autoreleasepool():
-        _ = msg_send[ObjCObject, "NSTask", "terminate"](ObjCObject(g_task()[]))
+        _ = Obj["NSTask"](g_task()[]).terminate()
     _ = _drain()
     g_task()[] = 0
     g_fd()[] = 0
