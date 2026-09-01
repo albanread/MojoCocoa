@@ -58,6 +58,12 @@ INSTALLED_LIB="/Applications/Roast/CocoaMojo/current/lib"
   exit 1
 }
 
+# The distribution ships source trees COPIED from this repository -- the
+# stdlib, the examples, the IDE's own source. Refresh them before packing,
+# so this bazel-free path can never ship a fresh Roast binary beside stale
+# source (which it did, once: rebuilt_Release.md in RoastInstaller).
+"$ROOT/tools/sync-dist-sources.sh" "$D" | sed 's/^/   /'
+
 VER="$(date +%Y.%m.%d)"
 GITREV="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
 

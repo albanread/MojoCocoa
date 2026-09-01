@@ -272,61 +272,10 @@ n=$(nm -gU "$D/lib/libCocoaMojoGPU.dylib" | grep -c 'AsyncRT') || true
 [ "$n" -gt 100 ] || { echo "GPU runtime exported only $n AsyncRT symbols -- visibility regression"; exit 1; }
 echo "   $n AsyncRT symbols exported"
 
-echo "== packages =="
-# Sources, not .mojoc: a precompiled package records a compiler version and this
-# tree's compiler rejects packages built by a different one.
-mkdir -p "$D/lib/mojo"
-rsync -a --delete "$ROOT/mojo/stdlib/"      "$D/lib/mojo/stdlib/"
-rsync -a --delete "$ROOT/max/mojo/"         "$D/lib/mojo/max/"
-rsync -a --delete "$ROOT/max/kernels/src/"  "$D/lib/mojo/kernels/"
-
-echo "== examples =="
-# Shipped with the toolchain because they are the answer to "what does a
-# project look like" -- each folder is one, with its main.mojo, and Roast
-# opens them as they are. Copied without build/ or anything a previous run
-# left behind, so a fresh distribution is sources only.
-# --delete-excluded as well as --delete: without it rsync protects excluded
-# files that are already in the destination, so a build/ from an earlier run
-# would survive every rebuild of the distribution.
-rsync -a --delete --delete-excluded \
-      --exclude 'build/' --exclude '*.png' --exclude '.DS_Store' \
-      "$ROOT/examples/" "$D/share/examples/"
-# A binary left behind by someone running `cocoamojo build -o name` inside an
-# example folder is not part of the example, and rsync cannot tell it from a
-# source. build/ is excluded above; this catches the other spelling.
-stray="$(find "$D/share/examples" -type f -perm +111 ! -name '*.sh' | wc -l | tr -d ' ')"
-if [ "$stray" -gt 0 ]; then
-  find "$D/share/examples" -type f -perm +111 ! -name '*.sh' -delete
-  echo "   dropped $stray stray executable(s)"
-fi
-echo "   $(find "$D/share/examples" -name '*.mojo' | wc -l | tr -d ' ') files in $(ls "$D/share/examples" | grep -vc README) projects"
-
-echo "== the IDE's source =="
-# Roast is written in the language it edits, so its source ships as a
-# project people can open, read and build -- the most complete example the
-# toolchain has, and the answer to "how would I write something like this".
-rsync -a --delete "$ROOT/ide/"*.mojo "$D/share/ide-source/"
-cat > "$D/share/ide-source/README.md" <<'IDEREADME'
-# Roast, in Roast
-
-The source of the editor you are reading it in. Roast is written in
-cocoa-mojo and talks to AppKit directly -- no bridge, no wrapper library --
-so this doubles as the largest worked example of `class`, `msg_send`, the
-Cocoa database and the debugger APIs.
-
-Build it with cmd-B; `roast.mojo` is the entry point. The copy in
-Application Support is yours: edit it freely, and File > Reset Standard
-Library & Examples restores the shipped one.
-
-Files worth opening first:
-
-- `roast.mojo`      the window, menus, toolbar, agent surface
-- `gridview.mojo`   the editor view: NSTextInputClient, drawing, the lexer
-- `rope.mojo`       the text engine, with its own test suite
-- `dap.mojo`        the debug adapter conversation
-- `lsp.mojo`        the language server conversation
-IDEREADME
-echo "   $(ls "$D/share/ide-source"/*.mojo | wc -l | tr -d ' ') files"
+# The stdlib, the examples and the IDE's own source are copies, not builds,
+# and the copies must also happen on the bazel-free path (make-app.sh), so
+# they live in one script both paths call.
+"$ROOT/tools/sync-dist-sources.sh" "$D"
 
 echo "== the IDE =="
 # Roast, built with the compiler this distribution just assembled -- the same
