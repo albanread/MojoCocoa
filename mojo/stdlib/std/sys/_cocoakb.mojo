@@ -853,3 +853,275 @@ comptime cocoakb_p_init_selector_for_parts_5[
         `> : !kgen.string`,
     ]
 )
+
+# The per-argument @encode kind characters, one packed integer per call
+# shape (sprint P4). Argument i's kind -- '@' object, ':' SEL, 'B' bool,
+# '{' struct, an integer width -- sits in bits 7*i, so a comptime
+# `(kinds >> (7*i)) & 127` folds where any string operation would not; the
+# parse itself lives in the compiler, beside the SQL, because Mojo cannot
+# do it and SQL should not.
+
+comptime cocoakb_p_arg_kinds_for_parts_1[
+    cls: StringLiteral,
+    name: StringLiteral,
+    isc: StringLiteral,
+    p1: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_parts_1" : !kgen.string, `,
+        cls.value, `, `,
+        name.value, `, `,
+        isc.value, `, `,
+        p1.value, 
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_parts_2[
+    cls: StringLiteral,
+    name: StringLiteral,
+    isc: StringLiteral,
+    p1: StringLiteral,
+    p2: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_parts_2" : !kgen.string, `,
+        cls.value, `, `,
+        name.value, `, `,
+        isc.value, `, `,
+        p1.value, `, `,
+        p2.value, 
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_parts_3[
+    cls: StringLiteral,
+    name: StringLiteral,
+    isc: StringLiteral,
+    p1: StringLiteral,
+    p2: StringLiteral,
+    p3: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_parts_3" : !kgen.string, `,
+        cls.value, `, `,
+        name.value, `, `,
+        isc.value, `, `,
+        p1.value, `, `,
+        p2.value, `, `,
+        p3.value, 
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_parts_4[
+    cls: StringLiteral,
+    name: StringLiteral,
+    isc: StringLiteral,
+    p1: StringLiteral,
+    p2: StringLiteral,
+    p3: StringLiteral,
+    p4: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_parts_4" : !kgen.string, `,
+        cls.value, `, `,
+        name.value, `, `,
+        isc.value, `, `,
+        p1.value, `, `,
+        p2.value, `, `,
+        p3.value, `, `,
+        p4.value, 
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_parts_5[
+    cls: StringLiteral,
+    name: StringLiteral,
+    isc: StringLiteral,
+    p1: StringLiteral,
+    p2: StringLiteral,
+    p3: StringLiteral,
+    p4: StringLiteral,
+    p5: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_parts_5" : !kgen.string, `,
+        cls.value, `, `,
+        name.value, `, `,
+        isc.value, `, `,
+        p1.value, `, `,
+        p2.value, `, `,
+        p3.value, `, `,
+        p4.value, `, `,
+        p5.value, 
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_init_parts_1[
+    cls: StringLiteral,
+    p1: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_init_parts_1" : !kgen.string, `,
+        cls.value, `, `,
+        p1.value, 
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_init_parts_2[
+    cls: StringLiteral,
+    p1: StringLiteral,
+    p2: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_init_parts_2" : !kgen.string, `,
+        cls.value, `, `,
+        p1.value, `, `,
+        p2.value, 
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_init_parts_3[
+    cls: StringLiteral,
+    p1: StringLiteral,
+    p2: StringLiteral,
+    p3: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_init_parts_3" : !kgen.string, `,
+        cls.value, `, `,
+        p1.value, `, `,
+        p2.value, `, `,
+        p3.value, 
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_init_parts_4[
+    cls: StringLiteral,
+    p1: StringLiteral,
+    p2: StringLiteral,
+    p3: StringLiteral,
+    p4: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_init_parts_4" : !kgen.string, `,
+        cls.value, `, `,
+        p1.value, `, `,
+        p2.value, `, `,
+        p3.value, `, `,
+        p4.value, 
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_init_parts_5[
+    cls: StringLiteral,
+    p1: StringLiteral,
+    p2: StringLiteral,
+    p3: StringLiteral,
+    p4: StringLiteral,
+    p5: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_init_parts_5" : !kgen.string, `,
+        cls.value, `, `,
+        p1.value, `, `,
+        p2.value, `, `,
+        p3.value, `, `,
+        p4.value, `, `,
+        p5.value, 
+        `> : index`,
+    ]
+)
+
+
+comptime cocoakb_p_arg_kinds_for_name_1[
+    cls: StringLiteral,
+    name: StringLiteral,
+    isc: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_name_1" : !kgen.string, `,
+        cls.value, `, `,
+        name.value, `, `,
+        isc.value,
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_name_2[
+    cls: StringLiteral,
+    name: StringLiteral,
+    isc: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_name_2" : !kgen.string, `,
+        cls.value, `, `,
+        name.value, `, `,
+        isc.value,
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_name_3[
+    cls: StringLiteral,
+    name: StringLiteral,
+    isc: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_name_3" : !kgen.string, `,
+        cls.value, `, `,
+        name.value, `, `,
+        isc.value,
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_name_4[
+    cls: StringLiteral,
+    name: StringLiteral,
+    isc: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_name_4" : !kgen.string, `,
+        cls.value, `, `,
+        name.value, `, `,
+        isc.value,
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_name_5[
+    cls: StringLiteral,
+    name: StringLiteral,
+    isc: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_name_5" : !kgen.string, `,
+        cls.value, `, `,
+        name.value, `, `,
+        isc.value,
+        `> : index`,
+    ]
+)
+
+comptime cocoakb_p_arg_kinds_for_name_6[
+    cls: StringLiteral,
+    name: StringLiteral,
+    isc: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_name_6" : !kgen.string, `,
+        cls.value, `, `,
+        name.value, `, `,
+        isc.value,
+        `> : index`,
+    ]
+)

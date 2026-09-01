@@ -70,6 +70,22 @@ from std.sys._cocoakb import (
     cocoakb_p_init_selector_for_parts_4,
     cocoakb_p_init_form_for_parts_5,
     cocoakb_p_init_selector_for_parts_5,
+    cocoakb_p_arg_kinds_for_parts_1,
+    cocoakb_p_arg_kinds_for_parts_2,
+    cocoakb_p_arg_kinds_for_parts_3,
+    cocoakb_p_arg_kinds_for_parts_4,
+    cocoakb_p_arg_kinds_for_parts_5,
+    cocoakb_p_arg_kinds_for_init_parts_1,
+    cocoakb_p_arg_kinds_for_init_parts_2,
+    cocoakb_p_arg_kinds_for_init_parts_3,
+    cocoakb_p_arg_kinds_for_init_parts_4,
+    cocoakb_p_arg_kinds_for_init_parts_5,
+    cocoakb_p_arg_kinds_for_name_1,
+    cocoakb_p_arg_kinds_for_name_2,
+    cocoakb_p_arg_kinds_for_name_3,
+    cocoakb_p_arg_kinds_for_name_4,
+    cocoakb_p_arg_kinds_for_name_5,
+    cocoakb_p_arg_kinds_for_name_6,
 )
 from std.memory import OpaquePointer
 from .runtime import ObjCObject, ObjCClass, msg_send
@@ -134,6 +150,35 @@ comptime _Result[
 # selector is assembled in SQL (`name || ':' || part || ':' ...`), so a
 # mislabelled call answers _NOSUCH and becomes a sentence, not a symbolic
 # type. One alias per label count because the queries are keyed that way.
+
+
+comptime _AT = 64  # '@' -- an object
+
+
+def _guard_str_arg[T: AnyType, kind: Int]():
+    """The safety half of bridging (sprint P4): a String argument is REFUSED
+    where the selector takes anything other than an object -- the difference
+    between a compile error and a crash inside the framework, met live by
+    sprint P2's probe (a String passed to buttonWithTitle:).
+
+    The bridging half -- converting the String where the selector DOES take
+    an object -- is blocked at the language level and recorded in the sprint
+    notes: a comptime `if T == String` does not narrow the value, and
+    overload selection cannot cross a symbolic boundary, so a String still
+    crosses by hand as `nsstring(s).ptr()`."""
+    comptime if T == String:
+        comptime if kind == _AT:
+            comptime assert False, (
+                "a String argument must be wrapped as nsstring(s).ptr()"
+                " -- automatic bridging is designed but blocked on comptime"
+                " value narrowing; see the sprint P4 notes"
+            )
+        else:
+            comptime assert False, (
+                "a String argument was given where the selector takes"
+                " something other than an object; pass an object or the"
+                " type the selector declares"
+            )
 
 
 comptime _KindP1[
@@ -318,6 +363,8 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         T0: AnyType
     ](self, a0: T0) -> _Result[Self.cls, Self.name, "0", "1"]:
         comptime sel = cocoakb_p_selector_for[Self.cls, Self.name, "0", "1"]
+        comptime kinds = cocoakb_p_arg_kinds_for_name_1[Self.cls, Self.name, "0"]
+        _guard_str_arg[T0, kinds & 127]()
         comptime assert _Kind[Self.cls, Self.name, "0", "1"] != _NOSUCH, (
             "no such method on this class taking this many arguments: the"
             " selector it would send is not one the SDK records. Check the"
@@ -336,6 +383,9 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         T0: AnyType, T1: AnyType
     ](self, a0: T0, a1: T1) -> _Result[Self.cls, Self.name, "0", "2"]:
         comptime sel = cocoakb_p_selector_for[Self.cls, Self.name, "0", "2"]
+        comptime kinds = cocoakb_p_arg_kinds_for_name_2[Self.cls, Self.name, "0"]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
         comptime assert _Kind[Self.cls, Self.name, "0", "2"] != _NOSUCH, (
             "no such method on this class taking this many arguments: the"
             " selector it would send is not one the SDK records. Check the"
@@ -354,6 +404,10 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         T0: AnyType, T1: AnyType, T2: AnyType
     ](self, a0: T0, a1: T1, a2: T2) -> _Result[Self.cls, Self.name, "0", "3"]:
         comptime sel = cocoakb_p_selector_for[Self.cls, Self.name, "0", "3"]
+        comptime kinds = cocoakb_p_arg_kinds_for_name_3[Self.cls, Self.name, "0"]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
         comptime assert _Kind[Self.cls, Self.name, "0", "3"] != _NOSUCH, (
             "no such method on this class taking this many arguments: the"
             " selector it would send is not one the SDK records. Check the"
@@ -372,6 +426,11 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType
     ](self, a0: T0, a1: T1, a2: T2, a3: T3) -> _Result[Self.cls, Self.name, "0", "4"]:
         comptime sel = cocoakb_p_selector_for[Self.cls, Self.name, "0", "4"]
+        comptime kinds = cocoakb_p_arg_kinds_for_name_4[Self.cls, Self.name, "0"]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
         comptime assert _Kind[Self.cls, Self.name, "0", "4"] != _NOSUCH, (
             "no such method on this class taking this many arguments: the"
             " selector it would send is not one the SDK records. Check the"
@@ -390,6 +449,12 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType, T4: AnyType
     ](self, a0: T0, a1: T1, a2: T2, a3: T3, a4: T4) -> _Result[Self.cls, Self.name, "0", "5"]:
         comptime sel = cocoakb_p_selector_for[Self.cls, Self.name, "0", "5"]
+        comptime kinds = cocoakb_p_arg_kinds_for_name_5[Self.cls, Self.name, "0"]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
+        _guard_str_arg[T4, (kinds >> 28) & 127]()
         comptime assert _Kind[Self.cls, Self.name, "0", "5"] != _NOSUCH, (
             "no such method on this class taking this many arguments: the"
             " selector it would send is not one the SDK records. Check the"
@@ -418,6 +483,9 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         comptime sel = cocoakb_p_selector_for_parts_1[
             Self.cls, Self.name, "0", p1
         ]
+        comptime kinds = cocoakb_p_arg_kinds_for_parts_1[Self.cls, Self.name, "0", p1]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
         comptime assert _KindP1[Self.cls, Self.name, "0", p1] != _NOSUCH, (
             "no such method on this class with these keyword labels: the"
             " selector they build is not one the SDK records. Check each"
@@ -441,6 +509,10 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         comptime sel = cocoakb_p_selector_for_parts_2[
             Self.cls, Self.name, "0", p1, p2
         ]
+        comptime kinds = cocoakb_p_arg_kinds_for_parts_2[Self.cls, Self.name, "0", p1, p2]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
         comptime assert _KindP2[Self.cls, Self.name, "0", p1, p2] != _NOSUCH, (
             "no such method on this class with these keyword labels: the"
             " selector they build is not one the SDK records. Check each"
@@ -464,6 +536,11 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         comptime sel = cocoakb_p_selector_for_parts_3[
             Self.cls, Self.name, "0", p1, p2, p3
         ]
+        comptime kinds = cocoakb_p_arg_kinds_for_parts_3[Self.cls, Self.name, "0", p1, p2, p3]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
         comptime assert _KindP3[Self.cls, Self.name, "0", p1, p2, p3] != _NOSUCH, (
             "no such method on this class with these keyword labels: the"
             " selector they build is not one the SDK records. Check each"
@@ -488,6 +565,12 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         comptime sel = cocoakb_p_selector_for_parts_4[
             Self.cls, Self.name, "0", p1, p2, p3, p4
         ]
+        comptime kinds = cocoakb_p_arg_kinds_for_parts_4[Self.cls, Self.name, "0", p1, p2, p3, p4]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
+        _guard_str_arg[T4, (kinds >> 28) & 127]()
         comptime assert _KindP4[Self.cls, Self.name, "0", p1, p2, p3, p4] != _NOSUCH, (
             "no such method on this class with these keyword labels: the"
             " selector they build is not one the SDK records. Check each"
@@ -514,6 +597,13 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         comptime sel = cocoakb_p_selector_for_parts_5[
             Self.cls, Self.name, "0", p1, p2, p3, p4, p5
         ]
+        comptime kinds = cocoakb_p_arg_kinds_for_parts_5[Self.cls, Self.name, "1", p1, p2, p3, p4, p5]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
+        _guard_str_arg[T4, (kinds >> 28) & 127]()
+        _guard_str_arg[T5, (kinds >> 35) & 127]()
         comptime assert _KindP5[Self.cls, Self.name, "0", p1, p2, p3, p4, p5] != _NOSUCH, (
             "no such method on this class with these keyword labels: the"
             " selector they build is not one the SDK records. Check each"
@@ -534,6 +624,13 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType, T4: AnyType, T5: AnyType
     ](self, a0: T0, a1: T1, a2: T2, a3: T3, a4: T4, a5: T5) -> _Result[Self.cls, Self.name, "0", "6"]:
         comptime sel = cocoakb_p_selector_for[Self.cls, Self.name, "0", "6"]
+        comptime kinds = cocoakb_p_arg_kinds_for_name_6[Self.cls, Self.name, "0"]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
+        _guard_str_arg[T4, (kinds >> 28) & 127]()
+        _guard_str_arg[T5, (kinds >> 35) & 127]()
         comptime assert _Kind[Self.cls, Self.name, "0", "6"] != _NOSUCH, (
             "no such method on this class taking this many arguments: the"
             " selector it would send is not one the SDK records. Check the"
@@ -581,6 +678,8 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         T0: AnyType
     ](self, a0: T0) -> _Result[Self.cls, Self.name, "1", "1"]:
         comptime sel = cocoakb_p_selector_for[Self.cls, Self.name, "1", "1"]
+        comptime kinds = cocoakb_p_arg_kinds_for_name_1[Self.cls, Self.name, "1"]
+        _guard_str_arg[T0, kinds & 127]()
         comptime assert _Kind[Self.cls, Self.name, "1", "1"] != _NOSUCH, (
             "no such CLASS method on this class taking this many arguments: the"
             " selector it would send is not one the SDK records. Check the"
@@ -599,6 +698,9 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         T0: AnyType, T1: AnyType
     ](self, a0: T0, a1: T1) -> _Result[Self.cls, Self.name, "1", "2"]:
         comptime sel = cocoakb_p_selector_for[Self.cls, Self.name, "1", "2"]
+        comptime kinds = cocoakb_p_arg_kinds_for_name_2[Self.cls, Self.name, "1"]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
         comptime assert _Kind[Self.cls, Self.name, "1", "2"] != _NOSUCH, (
             "no such CLASS method on this class taking this many arguments: the"
             " selector it would send is not one the SDK records. Check the"
@@ -617,6 +719,10 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         T0: AnyType, T1: AnyType, T2: AnyType
     ](self, a0: T0, a1: T1, a2: T2) -> _Result[Self.cls, Self.name, "1", "3"]:
         comptime sel = cocoakb_p_selector_for[Self.cls, Self.name, "1", "3"]
+        comptime kinds = cocoakb_p_arg_kinds_for_name_3[Self.cls, Self.name, "1"]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
         comptime assert _Kind[Self.cls, Self.name, "1", "3"] != _NOSUCH, (
             "no such CLASS method on this class taking this many arguments: the"
             " selector it would send is not one the SDK records. Check the"
@@ -635,6 +741,11 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType
     ](self, a0: T0, a1: T1, a2: T2, a3: T3) -> _Result[Self.cls, Self.name, "1", "4"]:
         comptime sel = cocoakb_p_selector_for[Self.cls, Self.name, "1", "4"]
+        comptime kinds = cocoakb_p_arg_kinds_for_name_4[Self.cls, Self.name, "1"]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
         comptime assert _Kind[Self.cls, Self.name, "1", "4"] != _NOSUCH, (
             "no such CLASS method on this class taking this many arguments: the"
             " selector it would send is not one the SDK records. Check the"
@@ -653,6 +764,12 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType, T4: AnyType
     ](self, a0: T0, a1: T1, a2: T2, a3: T3, a4: T4) -> _Result[Self.cls, Self.name, "1", "5"]:
         comptime sel = cocoakb_p_selector_for[Self.cls, Self.name, "1", "5"]
+        comptime kinds = cocoakb_p_arg_kinds_for_name_5[Self.cls, Self.name, "1"]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
+        _guard_str_arg[T4, (kinds >> 28) & 127]()
         comptime assert _Kind[Self.cls, Self.name, "1", "5"] != _NOSUCH, (
             "no such CLASS method on this class taking this many arguments: the"
             " selector it would send is not one the SDK records. Check the"
@@ -671,6 +788,13 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         T0: AnyType, T1: AnyType, T2: AnyType, T3: AnyType, T4: AnyType, T5: AnyType
     ](self, a0: T0, a1: T1, a2: T2, a3: T3, a4: T4, a5: T5) -> _Result[Self.cls, Self.name, "1", "6"]:
         comptime sel = cocoakb_p_selector_for[Self.cls, Self.name, "1", "6"]
+        comptime kinds = cocoakb_p_arg_kinds_for_name_6[Self.cls, Self.name, "1"]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
+        _guard_str_arg[T4, (kinds >> 28) & 127]()
+        _guard_str_arg[T5, (kinds >> 35) & 127]()
         comptime assert _Kind[Self.cls, Self.name, "1", "6"] != _NOSUCH, (
             "no such CLASS method on this class taking this many arguments: the"
             " selector it would send is not one the SDK records. Check the"
@@ -695,6 +819,9 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         comptime sel = cocoakb_p_selector_for_parts_1[
             Self.cls, Self.name, "1", p1
         ]
+        comptime kinds = cocoakb_p_arg_kinds_for_parts_1[Self.cls, Self.name, "1", p1]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
         comptime assert _KindP1[Self.cls, Self.name, "1", p1] != _NOSUCH, (
             "no such CLASS method on this class with these keyword labels:"
             " the selector they build is not one the SDK records. Check each"
@@ -719,6 +846,10 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         comptime sel = cocoakb_p_selector_for_parts_2[
             Self.cls, Self.name, "1", p1, p2
         ]
+        comptime kinds = cocoakb_p_arg_kinds_for_parts_2[Self.cls, Self.name, "1", p1, p2]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
         comptime assert _KindP2[Self.cls, Self.name, "1", p1, p2] != _NOSUCH, (
             "no such CLASS method on this class with these keyword labels:"
             " the selector they build is not one the SDK records. Check each"
@@ -743,6 +874,11 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         comptime sel = cocoakb_p_selector_for_parts_3[
             Self.cls, Self.name, "1", p1, p2, p3
         ]
+        comptime kinds = cocoakb_p_arg_kinds_for_parts_3[Self.cls, Self.name, "1", p1, p2, p3]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
         comptime assert _KindP3[Self.cls, Self.name, "1", p1, p2, p3] != _NOSUCH, (
             "no such CLASS method on this class with these keyword labels:"
             " the selector they build is not one the SDK records. Check each"
@@ -768,6 +904,12 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         comptime sel = cocoakb_p_selector_for_parts_4[
             Self.cls, Self.name, "1", p1, p2, p3, p4
         ]
+        comptime kinds = cocoakb_p_arg_kinds_for_parts_4[Self.cls, Self.name, "1", p1, p2, p3, p4]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
+        _guard_str_arg[T4, (kinds >> 28) & 127]()
         comptime assert _KindP4[Self.cls, Self.name, "1", p1, p2, p3, p4] != _NOSUCH, (
             "no such CLASS method on this class with these keyword labels:"
             " the selector they build is not one the SDK records. Check each"
@@ -794,6 +936,13 @@ struct BoundClass[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         comptime sel = cocoakb_p_selector_for_parts_5[
             Self.cls, Self.name, "1", p1, p2, p3, p4, p5
         ]
+        comptime kinds = cocoakb_p_arg_kinds_for_parts_5[Self.cls, Self.name, "1", p1, p2, p3, p4, p5]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
+        _guard_str_arg[T4, (kinds >> 28) & 127]()
+        _guard_str_arg[T5, (kinds >> 35) & 127]()
         comptime assert _KindP5[Self.cls, Self.name, "1", p1, p2, p3, p4, p5] != _NOSUCH, (
             "no such CLASS method on this class with these keyword labels:"
             " the selector they build is not one the SDK records. Check each"
@@ -869,6 +1018,8 @@ struct Obj[cls: StringLiteral](Copyable, Movable):
         p1: StringLiteral, T0: AnyType
     ](a0: T0) -> Self:
         comptime form = cocoakb_p_init_form_for_parts_1[Self.cls, p1]
+        comptime kinds = cocoakb_p_arg_kinds_for_init_parts_1[Self.cls, p1]
+        _guard_str_arg[T0, kinds & 127]()
         comptime assert form != 0, (
             "no constructor for these labels on this class: looked for a"
             " class method whose selector's parts are the labels, and an"
@@ -895,6 +1046,9 @@ struct Obj[cls: StringLiteral](Copyable, Movable):
         p1: StringLiteral, p2: StringLiteral, T0: AnyType, T1: AnyType
     ](a0: T0, a1: T1) -> Self:
         comptime form = cocoakb_p_init_form_for_parts_2[Self.cls, p1, p2]
+        comptime kinds = cocoakb_p_arg_kinds_for_init_parts_2[Self.cls, p1, p2]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
         comptime assert form != 0, (
             "no constructor for these labels on this class: looked for a"
             " class method whose selector's parts are the labels, and an"
@@ -924,6 +1078,10 @@ struct Obj[cls: StringLiteral](Copyable, Movable):
         T0: AnyType, T1: AnyType, T2: AnyType,
     ](a0: T0, a1: T1, a2: T2) -> Self:
         comptime form = cocoakb_p_init_form_for_parts_3[Self.cls, p1, p2, p3]
+        comptime kinds = cocoakb_p_arg_kinds_for_init_parts_3[Self.cls, p1, p2, p3]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
         comptime assert form != 0, (
             "no constructor for these labels on this class: looked for a"
             " class method whose selector's parts are the labels, and an"
@@ -958,6 +1116,11 @@ struct Obj[cls: StringLiteral](Copyable, Movable):
         comptime form = cocoakb_p_init_form_for_parts_4[
             Self.cls, p1, p2, p3, p4
         ]
+        comptime kinds = cocoakb_p_arg_kinds_for_init_parts_4[Self.cls, p1, p2, p3, p4]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
         comptime assert form != 0, (
             "no constructor for these labels on this class: looked for a"
             " class method whose selector's parts are the labels, and an"
@@ -992,6 +1155,12 @@ struct Obj[cls: StringLiteral](Copyable, Movable):
         comptime form = cocoakb_p_init_form_for_parts_5[
             Self.cls, p1, p2, p3, p4, p5
         ]
+        comptime kinds = cocoakb_p_arg_kinds_for_init_parts_5[Self.cls, p1, p2, p3, p4, p5]
+        _guard_str_arg[T0, kinds & 127]()
+        _guard_str_arg[T1, (kinds >> 7) & 127]()
+        _guard_str_arg[T2, (kinds >> 14) & 127]()
+        _guard_str_arg[T3, (kinds >> 21) & 127]()
+        _guard_str_arg[T4, (kinds >> 28) & 127]()
         comptime assert form != 0, (
             "no constructor for these labels on this class: looked for a"
             " class method whose selector's parts are the labels, and an"

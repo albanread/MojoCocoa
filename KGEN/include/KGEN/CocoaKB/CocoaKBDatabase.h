@@ -67,6 +67,13 @@ private:
   llvm::Error openLocked();
   llvm::Expected<sqlite3_stmt *> prepare(llvm::StringRef query,
                                          llvm::ArrayRef<llvm::StringRef> args);
+  /// `queryString`'s body without the lock, for queries whose answer is
+  /// composed of other queries -- the mutex is not recursive, so a query
+  /// implemented in terms of queries must not re-take it. Caller holds the
+  /// lock.
+  llvm::Expected<std::string>
+  queryStringLocked(llvm::StringRef query,
+                    llvm::ArrayRef<llvm::StringRef> args);
 
   std::mutex mutex;
   sqlite3 *db = nullptr;

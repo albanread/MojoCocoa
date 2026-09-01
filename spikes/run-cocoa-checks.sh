@@ -96,7 +96,7 @@ fi
 
 echo
 echo "must be rejected at compile time:"
-for f in must_fail.mojo must_fail_argcount.mojo must_fail_fn_raises.mojo must_fail_let_assign.mojo must_fail_kwarg_label.mojo must_fail_kwarg_init.mojo; do run_mustfail "$f"; done
+for f in must_fail.mojo must_fail_argcount.mojo must_fail_fn_raises.mojo must_fail_let_assign.mojo must_fail_kwarg_label.mojo must_fail_kwarg_init.mojo must_fail_kwarg_string.mojo; do run_mustfail "$f"; done
 
 echo
 echo "$pass passed, $fail failed"

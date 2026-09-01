@@ -23,8 +23,9 @@ throws the change away.
 
 **Files:** `std/objc/typed.mojo`, `std/sys/_cocoakb.mojo`
 
-**What and why.** Sprints P1 and P2 of `cocoa_improvements_design.md`: the
-call direction grew its keyword form, for calls and for construction.
+**What and why.** Sprints P1, P2 and P4 of
+`cocoa_improvements_design.md`: the call direction grew its keyword form,
+for calls and for construction, and its argument-kind guard.
 `win.setFrame(aRect, display=True)` now means `setFrame:display:`, and
 `NSWindow(contentRect=..., styleMask=...)` constructs a window — the labels
 are the selector's trailing parts (or, for construction, name an initialiser
@@ -40,8 +41,17 @@ by the compiler's new call hooks (names as StringLiteral parameters, values
 positional). Verified by `spikes/s5-cocoakb/kwargs_call_test.mojo` and
 `kwargs_init_test.mojo` (fold canary, instance/class/two-label calls,
 init-form and factory-form construction against live objects) plus
-`must_fail_kwarg_label.mojo` and `must_fail_kwarg_init.mojo` (a bad label of
-either kind is a compile error naming the class and the labels).
+`must_fail_kwarg_label.mojo`, `must_fail_kwarg_init.mojo` and
+`must_fail_kwarg_string.mojo` (a bad label of either kind, or a String
+argument where the selector's `@encode` kind says it cannot cross, is a
+compile error naming the class and the labels).
+
+Sprint P4 added the argument kinds: the compiler parses each method's
+`@encode` string (in `CocoaKBDatabase.cpp`, beside the SQL, because Mojo
+cannot -- string surgery does not fold) and packs one kind character per
+argument into an integer, seven bits each, so comptime shifts decompose
+them. A `String` argument is refused where it cannot legally cross, in both
+directions, until comptime value narrowing exists to convert it.
 
 **Carry forward:** yes — this is the fork's own surface, like the rest of
 `std.objc`. On an upstream sync, the whole file moves aside rather than

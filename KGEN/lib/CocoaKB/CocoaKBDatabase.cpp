@@ -435,6 +435,81 @@ const CocoaKBQueryDef kCocoaQueries[] = {
     {"posix_arg_classes", 1, kPosixArgClassesSQL},
 };
 
+/// An Objective-C method type encoding reads: retval, total size, then
+/// (type, offset) pairs for self, _cmd, and each argument. Bridging only
+/// needs each argument's FIRST character -- '@' object, ':' SEL, 'B' bool,
+/// '{' struct, an integer width -- so that is all this collects: argument i
+/// (after self and _cmd) lands in bits 7*i of the answer, low argument
+/// first, so a comptime `(kinds >> (7*i)) & 127` in Mojo folds where any
+/// string operation would not. Braces and brackets nest ({CGRect={CGPoint=
+/// dd}{CGSize=dd}}); '^' prefixes a pointee type that belongs to the same
+/// argument. Arguments beyond eight do not fit and read as 0 (NUL): pass
+/// through unbridged, which is the safe default.
+/// Scan one @encode type starting at encoding[i], leaving i past it; braces
+/// and brackets nest ({CGRect={CGPoint=dd}{CGSize=dd}}), and '^' prefixes a
+/// pointee type that belongs to the same argument. Reports the type's first
+/// character. Recursive, so it is a function rather than a lambda -- an
+/// `auto` lambda cannot name itself.
+static bool scanEncodingType(StringRef encoding, size_t &i, char &first) {
+  if (i >= encoding.size())
+    return false;
+  first = encoding[i];
+  auto scanMatching = [&](char open, char close) -> bool {
+    size_t depth = 0;
+    while (i < encoding.size()) {
+      if (encoding[i] == open)
+        ++depth;
+      else if (encoding[i] == close && --depth == 0) {
+        ++i;
+        return true;
+      }
+      ++i;
+    }
+    return false;
+  };
+  if (first == '{')
+    return scanMatching('{', '}');
+  if (first == '[')
+    return scanMatching('[', ']');
+  ++i;
+  if (first == '^') {
+    char pointee = 0;
+    if (!scanEncodingType(encoding, i, pointee))
+      return false;
+  }
+  return true;
+}
+
+static int64_t parseArgKinds(StringRef encoding) {
+  size_t i = 0;
+  auto scanOffset = [&] {
+    while (i < encoding.size() && isDigit(encoding[i]))
+      ++i;
+  };
+
+  char first = 0;
+  if (!scanEncodingType(encoding, i, first)) // return type
+    return 0;
+  scanOffset(); // total size (or the return's offset -- same skip)
+
+  uint64_t kinds = 0;
+  int argIndex = 0; // counts self, _cmd, then the arguments
+  while (scanEncodingType(encoding, i, first)) {
+    scanOffset();
+    if (argIndex < 2) { // self, _cmd
+      ++argIndex;
+      continue;
+    }
+    int position = argIndex - 2;
+    if (position >= 8)
+      break;
+    kinds |= static_cast<uint64_t>(static_cast<unsigned char>(first))
+             << (7 * position);
+    ++argIndex;
+  }
+  return static_cast<int64_t>(kinds);
+}
+
 } // namespace
 
 llvm::Error CocoaKBDatabase::openLocked() {
@@ -517,6 +592,66 @@ CocoaKBDatabase::prepare(StringRef query, ArrayRef<StringRef> args) {
 llvm::Expected<int64_t> CocoaKBDatabase::queryInt(StringRef query,
                                                   ArrayRef<StringRef> args) {
   std::lock_guard<std::mutex> lock(mutex);
+
+  // Sprint P4: per-argument KIND characters for the keyword tiers, packed
+  // into one integer because an integer is what a comptime branch can
+  // decompose -- argument i's @encode first character sits in bits 7*i.
+  // Bridging needs to know an argument is an object ('@') rather than an
+  // integer or a struct, and the only place that character lives is the
+  // encoding string -- which cannot be parsed in Mojo (string surgery does
+  // not fold) and is misery in SQL. This file is where the fork already
+  // puts knowledge that must not live in Mojo, so the parser lives here:
+  // the same reasoning that put the selector assembly in SQLite.
+  StringRef argKindsSuffix;
+  if (query.starts_with("arg_kinds_for_parts_"))
+    argKindsSuffix = query.substr(strlen("arg_kinds_for_parts_"));
+  else if (query.starts_with("arg_kinds_for_init_parts_"))
+    argKindsSuffix = query.substr(strlen("arg_kinds_for_init_parts_"));
+  else if (query.starts_with("arg_kinds_for_name_"))
+    argKindsSuffix = query.substr(strlen("arg_kinds_for_name_"));
+  if (!argKindsSuffix.empty()) {
+    // Which selector the labels (or the name) mean, then its encoding. The
+    // families take different arguments, and the name family's arity rides
+    // the query name exactly where selector_for_name expects its nargs
+    // operand.
+    SmallVector<StringRef, 9> selectorArgs;
+    SmallString<32> target;
+    bool isName = query.starts_with("arg_kinds_for_name_");
+    bool isInit = query.starts_with("arg_kinds_for_init_parts_");
+    if (isName) {
+      target.append("selector_for_name");
+      selectorArgs.append(args.begin(), args.end());
+      selectorArgs.push_back(argKindsSuffix);
+    } else {
+      if (isInit)
+        target.append("init_selector_for_parts_");
+      else
+        target.append("selector_for_parts_");
+      target.append(argKindsSuffix);
+      selectorArgs.append(args.begin(), args.end());
+    }
+
+    auto selector = queryStringLocked(target.str(), selectorArgs);
+    if (!selector)
+      return 0; // No selector: the caller's own assert reports the miss.
+    // The initialiser form decides the side: a factory selector is class
+    // side, an initWith... one is instance side. The name family states its
+    // side directly.
+    StringRef isClass = isName ? args.back() : "0";
+    if (isInit) {
+      SmallString<32> formTarget("init_form_for_parts_");
+      formTarget.append(argKindsSuffix);
+      auto form = queryStringLocked(formTarget.str(), args);
+      if (form && *form == "1")
+        isClass = "1";
+    }
+    auto encoding = queryStringLocked(
+        "method_encoding", {args.front(), *selector, isClass});
+    if (!encoding)
+      return 0;
+    return parseArgKinds(*encoding);
+  }
+
   auto stmt = prepare(query, args);
   if (!stmt)
     return stmt.takeError();
@@ -538,9 +673,7 @@ llvm::Expected<int64_t> CocoaKBDatabase::queryInt(StringRef query,
 }
 
 llvm::Expected<std::string>
-CocoaKBDatabase::queryString(StringRef query, ArrayRef<StringRef> args) {
-  std::lock_guard<std::mutex> lock(mutex);
-
+CocoaKBDatabase::queryStringLocked(StringRef query, ArrayRef<StringRef> args) {
   // The reproducibility pin: a compiler whose semantics depend on a database
   // must be able to say WHICH database. Hashed lazily and cached, so tooling
   // can record the exact metadata revision a binary was built against.
@@ -579,6 +712,11 @@ CocoaKBDatabase::queryString(StringRef query, ArrayRef<StringRef> args) {
                      sqlite3_column_bytes(*stmt, 0));
 }
 
+llvm::Expected<std::string>
+CocoaKBDatabase::queryString(StringRef query, ArrayRef<StringRef> args) {
+  std::lock_guard<std::mutex> lock(mutex);
+  return queryStringLocked(query, args);
+}
 
 llvm::Error CocoaKBDatabase::availability() {
   std::lock_guard<std::mutex> lock(mutex);
