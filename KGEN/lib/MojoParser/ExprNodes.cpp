@@ -3830,6 +3830,51 @@ static AnyValue emitBinOpCall(ASTExprAnd<AnyValue> lhs,
 /// The walrus := operator in Python requires the left side to be a simple
 /// identifier, but Mojo allows arbitrary lvalues like the assign stmt.
 AnyValue BinOpNode::emitAssign(ExprDest &dest, IREmitter &emitter) const {
+  // cocoa-mojo: property WRITES through `__setattr_param__` -- the
+  // assignment-shaped sibling of `__getattr_param__` and the P1 call hooks.
+  // `win.title = x` on a type that declares the hook re-dispatches onto
+  // `win.__setattr_param__["title"](x)`: the attribute name arrives as a
+  // StringLiteral parameter, so the setter it means is settled against the
+  // metadata database at compile time -- which a plain `__setattr__`
+  // receiving a runtime string can never do.
+  //
+  // Restricted to a bare-variable base for now: the base must be emitted to
+  // learn its type, and if the hook does not apply the ordinary path below
+  // emits it again -- harmless as a second variable load, not harmless for
+  // a call with side effects. `f().prop = x` keeps the ordinary path.
+  if (auto *attr = dyn_cast<AttributeRefNode>(lhs->getWithoutParens())) {
+    if (isa<DeclRefNode>(attr->base->getWithoutParens())) {
+      AnyValue baseVal = emitter.emitExpr(attr->base, EC_AttributeRefBase);
+      if (baseVal) {
+        if (auto baseCVal = baseVal.getIfCValue()) {
+          ASTType baseType = baseCVal.getRValueType();
+          if (emitter.shared.typeHasMember(baseType, "__setattr_param__",
+                                           getLoc())) {
+            std::string quoted = ("\"" + attr->spelling.str() + "\"");
+            StringRef spelling(quoted);
+            auto *nameNode =
+                new StringLiteralNode(ArrayRef<StringRef>(spelling));
+            llvm::scope_exit freeNode([&] { delete nameNode; });
+            Operand nameOperand(nameNode, attr->getLoc(),
+                                ArgUnpackStyle::kPositional);
+            Operand valueOperand(rhs, rhs->getLoc(),
+                                 ArgUnpackStyle::kPositional);
+
+            SyntheticNode baseNode(getLoc(), baseVal);
+            AttributeRefNode hookNode(
+                &baseNode, getLoc(),
+                StringAttr::get(emitter.getContext(), "__setattr_param__"));
+            SubscriptNode paramNode(&hookNode, getLoc(), nameOperand,
+                                    getLoc());
+            CallNode callNode(&paramNode, getLoc(), valueOperand,
+                              rhs->getLoc());
+            return emitter.emitExpr(&callNode, dest);
+          }
+        }
+      }
+    }
+  }
+
   // Assignments might need to infer the LHS from the RHS when the LHS is
   // unresolved, and the RHS from the LHS when it is known:
   //

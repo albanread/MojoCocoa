@@ -1125,3 +1125,30 @@ comptime cocoakb_p_arg_kinds_for_name_6[
         `> : index`,
     ]
 )
+
+comptime cocoakb_p_selector_for_setter[
+    cls: StringLiteral, name: StringLiteral,
+] = StaticString(
+    __mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "selector_for_setter" : !kgen.string, `,
+        cls.value, `, `,
+        name.value,
+        `> : !kgen.string`,
+    ]
+)
+"""The setter a property write means, verified to exist on the class or
+above it: `win.title = x` is setTitle:. A property with no setter is a
+compile error naming the class and the property, not a silently dropped
+write."""
+
+
+comptime cocoakb_p_arg_kinds_for_setter[
+    cls: StringLiteral, name: StringLiteral,
+] = Int(
+    mlir_value=__mlir_attr[
+        `#kgen.param.expr<cocoakb_query, "arg_kinds_for_setter" : !kgen.string, `,
+        cls.value, `, `,
+        name.value,
+        `> : index`,
+    ]
+)

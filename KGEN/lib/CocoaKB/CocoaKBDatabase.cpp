@@ -346,6 +346,30 @@ COCOAKB_INIT_QUERIES(
 #undef COCOAKB_INIT_QUERIES
 #undef COCOAKB_INIT_STATEMENT
 
+// A PROPERTY WRITE, sprint P3: `win.title = x` means setTitle:, found the
+// same way everything else here is found -- the selector is assembled from
+// the name in SQL ('set' + the name with its first letter capitalised + ':')
+// and its existence on the class or a superclass settles the write at
+// compile time. A miss is an ERROR, not an empty answer: a property with no
+// setter is read-only, and the caller should hear that as a sentence naming
+// the class and the property.
+#define COCOAKB_SETTER_CTE(expr, table)                                         \
+  "WITH RECURSIVE chain(c, depth) AS ("                                         \
+  "  SELECT ?1, 0"                                                             \
+  "  UNION ALL"                                                                \
+  "  SELECT rc.superclass, chain.depth + 1 FROM rt_classes rc, chain"           \
+  "    WHERE rc.name = chain.c AND rc.superclass IS NOT NULL)"                  \
+  " SELECT " expr " FROM chain JOIN " table " m"                                \
+  "   ON m.class = chain.c"                                                    \
+  "  AND m.selector = ('set' || upper(substr(?2, 1, 1)) || substr(?2, 2)"       \
+  "                    || ':')"                                                 \
+  "  AND m.is_class = 0"                                                       \
+  " ORDER BY chain.depth LIMIT 1"
+
+constexpr StringRef kSetterForNameSQL =
+    COCOAKB_SETTER_CTE("m.selector", "rt_methods");
+#undef COCOAKB_SETTER_CTE
+
 constexpr StringRef kSelectorVariantSQL =
     "SELECT CASE WHEN ret_class = '?' OR arg_classes LIKE '%?%' THEN '?' "
     "ELSE 'objc_msgSend' END FROM method_abi WHERE selector = ?1 "
@@ -425,6 +449,8 @@ const CocoaKBQueryDef kCocoaQueries[] = {
     {"init_selector_for_parts_4", 5, kInitSelector4SQL},
     {"init_form_for_parts_5", 6, kInitForm5SQL},
     {"init_selector_for_parts_5", 6, kInitSelector5SQL},
+    // A property write: the setter a plain name means.
+    {"selector_for_setter", 2, kSetterForNameSQL},
     {"selector_variant", 1, kSelectorVariantSQL},
     {"selector_arg_classes", 1, kSelectorArgClassesSQL},
     {"selector_ret_class", 1, kSelectorRetClassSQL},
@@ -609,6 +635,16 @@ llvm::Expected<int64_t> CocoaKBDatabase::queryInt(StringRef query,
     argKindsSuffix = query.substr(strlen("arg_kinds_for_init_parts_"));
   else if (query.starts_with("arg_kinds_for_name_"))
     argKindsSuffix = query.substr(strlen("arg_kinds_for_name_"));
+  else if (query == "arg_kinds_for_setter") {
+    auto selector = queryStringLocked("selector_for_setter", args);
+    if (!selector)
+      return 0;
+    auto encoding = queryStringLocked(
+        "method_encoding", {args.front(), *selector, "0"});
+    if (!encoding)
+      return 0;
+    return parseArgKinds(*encoding);
+  }
   if (!argKindsSuffix.empty()) {
     // Which selector the labels (or the name) mean, then its encoding. The
     // families take different arguments, and the name family's arity rides

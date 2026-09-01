@@ -46,7 +46,9 @@ init-form and factory-form construction against live objects) plus
 argument where the selector's `@encode` kind says it cannot cross, is a
 compile error naming the class and the labels).
 
-Sprint P4 added the argument kinds: the compiler parses each method's
+Sprint P3 added property writes (`__setattr_param__` on `Obj`: the setter
+a plain name means, assembled and verified in SQL; a read-only property is
+a compile error). Sprint P4 added the argument kinds: the compiler parses each method's
 `@encode` string (in `CocoaKBDatabase.cpp`, beside the SQL, because Mojo
 cannot -- string surgery does not fold) and packs one kind character per
 argument into an integer, seven bits each, so comptime shifts decompose

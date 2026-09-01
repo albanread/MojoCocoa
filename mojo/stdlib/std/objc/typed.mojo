@@ -86,6 +86,8 @@ from std.sys._cocoakb import (
     cocoakb_p_arg_kinds_for_name_4,
     cocoakb_p_arg_kinds_for_name_5,
     cocoakb_p_arg_kinds_for_name_6,
+    cocoakb_p_selector_for_setter,
+    cocoakb_p_arg_kinds_for_setter,
 )
 from std.memory import OpaquePointer
 from .runtime import ObjCObject, ObjCClass, msg_send
@@ -1187,6 +1189,20 @@ struct Obj[cls: StringLiteral](Copyable, Movable):
                 instance, a0, a1, a2, a3, a4
             ).addr()
         )
+
+# A property WRITE, sprint P3. `win.title = x` reaches this through the
+    # compiler's `__setattr_param__` hook: the property name arrives as a
+    # StringLiteral parameter, the setter it means (setTitle:) is assembled
+    # and verified in SQL, and the value carries the same argument-kind
+    # guard as every call. A read-only property is a compile error naming
+    # the class and the property.
+    def __setattr_param__[
+        name: StringLiteral, T: AnyType
+    ](self, value: T):
+        comptime sel = cocoakb_p_selector_for_setter[Self.cls, name]
+        comptime kinds = cocoakb_p_arg_kinds_for_setter[Self.cls, name]
+        _guard_str_arg[T, kinds & 127]()
+        _ = msg_send[ObjCObject, Self.cls, sel](ObjCObject(self.id), value)
 
     def __getattr_param__[name: StringLiteral](self) -> Bound[Self.cls, name]:
         """`obj.anything` -- the name arrives as a PARAMETER, which is what
