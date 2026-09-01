@@ -83,6 +83,17 @@ private:
   std::string cachedHash;
 };
 
+/// Records one timed SQL read -- nanoseconds on the steady clock, and the row
+/// count where the reader produces rows -- keyed by name for an end-of-process
+/// report on stderr. Both readers call this: the database with the query's
+/// name ("method_encoding", "selector_for_name", ...), the completion reader
+/// with its own ("completeSelectors", "completeClasses"), so one table
+/// attributes SQL time across components. The report prints only when
+/// MODULAR_COCOAKB_TIMING is set in the environment; otherwise recording
+/// costs one clock read per call.
+void recordQueryTiming(llvm::StringRef what, uint64_t nanoseconds,
+                       uint64_t rows = 0);
+
 } // namespace M::KGEN::CocoaKB
 
 #endif // KGEN_COCOAKB_COCOAKBDATABASE_H

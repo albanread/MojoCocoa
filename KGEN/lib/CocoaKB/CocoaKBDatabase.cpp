@@ -15,10 +15,16 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorOr.h"
+#include "llvm/Support/Format.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SHA256.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <map>
 #include <sqlite3.h>
+#include <vector>
 
 using namespace llvm;
 
@@ -536,9 +542,117 @@ static int64_t parseArgKinds(StringRef encoding) {
   return static_cast<int64_t>(kinds);
 }
 
+//===----------------------------------------------------------------------===//
+// SQL timing
+//
+// "Is the compiler slow because of the Cocoa database" is a question this
+// fork keeps having to answer with guesses. These timers move the answer into
+// the process that runs the queries: one clock read per query when the report
+// is off (MODULAR_COCOAKB_TIMING unset), one table on stderr at process exit
+// when it is on -- per query name, so the table attributes time across
+// components (parser bridging asks selector_for_name..., class resolution
+// asks class_framework, completion asks completeSelectors, ...).
+//===----------------------------------------------------------------------===//
+
+class QueryTimingCollector {
+public:
+  static QueryTimingCollector &get() {
+    static QueryTimingCollector instance;
+    return instance;
+  }
+
+  void record(StringRef what, uint64_t nanoseconds, uint64_t rowCount) {
+    if (!enabled)
+      return;
+    std::lock_guard<std::mutex> lock(mutex);
+    Row &row = table[what.str()];
+    ++row.count;
+    row.totalNs += nanoseconds;
+    row.maxNs = std::max(row.maxNs, nanoseconds);
+    row.rows += rowCount;
+  }
+
+  void dump() {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (printed || table.empty())
+      return;
+    printed = true;
+
+    struct Line {
+      uint64_t totalNs, count, maxNs, rows;
+      std::string what;
+    };
+    std::vector<Line> lines;
+    uint64_t totalCount = 0, totalNs = 0;
+    for (const auto &[what, row] : table) {
+      lines.push_back({row.totalNs, row.count, row.maxNs, row.rows, what});
+      totalCount += row.count;
+      totalNs += row.totalNs;
+    }
+    std::sort(lines.begin(), lines.end(),
+              [](const Line &a, const Line &b) {
+                return a.totalNs > b.totalNs;
+              });
+
+    llvm::errs() << "== CocoaKB SQL: " << totalCount << " reads, "
+                 << llvm::format("%.1f", totalNs / 1e6) << " ms total ==\n"
+                 << "   count   total_ms     avg_us     max_ms      rows  read\n";
+    for (const Line &line : lines) {
+      double avgUs = double(line.totalNs) / double(line.count) / 1e3;
+      llvm::errs() << llvm::format("%8llu %10.1f %10.1f %10.1f %10llu  %s\n",
+                                   (unsigned long long)line.count,
+                                   line.totalNs / 1e6, avgUs,
+                                   line.maxNs / 1e6,
+                                   (unsigned long long)line.rows,
+                                   line.what.c_str());
+    }
+  }
+
+private:
+  QueryTimingCollector()
+      : enabled(getenv("MODULAR_COCOAKB_TIMING") != nullptr) {}
+  // The report prints from the destructor -- the collector is a static, so
+  // that is exit(), which is how the language server ends. No atexit
+  // registration: it would fire after the destructor has already destroyed
+  // the mutex this dump takes.
+  ~QueryTimingCollector() { dump(); }
+
+  struct Row {
+    uint64_t count = 0;
+    uint64_t totalNs = 0;
+    uint64_t maxNs = 0;
+    uint64_t rows = 0;
+  };
+  std::mutex mutex;
+  std::map<std::string, Row> table;
+  bool printed = false;
+  bool enabled = false;
+};
+
+/// Times one read for the report; the destructor records, so every return
+/// path in the timed function is covered.
+class ScopedQueryTimer {
+public:
+  explicit ScopedQueryTimer(StringRef what) : what(what) {}
+  ~ScopedQueryTimer() {
+    auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::steady_clock::now() - start)
+                           .count();
+    QueryTimingCollector::get().record(what, nanoseconds, /*rowCount=*/0);
+  }
+  ScopedQueryTimer(const ScopedQueryTimer &) = delete;
+  ScopedQueryTimer &operator=(const ScopedQueryTimer &) = delete;
+
+private:
+  StringRef what;
+  std::chrono::steady_clock::time_point start =
+      std::chrono::steady_clock::now();
+};
+
 } // namespace
 
 llvm::Error CocoaKBDatabase::openLocked() {
+  ScopedQueryTimer timer("(open)");
   if (attempted)
     return openError.empty()
                ? llvm::Error::success()
@@ -618,6 +732,8 @@ CocoaKBDatabase::prepare(StringRef query, ArrayRef<StringRef> args) {
 llvm::Expected<int64_t> CocoaKBDatabase::queryInt(StringRef query,
                                                   ArrayRef<StringRef> args) {
   std::lock_guard<std::mutex> lock(mutex);
+  // Times the SQL, not the mutex wait: the clock starts with the lock held.
+  ScopedQueryTimer timer(query);
 
   // Sprint P4: per-argument KIND characters for the keyword tiers, packed
   // into one integer because an integer is what a comptime branch can
@@ -757,6 +873,7 @@ CocoaKBDatabase::queryStringLocked(StringRef query, ArrayRef<StringRef> args) {
 llvm::Expected<std::string>
 CocoaKBDatabase::queryString(StringRef query, ArrayRef<StringRef> args) {
   std::lock_guard<std::mutex> lock(mutex);
+  ScopedQueryTimer timer(query);
   return queryStringLocked(query, args);
 }
 
@@ -775,6 +892,10 @@ CocoaKBDatabase::lookup(StringRef query, ArrayRef<StringRef> args) {
     return std::nullopt;
   }
   return *value;
+}
+
+void recordQueryTiming(StringRef what, uint64_t nanoseconds, uint64_t rows) {
+  QueryTimingCollector::get().record(what, nanoseconds, rows);
 }
 
 } // namespace M::KGEN::CocoaKB

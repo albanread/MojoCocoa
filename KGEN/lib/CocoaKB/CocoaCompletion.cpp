@@ -1,11 +1,13 @@
 //===- CocoaCompletion.cpp - Cocoa completion from the SDK database -------===//
 
 #include "KGEN/CocoaKB/CocoaCompletion.h"
+#include "KGEN/CocoaKB/CocoaKBDatabase.h"
 #include "KGEN/Support/Configuration.h"
 
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 
+#include <chrono>
 #include <mutex>
 #include <sqlite3.h>
 
@@ -56,24 +58,45 @@ private:
   bool attempted = false;
 };
 
-/// Run `sql` with text parameters and hand each row to `onRow`.
-void eachRow(StringRef sql, ArrayRef<std::string> args,
+/// Run `sql` with text parameters and hand each row to `onRow`. Timed as
+/// `what` for the MODULAR_COCOAKB_TIMING report, with the row count recorded
+/// -- a completion that returns 50 rows cheaply and one that drags 50,000
+/// into memory to hand back 50 look identical until you count rows.
+void eachRow(StringRef what, StringRef sql, ArrayRef<std::string> args,
              function_ref<void(sqlite3_stmt *)> onRow) {
   Database &database = Database::get();
   sqlite3 *db = database.handle();
   if (!db)
     return;
 
-  std::lock_guard<std::mutex> lock(database.lock());
-  sqlite3_stmt *stmt = nullptr;
-  if (sqlite3_prepare_v2(db, sql.str().c_str(), -1, &stmt, nullptr) != SQLITE_OK)
-    return;
-  for (auto [index, arg] : llvm::enumerate(args))
-    sqlite3_bind_text(stmt, static_cast<int>(index + 1), arg.c_str(),
-                      static_cast<int>(arg.size()), SQLITE_TRANSIENT);
-  while (sqlite3_step(stmt) == SQLITE_ROW)
-    onRow(stmt);
-  sqlite3_finalize(stmt);
+  auto start = std::chrono::steady_clock::now();
+  uint64_t rows = 0;
+  {
+    std::lock_guard<std::mutex> lock(database.lock());
+    sqlite3_stmt *stmt = nullptr;
+    if (sqlite3_prepare_v2(db, sql.str().c_str(), -1, &stmt, nullptr) !=
+        SQLITE_OK) {
+      recordQueryTiming(what,
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() - start)
+                            .count(),
+                        rows);
+      return;
+    }
+    for (auto [index, arg] : llvm::enumerate(args))
+      sqlite3_bind_text(stmt, static_cast<int>(index + 1), arg.c_str(),
+                        static_cast<int>(arg.size()), SQLITE_TRANSIENT);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+      ++rows;
+      onRow(stmt);
+    }
+    sqlite3_finalize(stmt);
+  }
+  recordQueryTiming(what,
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - start)
+                        .count(),
+                    rows);
 }
 
 std::string columnText(sqlite3_stmt *stmt, int col) {
@@ -222,7 +245,7 @@ std::vector<CompletionItem> completeClasses(StringRef prefix, unsigned limit) {
   static constexpr StringRef kSQL =
       "SELECT name, superclass FROM rt_classes "
       "WHERE name LIKE ?1 ESCAPE '\\' ORDER BY length(name), name LIMIT ?2";
-  eachRow(kSQL, {likePrefix(prefix), std::to_string(limit)},
+  eachRow("completeClasses", kSQL, {likePrefix(prefix), std::to_string(limit)},
           [&](sqlite3_stmt *stmt) {
             CompletionItem item;
             item.name = columnText(stmt, 0);
@@ -262,7 +285,7 @@ std::vector<CompletionItem> completeSelectors(StringRef cls, StringRef prefix,
       " ORDER BY d, length(m.selector), m.selector "
       " LIMIT ?4";
 
-  eachRow(kSQL,
+  eachRow("completeSelectors", kSQL,
           {cls.str(), classMethods ? "1" : "0", likePrefix(prefix),
            std::to_string(limit)},
           [&](sqlite3_stmt *stmt) {
