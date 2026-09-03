@@ -25,6 +25,8 @@ Read it in order the first time. Each chapter assumes the one before it.
 
 When you want to look something up rather than learn it, use the
 [Reference Manual](../reference/).
+<!-- doccrate:keep-together:start -->
+
 
 ## What makes this different from a binding layer
 
@@ -32,9 +34,13 @@ Most language bridges to Cocoa work by generating declarations: a tool reads
 the SDK once, emits a large body of source, and from that moment the generated
 code and the real SDK drift apart silently.
 
+<!-- doccrate:keep-together:end -->
+
 CocoaMojo does not generate anything. The compiler holds an open connection to
 a database describing macOS, and resolves each fact at the point of use during
 elaboration.
+<!-- doccrate:keep-together:start -->
+
 
 ```mermaid
 flowchart LR
@@ -46,6 +52,8 @@ flowchart LR
     elab --> gen["Generated code<br/>the query is gone"]
     elab -->|"name not found"| err["Compile error"]
 ```
+
+<!-- doccrate:keep-together:end -->
 
 Two consequences follow, and they are the reason the whole design exists.
 

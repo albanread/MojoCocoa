@@ -2,9 +2,13 @@
 
 The compile errors this layer produces, what each one means, and what to do.
 Messages are quoted from the source that emits them.
+<!-- doccrate:keep-together:start -->
+
 
 ## Language-level
 
+
+<!-- doccrate:keep-together:end -->
 ### `'fn' declares a foreign-callable (C ABI, non-raising) function in cocoa-mojo and may not be marked 'raises'; use 'def' for an ordinary Mojo function`
 
 `fn` is the foreign-callable function. The C boundary has no error channel, so
@@ -13,24 +17,34 @@ a raising `fn` cannot exist. Comes with a FixIt replacing `fn` with `def`.
 This is also the migration message: code from the era when `fn` was a general
 strict function (`fn main() raises`) gets told what changed rather than a bare
 contract violation.
+<!-- doccrate:keep-together:start -->
+
 
 ### `'fn' declares a foreign-callable function and cannot be 'async'; use 'def'`
 
 Same contract, same remedy.
+
+<!-- doccrate:keep-together:end -->
 
 ### `unknown tokens at the end of a declaration`, on a class field
 
 A field initializer. `var x: Int = 3` is not accepted in this version; declare
 `var x: Int` and let it take its default. See
 [chapter 6](../guide/06-callbacks.md#the-rules-v1).
+<!-- doccrate:keep-together:start -->
+
 
 ### `expression must be mutable for in-place operator destination`, in a class method
 
 The method needs `mut self` to write a field, exactly as a struct method would.
 
+<!-- doccrate:keep-together:end -->
+
 ### `'let' declares an immutable binding inside a function body; use 'var' for a field or module value`
 
 `let` has no field or file-scope form. Use `var` there.
+<!-- doccrate:keep-together:start -->
+
 
 ### Reassigning a `let`
 
@@ -38,25 +52,39 @@ Rebinding a `let` is a compile error. The object remains mutable — this is
 about the binding, not the value. See
 [the language chapter](../guide/02-the-language.md#let-is-back--as-the-immutable-binding).
 
+<!-- doccrate:keep-together:end -->
+
 ### `'alias' is deprecated; use 'comptime'`
 
 A warning, not an error. `alias` still parses.
+<!-- doccrate:keep-together:start -->
+
 
 ### `'__new__' is not supported on structs; use '__init__' instead`
 
+
+<!-- doccrate:keep-together:end -->
 ### `the 'register_passable' function effect is no longer supported`
+<!-- doccrate:keep-together:start -->
+
 
 ### `the 'escaping' function effect is no longer supported`
 
+
+<!-- doccrate:keep-together:end -->
 ### `implicit deletion. '@explicit_destroy' is no longer required.`
 
 Remove the decorator; implicit deletion is now the default.
+<!-- doccrate:keep-together:start -->
+
 
 ## `std.objc` compile-time assertions
 
 These come from `comptime assert` inside `msg_send`, `send` and
 `ObjCClassBuilder`, so they fire during elaboration and name the problem
 precisely.
+
+<!-- doccrate:keep-together:end -->
 
 ### Unknown or unmodelable signature
 
@@ -69,6 +97,8 @@ hand with a checked external_call if you know the layout.
 `cocoakb_msgsend_variant` answered `"?"`. Rare, and the escape hatch is the one
 the message names: call it yourself with `external_call`, having worked out the
 layout.
+<!-- doccrate:keep-together:start -->
+
 
 ### Wrong argument count
 
@@ -76,9 +106,13 @@ layout.
 std.objc: 'SELECTOR' on CLASS takes N argument(s), but M were passed.
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Count the colons in the selector. `stringWithUTF8String:` takes one;
 `initWithContentRect:styleMask:backing:defer:` takes four. This is the check
 that prevents reading an unset argument register.
+<!-- doccrate:keep-together:start -->
+
 
 ### Wrong register file — float where an integer is expected
 
@@ -86,6 +120,8 @@ that prevents reading an unset argument register.
 std.objc: argument I of 'SELECTOR' on CLASS is a float, but the ABI expects an
 integer/pointer register here. Check the argument type.
 ```
+
+<!-- doccrate:keep-together:end -->
 
 ### Wrong register file — integer where a float is expected
 
@@ -98,6 +134,8 @@ The usual cause is an integer literal where a `CGFloat` is wanted. Write
 `Float64(0)` rather than `0`. These checks fire only where the classification
 is certain, so an absence of error is not proof of correctness for struct
 arguments.
+<!-- doccrate:keep-together:start -->
+
 
 ### Selector implemented by nothing
 
@@ -106,22 +144,32 @@ std.objc: no class in the metadata implements selector 'SELECTOR', so its
 dispatch ABI is unknown. Check the selector spelling.
 ```
 
+<!-- doccrate:keep-together:end -->
+
 From `send`. Either the selector is misspelled, or the framework declaring it
 was not scanned when the database was built.
+<!-- doccrate:keep-together:start -->
+
 
 ### Unknown selector encoding when defining a class
 
 Raised by `ObjCClassBuilder.add_method` when `encoding` is omitted and the SDK
 does not know the selector. Supply it:
 
+<!-- doccrate:keep-together:end -->
+
 ```mojo
 b.add_method["myCustomAction:", encoding="v@:@"](handler)
 ```
+<!-- doccrate:keep-together:start -->
+
 
 ## `cocoakb` query failures
 
 A name the database does not contain fails the query itself. The
 `must_fail.mojo` spike is exactly this:
+
+<!-- doccrate:keep-together:end -->
 
 ```mojo
 comptime bogus = cocoakb_struct_size["NSDefinitelyNotAStruct"]()
@@ -147,10 +195,14 @@ again. `cocoakb_db_hash()` tells you which revision a compilation used.
 **Is the spelling the runtime's?** The database is built from the live
 Objective-C runtime and BridgeSupport, so it holds the runtime's names, not a
 header's typedef.
+<!-- doccrate:keep-together:start -->
+
 
 ## Runtime failures the compiler cannot catch
 
 Three things remain yours.
+
+<!-- doccrate:keep-together:end -->
 
 **A nil class.** `ObjCClass.lookup` returns nil when the framework is not
 loaded. Every subsequent message to it does nothing, silently. Check

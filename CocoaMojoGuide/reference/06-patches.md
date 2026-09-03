@@ -6,6 +6,8 @@ changes real, and the defects fixed along the way.
 
 Ninety-three commits touch the compiler, the backend, the GPU runtime or the
 standard library, between 23 and 31 August 2026. They divide as:
+<!-- doccrate:keep-together:start -->
+
 
 | Area | Commits | What it is |
 |:---|---:|:---|
@@ -16,14 +18,22 @@ standard library, between 23 and 31 August 2026. They divide as:
 | `[stdlib]` | 7 | Standard-library fixes, mostly around `class` and `String` |
 | `[Kernels]`, `[Support]` | 3 | Example corpus repair, debug annotation |
 
+<!-- doccrate:keep-together:end -->
+
 The rest of this document explains the ones worth understanding. To list them
 all: `git log --oneline --grep='^\[\(KGEN\|Air\|AppleGPU\|AsyncRT\|stdlib\)\]'`.
+<!-- doccrate:keep-together:start -->
+
 
 ## Building the class model
 
 Forty-one commits mention the class model in some form, which makes it the
 largest single body of work in the fork. It landed as numbered sprints and each
 one is a self-contained claim:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 | Sprint | What it established |
 |:---|:---|
@@ -32,6 +42,8 @@ one is a self-contained claim:
 | 2b | Protocols, registration, the method walk, trampolines |
 | 3 | Fields live in the box, proven at runtime, and emptied when the object dies |
 | 4 | The SDK answers, and the parser can ask it |
+
+<!-- doccrate:keep-together:end -->
 
 Two of these are worth drawing out.
 
@@ -64,11 +76,15 @@ Frontend defects fixed while building this:
   rather than merely be checked afterwards.
 - **`box_ref`: nil is a state, not a hazard** — reading a field of a nil class
   reference should be a defined outcome, not a trap.
+<!-- doccrate:keep-together:start -->
+
 
 ## The AIR backend
 
 This is the largest area by commit count and the one with the most instructive
 failures. The theme running through all of it:
+
+<!-- doccrate:keep-together:end -->
 
 > LLVM's verifier is target-agnostic by construction, so it cannot see any of
 > AIR's rules. Every defect this backend shipped was **legal LLVM IR that was
@@ -119,6 +135,8 @@ most expensive class: the module verifies, `metallib` accepts it, `air-opt`
 accepts it, and the failure appears only when the driver builds a compute
 pipeline — which is why the backend now retains artifacts per kernel and keeps
 diagnostics attached to their cause.
+<!-- doccrate:keep-together:start -->
+
 
 ## The Apple GPU runtime
 
@@ -129,6 +147,8 @@ per dispatch, under the registry lock. Correct, and linear in live allocations.
 An `MTLResidencySet` inverts that: one set per device, attached to each command
 queue, edited when an allocation is created or destroyed, with nothing left on
 the dispatch path.
+
+<!-- doccrate:keep-together:end -->
 
 The instructive part is the follow-up. **The selector was wrong, so the
 optimisation had never executed.** The code asked for
@@ -143,12 +163,16 @@ against itself, and the ~25% improvement recorded for it was noise between two
 runs of identical code.
 
 Measured properly afterwards, in µs per dispatch:
+<!-- doccrate:keep-together:start -->
+
 
 | Live buffers | Walk | Residency set |
 |---:|---:|---:|
 | 256 | 18.56 | 3.46 |
 | 1,024 | 73.35 | 3.25 |
 | 4,096 | 289.53 | 3.37 |
+
+<!-- doccrate:keep-together:end -->
 
 Linear against flat, and −99% at the top end.
 
@@ -168,10 +192,14 @@ rejected up front rather than failing later.
 **Capability reporting.** The ABI capability table is generated from the source
 and checked, so what the runtime claims and what it implements cannot drift
 apart. `MULTIPROCESSOR_COUNT` is answered from measured cores.
+<!-- doccrate:keep-together:start -->
+
 
 ## Standard library
 
 Two `String` fixes worth naming because both are the kind that survive review:
+
+<!-- doccrate:keep-together:end -->
 
 - **`String._realloc_mutable` asked the allocator for zero.** A zero-size
   allocation is permitted to return null or a pointer you must not use, and
@@ -182,10 +210,14 @@ Two `String` fixes worth naming because both are the kind that survive review:
 The rest are the class model reaching the library: `std.objc.typed` for calling
 Cocoa as calls, `box_ref` reaching a class's fields from outside a method, and
 the runtime half of class registration, made provable on its own.
+<!-- doccrate:keep-together:start -->
+
 
 ## What this history is good for
 
 Two things, beyond the record.
+
+<!-- doccrate:keep-together:end -->
 
 First, the failure modes repeat. Address spaces, convergence, and
 optimiser-synthesised intrinsics account for most of the AIR defects, and each

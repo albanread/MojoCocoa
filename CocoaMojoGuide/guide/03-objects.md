@@ -13,12 +13,16 @@ language.
 That is not a deficiency to work around. Most of what you want from objects is
 here; what is missing is precisely the part Objective-C is unusually good at,
 which is why the two compose so well.
+<!-- doccrate:keep-together:start -->
+
 
 ## `class` means something specific here
 
 In this fork `class` is not a Mojo class. It declares an **Objective-C**
 class — a real one, registered with the ObjC runtime, with dynamic dispatch and
 inheritance and everything else Mojo does not have.
+
+<!-- doccrate:keep-together:end -->
 
 That is the division of labour in one keyword. `struct` is Mojo's value type,
 resolved statically; `class` is Cocoa's reference type, resolved by the
@@ -27,10 +31,16 @@ runtime. They are different animals and the language now says so.
 This chapter is about `struct`, because that is what Mojo gives you on its own
 and what everything else is built from. [Chapter 6](06-callbacks.md) is about
 `class`.
+<!-- doccrate:keep-together:start -->
+
 
 ## Structs
 
 A struct is a value type with a fixed layout known at compile time.
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 struct Counter:
@@ -48,9 +58,13 @@ struct Counter:
         return self.label + ": " + String(self.count)
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Fields are declared with `var`. Methods are ordinary `def`s whose first
 parameter is `self`, and the argument convention on `self` says what the method
 does:
+<!-- doccrate:keep-together:start -->
+
 
 | First parameter | Meaning |
 |:---|:---|
@@ -60,10 +74,14 @@ does:
 | `out self` | Initialises it. Used by `__init__`. |
 | `deinit self` | Consumes it, ending its lifetime. |
 
+<!-- doccrate:keep-together:end -->
+
 `Self` names the enclosing type, which matters in generic code and in trait
 requirements.
 
 Static methods take no `self`:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
     @staticmethod
@@ -71,9 +89,17 @@ Static methods take no `self`:
         return Counter("")
 ```
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ### `@fieldwise_init`
 
 When the initialiser would just assign each field in order, ask for it:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 @fieldwise_init
@@ -84,13 +110,21 @@ struct CGPoint(Copyable, Movable):
 var p = CGPoint(3.0, 4.0)
 ```
 
+<!-- doccrate:keep-together:end -->
+
 This is the shape almost every Cocoa geometry struct takes.
+<!-- doccrate:keep-together:start -->
+
 
 ## The lifecycle
 
 Here Mojo diverges sharply from older writing about it, and from most other
 languages. There are four operations, and **three of them are spelled as
 `__init__` overloads**:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 struct Buffer(Copyable, Movable, Deinitable):
@@ -110,25 +144,37 @@ struct Buffer(Copyable, Movable, Deinitable):
         ...
 ```
 
+<!-- doccrate:keep-together:end -->
+
 If you have seen `__copyinit__` and `__moveinit__`, those names are gone. The
 keyword-only `copy:` and `deinit move:` arguments replace them, and there are
 zero uses of the old spellings left in the standard library.
 
 Copying is explicit at the call site too:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 var b = a.copy()
 ```
+
+<!-- doccrate:keep-together:end -->
 
 `copy()` is a convenience for `Self(copy=self)` provided by the `Copyable`
 trait, and **overriding it is not allowed** — the trait says so directly. You
 customise the constructor, not the convenience.
 
 Moving uses the transfer sigil:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 var b = a^
 ```
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ## The four traits everything rests on
 
@@ -151,6 +197,8 @@ flowchart TB
     class M,C,I,D plain
 ```
 
+<!-- doccrate:keep-together:end -->
+
 **`AnyType`** is the floor. Every struct conforms to it automatically, and it
 requires nothing — *not even a destructor*. That is the unusual part, and the
 next section is about why.
@@ -166,6 +214,8 @@ Copying is explicit by default.
 explicit `.copy()`.
 
 **`Deinitable`** is the implicit destructor. Every type gets it by default.
+<!-- doccrate:keep-together:start -->
+
 
 ## Linear types, and why `AnyType` requires nothing
 
@@ -173,10 +223,14 @@ Most languages with strong lifetimes require every type to provide at least a
 trivial destructor, so the compiler can destroy a value whenever it decides the
 value is dead. Mojo's floor is lower than that on purpose.
 
+<!-- doccrate:keep-together:end -->
+
 A type may conform to `AnyType` but **not** to `Deinitable`. Such a type is
 called *linear*, and it has no implicitly-callable destructor at all. The
 compiler will not quietly clean it up; if you let one go out of scope without
 consuming it, that is a **compile error**.
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 struct MustBeCommitted(Deinitable where False):
@@ -185,6 +239,8 @@ struct MustBeCommitted(Deinitable where False):
     def roll_back(deinit self): ...
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The `Deinitable where False` conformance is how a type opts out. The effect is
 that the user must *choose* — commit or roll back — and cannot drift into
 neither by forgetting.
@@ -192,16 +248,24 @@ neither by forgetting.
 This is a real tool, not a curiosity. A linear type is a guard that some
 explicit action must happen later, enforced by the compiler rather than by
 review. You will not need it often; when you do, nothing else substitutes.
+<!-- doccrate:keep-together:start -->
+
 
 ## Traits
 
 A trait declares requirements. A body of `...` means "conforming types must
 provide this".
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 trait Equatable:
     def __eq__(self, rhs: Self) -> Bool: ...
 ```
+
+<!-- doccrate:keep-together:end -->
 
 Three things traits can do that make them carry most of the weight classes
 would.
@@ -211,6 +275,8 @@ does, plus its own.
 
 **They carry default implementations.** A trait method with a real body is a
 default, and conforming types get it free:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 trait Comparable(Equatable):
@@ -221,10 +287,14 @@ trait Comparable(Equatable):
         return rhs < self
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Implement `__lt__` and `__eq__`; get `__gt__`, `__le__` and `__ge__` for
 nothing. This is where inherited behaviour lives in Mojo.
 
 **They carry associated types.** A `comptime` member constrained by a trait:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 trait IterableOwned:
@@ -233,21 +303,37 @@ trait IterableOwned:
     def __iter__(var self) -> Self.IteratorOwnedType: ...
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The conforming type chooses what `IteratorOwnedType` is, and refers to it as
 `Self.IteratorOwnedType`.
+<!-- doccrate:keep-together:start -->
+
 
 ### Composition
 
 Traits combine with `&`, anywhere a trait is expected:
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 def once[T: Movable & Deinitable, //](...):
 ```
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ### Conditional conformance
 
 A generic type can conform to a trait *only when its parameter does*. This is
 the most expressive thing in the system, and `Optional` uses it heavily:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 struct Optional[T: AnyType](
@@ -260,13 +346,21 @@ struct Optional[T: AnyType](
 ):
 ```
 
+<!-- doccrate:keep-together:end -->
+
 `Optional[Int]` is copyable because `Int` is. `Optional[SomeLinearType]` is
 not, and the compiler knows without being told twice.
+<!-- doccrate:keep-together:start -->
+
 
 ## Generics
 
 Struct and function parameters go in square brackets and are compile-time
 values:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 struct Optional[T: AnyType]:
@@ -276,15 +370,25 @@ def largest[T: Comparable](a: T, b: T) -> T:
     return a if b < a else b
 ```
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ### `Some[Trait]`
 
 When a parameter exists only to name the argument's type, `Some` says so more
 briefly:
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 def foo[T: Intable, //](x: T) -> Int:   # the long way
 def foo(x: Some[Intable]) -> Int:       # the same thing
 ```
+
+<!-- doccrate:keep-together:end -->
 
 The `//` marks parameters that are *inferred only* — never written at the call
 site.
@@ -297,11 +401,17 @@ chosen at compile time", not "any writer, decided at run time".
 
 That distinction is the whole difference between Mojo's object model and
 Objective-C's, and it is worth holding on to for the next chapter.
+<!-- doccrate:keep-together:start -->
+
 
 ## Operators
 
 The dunder protocol will be familiar from Python. This compiler's standard
 library defines and dispatches:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 | Group | Methods |
 |:---|:---|
@@ -313,16 +423,24 @@ library defines and dispatches:
 | Conversion | `__int__` `__float__` `__bool__` `__str__` `__hash__` |
 | Call and scope | `__call__` `__enter__` `__exit__` |
 
+<!-- doccrate:keep-together:end -->
+
 `__enter__` and `__exit__` are what make `with autoreleasepool():` work — a
 context manager is just a struct with those two methods, which is exactly how
 `autoreleasepool` is built.
 
 Text formatting goes through the `Writable` trait and a `write_to` method
 rather than only `__str__`.
+<!-- doccrate:keep-together:start -->
+
 
 ## What this means for Cocoa
 
 Lay the two models side by side and the division of labour is obvious.
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 | | Mojo | Objective-C |
 |:---|:---|:---|
@@ -334,6 +452,8 @@ Lay the two models side by side and the division of labour is obvious.
 | Polymorphism | traits and generics, resolved at compile time | messages, resolved at run time |
 | Lifetime | scope-based, compiler-enforced | reference counting |
 | Adding a method later | impossible | routine — categories, runtime class building |
+
+<!-- doccrate:keep-together:end -->
 
 Mojo has no runtime object system, and Cocoa is nothing *but* a runtime object
 system. So CocoaMojo does not try to make Mojo object-oriented. It does two

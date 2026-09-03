@@ -9,12 +9,18 @@ operation exists in two forms — a block form, and an `_f` form taking a bare C
 function pointer plus a context word — and **the `_f` form is exactly the
 revived `fn`**: thin, non-raising, C ABI. So most of `std.objc.dispatch` is
 direct calls with no adaptation layer at all.
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 from std.objc.dispatch import (
     Semaphore, async_f, global_queue, main_queue, sync_f, with_block,
 )
 ```
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ## Queues
 
@@ -23,10 +29,14 @@ var q = global_queue()      # the default-priority concurrent queue
 var m = main_queue()        # where UI work belongs
 ```
 
+<!-- doccrate:keep-together:end -->
+
 `main_queue()` is worth a note: the main queue is not a function in C but a
 global, `_dispatch_main_q`, and the `dispatch_get_main_queue()` macro takes its
 address. The library references it the same way it references the `msg_send`
 stubs — as a link-time symbol.
+<!-- doccrate:keep-together:start -->
+
 
 ## Dispatching an `fn`
 
@@ -38,6 +48,8 @@ sync_f(q, ctx, set_flag)     # runs before returning
 async_f(q, ctx, set_flag)    # returns immediately
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The context word is how you get data to the work function, because an `fn` has
 no closure. In practice you will often reach for `named_global` instead, the
 same way Cocoa callbacks do — see
@@ -45,6 +57,8 @@ same way Cocoa callbacks do — see
 
 `Pointer` is non-nullable, so when the work function ignores its context you
 still have to hand it a real address rather than null. Any stable one will do.
+<!-- doccrate:keep-together:start -->
+
 
 ## Waiting: `Semaphore`
 
@@ -58,8 +72,12 @@ sem.wait()
 sem.wait()
 ```
 
+<!-- doccrate:keep-together:end -->
+
 One `wait()` per expected signal. This is the rendezvous the dispatch spike
 uses to prove three concurrent `async_f` calls all ran.
+<!-- doccrate:keep-together:start -->
+
 
 ## Blocks
 
@@ -67,10 +85,14 @@ Plenty of modern Cocoa is block-only, and blocks have their own ABI — isa,
 flags, invoke pointer, descriptor, copy and dispose helpers. That sounds like a
 lot of machinery to build.
 
+<!-- doccrate:keep-together:end -->
+
 It is not, because of the correspondence the design turns on: **a thin `fn` is
 exactly a global block.** No captures means `_NSConcreteGlobalBlock` and no
 copy/dispose helpers at all, so the library can build the 32-byte block literal
 around any `fn` on the stack.
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 fn block_work() -> None:
@@ -81,10 +103,14 @@ with_block[block_work](q, wait=True)     # sync: no copy needed
 with_block[block_work](q, wait=False)    # async: the runtime Block_copy's it
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The `wait=True` path never escapes the frame, so the stack literal is enough.
 The `wait=False` path does escape, and dispatch's own `Block_copy` memmoves the
 32 bytes off your frame — safe precisely because there are no captures to
 deep-copy and the descriptor is immortal.
+<!-- doccrate:keep-together:start -->
+
 
 ## What is not here yet
 
@@ -92,6 +118,8 @@ deep-copy and the descriptor is immortal.
 helpers riding the existing closure emitter, and it is explicitly a later
 phase. If an API demands a block that captures, you are outside what the
 library covers today.
+
+<!-- doccrate:keep-together:end -->
 
 The practical consequence is the one you have already met everywhere else in
 this guide: state that a callback needs must live somewhere reachable without a

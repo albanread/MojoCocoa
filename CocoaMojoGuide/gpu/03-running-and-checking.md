@@ -1,8 +1,14 @@
 # 3. Running and checking
+<!-- doccrate:keep-together:start -->
+
 
 ## Running: JIT or build
 
 From a CocoaMojo distribution:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```bash
 cocoamojo --run   prog.mojo        # JIT, straight into this process
@@ -10,12 +16,16 @@ cocoamojo --build prog.mojo        # -> ./prog, a normal binary
 cocoamojo --build prog.mojo -o app # -> ./app
 ```
 
+<!-- doccrate:keep-together:end -->
+
 **Both paths run GPU kernels.** `cocoamojo` is the whole interface: no `-I`
 flags, no `MODULAR_*` environment variables, no Bazel. The distribution ships
 the compiler, the Mojo runtime, the Metal device runtime
 (`libCocoaMojoGPU`), the packages and `cocoa.sqlite` beside one another, and
 the driver points the compiler at them. Binaries from `--build` carry an rpath
 to `lib/`, so they run anywhere on the machine without a wrapper.
+<!-- doccrate:keep-together:start -->
+
 
 ### A correction worth knowing
 
@@ -24,12 +34,16 @@ this guide — said that GPU code could not be JIT-run, because "the JIT cannot
 resolve the GPU runtime's symbols". **That was wrong**, and the mistake is
 worth understanding because it is a common shape.
 
+<!-- doccrate:keep-together:end -->
+
 The JIT was never the problem. `ExecutionEngineOptions::libraryPaths` feeds an
 ORC dynamic-library search generator, and `-Xlinker -L`/`-l` reach it. The
 symbols were missing for the same reason so many things here were missing:
 nothing exported them. Once the device runtime existed as
 `libCocoaMojoGPU.dylib` rather than a hidden-visibility archive, the JIT
 resolved them like any other library and ran GPU kernels immediately:
+<!-- doccrate:keep-together:start -->
+
 
 ```text
 GPU: 0.413 ms   speedup: 197.96 x
@@ -37,10 +51,14 @@ exact agreement: 100.0 % ( 0 boundary-band pixels differ)
 COMPUTE-SMOKE: PASS
 ```
 
+<!-- doccrate:keep-together:end -->
+
 All sixteen spike checks now pass through the JIT path.
 
 The lesson generalises: *"the JIT cannot do X"* is almost always *"nothing
 exported the symbol X needs"*, and the two have very different fixes.
+<!-- doccrate:keep-together:start -->
+
 
 ### One reason to prefer a subprocess anyway
 
@@ -49,13 +67,21 @@ JIT'd code runs in the **host process's address space**. A segfault is caught
 by `CrashRecoveryContext`, but a call to `exit()` is not, and it would take the
 host down with it.
 
+<!-- doccrate:keep-together:end -->
+
 That matters if you are embedding the compiler in something long-lived — an
 editor, say. For running your own programs from a shell it is irrelevant.
+<!-- doccrate:keep-together:start -->
+
 
 ## Building against the source tree
 
 If you are working in the repository rather than from a distribution, you drive
 the compiler directly and supply what `cocoamojo` would have supplied:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```bash
 mojo build --target-accelerator apple-m4 \
@@ -63,19 +89,33 @@ mojo build --target-accelerator apple-m4 \
   -o /tmp/prog prog.mojo
 ```
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ### `--target-accelerator` is required
 
 Through Bazel the toolchain supplies it. Compiling directly you must pass it
 yourself, or comptime GPU dispatch fails with *"Unknown GPU architecture"*.
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ### Clear the kernel cache when a change seems not to take
 
 Compiled kernels are cached, so a rebuilt compiler can still hand you
 yesterday's answer. When an edit appears to do nothing, suspect this first:
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ```bash
 ./clear_cache.sh
 ```
+
+<!-- doccrate:keep-together:end -->
 
 `./rebuild.sh` does it as part of a rebuild, and can assert that a marker
 string is genuinely present in the binary you are about to run — so "did it
@@ -86,12 +126,18 @@ into compile actions**, so exporting a variable does nothing. Use
 `--action_env=FOO=1`, which forwards it *and* changes the action key so the
 action re-runs — at the cost of invalidating the whole graph, so expect a full
 rebuild each way.
+<!-- doccrate:keep-together:start -->
+
 
 ## Timing
 
 Warm up first. The first dispatch pays for pipeline creation and first-touch
 residency, and including it will make your kernel look several times slower
 than it is.
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
     # warm
@@ -102,6 +148,8 @@ than it is.
     var t1 = perf_counter_ns()
 ```
 
+<!-- doccrate:keep-together:end -->
+
 `synchronize()` before reading the clock, or you are timing the enqueue rather
 than the work.
 
@@ -109,11 +157,15 @@ Launch is synchronous by default. Setting `APPLEGPU_ASYNC_LAUNCH=1` defers the
 wait to `synchronize()`, which is worth about +29% on a single-chain FMA kernel
 and +2.9% at 64 chains — most valuable when you are launch-bound and nearly
 irrelevant when you are not.
+<!-- doccrate:keep-together:start -->
+
 
 ## Checking the answer
 
 This deserves more care than it usually gets, because the obvious check is the
 wrong one.
+
+<!-- doccrate:keep-together:end -->
 
 Comparing every GPU value to every CPU value for exact equality will fail on
 correct code. The GPU contracts a multiply and an add into a single fused
@@ -129,14 +181,20 @@ The Mandelbrot spike says it plainly:
 > its escape count — inherent to Float32 mandelbrot, not a bug.
 
 So it measures an **agreement rate** and requires it to be very high:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
     var rate = Float64(agree) / Float64(checked) * 100.0
     print("PASS" if rate > 99.0 else "FAIL")
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The general rule is to **classify differences before claiming victory or
 defeat**:
+<!-- doccrate:keep-together:start -->
+
 
 | Difference | Verdict |
 |:---|:---|
@@ -147,18 +205,28 @@ defeat**:
 | Exactly one block's worth of values wrong | a bounds check or an index |
 | Everything past a certain index wrong | grid too small, or a missing `if i < n` |
 
+<!-- doccrate:keep-together:end -->
+
 A picture that looks right is not evidence. A picture that survives a
 classification filter is.
+<!-- doccrate:keep-together:start -->
+
 
 ## Debugging
 
 The runtime reads a set of environment variables, and the two you will reach
 for first are:
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 | Variable | Use |
 |:---|:---|
 | `APPLEGPU_TRACE_LAUNCH` | Trace each dispatch — confirms the launch happened and with what dimensions |
 | `APPLEGPU_TRACE_CAPS` | Report the device capabilities resolved at context creation |
+
+<!-- doccrate:keep-together:end -->
 
 `APPLEGPU_KEEP_AIR` keeps the intermediate GPU module for inspection, and
 `APPLEGPU_TRACE_BLOB`, `APPLEGPU_TRACE_PROFILE` and `APPLEGPU_AIR_TRACE_KNOBS`
@@ -167,10 +235,14 @@ cover capture blobs, timing and which knobs are in effect.
 Metal's own validation is worth enabling during bring-up: this fork's dispatch
 path passes with Metal debug and shader validation on, and a residency mistake
 that is silent otherwise becomes an error there.
+<!-- doccrate:keep-together:start -->
+
 
 ## What this hardware supports
 
 The reference machine is an **M4 Max**, and one distinction shapes what runs.
+
+<!-- doccrate:keep-together:end -->
 
 Apple's 16×16 `simdgroup_matrix` operations — the tensor-core-class matrix
 paths — require `MTLGPUFamilyApple10`, which **M5 is the first part to
@@ -184,6 +256,8 @@ that question by asking Metal for the family rather than trusting a marketing
 name.
 
 The 8×8 matrix path does work here.
+<!-- doccrate:keep-together:start -->
+
 
 ## An honest word on maturity
 
@@ -192,6 +266,8 @@ Mandelbrot runs and agrees with the CPU; 96 of 119 in-scope GPU tests pass; the
 failures are triaged and named. The open work is mostly numerical correctness
 in specific kernels, plus the M5 surface that cannot be exercised on this
 machine at all.
+
+<!-- doccrate:keep-together:end -->
 
 Two consequences for you. Ordinary kernels of the shape in this section — index,
 guard, compute, store — are well-travelled ground. The further you go towards

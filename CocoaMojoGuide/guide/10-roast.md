@@ -16,6 +16,8 @@ an application proves itself in CI with nobody at the keyboard.
 
 Everything below is quoted from the source at commit `3275387`. The program
 moves; the shapes are the point.
+<!-- doccrate:keep-together:start -->
+
 
 ```mermaid
 flowchart TD
@@ -32,8 +34,12 @@ flowchart TD
     build --> lsp
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Each module below gets a section, and each section is really about one piece
 of the language.
+<!-- doccrate:keep-together:start -->
+
 
 ## The rope: structs, sharing, and `ArcPointer`
 
@@ -41,6 +47,10 @@ The text is a persistent rope — a B-tree over UTF-8 leaves in which **nodes
 are immutable and shared**. An edit copies only the path from the touched
 leaf to the root and returns a new root; every other node is shared with the
 previous version.
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 struct Node(Movable, Deinitable):
@@ -53,6 +63,8 @@ struct Node(Movable, Deinitable):
     var nlines: Int  # newline characters beneath this node, not line count
     var nutf16: Int  # UTF-16 units beneath this node -- what Cocoa counts in
 ```
+
+<!-- doccrate:keep-together:end -->
 
 This is chapter 3's material doing real work. `Node` is an ordinary Mojo
 struct; `ArcPointer` makes children shareable between trees; and the three
@@ -77,15 +89,23 @@ because Cocoa's text system counts UTF-16 units — `selectedRange` is asked on
 essentially every keystroke, and answering it from cached per-node counts
 rather than by walking a copy of the prefix is the difference between a
 2.4 µs keystroke and a multi-megabyte one.
+<!-- doccrate:keep-together:start -->
+
 
 ## The editor surface: a `class` that draws
 
 The whole editor is one custom view. Its declaration is chapter 6 in a single
 line:
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 class RoastGridView(NSView, NSTextInputClient):
 ```
+
+<!-- doccrate:keep-together:end -->
 
 The base list names the superclass and the protocol, and the protocol matters:
 implementing the selectors is not conforming, and AppKit asks
@@ -97,14 +117,20 @@ CJK input method go through marked text, and a client that answers
 exactly the people using those input methods.
 
 Drawing is arithmetic, on purpose. A fixed-pitch font means
+<!-- doccrate:keep-together:start -->
+
 
 ```
 x = column * advance          y = line * line_height
 document height = line_count * line_height
 ```
 
+<!-- doccrate:keep-together:end -->
+
 so there is no layout pass, ever. `drawRect_` draws the lines the *damage*
 covers — not the viewport:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
                 # The dirty rect, not the viewport. For a keystroke they are
@@ -114,10 +140,14 @@ covers — not the viewport:
                 # cursor.
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Keyboard input never touches the buffer directly. Every key goes to the input
 context, which turns it into either committed text or a *command selector* —
 and commands are where an editor's real bugs live, so they are one function,
 `apply_command`, driven directly by a windowless test suite:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
     def keyDown_(self, event: ObjCObject):
@@ -129,9 +159,13 @@ and commands are where an editor's real bugs live, so they are one function,
         """
 ```
 
+<!-- doccrate:keep-together:end -->
+
 One detail worth stealing: the shifted movement keys arrive as the same
 selectors with an `AndModifySelection:` suffix. Roast strips the suffix once,
 and every motion — present and future — gains its selecting twin for free.
+<!-- doccrate:keep-together:start -->
+
 
 ## State a callback can reach: `named_global`, then fields
 
@@ -139,9 +173,13 @@ A Cocoa callback is a C-ABI `fn` with no closure. Whatever it needs, it must
 be able to *find*, and Roast shows the two answers the dialect has, in the
 order it grew them.
 
+<!-- doccrate:keep-together:end -->
+
 The first is `named_global`: one zero-initialised process global per name.
 The contract is strict — a zero-initialised global of any type is all zeros —
 and the codebase treats that as a design constraint rather than a nuisance:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 # The buffer lives in a one-element global list rather than a raw heap slot.
@@ -153,11 +191,15 @@ and the codebase treats that as a design constraint rather than a nuisance:
 comptime g_buffer = named_global["roast.buffer", List[Rope]]
 ```
 
+<!-- doccrate:keep-together:end -->
+
 That pattern — `Int` for object addresses, one-element `List` for anything
 with a destructor — repeats across the program's 89 globals.
 
 The second answer is newer: **fields on the class**. State that is *per view
 by nature* now lives in the view's box:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
     var caret: Int
@@ -166,9 +208,13 @@ by nature* now lives in the view's box:
     """the other end of the selection; equal to the caret when there is none"""
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The migration is instructive because of what it did *not* do: none of the 149
 call sites moved. Each global became a function of the same name returning a
 pointer, choosing storage by whether a view exists yet:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 def g_caret() -> Pointer[Int, MutUntrackedOrigin]:
@@ -181,11 +227,15 @@ def g_caret() -> Pointer[Int, MutUntrackedOrigin]:
     return Pointer(to=box_ref[RoastGridView](id)[].caret)
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The fallback is not a transition artefact — the editing test suite drives the
 whole editor without ever making a view, deliberately, because the risk there
 is the arithmetic and not the Objective-C. And the test the migration was
 *for* could not previously have been written at all: two views, two carets,
 and editing one leaves the other alone.
+<!-- doccrate:keep-together:start -->
+
 
 ## `let`, `var`, and a bug that shipped
 
@@ -193,13 +243,19 @@ The revived `let` is an immutable binding **to a place**, not a snapshot of a
 value. The codebase documents the trap twice, and then a review caught it a
 third time, live.
 
+<!-- doccrate:keep-together:end -->
+
 The documented version, from the highlighter:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
             # `var`, not `let`. In cocoa-mojo `let x = y` binds to y rather
             # than copying it, so `let start = i` followed i as the loop
             # advanced and the keyword span came out empty.
 ```
+
+<!-- doccrate:keep-together:end -->
 
 The live version was in `popup_accept`, the code that types a completion into
 the buffer when you press Enter. It bound `let text` into the completion
@@ -210,15 +266,21 @@ kind of working.
 
 The interesting part is why it compiled. Bind into a *tracked* list and the
 compiler refuses:
+<!-- doccrate:keep-together:start -->
+
 
 ```
 error: use of invalidated interior reference 'l["element"]'
 ```
 
+<!-- doccrate:keep-together:end -->
+
 But every long-lived structure in a Cocoa program routes through
 `named_global`, whose pointers carry `MutUntrackedOrigin` — and untracked
 origins are precisely where invalidated-reference analysis goes blind. The
 fix is one word, now wearing its reason:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
     # `var`, not `let`. The revived `let` binds to the list slot, and
@@ -227,9 +289,13 @@ fix is one word, now wearing its reason:
     var text = g_comp_insert()[][sel]
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The rule this teaches: **`let` into a container you are about to mutate is
 wrong, and the compiler can only tell you so when the origin is tracked.**
 Inside the `named_global` world, the discipline is yours.
+<!-- doccrate:keep-together:start -->
+
 
 ## Two child processes, zero blocked threads
 
@@ -238,8 +304,12 @@ Both are `NSTask`s with pipes, and both are drained *without blocking* from
 the same timer, because a server thinking hard must not be an editor that has
 stopped responding.
 
+<!-- doccrate:keep-together:end -->
+
 The non-blocking read is a lesson in ABI honesty, quoted at length because
 the comment is the best in the codebase:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 @always_inline
@@ -259,11 +329,15 @@ def readable(fd: Int) -> Bool:
     """
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The server conversation is JSON-RPC with `Content-Length` framing — a header,
 a blank line, and that many *bytes* — and the client is strict about protocol
 order in a way worth copying. Nothing is sent before the server answers
 `initialize`; the client counts completed handshakes, and the application
 watches the count and announces every open document when it moves:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 def announce_open_documents():
@@ -276,10 +350,14 @@ def announce_open_documents():
     """
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Replies are matched by request id, and a completion reply additionally
 records *which document* it was asked about — a reply that is not superseded
 can still be about a file the user has switched away from, and a late answer
 pasted into the wrong buffer is worse than no answer.
+<!-- doccrate:keep-together:start -->
+
 
 ## Documents: the working set
 
@@ -290,11 +368,15 @@ wrong — and rather than thread a document handle through forty call sites,
 document being left and loads the one being entered. Two functions, one
 place, and every draw loop and input handler keeps working unchanged.
 
+<!-- doccrate:keep-together:end -->
+
 The rope is what makes this honest: stashing a document's text is one pointer
 copy, and so is its whole undo history, because the entries share structure.
 
 Every tab change goes through one function, so a rule added later cannot be
 forgotten at one of the nine places a tab can change:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 def switch_document(index: Int) -> Bool:
@@ -306,11 +388,15 @@ def switch_document(index: Int) -> Bool:
     """
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The flush exists because edits are debounced — three idle ticks before a
 `didChange` goes out — so a tab edited and left quickly would strand its text,
 and the server would go on reporting diagnostics for a version of the file
 that no longer exists anywhere. Exactly the case that looks like the tool
 lying to you.
+<!-- doccrate:keep-together:start -->
+
 
 ## The shell: five classes and a timer
 
@@ -321,12 +407,18 @@ The tab strip is the one to read — it draws itself, hit-tests its own close
 boxes, scrolls, and keeps its label attributes as fields built lazily in its
 own box.
 
+<!-- doccrate:keep-together:end -->
+
 The program's heartbeat is one timer tick that drains both children and
 notices state changes by serial number rather than by flag:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
     def timerTick_(self, timer: ObjCObject):
 ```
+
+<!-- doccrate:keep-together:end -->
 
 Everything asynchronous in Roast — server messages, compiler output, build
 completion, completion replies, handshake completion — is a counter someone
@@ -337,6 +429,8 @@ application.
 Behaviour rules live in one place each. Opening an example *is* a project
 switch — save what is dirty, root the project, open its files, close what
 belongs to the old project — and the close rule survived a data-loss review:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
     # Still dirty means the save above did not happen -- the panel was
@@ -345,9 +439,15 @@ belongs to the old project — and the close rule survived a data-loss review:
     # alongside the new project instead.
 ```
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ## Proving it with nobody at the keyboard
 
 Roast's test philosophy is the part most worth stealing, and it is two rules.
+
+<!-- doccrate:keep-together:end -->
 
 **Rule one: logic tests need no window.** The rope, the JSON, the editing
 commands, the build driver and the LSP client all run headless —
@@ -370,6 +470,8 @@ Unattended runs are also *polite*. A harness launch is still a real GUI
 process on a real desktop, and as a Regular app it took the screen from
 whoever was working. With the autoclose door set, the app declares itself an
 Accessory and never claims the front:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
         # Accessory (1) gives the same window and the same
@@ -377,9 +479,15 @@ Accessory and never claims the front:
         let headless = g_autoclose()[] != 0
 ```
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ## What to take from it
 
 Reading Roast end to end, five shapes recur, and they are the chapter:
+
+<!-- doccrate:keep-together:end -->
 
 1. **Cache what you will be asked.** Three counts on every rope node turn
    every editor question into a descent.

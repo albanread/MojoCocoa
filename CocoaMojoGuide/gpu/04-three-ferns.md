@@ -13,12 +13,18 @@ The rule this chapter argues for, ahead of the evidence:
 > one.
 
 Both halves matter, and the three ferns separate them cleanly.
+<!-- doccrate:keep-together:start -->
+
 
 ## The shape of the problem
 
 All three draw a Barnsley fern by the **chaos game**. Four affine maps, each
 with a probability; start anywhere, pick a map at random, apply it, plot where
 you land, repeat. The picture emerges from the density of visits.
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 var r = rng.next()          # pick a map by weight
@@ -28,6 +34,8 @@ var ny = m.c * x + m.d * y + m.f
 x = nx
 y = ny                      # the next point depends on this one
 ```
+
+<!-- doccrate:keep-together:end -->
 
 That last line is the whole difficulty. The chaos game is a **recurrence**:
 point *n+1* is a function of point *n*. You cannot compute the millionth point
@@ -40,16 +48,24 @@ chapter: **independent streams**. A hundred separate chaos games, each starting
 from its own seed, are a hundred independent recurrences. They do not need to
 talk to each other. That is the parallelism — not within a fern's history, but
 across many short histories.
+<!-- doccrate:keep-together:start -->
+
 
 ## `fern/` — no deadline, so no question
 
 Two million points, one stream, straight down the CPU, into a histogram:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 var hits = List[UInt32](length=W * H, fill=0)
 ...
 hits[idx] += 1
 ```
+
+<!-- doccrate:keep-together:end -->
 
 Then a log curve to colour (linear brightness leaves the fronds invisible
 beside the stem) and a PNG.
@@ -68,6 +84,8 @@ is the CPU.
 `main.mojo`, `ifs.mojo`, `png.mojo` — side by side in one folder, because
 `cocoamojo` follows imports from `main.mojo` and a project's files live in the
 project's folder.
+<!-- doccrate:keep-together:start -->
+
 
 ## `ferns/` — a deadline arrives, and the CPU still wins
 
@@ -75,6 +93,8 @@ Now a live window: a dozen ferns growing in front of you, over a procedural
 lawn of fourteen thousand grass blades, under a two-octave value-noise sky.
 There is a deadline now — 60 frames a second, 16.7 ms a frame — and the example
 still does everything on the CPU. That is not laziness. It is the design.
+
+<!-- doccrate:keep-together:end -->
 
 The trick is in one comment in the source:
 
@@ -98,6 +118,8 @@ thousand chaos-game steps do not fill an M4 Max's width; you would pay a
 dispatch and a synchronise to save four microseconds of a sixteen-millisecond
 budget. **Accumulation is what keeps this cheap** — and it is also exactly what
 forbids the next thing.
+<!-- doccrate:keep-together:start -->
+
 
 ## The wall: why `ferns` cannot move
 
@@ -105,23 +127,33 @@ Wind means the ferns change shape. Change the shape and every point already in
 that framebuffer is wrong. The accumulation — the thing that made `ferns` cheap
 — is only valid while nothing moves.
 
+<!-- doccrate:keep-together:end -->
+
 So animating the meadow is not an optimisation problem. It is a different
 problem: **every fern must be drawn from scratch, every frame**, at full
 density. The work per frame goes from about a thousand points to about seven
 million.
 
 That is the crossing. Not "the GPU is faster" — the *requirement changed*.
+<!-- doccrate:keep-together:start -->
+
 
 ## `fernwind/` — wide work, and now out of time
 
 The answer is the fractal-flame one: stop trying to make one stream long, and
 run an enormous number of short ones.
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 comptime STREAMS = 24576
 comptime BURN    = 12     # unplotted, to land on the attractor
 comptime ITERS   = 280    # plotted
 ```
+
+<!-- doccrate:keep-together:end -->
 
 24,576 threads, each running its own small chaos game: twelve iterations
 discarded so the point is genuinely *on* the attractor before anyone sees it,
@@ -135,6 +167,8 @@ stream is the price of 24,576 independent starting points, and it is why the
 picture is clean.
 
 Threads meet only in the density buffers, through atomics:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 _ = Atomic.fetch_add(nacc.unsafe_offset(pat), UInt32(1))
@@ -143,9 +177,13 @@ _ = Atomic.fetch_add(gacc.unsafe_offset(pat), cg)
 _ = Atomic.fetch_add(bacc.unsafe_offset(pat), cb)
 ```
 
+<!-- doccrate:keep-together:end -->
+
 A count, and the fern's colour weighted in — so where two ferns overlap they
 blend **by evidence rather than by draw order**, which is a thing painters'
 algorithms cannot do at all.
+<!-- doccrate:keep-together:start -->
+
 
 ### The wind is in the mathematics, not the geometry
 
@@ -155,20 +193,30 @@ frame by a gusting wind field. Because that map is applied **recursively** up
 the plant, a uniform rotation compounds: the stem barely moves, the tips whip.
 The bend is a consequence of recursion, not of any code that draws a curve.
 
+<!-- doccrate:keep-together:end -->
+
 This is the payoff for redrawing from scratch. Once the maps can change per
 frame, the motion is free — it costs nothing beyond the redraw you were already
 doing. `ferns` could never have this at any price, because its picture is its
 history.
+<!-- doccrate:keep-together:start -->
+
 
 ## The measurement
 
 The same work — one `fernwind` frame's 6,881,280 plotted points — on each
 processor. M4 Max, warm, three trials each:
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 | | per frame | rate |
 |---|---|---|
 | **CPU**, one thread | **26.6 ms** | 259 M points/s |
 | **GPU**, 24,576 streams | **0.256 ms** | 26,900 M points/s |
+
+<!-- doccrate:keep-together:end -->
 
 **104× faster on the GPU** — and the number that actually decides it is the
 first column against a 16.7 ms frame budget. The CPU is not hopeless here; it
@@ -185,6 +233,8 @@ Measured with the same source shape as the example, dispatching and awaiting
 only the chaos kernel. The frame rate of `fernwind` itself cannot show this:
 it is vsync-locked, so it reads 60.2 fps whether the kernel takes 0.26 ms or
 14 ms. **A frame-rate number tells you a deadline was met, never by how much.**
+<!-- doccrate:keep-together:start -->
+
 
 ## What stayed on the CPU, deliberately
 
@@ -194,11 +244,15 @@ change between frames, and work that does not change should not be recomputed
 by anyone. Only the part that genuinely changes every frame went to the GPU,
 and a second small kernel composites densities over that backdrop.
 
+<!-- doccrate:keep-together:end -->
+
 The design also rests on two facts that were **proved by a probe before the
 example was written**: that `Atomic.fetch_add` lowers through the AIR backend
 without losing increments, and that host writes through `map_to_host` reach the
 next dispatch. Both are assumptions that would have been extremely painful to
 discover as bugs later, and cheap to establish first.
+<!-- doccrate:keep-together:start -->
+
 
 ## The rule, restated
 
@@ -207,6 +261,8 @@ discover as bugs later, and cheap to establish first.
 | `fern/` | 2M sequential points | none | **CPU** — nobody is waiting |
 | `ferns/` | ~1k points/frame | 16.7 ms | **CPU** — accumulation keeps it tiny |
 | `fernwind/` | 6.9M points/frame | 16.7 ms | **GPU** — 26.6 ms doesn't fit |
+
+<!-- doccrate:keep-together:end -->
 
 Ask, in this order:
 

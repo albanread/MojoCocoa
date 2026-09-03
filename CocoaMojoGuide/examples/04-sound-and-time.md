@@ -9,6 +9,8 @@ Both run code on a real-time audio thread, which is the strictest execution
 environment in the collection. No allocation, no locks, no raising, no
 unbounded loops. Every one of those constraints is annotated in the source at
 the line that obeys it.
+<!-- doccrate:keep-together:start -->
+
 
 ## `chip`
 
@@ -17,6 +19,10 @@ the line that obeys it.
 hard sync, ADSR envelopes and a shared resonant filter — driven by a 50 Hz
 player routine, with an oscilloscope on a C64 palette.
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ### The lesson, stated plainly
 
 This example exists to show that **one Mojo process can hold both halves of a
@@ -24,7 +30,11 @@ foreign ABI with no shim**. `class` gives Cocoa an Objective-C object to send
 messages to. `fn` gives CoreAudio a bare C function pointer to call on a
 real-time thread. Neither needs a C file, a bridging header, or a block.
 
+<!-- doccrate:keep-together:end -->
+
 The type is spelled as a `comptime`:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 # The callback's type. An AURenderCallback is a C function pointer, and `fn`
@@ -33,7 +43,11 @@ The type is spelled as a `comptime`:
 comptime AURenderCallback = fn(P, P, P, UInt32, UInt32, P, /) -> Int32
 ```
 
+<!-- doccrate:keep-together:end -->
+
 and installing it is four lines:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 var cbfn: AURenderCallback = render
@@ -42,6 +56,8 @@ var cbs = external_call["calloc", P](Int(2), Int(8))
 cbs.unsafe_bitcast[Int]()[unsafe_offset=0] = fn_addr
 cbs.unsafe_bitcast[Int]()[unsafe_offset=1] = Int(st)
 ```
+
+<!-- doccrate:keep-together:end -->
 
 That is an `AURenderCallbackStruct` — a function pointer and a `refCon` — built
 by hand and handed to `AudioUnitSetProperty`. Because `fn` *is* a C function
@@ -58,15 +74,23 @@ The old AudioUnit API is used rather than `AVAudioSourceNode` for a stated
 reason: the modern one takes an Objective-C block, and **Mojo cannot construct
 a block**. That is a real limitation of the fork, and it is why the older API
 is the right one here.
+<!-- doccrate:keep-together:start -->
+
 
 ### What the real-time thread costs you
 
 `fn` is non-raising, and that has consequences that reach down into the DSP:
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 # std.math.sin is a `def`, and a `def` may raise. The render callback is an
 # `fn` -- non-raising, C-callable -- so it cannot call one.
 ```
+
+<!-- doccrate:keep-together:end -->
 
 So the filter carries a hand-rolled nine-term sine series. And its range
 reduction is deliberately a single step rather than a loop, because the
@@ -79,11 +103,17 @@ choice rather than an oversight: the main thread reads the same state to draw
 the meters, and "a torn read costs a wrong pixel for one frame, where a held
 lock would cost a click in the speaker." The oscilloscope's ring buffer is
 unsynchronised for the same reason.
+<!-- doccrate:keep-together:start -->
+
 
 ### The bug worth keeping
 
 The example documents a freeze that took real time to find, and the annotation
 is preserved at the line that fixes it:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 # `var`, not `let`. `let` names the storage of `i` rather than copying
@@ -94,6 +124,8 @@ is preserved at the line that fixes it:
 # thread: a note of a few billion is an octave loop that never finishes.
 var bass_first = i
 ```
+
+<!-- doccrate:keep-together:end -->
 
 This is the fork's `let`-binds-by-reference rule producing its worst possible
 symptom. A garbage note is not a wrong pitch — it is a hang, because the octave
@@ -114,6 +146,8 @@ Two other Cocoa traps are recorded here and are worth knowing:
 **The lesson: `fn` is the C ABI, and a real-time thread means what it says.**
 Both documented failures here were silence rather than crashes, which is the
 failure mode that makes you blame the audio system instead of your code.
+<!-- doccrate:keep-together:start -->
+
 
 ## `abcplayer`
 
@@ -123,10 +157,16 @@ tuplets, broken rhythm, ties, grace notes, chord symbols, key signatures and
 modes), schedules it to the sample, and plays it through either the chip
 synthesiser or General MIDI — or writes a standard MIDI file instead.
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ### Time is an integer
 
 The central design decision is stated in `model.mojo` and everything follows
 from it:
+
+<!-- doccrate:keep-together:end -->
 
 > **Time is an integer.** Durations are counted in ticks at 480 per quarter
 > note — 1920 per whole note — and never in seconds or doubles. That number is
@@ -137,6 +177,8 @@ from it:
 
 There is exactly **one** place where that integer clock becomes a sample
 position, and it rounds once:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 fn tick_to_sample(tick: Int, bpm: Int, per_beat: Int, sample_rate: Int) -> Int:
@@ -146,8 +188,12 @@ fn tick_to_sample(tick: Int, bpm: Int, per_beat: Int, sample_rate: Int) -> Int:
     return (tick * sample_rate * 60 + denom // 2) // denom
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Choosing 480 also means the MIDI writer needs no conversion at all — the ticks
 it writes are the ticks the model holds.
+<!-- doccrate:keep-together:start -->
+
 
 ### Dispatch inside the buffer, not at its edges
 
@@ -156,9 +202,15 @@ measurable. Notes are not started by waking a thread at the right moment; the
 schedule is compiled to sample offsets ahead of time, and the render callback
 splits its own buffer at each event:
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 span = min(frames - filled, next_event - now)
 ```
+
+<!-- doccrate:keep-together:end -->
 
 The measurement, taken with 512-frame buffers deliberately chosen so that no
 onset falls on a buffer boundary: scheduled at samples 0, 48000, 96000, 144000;
@@ -170,6 +222,8 @@ One ordering detail carries real musical weight. The schedule sorts NOTE_OFF
 before NOTE_ON at the same sample, "because releasing first leaves the voice
 free for the new note. The other order steals a voice that is about to be freed
 and drops a note."
+<!-- doccrate:keep-together:start -->
+
 
 ### The window
 
@@ -179,6 +233,8 @@ waveform toggles, the envelope as vertical bars, pulse width — with the shared
 filter in its own block, because cutoff and resonance belong to the one filter
 all three voices pass through and a control that looks per-voice and is not
 would be worse than no label at all.
+
+<!-- doccrate:keep-together:end -->
 
 The keyboard uses Logic Pro's and GarageBand's *Musical Typing* layout, which
 is the mapping a Mac musician already has in their fingers: the home row is the
@@ -200,6 +256,8 @@ same unsynchronised trade the meters make. Which is also where the bug was: a
 gate is *two* registers, the gate bit and the envelope phase, and setting only
 the bit leaves the envelope idle. The oscillator runs, the envelope multiplies
 it to nothing, and every register looks right while the key is silent.
+<!-- doccrate:keep-together:start -->
+
 
 ### Two backends from one model
 
@@ -209,6 +267,8 @@ with stealing that takes the oldest sounding note "because it is the one
 furthest through its decay and the least missed"), Apple's DLS synth for
 General MIDI, and a standard MIDI file.
 
+<!-- doccrate:keep-together:end -->
+
 The file is the interesting one, and the README says why:
 
 > The MIDI file is the proof. It opens in any notation program, so the pitches,
@@ -217,11 +277,15 @@ The file is the interesting one, and the README says why:
 
 That is the right instinct about correctness. A parser that only feeds its own
 synthesiser can be wrong in a way that sounds fine.
+<!-- doccrate:keep-together:start -->
+
 
 ### What the port found
 
 `abcplayer` is a port of a C++ program, and it fixed five defects in it. Four
 were findable by reading:
+
+<!-- doccrate:keep-together:end -->
 
 1. **Key signatures did nothing.** `applyKeySignature()` returned its argument
    unchanged, so every tune played in C major.
@@ -236,12 +300,16 @@ were findable by reading:
 
 The first two meant the original played most folk tunes wrong from the opening
 bar.
+<!-- doccrate:keep-together:start -->
+
 
 ### A catalogue of compiler traps — most of them now historical
 
 `abcplayer` records six failure modes it hit during the port, each annotated at
 the line that works around it, and each with its *symptom* rather than just its
 rule. That made it the most useful bug catalogue in the distribution.
+
+<!-- doccrate:keep-together:end -->
 
 **Every one was retested against the shipped compiler in August 2026, and four
 no longer reproduce.** The workarounds are still in the source, so the examples
@@ -262,6 +330,8 @@ That last row is the one to carry away, because it is not a bug — it is
 [`let` binding by reference](#the-bug-worth-keeping), working exactly as
 designed, in its most damaging form. The insertion sort in `midi.mojo` is four
 lines of ordinary code:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 for a in range(1, len(times)):
@@ -270,6 +340,8 @@ for a in range(1, len(times)):
     while b >= 0 and times[b] > t:
         times[b + 1] = times[b]
 ```
+
+<!-- doccrate:keep-together:end -->
 
 Sorting `5 3 9 1` that way yields `5 5 9 9`. The behaviour has not changed and
 `let` still binds by reference, but the compiler now warns at the write that

@@ -142,6 +142,8 @@ The `life.` prefix on every key is the discipline that keeps two subsystems
 from colliding, and it stays worth having for whatever remains a global.
 
 ## `main`, in order
+<!-- doccrate:keep-together:start -->
+
 
 ### Load AppKit first
 
@@ -151,9 +153,13 @@ def main() raises:
         raise Error("could not load AppKit")
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Nothing linked AppKit into a JIT-run process, so without this the
 `NSApplication` lookup is nil and every message to nil quietly does nothing:
 the app starts and exits having drawn nothing.
+<!-- doccrate:keep-together:start -->
+
 
 ### Allocate outside Mojo
 
@@ -162,11 +168,15 @@ the app starts and exits having drawn nothing.
     g_frame()[] = alloc_zeroed(PIXELS, 4)
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Mojo destroys a value at its **last use**, not at end of scope, so a `List`
 whose `unsafe_ptr()` you stash in a global is freed immediately and every
 stored pointer dangles — surfacing much later as a corrupted allocator, nowhere
 near the cause. Owning the memory outside Mojo makes the lifetime explicit and
 correct.
+<!-- doccrate:keep-together:start -->
+
 
 ### Instantiate the classes
 
@@ -181,6 +191,8 @@ correct.
         _ = external_call["objc_retain", P](actions.ptr())
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Three lines where the old version had three builders, six `add_method` calls
 and two hand-written encodings.
 
@@ -192,6 +204,8 @@ class is in the runtime by the time you hand the instance to AppKit.
 **Retain what Cocoa holds by bare pointer.** `actions` is the timer's target
 and must outlive this scope; the explicit `objc_retain` is correct for an
 object that lives as long as the application.
+<!-- doccrate:keep-together:start -->
+
 
 ### A difference from the builder path
 
@@ -203,9 +217,13 @@ object that lives as long as the application.
         _ = Obj["NSView"](view.addr()).setFrame(frame)
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Worth noticing because it changes the code you write. With `ObjCClassBuilder`
 you got a class back and did `alloc` then `initWithFrame:` yourself.
 `LifeView()` has already done both, so you set the frame afterwards instead.
+<!-- doccrate:keep-together:start -->
+
 
 ### The timer
 
@@ -221,6 +239,8 @@ you got a class back and did `alloc` then `initWithFrame:` yourself.
         )
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The five labels *are* the selector's five parts, so
 `+scheduledTimerWithTimeInterval:target:selector:userInfo:repeats:` is
 resolved from them and never written down. Get one label wrong and the build
@@ -235,6 +255,8 @@ target/action wants the `SEL` itself, not a call.
 register, and the register-file check would have caught an integer literal.
 `repeats=True` needs no `Bool(...)` — the label tells the compiler what the
 argument is, so the literal is enough.
+<!-- doccrate:keep-together:start -->
+
 
 ### Into the run loop
 
@@ -242,11 +264,15 @@ argument is, so the literal is enough.
     _ = Cls["NSApplication"]().sharedApplication().run()
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Outside the `with` block, so the setup pool drains before the loop begins; the
 loop keeps its own pools per event cycle. `app` was bound inside the block that
 has now ended, hence `app2`.
 
 `run` does not return.
+<!-- doccrate:keep-together:start -->
+
 
 ## What the drawing does
 
@@ -256,14 +282,24 @@ rules over the two cell buffers; `render()` writes BGRA pixels into
 work uses `send` rather than `msg_send`, because a `MTLDevice` is a
 protocol-typed object whose concrete class is not something you can name:
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
         var queue = send[ObjCObject, "newCommandQueue"](display_dev)
 ```
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ## What to take from it
 
 The Cocoa-facing surface of a 644-line application is three class declarations
 totalling about thirty lines, and every selector and encoding in them was
 checked at compile time. The rest is Mojo.
+
+<!-- doccrate:keep-together:end -->
 
 That ratio is the point of the whole design.

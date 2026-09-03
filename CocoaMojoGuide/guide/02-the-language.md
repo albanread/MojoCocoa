@@ -132,14 +132,20 @@ bindings became `let` in one file alone. If you never rebind it, say so.
 Use `comptime`. `alias` is gone from the standard library's own code.
 
 ## `comptime` does the compile-time work
+<!-- doccrate:keep-together:start -->
+
 
 ## Argument conventions
 
 There is no `inout`, no `borrowed`, and no `owned`. The conventions are:
 
+<!-- doccrate:keep-together:end -->
+
 Most of them are *contextual* — soft identifiers rather than reserved
 words — so `mut`, `imm`, `out` and `deinit` are all still available as ordinary
 variable names. Only `var` is a reserved keyword.
+<!-- doccrate:keep-together:start -->
+
 
 | Convention | Meaning |
 |:---|:---|
@@ -150,7 +156,11 @@ variable names. Only `var` is a reserved keyword.
 | `var` | Taken by value; the callee owns it. |
 | `deinit` | Consumes the value and ends its lifetime. Used for `__deinit__` and for consuming methods. |
 
+<!-- doccrate:keep-together:end -->
+
 In practice:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 def __init__(out self, *, adopt: ObjCObject):
@@ -166,20 +176,32 @@ def __iter__(var self) -> Self.IteratorOwnedType:
     ...
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The transfer sigil `^` moves a value into a consuming position:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 var cls = b^.register()      # b is consumed here
 var delegate = new_instance(cls)
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Forgetting `^` on a `deinit` method is one of the more common early errors.
+<!-- doccrate:keep-together:start -->
+
 
 ## Origins, and how they are spelled
 
 References carry an origin parameter. The names were renamed twice and the old
 spellings have now been removed, so a tutorial written a few months ago will
 use identifiers that no longer exist.
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 | Use this | Not this |
 |:---|:---|
@@ -190,13 +212,21 @@ use identifiers that no longer exist.
 | `MutUntrackedOrigin` | `MutExternalOrigin` |
 | `ImmUntrackedOrigin` | `ImmutUntrackedOrigin`, `ImmutExternalOrigin` |
 
+<!-- doccrate:keep-together:end -->
+
 `MutUntrackedOrigin` is the one you will type constantly in Cocoa code, because
 every pointer that crosses into Objective-C is outside Mojo's lifetime tracking
 by definition. Most CocoaMojo files start by shortening it:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 comptime P = OpaquePointer[MutUntrackedOrigin]
 ```
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ## Pointers
 
@@ -205,25 +235,39 @@ of it, and the pre-unification aliases — `MutUnsafePointer`, `ImmUnsafePointer
 `ImmutOpaquePointer`, `OptionalUnsafePointer` and the rest — have been removed
 outright.
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 var p = Pointer[UInt8, MutUntrackedOrigin](unsafe_from_address=addr)
 var q = OpaquePointer[MutUntrackedOrigin](unsafe_from_address=addr)
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The raw memory functions were renamed to carry an `unsafe_` prefix, and the old
 names are gone: use `unsafe_memcpy`, `unsafe_memset`, `unsafe_memset_zero`,
 `unsafe_destroy_n`. Likewise the `Pointer` methods are now
 `unsafe_deinit_pointee()`, `unsafe_write()`, `unsafe_as_noalias()`.
+<!-- doccrate:keep-together:start -->
+
 
 ## Function types, `thin`, and `abi("C")`
 
 `fn` is the spelling you want for a foreign-callable function, but the longhand
 still exists and you will meet it in older code and in diagnostics.
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 comptime IMP1 = fn(P, P, P, /) -> None          # cocoa-mojo
 comptime IMP1 = def(P, P, P, /) thin abi("C") -> None   # the longhand it sugars
 ```
+
+<!-- doccrate:keep-together:end -->
 
 `/` ends the positional-only parameters, `thin` means the function carries no
 captured context, and `abi("C")` gives it the C calling convention. You need
@@ -241,11 +285,17 @@ Objective-C block with no captures is `_NSConcreteGlobalBlock` with no
 copy/dispose helpers, so the standard library can build a block around any
 `fn` at no cost. That is how block-only Cocoa APIs are reachable today — see
 [Concurrency and blocks](08-concurrency.md).
+<!-- doccrate:keep-together:start -->
+
 
 ## Parameters and generics
 
 Parameters go in square brackets and are resolved at compile time. Arguments go
 in parentheses.
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 def msg_send[
@@ -258,12 +308,16 @@ def msg_send[
     ...
 ```
 
+<!-- doccrate:keep-together:end -->
+
 That signature shows most of what you need: a type parameter, string
 parameters, a defaulted `Bool` parameter, a variadic type-parameter pack, and a
 value pack `*args: *Ts` bound to it.
 
 Overloading works on parameter lists as well as argument lists, which is how
 `ObjCClassBuilder.add_method` accepts five different IMP shapes under one name.
+<!-- doccrate:keep-together:start -->
+
 
 ## Structs and traits
 
@@ -274,6 +328,8 @@ struct CGPoint(Copyable, Movable):
     var y: Float64
 ```
 
+<!-- doccrate:keep-together:end -->
+
 `@fieldwise_init` synthesises the memberwise initialiser. Conformances go in
 the parentheses. The ones you will meet most in Cocoa code are `Copyable`,
 `Movable`, `AnyType` and `TrivialRegisterPassable`.
@@ -283,12 +339,16 @@ Two more renames that will bite: `ImplicitlyDestructible` and
 longer required, because implicit deletion is the default.
 
 Destructors are `__deinit__`, taking `deinit self`:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 def __deinit__(deinit self):
     if not self._obj.is_nil():
         ...
 ```
+
+<!-- doccrate:keep-together:end -->
 
 ## Other removals you are likely to trip over
 
@@ -312,11 +372,17 @@ The module system also tightened. Importing same-named functions from different
 modules to build one overload set is now an error, and intra-package access
 without an explicit `import` is an error. Both had deprecation periods that
 have now expired.
+<!-- doccrate:keep-together:start -->
+
 
 ## `async` on an `fn`
 
 `fn` cannot be `async`; use `def`. The rest of the async story is unchanged
 from upstream, and nothing in CocoaMojo depends on it.
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ## A note on `async`
 
@@ -325,9 +391,15 @@ and the module defining them is private. `async def` still works and the
 compiler still synthesises those types — you simply cannot name them. Mojo's
 async support is unfinished and nothing in CocoaMojo depends on it.
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ## What you can rely on
 
 The point of the freeze is that this list will not move under you. Code written
 against this chapter keeps compiling for as long as you keep the compiler. That
 is the trade the fork makes: no upstream fixes and no new features, in exchange
 for a language that stays still long enough to build something on.
+
+<!-- doccrate:keep-together:end -->

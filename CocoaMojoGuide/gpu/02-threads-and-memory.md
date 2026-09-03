@@ -3,6 +3,8 @@
 Chapter 1 used one index and one buffer. Real kernels need to know where they
 sit in the grid, cooperate with their neighbours, and use faster memory than
 the device buffer. This chapter is those three things.
+<!-- doccrate:keep-together:start -->
+
 
 ## Knowing where you are
 
@@ -12,6 +14,10 @@ from std.gpu import (
     lane_id, warp_id, WARP_SIZE,
 )
 ```
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 | Name | What it tells you |
 |:---|:---|
@@ -24,10 +30,14 @@ from std.gpu import (
 | `warp_id` | Which SIMD group within the block |
 | `WARP_SIZE` | Lanes per SIMD group |
 
+<!-- doccrate:keep-together:end -->
+
 `global_idx` is the convenience you will use most; it is `block_idx * block_dim
 + thread_idx` computed for you.
 
 For 2D work, index both axes:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 def blur(out: Pointer[Float32, MutAnyOrigin], w: Int, h: Int):
@@ -38,7 +48,11 @@ def blur(out: Pointer[Float32, MutAnyOrigin], w: Int, h: Int):
         ...
 ```
 
+<!-- doccrate:keep-together:end -->
+
 launched with `grid_dim=(gx, gy), block_dim=(16, 16)`.
+<!-- doccrate:keep-together:start -->
+
 
 ### A note on `WARP_SIZE`
 
@@ -48,12 +62,20 @@ a kernel that assumes 32 or 64 is a kernel that silently produces wrong answers
 on the other vendor. This is one of the commonest portability bugs in GPU code
 and it costs nothing to avoid.
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ## Shared memory
 
 Every thread can reach the device buffers you passed in, but that memory is
 comparatively slow. Threads *within a block* also share a small, fast scratchpad
 — Metal calls it threadgroup memory, CUDA calls it shared memory — and using it
 well is most of what separates a fast kernel from a slow one.
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 from std.memory import unsafe_stack_allocation, AddressSpace
@@ -69,17 +91,25 @@ def tiled_matmul(...):
     ]()
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The allocation is per block, and its size must be a compile-time constant. Ask
 for too much and the pipeline will not create.
 
 The classic use is tiling: each block cooperatively loads a tile of input into
 shared memory, then every thread in the block reads that tile many times
 without touching device memory again.
+<!-- doccrate:keep-together:start -->
+
 
 ## Barriers
 
 Shared memory is only useful if the threads agree about when it is filled. That
 is what a barrier is for:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 from max.gpu.sync import barrier
@@ -89,6 +119,8 @@ from max.gpu.sync import barrier
     ...read a_shared freely...
     barrier()                                                    # all finished
 ```
+
+<!-- doccrate:keep-together:end -->
 
 `barrier()` synchronises **every thread in the block** — it is CUDA's
 `__syncthreads()`. Memory operations before it are visible to all threads after
@@ -107,11 +139,17 @@ reading.
 
 `syncwarp(mask)` synchronises only within a SIMD group, which is cheaper and
 occasionally what you want.
+<!-- doccrate:keep-together:start -->
+
 
 ## SIMD-group operations
 
 Threads in the same SIMD group run in lockstep and can exchange values directly
 — no shared memory, no barrier. This is the fastest cooperation available.
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 from std.gpu.primitives.warp import (
@@ -119,6 +157,10 @@ from std.gpu.primitives.warp import (
     reduce, lane_group_reduce,
 )
 ```
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 | Operation | What it does |
 |:---|:---|
@@ -128,8 +170,12 @@ from std.gpu.primitives.warp import (
 | `reduce` | Combine a value across the whole SIMD group |
 | `lane_group_reduce` | The same across a sub-group of lanes |
 
+<!-- doccrate:keep-together:end -->
+
 The idiom worth knowing is the reduction. To sum across a SIMD group, halve the
 distance each step:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
     var v = my_value
@@ -140,8 +186,12 @@ distance each step:
     # lane 0 now holds the sum
 ```
 
+<!-- doccrate:keep-together:end -->
+
 A block-wide reduction is this, then one value per SIMD group written to shared
 memory, a barrier, and one more SIMD-group reduction over those.
+<!-- doccrate:keep-together:start -->
+
 
 ## Which memory to reach for
 
@@ -152,9 +202,13 @@ memory, a barrier, and one more SIMD-group reduction over those.
 | Shared memory | one block | fast | tiles, staging, block-wide cooperation |
 | Device buffers | whole grid, and the host | slow | inputs and outputs |
 
+<!-- doccrate:keep-together:end -->
+
 The usual shape of a fast kernel: read device memory once, coalesced; keep the
 working set in shared memory and registers; cooperate through shuffles where
 possible and barriers where not; write device memory once.
+<!-- doccrate:keep-together:start -->
+
 
 ## Coalescing
 
@@ -163,16 +217,22 @@ one wide transaction. When they stride, it cannot. This is usually the
 difference between a kernel that is memory-bound at a sensible fraction of
 bandwidth and one that is ten times slower for no visible reason.
 
+<!-- doccrate:keep-together:end -->
+
 In practice: map the **fastest-varying thread index to the fastest-varying data
 index**. If your matmul reads `B[k][n]`, let `thread_idx.x` walk `n`, not `k`.
 The tiled matmul in this tree carries exactly that comment — *map thread x to
 column for coalesced access in B*.
+<!-- doccrate:keep-together:start -->
+
 
 ## Divergence
 
 Threads in a SIMD group share one instruction pointer. When they take different
 branches, both sides execute with the inactive lanes masked off, so a
 two-way branch inside a SIMD group costs the sum of both sides.
+
+<!-- doccrate:keep-together:end -->
 
 Divergence across *different* SIMD groups is free. So a condition on
 `block_idx`, or on `global_idx / WARP_SIZE`, costs nothing; a condition on

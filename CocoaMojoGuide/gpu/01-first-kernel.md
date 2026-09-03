@@ -1,10 +1,16 @@
 # 1. Your first kernel
+<!-- doccrate:keep-together:start -->
+
 
 ## A kernel is a function
 
 There is no kernel keyword and no attribute. A kernel is a `def` whose
 parameters can cross to the device, which asks for its own thread index and
 does one element's worth of work:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 from std.gpu import global_idx
@@ -34,6 +40,8 @@ def mandelbrot_kernel(
         escape[unsafe_offset=idx] = n
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Three things in that signature are worth pausing on.
 
 **`Pointer[UInt32, MutAnyOrigin]`** — device buffers use `MutAnyOrigin`, not
@@ -46,6 +54,8 @@ launch, so small parameters cost nothing to pass and need no buffer.
 **The bounds check is not optional.** Grids are rounded up to whole blocks, so
 the final block runs threads past the end of your data. Without `if idx < n`
 those threads write outside the buffer.
+<!-- doccrate:keep-together:start -->
+
 
 ## The host side, in five calls
 
@@ -65,6 +75,10 @@ def main() raises:
     ctx.synchronize()
 ```
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 | Call | What it does |
 |:---|:---|
 | `DeviceContext(api="metal")` | Opens the device |
@@ -73,8 +87,12 @@ def main() raises:
 | `enqueue_function(f, args…, grid_dim=, block_dim=)` | Launches it |
 | `synchronize()` | Waits for completion |
 
+<!-- doccrate:keep-together:end -->
+
 `compile_function` is the expensive call. Hoist it out of any loop — compile
 once, launch many times.
+<!-- doccrate:keep-together:start -->
+
 
 ## Choosing the grid
 
@@ -82,6 +100,8 @@ once, launch many times.
 comptime block = 256
 comptime grid = (PIXELS + block - 1) // block
 ```
+
+<!-- doccrate:keep-together:end -->
 
 `block_dim` is how many threads are in each block; `grid_dim` is how many
 blocks. The ceiling division is the standard idiom for "enough blocks to cover
@@ -91,11 +111,17 @@ required.
 256 is a reasonable default block size. Both take tuples for 2D and 3D work —
 `grid_dim=(gx, gy)`, `block_dim=(16, 16)` — and then your kernel reads
 `global_idx.x` and `global_idx.y`.
+<!-- doccrate:keep-together:start -->
+
 
 ## Getting the answer back
 
 Apple Silicon has unified memory, so reading results is a mapping rather than a
 copy:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 with dev.map_to_host() as host_view:
@@ -103,15 +129,21 @@ with dev.map_to_host() as host_view:
         ...host_view[i]...
 ```
 
+<!-- doccrate:keep-together:end -->
+
 It is a context manager, so the mapping is released at scope exit.
 
 For explicit transfers — and for portability to discrete GPUs — buffers also
 carry `enqueue_copy_to`, `enqueue_copy_from` and `enqueue_fill`, and the
 context can allocate a host buffer with `enqueue_create_host_buffer`.
+<!-- doccrate:keep-together:start -->
+
 
 ## The whole program
 
 Putting it together, with a CPU reference to check against:
+
+<!-- doccrate:keep-together:end -->
 
 ```mojo
 from std.gpu import global_idx
@@ -154,24 +186,36 @@ def main() raises:
 ```
 
 On the reference M4 Max the most recent run of this reports:
+<!-- doccrate:keep-together:start -->
+
 
 ```text
 GPU: 0.413 ms   speedup: 197.96 x
 exact agreement: 100.0 % ( 0 boundary-band pixels differ)
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Before you take that as a benchmark, read
 [Running and checking](03-running-and-checking.md) — both the timing and the
 comparison need more care than they look like they do.
+<!-- doccrate:keep-together:start -->
+
 
 ## Running it
 
 From the CocoaMojo distribution, one command either way:
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ```bash
 cocoamojo --run   mandelbrot.mojo      # JIT: compile and run
 cocoamojo --build mandelbrot.mojo      # -> ./mandelbrot
 ```
+
+<!-- doccrate:keep-together:end -->
 
 **Both work for GPU code.** `--run` JITs the program, GPU kernels included, and
 `--build` produces an ordinary double-clickable binary.

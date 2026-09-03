@@ -30,19 +30,27 @@ thought about.
 
 Three of these are keywords, and they are the ones that will bite a reader
 coming from current Mojo documentation, because the code still *parses*.
+<!-- doccrate:keep-together:start -->
+
 
 ## `fn` is the foreign-callable function
 
 **Upstream** used `fn` for the strict-mode function — declared argument
 mutability, no implicit raising — and has since folded that distinction away.
 
+<!-- doccrate:keep-together:end -->
+
 **Here** `fn` means something narrower and load-bearing: thin (no captures),
 non-raising, C ABI, every parameter and return type ABI-classifiable. That is
 exactly the Objective-C `IMP` contract, and exactly a C function pointer.
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 comptime AURenderCallback = fn(P, P, P, UInt32, UInt32, P, /) -> Int32
 ```
+
+<!-- doccrate:keep-together:end -->
 
 **Why this is right.** A language that talks to an operating system needs a way
 to say *this function is callable by C*, and it needs the compiler to enforce
@@ -61,10 +69,14 @@ argument in one file.
 reaches further than it first appears: `std.math.sin` is a `def`, so the chip
 synthesiser carries a hand-written sine series. The restriction is real and it
 is the price of the guarantee.
+<!-- doccrate:keep-together:start -->
+
 
 ## `let` binds by reference
 
 **Upstream** removed `let` entirely.
+
+<!-- doccrate:keep-together:end -->
 
 **Here** `let` is an immutable, function-scope binding that **names storage
 rather than copying it**. `let x = g[]` does not snapshot `g`; it is another
@@ -84,6 +96,8 @@ read a line and know which question it answers.
 hypothetical — it has cost real debugging time five separate times in this
 project. A value read into a `let` and then mutated at the source reads back
 *mutated*:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 for a in range(1, len(times)):
@@ -93,16 +107,22 @@ for a in range(1, len(times)):
         times[b + 1] = times[b]
 ```
 
+<!-- doccrate:keep-together:end -->
+
 That sorts `5 3 9 1` into `5 5 9 9`. `var t = times[a]` is correct and is the
 only difference.
 
 **The compiler now says so**, which it did not when this was first written:
+<!-- doccrate:keep-together:start -->
+
 
 ```text
 warning: this write changes what 't' reads: 'let t' is bound to a place rooted
 at 'times' and reads through it live; for a snapshot use `var t = ...`
 note: 't' bound here
 ```
+
+<!-- doccrate:keep-together:end -->
 
 It points at the *write* rather than the binding, because the write is what
 makes the binding wrong, and it names the fix. The semantics are unchanged --
@@ -114,19 +134,27 @@ Read the value **out** before touching the source, or bind a genuine copy with
 `var`. The compiler does catch the related case where the container is *grown*
 rather than written — that is `use of invalidated interior reference`, and it
 names both the read and the invalidation.
+<!-- doccrate:keep-together:start -->
+
 
 ## `class` declares an Objective-C class
 
 **Upstream** reserved `class` for a Python-style class that never arrived; it
 was lexed, classified, and never parsed.
 
+<!-- doccrate:keep-together:end -->
+
 **Here** it declares a real Objective-C class, registered in the runtime.
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 class ExampleActions:
     def buttonClicked_(self, sender: ObjCObject):
         ...
 ```
+
+<!-- doccrate:keep-together:end -->
 
 The selector comes from the method name — an underscore is a colon, so
 `buttonClicked_` answers `buttonClicked:`. The type encoding is derived: from
@@ -153,6 +181,8 @@ otherwise have registered the method with the wrong encoding.
 
 **What it costs.** Fields have no initializers yet, and the class model took
 the largest single share of the compiler work in this fork.
+<!-- doccrate:keep-together:start -->
+
 
 ## `@objc`
 
@@ -160,18 +190,28 @@ A decorator, on methods and on classes, that makes the Objective-C exposure
 explicit where the default is not what you want. New here; upstream has no
 equivalent because it has nothing to expose to.
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ## `cocoakb`: the compiler asks the SDK
 
 This is the deviation the rest of the fork is built on, and it is not a
 language change at all — it is a change to what the compiler *does*.
 
+<!-- doccrate:keep-together:end -->
+
 **Upstream** compiles Mojo. **Here** the compiler additionally holds an open
 connection to a database describing macOS, and resolves questions against it
 during elaboration, at the point of use:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 comptime assert size_of[CGRect]() == cocoakb_struct_size["CGRect"]()
 ```
+
+<!-- doccrate:keep-together:end -->
 
 Fifteen-odd builtins answer struct sizes and field offsets, enum values,
 superclasses, method encodings, which `objc_msgSend` variant a return type
@@ -197,12 +237,16 @@ live Objective-C runtime and BridgeSupport.
 wrong and every Cocoa name in the program fails to resolve, which looks like a
 source error and is a configuration one. `cocoakb_db_hash()` exists so a binary
 can record which revision it was built against.
+<!-- doccrate:keep-together:start -->
+
 
 ## An Apple GPU target
 
 **Upstream** targets NVIDIA and AMD. **Here** there is a complete Metal/AIR
 backend — roughly 4,750 lines of lowering, legality checking and object
 emission — and an Apple GPU runtime of about 2,750 lines beneath it.
+
+<!-- doccrate:keep-together:end -->
 
 **Why this is right.** Mojo's premise is that one source file specialises to
 whatever silicon you point it at. On a Mac the silicon is the Apple GPU, and
@@ -221,11 +265,17 @@ illegal for the target, discovered one crash at a time from an error naming
 nothing. That is why the backend carries a data-driven legality firewall with
 per-rule permit/log/fail and recorded evidence for each rule — see
 [Patches](06-patches.md).
+<!-- doccrate:keep-together:start -->
+
 
 ## `std.objc`
 
 About 3,300 lines of standard library that upstream has no reason to carry,
 and it is built in layers rather than as one surface:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 | | | |
 |---:|:---|:---|
@@ -235,6 +285,8 @@ and it is built in layers rather than as one surface:
 | `classes.mojo` | 760 | `ObjCClassBuilder`, for a class assembled at run time |
 | `dispatch.mojo` | 154 | GCD queues, built on `fn` because a block is what they want |
 | `typed.mojo` | 1,247 | `Obj[...]`, `Cls[...]` — calling Cocoa as a call |
+
+<!-- doccrate:keep-together:end -->
 
 **Why this is right.** The compiler deviations above give you a *checked* way
 to reach Cocoa; this package is the surface you actually write against. Keeping
@@ -253,10 +305,14 @@ the raw call without leaving the language. `typed.mojo` compiles to
 know which to write. That is what
 [Guide, chapter 4](../guide/04-calling-cocoa.md#built-in-layers-and-every-one-of-them-still-works)
 opens with.
+<!-- doccrate:keep-together:start -->
+
 
 ## One host, one CPU, one accelerator
 
 **Upstream** supports Linux on x86-64 and aarch64, and macOS on ARM64.
+
+<!-- doccrate:keep-together:end -->
 
 **Here** the target is Apple Silicon macOS, and the 2019 Intel Mac Pro with its
 Radeon Pro Vega II is a *separate fork*, described the same way and shipped as
@@ -271,12 +327,16 @@ has measured one is a port that will be wrong about four of them.
 **What it costs.** Shared lowering changes have to be made in each fork, and
 the NVIDIA, AMD and Snapdragon paths still in this tree are reference material
 rather than supported targets.
+<!-- doccrate:keep-together:start -->
+
 
 ## Not ours: upstream churn we inherited
 
 Freezing at a commit inherits whatever upstream had already changed by then.
 The following differ from a good deal of published Mojo writing, **including
 Modular's own documentation**, and none of them is a decision of this fork:
+
+<!-- doccrate:keep-together:end -->
 
 - `alias` is deprecated in favour of **`comptime`**
 - `@parameter if` and `@parameter for` have given way to **`comptime if`** and

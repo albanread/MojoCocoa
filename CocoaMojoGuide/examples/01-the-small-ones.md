@@ -2,10 +2,16 @@
 
 Five short projects. One of them states the fork's entire argument; two of them
 state nothing at all, on purpose; and two are here to prove a negative.
+<!-- doccrate:keep-together:start -->
+
 
 ## `hello`
 
 Seven lines, one file.
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 # The smallest thing that runs. ⌘R.
@@ -16,6 +22,8 @@ def main():
         total += i
     print("The first hundred integers sum to", total)
 ```
+
+<!-- doccrate:keep-together:end -->
 
 It prints a greeting and `5050`.
 
@@ -28,6 +36,8 @@ working. Seven lines, two distinguishable failure modes.
 your SDK database and your run button all work, and you can stop thinking about
 them. That is the whole of its ambition, and it is worth having for exactly the
 five seconds it takes.
+<!-- doccrate:keep-together:start -->
+
 
 ## `window`
 
@@ -35,6 +45,10 @@ five seconds it takes.
 label, a button; click the button and the label counts. In any other
 language-to-Cocoa bridge this is a chapter about generated headers. Here it is
 one `class` declaration:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 class ExampleActions:
@@ -51,6 +65,8 @@ class ExampleActions:
         clicks()[] += 1
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Three things are absent, and their absence is the point. There is no bridging
 header. There is no `"v@:@"` typed out anywhere — the compiler derived it. And
 there is no `ObjCClassBuilder` call registering the class by hand, because
@@ -58,6 +74,8 @@ there is no `ObjCClassBuilder` call registering the class by hand, because
 
 The button is made by naming what its arguments *are*, and the labels pick the
 constructor:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 let button = Obj["NSButton"](
@@ -67,6 +85,8 @@ let button = Obj["NSButton"](
 )
 _ = button.setFrame(CGRect(CGPoint(20.0, 30.0), CGSize(160.0, 32.0)))
 ```
+
+<!-- doccrate:keep-together:end -->
 
 Three things are worth noticing in four lines. The labels are the selector's
 parts, so the database resolves `+buttonWithTitle:target:action:` without the
@@ -83,6 +103,8 @@ Two details in this file are load-bearing for every Cocoa program you write
 afterwards.
 
 **AppKit must be loaded explicitly.** The comment says why:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 # AppKit is not linked into a JIT process; without this NSApplication is
@@ -91,17 +113,23 @@ if not load_framework["AppKit"]():
     raise Error("could not load AppKit")
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The failure this prevents is silent — no crash, no message, just a program that
 exits having done nothing visible.
 
 **A callback cannot reach a local.** `buttonClicked_` needs the click count and
 the label, and neither can be a variable in `main`, because Cocoa calls the
 method with no path back to `main`'s frame. So both live in named globals:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 comptime clicks = named_global["example.clicks", Int]
 comptime label_addr = named_global["example.label", Int]
 ```
+
+<!-- doccrate:keep-together:end -->
 
 This constraint reappears in every larger example. `life`, `mandelbrot` and
 `othello` all hand-roll their event loops or park state in globals for exactly
@@ -117,6 +145,8 @@ error for any of them that does not exist. Nothing in the file writes a
 selector string, a type encoding, or a folklore integer. Read this one
 even if you skip the rest of the section. The full treatment is
 [Guide, chapter 6](../guide/06-callbacks.md).
+<!-- doccrate:keep-together:start -->
+
 
 ## `operators`
 
@@ -124,6 +154,8 @@ even if you skip the rest of the section. The full treatment is
 `test_my_complex.mojo` beside them. A `Complex` struct wearing the whole
 operator set — arithmetic, comparison, indexing, conversion — with a
 `std.testing` suite that exercises it.
+
+<!-- doccrate:keep-together:end -->
 
 It is Modular's own example, from `mojo/examples/operators`, carried into this
 collection **unmodified**. Not adapted, not ported: the same source.
@@ -141,6 +173,8 @@ some upstream snippet will work, this example is the standing answer for the
 non-Cocoa parts of the language.
 
 The pattern worth stealing is the four-overload operator:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 def __add__(self, rhs: Self) -> Self:      # Complex + Complex
@@ -148,6 +182,8 @@ def __add__(self, rhs: Float64) -> Self:   # Complex + Float64
 def __radd__(self, lhs: Float64) -> Self:  # Float64 + Complex
 def __iadd__(mut self, rhs: Self):         # +=
 ```
+
+<!-- doccrate:keep-together:end -->
 
 Same-type, mixed-type, *reflected* mixed-type, and in-place. Miss `__radd__`
 and `2.0 + c` fails while `c + 2.0` works, which is a confusing afternoon.
@@ -157,12 +193,16 @@ Roast's entry-point rule returns `main.mojo` whenever a project has one, and
 its test-file exclusion matches `_test.mojo`, which `test_my_complex.mojo`
 does not. So ⌘R in this project always builds `main.mojo`. To run the suite,
 point the compiler at the test file directly.
+<!-- doccrate:keep-together:start -->
+
 
 ## `process`
 
 128 lines. Modular's `std.os.Process` example, also carried in unmodified. It
 spawns `sleep 1` and waits for it, spawns `sleep 2` and polls it, and kills a
 child, printing the exit code or terminating signal at each step.
+
+<!-- doccrate:keep-together:end -->
 
 **The lesson: none that belongs to this fork.** Same as `operators` — it is
 here to prove that the standard library beneath the Cocoa layer is intact.
@@ -171,12 +211,18 @@ It is worth knowing it exists for one practical reason: it is the example to
 crib from when you want to shell out to a tool from a Mojo application, and it
 shows the three shapes you actually need — block until done, check without
 blocking, and terminate.
+<!-- doccrate:keep-together:start -->
+
 
 ## `life-python`
 
 231 lines across `main.mojo` and `gridv1.mojo`. Conway's Life for the second
 time in this distribution — but the window belongs to **pygame**, not Cocoa.
 The grid logic is Mojo; the drawing goes through CPython:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 var pygame = Python.import_module("pygame")
@@ -185,6 +231,8 @@ var window = pygame.display.set_mode(
     Python.tuple(window_width, window_height)
 )
 ```
+
+<!-- doccrate:keep-together:end -->
 
 The comparison is the demo. Put it beside the native `life` example — the same
 game, the same rules, two windowing worlds — and the difference is immediate.

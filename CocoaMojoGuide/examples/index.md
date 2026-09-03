@@ -34,6 +34,8 @@ section ends with a plain verdict, and some of those verdicts are "none".
 
 The last three have a chapter of their own, [Three ferns](../gpu/04-three-ferns.md),
 because together they make an argument no single example can.
+<!-- doccrate:keep-together:start -->
+
 
 ## The chapters
 
@@ -46,9 +48,15 @@ because together they make an argument no single example can.
 | [6. Inside `chip`](06-inside-the-chip.md) | The synthesiser in full: flow, algorithms, and how to extend it |
 | [5. Python, used well](05-python-used-well.md) | `bifurcation`, and what it measures about the boundary |
 
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
+
 ## Two questions the set keeps asking
 
 Read end to end, the examples circle the same two decisions.
+
+<!-- doccrate:keep-together:end -->
 
 **Where does the work run?** The GPU chapters and the ferns settle this with a
 rule worth carrying into the rest of the section:
@@ -66,11 +74,15 @@ program that is *called*. `window` shows the smallest version — a button that
 sends a message to a `class` you declared. `life` shows three such classes.
 `chip` shows the case where the caller is not Objective-C at all, but CoreAudio
 on a real-time thread, and the thing it wants is a bare C function pointer.
+<!-- doccrate:keep-together:start -->
+
 
 ## How to run one
 
 Every example is a folder with a `main.mojo` in it. In Roast, **File ▸ Open
 Folder…**, then ⌘R. There is no project file and nothing to generate.
+
+<!-- doccrate:keep-together:end -->
 
 The GPU examples guard themselves with `has_accelerator` and will say so
 rather than fail if there is no Metal device. `life-python` and `bifurcation`

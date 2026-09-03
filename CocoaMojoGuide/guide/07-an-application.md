@@ -2,6 +2,8 @@
 
 Everything so far assembles into one shape. This chapter is that shape, in the
 order it has to happen, with the reasons.
+<!-- doccrate:keep-together:start -->
+
 
 ## The skeleton
 
@@ -21,9 +23,13 @@ edge last | gray
 step red | 6. Run loop | Never returns | icon=clock icon-pos=bottom-right
 ```
 
+<!-- doccrate:keep-together:end -->
+
 **Order matters.** A class must be registered before anything is instantiated
 from it, and the application object must exist before a window is made key.
 Getting either backwards produces a silent failure rather than an error.
+<!-- doccrate:keep-together:start -->
+
 
 ## Step 0 — load AppKit
 
@@ -33,9 +39,13 @@ def main() raises:
         raise Error("could not load AppKit")
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Nothing linked AppKit into a `mojo run` process, so without this every AppKit
 class lookup returns nil and every message to it silently does nothing. The
 program starts and exits with no window and no diagnostic. Put it first.
+<!-- doccrate:keep-together:start -->
+
 
 ## Step 1 — state, before anything else
 
@@ -47,9 +57,13 @@ program starts and exits with no window and no diagnostic. Put it first.
     randomize()
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Do this first because the callbacks you are about to install can fire the
 moment the run loop starts, and a callback that reads a null global crashes on
 the first frame.
+<!-- doccrate:keep-together:start -->
+
 
 ## Step 2 — the application object
 
@@ -61,15 +75,23 @@ the first frame.
         )
 ```
 
+<!-- doccrate:keep-together:end -->
+
 `NSApplicationActivationPolicyRegular` is the difference between a real
 application with a Dock icon and menu bar, and a process that puts a window on
 screen that cannot be focused. Skipping it is the most common reason a first
 CocoaMojo window appears dead — which is a good argument for the name over the
 `0` it stands for.
+<!-- doccrate:keep-together:start -->
+
 
 ## Step 3 — classes
 
 They are `class` declarations, written once at the top of the file:
+
+<!-- doccrate:keep-together:end -->
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 class LifeDelegate:
@@ -86,7 +108,11 @@ class LifeView(NSView):
     def keyDown_(self, event: ObjCObject): ...
 ```
 
+<!-- doccrate:keep-together:end -->
+
 and instantiated where they are needed:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
         # Instantiating a class is what registers it, so the delegate exists
@@ -97,6 +123,8 @@ and instantiated where they are needed:
         var view_instance = ObjCObject(LifeView().__objc_id)
 ```
 
+<!-- doccrate:keep-together:end -->
+
 An earlier version of this chapter built both with `ObjCClassBuilder` and
 `add_method`, which is the library the `class` keyword replaced. That path
 still exists for a class you assemble at run time; nothing writes it by hand
@@ -105,6 +133,8 @@ any more.
 `acceptsFirstResponder` returning `True` is what makes the view eligible to
 receive key events at all. Without it `keyDown:` never fires and the view looks
 broken in a way that gives no clue.
+<!-- doccrate:keep-together:start -->
+
 
 ## Step 4 — window and view
 
@@ -123,6 +153,8 @@ broken in a way that gives no clue.
         g_window()[] = win.addr()
 ```
 
+<!-- doccrate:keep-together:end -->
+
 No `alloc`, and no `initWithContentRect:styleMask:backing:defer:` written
 down: the labels are the selector's parts and the database resolves which
 initialiser they name. The style is four flags by the names the SDK gives
@@ -135,6 +167,8 @@ the answer then comes from freed memory. Either retain it, or say
 `setReleasedWhenClosed(False)`.
 
 Then the view, and making the window visible:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
         # `LifeView()` is already allocated and initialised -- that is what
@@ -150,16 +184,22 @@ Then the view, and making the window visible:
         _ = app.activateIgnoringOtherApps(True)
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The retain is not optional: the Mojo wrapper owns the only reference until
 that line, and releases at the end of the statement that made it — after which
 AppKit is drawing into a freed object, and the first `drawRect:` traps inside
 `_NSViewDrawRect` with a stack that says nothing about ownership.
+<!-- doccrate:keep-together:start -->
+
 
 ## Step 5 — the run loop
 
 ```mojo
     _ = Cls["NSApplication"]().sharedApplication().run()
 ```
+
+<!-- doccrate:keep-together:end -->
 
 `run` does not return until the application terminates. Note that it is
 deliberately **outside** the `autoreleasepool` block: the pool should drain the
@@ -168,10 +208,14 @@ event cycle.
 
 Re-fetching `sharedApplication` rather than reusing `app` is not superstition —
 `app` was bound inside the `with` block that has now ended.
+<!-- doccrate:keep-together:start -->
+
 
 ## What you get
 
 The fork ships three applications built exactly this way.
+
+<!-- doccrate:keep-together:end -->
 
 `spikes/life/life.mojo` is Conway's Life with mouse drawing, pause and single
 step, and cells coloured by age so you can see a pattern's structure rather
@@ -192,12 +236,16 @@ serving as CoreAudio's render callback, on a thread with a 10.7 ms deadline
 
 `examples/fluid/` is the deeper GPU example — Stable Fluids, about 35
 dependent dispatches a frame, no shader anywhere.
+<!-- doccrate:keep-together:start -->
+
 
 ## Debugging, honestly
 
 There is no source-level debugging here yet. What you have is `print`,
 `respondsToSelector:` during bring-up, and the compile-time checks doing more
 work than they would in most languages.
+
+<!-- doccrate:keep-together:end -->
 
 The three failure modes worth recognising:
 

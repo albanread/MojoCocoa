@@ -8,6 +8,8 @@ real-time thread.
 
 This chapter walks the whole program: the shape first, then the synthesis
 arithmetic in detail, then what to do to it next.
+<!-- doccrate:keep-together:start -->
+
 
 | File | Lines | What it holds |
 |:---|---:|:---|
@@ -15,6 +17,8 @@ arithmetic in detail, then what to do to it next.
 | `main.mojo` | 666 | CoreAudio, the window, the screen, the keys |
 | `tune.mojo` | 395 | The player routine, instruments, the built-in demo |
 | `abc.mojo` | 536 | An ABC-notation parser, so a text file can drive it |
+
+<!-- doccrate:keep-together:end -->
 
 ## Why this example exists
 
@@ -31,11 +35,15 @@ sides of it:
   with no shim, no Objective-C, and no C file in the build.
 - **`class` declares a real Objective-C class**, so the same program's view is
   an `NSView` subclass that AppKit dispatches to normally.
+<!-- doccrate:keep-together:start -->
+
 
 ## The overall shape
 
 Two threads that never wait for each other, and one block of memory they
 share without a lock.
+
+<!-- doccrate:keep-together:end -->
 
 ```mermaid
 flowchart TB
@@ -75,6 +83,8 @@ comment on `render` states the trade:
 Everything the audio thread touches is allocated before the unit starts. The
 scope buffer, the score, the chip itself — all of it exists before a single
 sample is rendered.
+<!-- doccrate:keep-together:start -->
+
 
 ### Startup order
 
@@ -85,6 +95,8 @@ sequenceDiagram
     participant T as tune / abc
     participant AU as CoreAudio
     participant AK as AppKit
+
+<!-- doccrate:keep-together:end -->
 
     M->>C: calloc 160 slots, sane silence
     M->>T: parse .abc, or build the demo
@@ -107,11 +119,15 @@ examples give: **the thing that owns the resource has to be the thing that
 drives the app**. Here it owns the audio unit, and it has to stop it before
 the process exits, or CoreAudio keeps pulling from a callback whose chip has
 been freed.
+<!-- doccrate:keep-together:start -->
+
 
 ## The state block
 
 A chip is a bank of registers plus some counters, so that is what this is: one
 `calloc`'d array of 160 eight-byte slots, addressed by index.
+
+<!-- doccrate:keep-together:end -->
 
 ```mermaid
 flowchart LR
@@ -139,6 +155,8 @@ is the cleanest route to a stereo or dual-chip version.
 
 A voice occupies sixteen slots (`V_STRIDE`), addressed as
 `V_BASE + voice * V_STRIDE + field`:
+<!-- doccrate:keep-together:start -->
+
 
 | Field | Meaning |
 |:---|:---|
@@ -151,76 +169,118 @@ A voice occupies sixteen slots (`V_STRIDE`), addressed as
 | `V_LFSR` | The noise shift register |
 | `V_RING`, `V_SYNC`, `V_FILT` | Ring modulation, hard sync, filter routing |
 
+<!-- doccrate:keep-together:end -->
+
 ## The audio path, one sample at a time
 
 `chip_render` fills a buffer. For every sample it runs the 50 Hz frame
 countdown, then three voices, then the filter and the mix.
+<!-- doccrate:keep-together:start -->
+
 
 ```mermaid
-flowchart TB
-    START["for i in range(frames)"] --> TICK{"S_TICK reaches 0?"}
-    TICK -->|yes| PLAY["player_tick(st)<br/>reload 960"]
-    TICK -->|no| VOICES
-    PLAY --> VOICES["for v in 0,1,2"]
-
-    VOICES --> ACC["acc = prev + V_STEP<br/>(24.8 fixed point)"]
-    ACC --> SYNC{"V_SYNC?"}
-    SYNC -->|source wrapped| ZERO["acc = 0"]
-    SYNC -->|no| NOISE
-    ZERO --> NOISE{"acc bit 19<br/>rising edge?"}
-    NOISE -->|yes| LFSR["shift the 23-bit LFSR"]
-    NOISE -->|no| WAVE
-    LFSR --> WAVE["waveform() → 12 bits"]
-    WAVE --> ENV["advance_envelope() → 0..255"]
-    ENV --> SAMP["sample = (w − 2048) × env / 255"]
-    SAMP --> ROUTE{"V_FILT?"}
-    ROUTE -->|yes| WET["wet += sample"]
-    ROUTE -->|no| DRY["dry += sample"]
-
-    WET --> SVF["state-variable filter"]
-    DRY --> MIX
-    SVF --> MIX["(dry + filtered) × VOL/15 ÷ 8192"]
-    MIX --> CLAMP["clamp ±1.0 → Float32"]
+flowchart LR
+    START(["each sample"]) --> TICK{"S_TICK<br/>reaches 0?"}
+    TICK -->|yes| PLAY["player_tick(st)<br/>reload 960"] --> VOICES
+    TICK -->|no| VOICES(["for v in 0,1,2"])
 ```
+
+<!-- doccrate:keep-together:end -->
+
+Each voice then walks this path, and the three results are summed:
+<!-- doccrate:keep-together:start -->
+
+
+```mermaid
+flowchart LR
+    ACC["acc = prev + V_STEP<br/>24.8 fixed point"] --> SYNC{"V_SYNC?"}
+    SYNC -->|source wrapped| ZERO["acc = 0"] --> NOISE
+    SYNC -->|no| NOISE{"acc bit 19<br/>rising edge?"}
+    NOISE -->|yes| LFSR["shift the LFSR"] --> WAVE
+    NOISE -->|no| WAVE["waveform()<br/>12 bits"]
+    WAVE --> ENV["× envelope<br/>(w − 2048) × env / 255"]
+    ENV --> ROUTE{"V_FILT?"}
+    ROUTE -->|yes| WET(["wet"])
+    ROUTE -->|no| DRY(["dry"])
+```
+
+<!-- doccrate:keep-together:end -->
+
+The two sums meet at the end of the sample:
+<!-- doccrate:keep-together:start -->
+
+
+```mermaid
+flowchart LR
+    WET(["wet"]) --> SVF["state-variable<br/>filter"] --> MIX
+    DRY(["dry"]) --> MIX["× VOL/15 ÷ 8192"]
+    MIX --> CLAMP["clamp ±1.0"] --> OUT(["Float32"])
+```
+
+<!-- doccrate:keep-together:end -->
 
 The frame countdown is the whole of the C64's timing model. A real machine got
 there by a raster interrupt fifty times a second; here it is a counter, and
 the arithmetic is identical.
 
 ---
+<!-- doccrate:keep-together:start -->
+
 
 # The synthesis, in detail
 
+
+
+<!-- doccrate:keep-together:end -->
 ## 1. Pitch: a 24-bit phase accumulator
 
 Every oscillator is a counter that wraps. Add `V_STEP` each sample, take the
 top bits, and the shape you read out of them is the waveform.
 
+
 The chip stepped its accumulator once per *chip cycle* — 985,248 times a
 second on a PAL machine. This steps once per *output sample*, 48,000 times a
 second, so the frequency register has to be converted:
 
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 vput(st, voice, V_STEP, (freq * CLOCK_PAL * 256) // SAMPLE_RATE)
 ```
+
+<!-- doccrate:keep-together:end -->
+
 
 The `* 256` is eight fractional bits of headroom. Without them the division
 rounds, and the error is a few cents flat in the high octaves — small, and
 audible. So the accumulator is 24.8 fixed point internally, and `acc24` is
 what the waveform generator sees:
 
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 let acc24 = (acc >> 8) & 0xFFFFFF
 ```
+
+<!-- doccrate:keep-together:end -->
+
 
 `CLOCK_PAL = 985248` is not decoration. **Every frequency register in every
 chip tune ever written was chosen against that number**, so a tune ported from
 real chip data keeps its values and lands on the right pitches.
 
+<!-- doccrate:keep-together:start -->
+
+
 ## 2. The four waveforms
 
 `waveform()` returns twelve bits. It starts at `0xFFF` and **ANDs** each
 selected shape into it — because that is what the real chip did:
+
+<!-- doccrate:keep-together:end -->
+
 
 > Selecting more than one waveform ANDs them together on the real chip — an
 > accident of how the outputs are wired, not a design, and the source of most
@@ -228,12 +288,21 @@ selected shape into it — because that is what the real chip did:
 
 **Sawtooth** is the accumulator's top twelve bits, straight through:
 
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 out &= (acc24 >> 12) & 0xFFF
 ```
 
+<!-- doccrate:keep-together:end -->
+
+
 **Triangle** folds the waveform in half when the top bit is set, which turns a
 ramp into a peak:
+
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 var folded = acc24
@@ -242,12 +311,21 @@ if ((acc24 ^ ring_source_msb) & 0x800000) != 0:
 out &= (folded >> 11) & 0xFFF
 ```
 
+<!-- doccrate:keep-together:end -->
+
+
 **Pulse** compares the accumulator against the 12-bit pulse-width register.
 Full scale or nothing:
+
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 out &= 0xFFF if ((acc24 >> 12) >= vget(st, voice, V_PW)) else 0
 ```
+
+<!-- doccrate:keep-together:end -->
+
 
 Pulse width is not a setting you dial in once — it is a register you are
 *expected to modulate every frame*, and the player routine does exactly that.
@@ -255,16 +333,28 @@ Pulse width is not a setting you dial in once — it is a register you are
 **Noise** is the part that makes it sound like a games machine rather than a
 white-noise generator.
 
+<!-- doccrate:keep-together:start -->
+
+
 ## 3. The noise LFSR
 
 A 23-bit linear-feedback shift register, clocked not by the sample rate but by
 **bit 19 of the accumulator going high**:
+
+<!-- doccrate:keep-together:end -->
+
+
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 if (was24 & 0x80000) == 0 and (acc24 & 0x80000) != 0:
     let feedback = ((lfsr >> 22) ^ (lfsr >> 17)) & 1
     vput(st, voice=v, field=V_LFSR, value=((lfsr << 1) | feedback) & 0x7FFFFF)
 ```
+
+<!-- doccrate:keep-together:end -->
+
 
 Two consequences fall out of that, and both are audible.
 
@@ -274,6 +364,9 @@ explosion was made.
 
 **The output is eight scattered taps, not the register.** Bits 22, 20, 16, 13,
 11, 7, 4 and 2 become output bits 11 down to 4:
+
+<!-- doccrate:keep-together:start -->
+
 
 ```mermaid
 flowchart LR
@@ -288,6 +381,9 @@ flowchart LR
     Z["bits 3..0 always zero"] --> O["coarse, stepped noise"]
 ```
 
+<!-- doccrate:keep-together:end -->
+
+
 The low four bits are always zero. That quantisation is part of why the noise
 *rasps* instead of hissing.
 
@@ -295,9 +391,15 @@ One detail in `chip_new` is load-bearing: the LFSR is seeded to `0x7FFFF8` and
 must never be zero. All-zeroes is a fixed point of the shift — the noise would
 be silence forever.
 
+<!-- doccrate:keep-together:start -->
+
+
 ## 4. Ring modulation and hard sync
 
 Both take their input from the *previous* voice, `(v + 2) % 3`.
+
+<!-- doccrate:keep-together:end -->
+
 
 **Ring modulation** is one XOR. The triangle's folding bit is replaced by the
 source voice's top bit, and that is the entire mechanism — it is why bells and
@@ -305,18 +407,33 @@ gongs sound the way they do on this chip.
 
 **Hard sync** slams the accumulator to zero when the source voice wraps:
 
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 if s_now < s_was:
     acc = 0
 ```
 
+<!-- doccrate:keep-together:end -->
+
+
 Two oscillators at unrelated pitches, one resetting the other, is the chip
 lead sound.
+
+<!-- doccrate:keep-together:start -->
+
 
 ## 5. The envelope
 
 This is the single algorithm that most decides whether the result sounds like
 a games machine or a generic synthesiser.
+
+<!-- doccrate:keep-together:end -->
+
+
+<!-- doccrate:keep-together:start -->
+
 
 ```mermaid
 stateDiagram-v2
@@ -331,10 +448,16 @@ stateDiagram-v2
     RELEASE --> ATTACK: gate_on
 ```
 
+<!-- doccrate:keep-together:end -->
+
+
 The level is 16.16 fixed point, and **the attack is linear**. Only the falling
 phases are shaped — and they are not exponential. The chip divided its
 countdown further as the level fell, so the tail flattens in five visible
 steps:
+
+<!-- doccrate:keep-together:start -->
+
 
 | Level | Divisor |
 |---:|---:|
@@ -345,9 +468,18 @@ steps:
 | 7–14 | 16 |
 | 0–6 | 30 |
 
+<!-- doccrate:keep-together:end -->
+
+
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 env -= step // divisor
 ```
+
+<!-- doccrate:keep-together:end -->
+
 
 > Replacing that with a smooth exponential is the single change that makes
 > this sound like a synthesiser instead of a games machine.
@@ -361,16 +493,31 @@ for half a second.
 at least 1, because a zero step would hang the envelope in its attack phase
 and the voice would never sound.
 
+<!-- doccrate:keep-together:start -->
+
+
 ## 6. The filter
 
 A two-pole Chamberlin state-variable filter — three outputs from one
 structure, and the mode register selects which are summed:
+
+<!-- doccrate:keep-together:end -->
+
+
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 low += f * band
 let high = wet - low - q * band
 band += f * high
 ```
+
+<!-- doccrate:keep-together:end -->
+
+
+<!-- doccrate:keep-together:start -->
+
 
 ```mermaid
 flowchart LR
@@ -385,7 +532,13 @@ flowchart LR
     SEL --> OUTP["filtered"]
 ```
 
+<!-- doccrate:keep-together:end -->
+
+
 Two coefficients, from the cutoff and resonance registers:
+
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 let hz = 200.0 + Float64(cutoff) * 5.8
@@ -393,14 +546,26 @@ var f = 2.0 * _sin(3.141592653589793 * hz / Float64(SAMPLE_RATE))
 let q = 1.4 - Float64(get(st, S_RES)) * 0.086
 ```
 
+<!-- doccrate:keep-together:end -->
+
+
 The 6581's cutoff curve is famously non-linear and differs chip to chip, so
 there is no correct mapping to reproduce; this is a plain linear sweep across
 the range the chip covered.
+
+<!-- doccrate:keep-together:start -->
+
 
 ### The stability bound, and why it matters
 
 **`f` and `q` are not independent.** A Chamberlin filter is stable only while
 `f + q < 2`, so the usable cutoff depends on the resonance chosen with it:
+
+<!-- doccrate:keep-together:end -->
+
+
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 var limit = 0.95 * (2.0 - q)
@@ -409,6 +574,9 @@ if limit > 1.4:
 if f > limit:
     f = limit
 ```
+
+<!-- doccrate:keep-together:end -->
+
 
 This is worth dwelling on, because the history is instructive. An earlier
 version clamped `f` to a flat 1.4 — enough for the single cutoff and resonance
@@ -423,15 +591,24 @@ had ever changed it while a note was sounding.
 Two guards follow from that. The state saturates at ±65536, because a real
 filter saturates. And NaN is caught and reset:
 
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 if low != low or band != band:
     low = 0.0
     band = 0.0
 ```
 
+<!-- doccrate:keep-together:end -->
+
+
 NaN is *sticky* — one of them poisons every sample after it, so the synth goes
 silent for good and only a restart brings it back. The output clamp cannot
 help, because by then the damage is in the state rather than in the sample.
+
+<!-- doccrate:keep-together:start -->
+
 
 ## 7. Mixing, and headroom
 
@@ -439,31 +616,55 @@ help, because by then the damage is in the state rather than in the sample.
 let sample = Float64((w - 2048) * env) / 255.0
 ```
 
+<!-- doccrate:keep-together:end -->
+
+
 The waveform is centred *before* the envelope scales it. Skip that and every
 note-on puts a step of DC through the filter.
+
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 let mixed = (dry + filtered) * Float64(get(st, S_VOL)) / 15.0
 var value = mixed / 8192.0
 ```
 
+<!-- doccrate:keep-together:end -->
+
+
 Three voices at full envelope reach 3 × 2048; the 8192 divisor leaves headroom
 for the filter's resonant peak, which can exceed its own input. The final
 clamp to ±1.0 is the last line of defence.
+
+<!-- doccrate:keep-together:start -->
+
 
 ## 8. The player routine
 
 `chip_render` takes a plain C function pointer:
 
+<!-- doccrate:keep-together:end -->
+
+
+<!-- doccrate:keep-together:start -->
+
+
 ```mojo
 comptime Tick = fn(P, /) -> None
 ```
+
+<!-- doccrate:keep-together:end -->
+
 
 so the chip never has to know what a tune is. The player is called from
 *inside* the audio callback, on the beat, exactly as a raster interrupt would
 have been — and it keeps its own state in slots 64–159, after the chip's.
 
 Every effect the example has is done up here, at 50 Hz, by writing registers:
+
+<!-- doccrate:keep-together:start -->
+
 
 | Effect | How |
 |:---|:---|
@@ -472,15 +673,24 @@ Every effect the example has is done up here, at 50 Hz, by writing registers:
 | **Vibrato** | `hz *= 1 + cents·sin(frame·0.55)/1200`, delayed slightly so short notes stay clean. |
 | **PWM** | A slow triangle over the pulse-width register, never reaching the ends, where the wave would go silent. |
 
+<!-- doccrate:keep-together:end -->
+
+
 That table is the answer to "how did they get so much out of three voices".
 None of it is in the chip. All of it is a player routine writing registers
 fifty times a second.
+
+<!-- doccrate:keep-together:start -->
+
 
 ### One trap, kept in the source
 
 `_sin` is hand-written as a nine-term series, and the reason is a language
 fact: `std.math.sin` is a `def`, a `def` may raise, and the render callback is
 an `fn` — non-raising and C-callable — so it *cannot call one*.
+
+<!-- doccrate:keep-together:end -->
+
 
 Its range reduction is one multiply-and-truncate, not a loop, and the comment
 explains why that matters:
@@ -493,9 +703,15 @@ explains why that matters:
 
 ---
 
+<!-- doccrate:keep-together:start -->
+
+
 # Extending it
 
 The design leaves several doors open on purpose.
+
+<!-- doccrate:keep-together:end -->
+
 
 **Run two chips.** All state is in one block reached through `inRefCon`, and
 there are no globals — so a second `chip_new()` and a stereo stream format
@@ -528,10 +744,16 @@ the same way, making this a playable instrument.
 tolerates being read while it is written. A small DFT over it, drawn beside
 the waveform, needs no new plumbing.
 
+<!-- doccrate:keep-together:start -->
+
+
 ## Known rough edges
 
 Honest notes from a review of this example, worth knowing before you build on
 it:
+
+<!-- doccrate:keep-together:end -->
+
 
 - **The cutoff keys wrap rather than clamp.** `set_filter` masks with
   `& 0x7FF`, and the `<` / `>` handlers pass an unclamped value, so stepping

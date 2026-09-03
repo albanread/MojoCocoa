@@ -14,13 +14,19 @@ and `AddressSpace.SHARED` compile and run here as written.
 
 Read them for the idioms. Do not read them for a lesson about this fork, and be
 aware of how little two of the three actually check.
+<!-- doccrate:keep-together:start -->
+
 
 ## `vector-add`
 
 80 lines. Three ten-element buffers, one thread per element, `1.25 + 2.5` ten
 times. It prints `Resulting vector:` and ten copies of `3.75`.
 
+<!-- doccrate:keep-together:end -->
+
 The launch is the whole reason to read the file:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 ctx.enqueue_function[vector_addition](
@@ -34,6 +40,8 @@ with out_buffer.map_to_host() as host_buffer:
     print("Resulting vector:", host_tensor)
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The kernel is a compile-time parameter, its arguments are positional, and the
 geometry is keyword-only at the end. Reading the result back is a `with` block.
 That five-line shape is the entire API surface a first GPU program needs, and
@@ -41,10 +49,14 @@ it does not get more complicated in the larger examples — `mandelbrot` and
 `fluid` call `enqueue_function` exactly like this, just more often.
 
 Note the guard, because the three examples do not agree on it:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 comptime assert has_accelerator(), "This example requires a supported GPU"
 ```
+
+<!-- doccrate:keep-together:end -->
 
 That is a *compile-time* assert. On a machine with no Metal device this example
 fails to build rather than degrading to a message.
@@ -54,6 +66,8 @@ touch the GPU. It is also worth saying plainly that **it never checks its own
 answer** — the ten values are printed for a human to look at, and nothing would
 fail if they were wrong. As a compatibility proof it is the weakest of the
 three. Read it for the launch idiom, then move on.
+<!-- doccrate:keep-together:start -->
+
 
 ## `grayscale`
 
@@ -61,7 +75,11 @@ three. Read it for the launch idiom, then move on.
 the host, converts it to single-channel grey on the GPU, and prints the result
 as a table of integers.
 
+<!-- doccrate:keep-together:end -->
+
 One idea, and it is the one everybody gets wrong once:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 var row = global_idx.y
@@ -72,6 +90,8 @@ if col < WIDTH and row < HEIGHT:
     ...
     gray_tensor[row, col] = gray.cast[int_dtype]()
 ```
+
+<!-- doccrate:keep-together:end -->
 
 `global_idx.y` is the row and `global_idx.x` is the column. Transpose those two
 and you get a kernel that runs, writes plausible-looking numbers, and is wrong
@@ -89,6 +109,8 @@ an image.
 **The lesson: none beyond `vector-add`, except the `y`-is-row convention.**
 Like `vector-add` it never validates anything. If you have read `vector-add`,
 the only new information here is two-dimensional indexing, and you now have it.
+<!-- doccrate:keep-together:start -->
+
 
 ## `tiled-matmul`
 
@@ -96,8 +118,12 @@ the only new information here is two-dimensional indexing, and you now have it.
 multiplies two 64×64 matrices using 16×16 shared-memory tiles, 4×4 blocks of
 16×16 threads.
 
+<!-- doccrate:keep-together:end -->
+
 The lesson is the barrier — specifically that there are **two** of them per
 iteration:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 # Ensure all threads finish loading tiles before any thread starts computing
@@ -112,6 +138,8 @@ comptime for k in range(TILE_K):
 barrier()
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The first barrier is obvious: do not compute on a tile that is still being
 filled. The second is the one people omit, and omitting it is a genuinely nasty
 bug — a fast thread races ahead to the next iteration and overwrites shared
@@ -122,11 +150,15 @@ This pattern generalises to every shared-memory algorithm you will write, and
 it is the only idea in this chapter that does.
 
 `tiled-matmul` also guards itself differently from the other two:
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 comptime if not has_accelerator():
     print("No GPU detected...")
 ```
+
+<!-- doccrate:keep-together:end -->
 
 A message at run time, not a failed build. Worth knowing that the two styles
 exist and that upstream uses both.
@@ -135,10 +167,14 @@ exist and that upstream uses both.
 double barriers is worth understanding wherever you write GPU code.
 
 **One caveat, and it matters.** The program prints:
+<!-- doccrate:keep-together:start -->
+
 
 ```
 Validating GPU results against CPU reference...
 ```
+
+<!-- doccrate:keep-together:end -->
 
 There is no CPU reference implementation in the file. What actually runs is
 five hard-coded closed-form spot checks — `(0,0)`, `(0,1)`, `(1,0)`, `(1,1)`

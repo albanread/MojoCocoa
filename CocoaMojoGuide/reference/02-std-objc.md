@@ -2,6 +2,8 @@
 
 The complete exported surface. Throughout, `P` abbreviates
 `OpaquePointer[MutUntrackedOrigin]`.
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 from std.objc import (
@@ -20,21 +22,31 @@ from std.objc.dispatch import (
 )
 ```
 
+<!-- doccrate:keep-together:end -->
+
 ## Runtime handles
+<!-- doccrate:keep-together:start -->
+
 
 ### `SEL`
 
 A registered Objective-C selector — an interned string pointer.
+
+<!-- doccrate:keep-together:end -->
 
 | Member | Signature |
 |:---|:---|
 | `ptr` | `def ptr(self) -> P` |
 
 Conforms to `TrivialRegisterPassable`.
+<!-- doccrate:keep-together:start -->
+
 
 ### `ObjCClass`
 
 A handle on a class object.
+
+<!-- doccrate:keep-together:end -->
 
 | Member | Signature |
 |:---|:---|
@@ -43,10 +55,14 @@ A handle on a class object.
 | `as_object` | `def as_object(self) -> ObjCObject` |
 
 `lookup` calls `objc_getClass`. A nil result means the framework is not loaded.
+<!-- doccrate:keep-together:start -->
+
 
 ### `ObjCObject`
 
 A borrowed `id`.
+
+<!-- doccrate:keep-together:end -->
 
 | Member | Signature |
 |:---|:---|
@@ -55,9 +71,13 @@ A borrowed `id`.
 | `ptr` | `def ptr(self) -> P` |
 
 Construct directly from an address with `ObjCObject(Int(raw_pointer))`.
+<!-- doccrate:keep-together:start -->
+
 
 ## Selectors
 
+
+<!-- doccrate:keep-together:end -->
 ### `sel`
 
 ```mojo
@@ -67,6 +87,8 @@ def sel[name: StaticString]() -> SEL
 Registers the selector once and caches the result in a per-selector global slot,
 deduplicated by name in the KGEN lowering. After the first send the cost is one
 load and a null check.
+<!-- doccrate:keep-together:start -->
+
 
 ### `sel_dynamic`
 
@@ -74,12 +96,18 @@ load and a null check.
 def sel_dynamic(name: StaticString) -> P
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Registers a selector by name at run time, returning the raw pointer. Accepts
 custom selectors the SDK does not know. Use when calling `class_addMethod`
 directly.
+<!-- doccrate:keep-together:start -->
+
 
 ## Message sending
 
+
+<!-- doccrate:keep-together:end -->
 ### `msg_send`
 
 ```mojo
@@ -93,6 +121,8 @@ def msg_send[
 ```
 
 Sends `selector` to `obj`, returning `R`.
+<!-- doccrate:keep-together:start -->
+
 
 | Parameter | Meaning |
 |:---|:---|
@@ -102,10 +132,14 @@ Sends `selector` to `obj`, returning `R`.
 | `is_class` | `True` for a `+` method |
 | `Ts` | Argument types, inferred |
 
+<!-- doccrate:keep-together:end -->
+
 Compile-time checks: the selector must exist on `cls` or a superclass; the
 argument count must equal the selector's declared count; each argument must be
 in the register file the ABI expects, for the cases that can be determined
 certainly; and the `@encode` signature must be modelable.
+<!-- doccrate:keep-together:start -->
+
 
 ### `send`
 
@@ -115,19 +149,27 @@ def send[R: AnyType, selector: StaticString, *Ts: AnyType](
 ) -> R
 ```
 
+<!-- doccrate:keep-together:end -->
+
 Sends to a **protocol-typed** receiver whose concrete class is unknown at
 compile time — every Metal object, every delegate. The dispatch stub and
 argument classes come from the database keyed by selector alone.
 
 Argument count and register-file checks still apply. Receiver-class
 verification does not.
+<!-- doccrate:keep-together:start -->
+
 
 ## Ownership
 
+
+<!-- doccrate:keep-together:end -->
 ### `ObjCRef`
 
 An owning handle on one +1 reference. Conforms to `Movable`; deliberately not
 implicitly `Copyable`.
+<!-- doccrate:keep-together:start -->
+
 
 | Member | Signature | Notes |
 |:---|:---|:---|
@@ -139,14 +181,20 @@ implicitly `Copyable`.
 | `autorelease` | `def autorelease(deinit self) -> ObjCObject` | Hands to the current pool; consumes the ref |
 | deinit | `def __deinit__(deinit self)` | Releases if not nil |
 
+<!-- doccrate:keep-together:end -->
+
 Use `adopt=` after `alloc`, `new`, `copy`, `mutableCopy`; `retain=` otherwise.
 
 Backed by the ARC entry points `objc_retain`, `objc_release`,
 `objc_autorelease`, so it interoperates with ARC code.
+<!-- doccrate:keep-together:start -->
+
 
 ### `autoreleasepool`
 
 A scoped pool.
+
+<!-- doccrate:keep-together:end -->
 
 ```mojo
 with autoreleasepool():
@@ -155,12 +203,18 @@ with autoreleasepool():
 
 Pushes on `__enter__`, pops on `__exit__`, and guards against a double pop —
 popping a token twice corrupts the pool page.
+<!-- doccrate:keep-together:start -->
+
 
 ## Foundation
 
+
+<!-- doccrate:keep-together:end -->
 ### `NSString`
 
 A leak-safe owning wrapper. Conforms to `Movable`.
+<!-- doccrate:keep-together:start -->
+
 
 | Member | Signature |
 |:---|:---|
@@ -172,7 +226,11 @@ A leak-safe owning wrapper. Conforms to `Movable`.
 | `equals` | `def equals(self, other: NSString) -> Bool` |
 | `appending` | `def appending(self, other: NSString) -> NSString` |
 
+<!-- doccrate:keep-together:end -->
+
 `length` is UTF-16 code units, matching `-[NSString length]`.
+<!-- doccrate:keep-together:start -->
+
 
 ### `nsstring`
 
@@ -180,8 +238,12 @@ A leak-safe owning wrapper. Conforms to `Movable`.
 def nsstring(s: String) -> ObjCObject
 ```
 
+<!-- doccrate:keep-together:end -->
+
 An **autoreleased** `NSString`. For handing to AppKit setters, which retain.
 Use inside an autorelease pool.
+<!-- doccrate:keep-together:start -->
+
 
 ### `extern_object`
 
@@ -189,13 +251,19 @@ Use inside an autorelease pool.
 def extern_object[name: StaticString]() -> ObjCObject
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The object held in an extern Cocoa constant, such as
 `NSForegroundColorAttributeName`. These are globals whose address the linker
 resolves, not compile-time values; this takes a link-time reference to the data
 symbol and loads the pointer out of it.
+<!-- doccrate:keep-together:start -->
+
 
 ## Defining classes
 
+
+<!-- doccrate:keep-together:end -->
 ### IMP type aliases
 
 | Alias | Signature |
@@ -207,15 +275,21 @@ symbol and loads the pointer out of it.
 | `IMP2` | `fn(P, P, P, P, /) -> None` |
 
 The first two arguments are always `self` and `_cmd`.
+<!-- doccrate:keep-together:start -->
+
 
 ### `ObjCClassBuilder`
 
 **Superseded by the `class` keyword** for new code; retained as the lower-level
 mechanism and as the escape hatch for method shapes `class` does not cover.
 
+<!-- doccrate:keep-together:end -->
+
 ```mojo
 struct ObjCClassBuilder[superclass: StaticString = "NSObject"]
 ```
+<!-- doccrate:keep-together:start -->
+
 
 | Member | Signature |
 |:---|:---|
@@ -223,11 +297,15 @@ struct ObjCClassBuilder[superclass: StaticString = "NSObject"]
 | `add_method` | `def add_method[selector: StaticString, encoding: StaticString = ""](mut self, imp: IMPn)` |
 | `register` | `def register(deinit self) -> ObjCClass` |
 
+<!-- doccrate:keep-together:end -->
+
 `add_method` is overloaded across the five IMP shapes. When `encoding` is
 omitted the SDK's `@encode` for the selector is used, with frame offsets
 stripped; an unknown selector with no `encoding` is a compile error.
 
 `register` consumes the builder, so call it as `builder^.register()`.
+<!-- doccrate:keep-together:start -->
+
 
 ### `new_instance`
 
@@ -235,8 +313,12 @@ stripped; an unknown selector with no `encoding` is a compile error.
 def new_instance(cls: ObjCClass) -> ObjCObject
 ```
 
+<!-- doccrate:keep-together:end -->
+
 `+[cls new]` — an owned (+1) instance. Retain it explicitly if it must outlive
 the enclosing scope while Cocoa holds a bare pointer to it.
+<!-- doccrate:keep-together:start -->
+
 
 ### `named_global`
 
@@ -244,22 +326,32 @@ the enclosing scope while Cocoa holds a bare pointer to it.
 def named_global[name: StaticString, T: AnyType]() -> Pointer[T, MutUntrackedOrigin]
 ```
 
+<!-- doccrate:keep-together:end -->
+
 A zero-initialised process global of type `T`, shared by name across every call
 site, because KGEN deduplicates the global. The standard answer to callbacks
 having no closure.
+<!-- doccrate:keep-together:start -->
+
 
 ```mojo
 comptime g_running = named_global["life.running", Int]
 g_running()[] = 1
 ```
 
+<!-- doccrate:keep-together:end -->
+
 ## Frameworks
+<!-- doccrate:keep-together:start -->
+
 
 ### `load_framework`
 
 ```mojo
 def load_framework[name: StaticString]() -> Bool
 ```
+
+<!-- doccrate:keep-together:end -->
 
 `dlopen` of `/System/Library/Frameworks/<name>.framework/<name>` with
 `RTLD_NOW`. Returns whether the handle is non-null. Idempotent and cheap after
@@ -268,9 +360,13 @@ the first call.
 Foundation arrives in every process; AppKit does not unless the binary linked
 it, which a `mojo run` process did not. Without this, `ObjCClass.lookup` for an
 AppKit class returns nil and every message to it silently no-ops.
+<!-- doccrate:keep-together:start -->
+
 
 ## Errors
 
+
+<!-- doccrate:keep-together:end -->
 ### `msg_send_raising`
 
 ```mojo
@@ -283,6 +379,8 @@ def msg_send_raising[
 Sends an object-returning `...error:` selector and raises when the result is
 nil. **The trailing error argument is created and appended by the wrapper —
 pass the message arguments without it.**
+<!-- doccrate:keep-together:start -->
+
 
 ### `msg_send_raising_check`
 
@@ -293,6 +391,8 @@ def msg_send_raising_check[
 ](obj: ObjCObject, a0: T0, ...) raises
 ```
 
+<!-- doccrate:keep-together:end -->
+
 The `BOOL` convention: raises when the result is `NO`. Returns nothing. Same
 error-slot handling.
 
@@ -301,12 +401,18 @@ nothing may follow an unpacked `*args`. The raised `Error` carries the
 `NSError`'s `localizedDescription`, domain and code, copied into a Mojo
 `String`. An API that returns failure without writing an error produces a
 message saying exactly that.
+<!-- doccrate:keep-together:start -->
+
 
 ## Weak references
 
+
+<!-- doccrate:keep-together:end -->
 ### `ObjCWeakRef`
 
 A zeroing weak reference. Conforms to `Movable`.
+<!-- doccrate:keep-together:start -->
+
 
 | Member | Signature | Notes |
 |:---|:---|:---|
@@ -314,6 +420,8 @@ A zeroing weak reference. Conforms to `Movable`.
 | `load` | `def load(self) -> ObjCRef` | The object at +1 if alive, else a nil `ObjCRef` |
 | `copy` | `def copy(self) -> Self` | An independent registration |
 | deinit | `def __deinit__(deinit self)` | `objc_destroyWeak` plus `free` |
+
+<!-- doccrate:keep-together:end -->
 
 The registration slot is heap-allocated — one pointer-sized `malloc` per weak
 reference — because the runtime tracks weak references by the *address of the
@@ -326,9 +434,13 @@ use.
 
 Use this wherever Cocoa expects weakness — delegates and observer targets —
 because an `ObjCRef` there is a retain cycle.
+<!-- doccrate:keep-together:start -->
+
 
 ## Strings, the other direction
 
+
+<!-- doccrate:keep-together:end -->
 ### `ns_to_string`
 
 ```mojo
@@ -337,10 +449,14 @@ def ns_to_string(s: ObjCObject) -> String
 
 `NSString` to Mojo `String`, by copy, UTF-8. The result does not depend on the
 pool owning the `NSString`.
+<!-- doccrate:keep-together:start -->
+
 
 ## `std.objc.dispatch`
 
 Grand Central Dispatch. Imported directly, not re-exported from `std.objc`.
+
+<!-- doccrate:keep-together:end -->
 
 | Name | Signature | Notes |
 |:---|:---|:---|
@@ -358,11 +474,15 @@ Grand Central Dispatch. Imported directly, not re-exported from `std.objc`.
 `Block_copy` the 32 bytes off the frame.
 
 Capturing closures as heap blocks are not implemented.
+<!-- doccrate:keep-together:start -->
+
 
 ## Method type encodings
 
 The strings `class_addMethod` expects, as returned by the database with frame
 offsets stripped.
+
+<!-- doccrate:keep-together:end -->
 
 | Encoding | Meaning |
 |:---|:---|
