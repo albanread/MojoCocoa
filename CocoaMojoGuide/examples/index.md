@@ -25,7 +25,7 @@ section ends with a plain verdict, and some of those verdicts are "none".
 | [`mandelbrot`](03-the-applications.md#mandelbrot) | 469 lines | One dispatch per frame, computing *and* colouring, with no shader |
 | [`fluid`](03-the-applications.md#fluid) | 873 lines | Thirty-five dependent dispatches per step, where launch cost dominates |
 | [`othello`](03-the-applications.md#othello) | 1,000 lines | The honest answer about game trees: one search suits a GPU, one does not |
-| [`chip`](04-sound-and-time.md#chip) | 2,176 lines | A Mojo `fn` serving as a C function pointer on a real-time thread |
+| [`chip`](04-sound-and-time.md#chip) | 2,176 lines | A Mojo `fn` serving as a C function pointer on a real-time thread — dissected in [chapter 6](06-inside-the-chip.md) |
 | [`abcplayer`](04-sound-and-time.md#abcplayer) | 4,650 lines | The largest example: a real parser, and exact timing without floats |
 | [`bifurcation`](05-python-used-well.md#bifurcation) | 250 lines | What Python is genuinely better at, measured rather than assumed |
 | [`fern`](../gpu/04-three-ferns.md) | 289 lines | Wide work with no deadline — correctly on the CPU |
@@ -43,6 +43,7 @@ because together they make an argument no single example can.
 | [2. The GPU primers](02-the-gpu-primers.md) | `vector-add`, `grayscale`, `tiled-matmul` |
 | [3. The applications](03-the-applications.md) | `life`, `mandelbrot`, `fluid`, `othello` |
 | [4. Sound, and time](04-sound-and-time.md) | `chip`, `abcplayer` |
+| [6. Inside `chip`](06-inside-the-chip.md) | The synthesiser in full: flow, algorithms, and how to extend it |
 | [5. Python, used well](05-python-used-well.md) | `bifurcation`, and what it measures about the boundary |
 
 ## Two questions the set keeps asking
