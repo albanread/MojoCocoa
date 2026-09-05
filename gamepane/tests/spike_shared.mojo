@@ -20,6 +20,10 @@
 
 from std.objc import (
     load_framework, Cls, ObjCObject, send, nsenum, nsstring, autoreleasepool,
+    MTLOrigin,
+    MTLSize,
+    MTLRegion,
+    MTLClearColor,
 )
 from std.ffi import external_call, c_char
 from std.memory import OpaquePointer, Pointer
@@ -62,34 +66,6 @@ fragment float4 fmain(VOut in [[stage_in]],
 struct U(Copyable, Movable):
     var w: Float32
     var h: Float32
-
-
-@fieldwise_init
-struct MTLOrigin(Copyable, Movable):
-    var x: Int
-    var y: Int
-    var z: Int
-
-
-@fieldwise_init
-struct MTLSize(Copyable, Movable):
-    var width: Int
-    var height: Int
-    var depth: Int
-
-
-@fieldwise_init
-struct MTLRegion(Copyable, Movable):
-    var origin: MTLOrigin
-    var size: MTLSize
-
-
-@fieldwise_init
-struct MTLClearColor(Copyable, Movable):
-    var red: Float64
-    var green: Float64
-    var blue: Float64
-    var alpha: Float64
 
 
 # The blitter, in miniature: fill a rectangle with an index. The real one

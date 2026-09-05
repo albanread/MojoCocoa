@@ -48,7 +48,7 @@ from gamepane.api import (
     FRONT,
 )
 from gamepane.api import (
-    FLAG_TRANSPARENT_BG, P, SFX_COIN, SFX_JUMP, SFX_ZAP, SFX_EXPLODE,
+    FLAG_TRANSPARENT_BG, STARFIELD, P, SFX_COIN, SFX_JUMP, SFX_ZAP, SFX_EXPLODE,
     SFX_POWERUP, SFX_BLIP, WAVE_PULSE, WAVE_TRI,
     set_freq_hz, set_pulse_width, set_wave, set_adsr, gate_on, gate_off,
     set_volume,
@@ -95,26 +95,6 @@ comptime WORLD_W = 960   # twice the viewport each way -> a real overscan margin
 comptime WORLD_H = 640
 
 
-comptime STARFIELD = String(
-    """
-fragment float4 fmain(VOut in [[stage_in]], constant Uniforms& u [[buffer(0)]]) {
-    float2 uv = in.uv * float2(u.aspect, 1.0);
-    float3 col = float3(0.02, 0.02, 0.06);
-    for (int i = 0; i < 3; i++) {
-        float layer = float(i);
-        float scale = 18.0 + layer * 14.0;
-        float2 grid = uv * scale + layer * 11.0;
-        float2 cellId = floor(grid);
-        float2 cellUv = fract(grid) - 0.5;
-        float h = fract(sin(dot(cellId, float2(12.9898, 78.233)) + layer * 3.7) * 43758.5453);
-        float star = smoothstep(0.06, 0.0, length(cellUv)) * step(0.97, h);
-        float twinkle = 0.5 + 0.5 * sin(u.time * (2.0 + h * 4.0) + h * 12.0);
-        col += float3(star * twinkle);
-    }
-    return float4(col, 1.0);
-}
-"""
-)
 
 
 def build_world(mut pane: IndexedPane) raises:

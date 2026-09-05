@@ -42,3 +42,61 @@ struct NSRange(TrivialRegisterPassable):
     var length: Int
 
     comptime NOT_FOUND = 0x7FFFFFFFFFFFFFFF
+
+
+# ===----------------------------------------------------------------------=== #
+# Metal's own geometry.
+#
+# These are here for the same reason CGRect is: they are SDK struct layouts
+# that every program drawing anything has to spell, and a program that spells
+# one wrong gets a corrupted call rather than a diagnostic. Before this they
+# were copy-pasted into eight files in this tree -- five examples and three
+# parts of the game pane -- which is seven chances to get a field order wrong
+# and no way to fix it once.
+#
+# The integer fields are NSUInteger, so they are `Int` here, and an MTLRegion
+# is 48 bytes: too large for registers, so it crosses on the stack. That is
+# what makes `replaceRegion:` and `getBytes:` work without a shim.
+# ===----------------------------------------------------------------------=== #
+
+
+@fieldwise_init
+struct MTLOrigin(Copyable, Movable):
+    """`{MTLOrigin=QQQ}`: the corner of a region, in texels."""
+
+    var x: Int
+    var y: Int
+    var z: Int
+
+
+@fieldwise_init
+struct MTLSize(Copyable, Movable):
+    """`{MTLSize=QQQ}`: an extent, in texels. `depth` is 1 for a 2D texture,
+    not 0 -- a zero-depth region copies nothing and reports no error."""
+
+    var width: Int
+    var height: Int
+    var depth: Int
+
+
+@fieldwise_init
+struct MTLRegion(Copyable, Movable):
+    """`{MTLRegion={MTLOrigin=QQQ}{MTLSize=QQQ}}`: 48 bytes, by value."""
+
+    var origin: MTLOrigin
+    var size: MTLSize
+
+
+@fieldwise_init
+struct MTLClearColor(Copyable, Movable):
+    """`{MTLClearColor=dddd}`: four doubles.
+
+    On arm64 that is a homogeneous float aggregate, so it reaches
+    `setClearColor:` in v0..v3 the way a CGRect does -- not on the stack,
+    despite being the same 32 bytes a CGRect is.
+    """
+
+    var red: Float64
+    var green: Float64
+    var blue: Float64
+    var alpha: Float64

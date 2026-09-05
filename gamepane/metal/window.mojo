@@ -30,6 +30,10 @@ from std.objc import (
     autoreleasepool,
     named_global,
     sel,
+    MTLOrigin,
+    MTLSize,
+    MTLRegion,
+    MTLClearColor,
 )
 from std.ffi import external_call
 from std.memory import OpaquePointer, Pointer
@@ -561,29 +565,3 @@ fn rect(x: Float64, y: Float64, w: Float64, h: Float64) -> CGRect:
     return CGRect(CGPoint(x, y), CGSize(w, h))
 
 
-@fieldwise_init
-struct MTLOrigin(Copyable, Movable):
-    var x: Int
-    var y: Int
-    var z: Int
-
-
-@fieldwise_init
-struct MTLSize(Copyable, Movable):
-    var width: Int
-    var height: Int
-    var depth: Int
-
-
-@fieldwise_init
-struct MTLRegion(Copyable, Movable):
-    var origin: MTLOrigin
-    var size: MTLSize
-
-
-@fieldwise_init
-struct MTLClearColor(Copyable, Movable):
-    var red: Float64
-    var green: Float64
-    var blue: Float64
-    var alpha: Float64

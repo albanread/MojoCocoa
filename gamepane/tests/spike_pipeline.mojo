@@ -27,6 +27,10 @@ from std.objc import (
     nsstring,
     ns_to_string,
     autoreleasepool,
+    MTLOrigin,
+    MTLSize,
+    MTLRegion,
+    MTLClearColor,
 )
 from std.ffi import external_call
 from std.memory import OpaquePointer, Pointer
@@ -35,39 +39,6 @@ comptime P = OpaquePointer[MutUntrackedOrigin]
 
 comptime W = 4
 comptime H = 4
-
-
-# An MTLRegion is 48 bytes of NSUInteger and goes to getBytes: on the stack,
-# the same way mandelbrot passes it to replaceRegion:.
-@fieldwise_init
-struct MTLOrigin(Copyable, Movable):
-    var x: Int
-    var y: Int
-    var z: Int
-
-
-@fieldwise_init
-struct MTLSize(Copyable, Movable):
-    var width: Int
-    var height: Int
-    var depth: Int
-
-
-@fieldwise_init
-struct MTLRegion(Copyable, Movable):
-    var origin: MTLOrigin
-    var size: MTLSize
-
-
-# Four doubles. On arm64 that is a homogeneous float aggregate, so it should
-# reach setClearColor: in v0..v3 exactly as a CGRect does — which is the
-# second thing this spike is checking.
-@fieldwise_init
-struct MTLClearColor(Copyable, Movable):
-    var red: Float64
-    var green: Float64
-    var blue: Float64
-    var alpha: Float64
 
 
 # The full-screen triangle, and a fragment shader that returns a colour the

@@ -54,6 +54,10 @@ from std.objc import (
     CGPoint,
     CGSize,
     CGRect,
+    MTLOrigin,
+    MTLSize,
+    MTLRegion,
+    MTLClearColor,
 )
 from std.ffi import external_call, c_char
 from std.memory import OpaquePointer, Pointer
@@ -79,26 +83,6 @@ comptime TAU = Float32(6.28318530718)
 # Metal structs, by value across the ABI. An MTLRegion is 48 bytes of
 # NSUInteger, so it goes to `replaceRegion:` on the stack, not in registers.
 # ===----------------------------------------------------------------------=== #
-
-
-@fieldwise_init
-struct MTLOrigin(Copyable, Movable):
-    var x: Int
-    var y: Int
-    var z: Int
-
-
-@fieldwise_init
-struct MTLSize(Copyable, Movable):
-    var width: Int
-    var height: Int
-    var depth: Int
-
-
-@fieldwise_init
-struct MTLRegion(Copyable, Movable):
-    var origin: MTLOrigin
-    var size: MTLSize
 
 
 # ===----------------------------------------------------------------------=== #

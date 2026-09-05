@@ -16,7 +16,10 @@
 
 from .runtime import ObjCClass, ObjCObject, SEL, sel, msg_send, send, autoreleasepool, load_framework, load_framework_dynamic
 from .typed import Obj, Bound, Cls, BoundClass
-from .geometry import CGPoint, CGSize, CGRect, NSRange
+from .geometry import (
+    CGPoint, CGSize, CGRect, NSRange,
+    MTLOrigin, MTLSize, MTLRegion, MTLClearColor,
+)
 from .ownership import ObjCRef, ObjCWeakRef
 from .foundation import NSString, nsstring, extern_object, ns_to_string, nsenum
 from .error import msg_send_raising, msg_send_raising_check

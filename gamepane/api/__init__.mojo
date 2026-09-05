@@ -7,7 +7,7 @@ from .input import (
     MAX_KEY_CODE, MouseState, GamepadState,
 )
 
-from .shader import ShaderParams, SHADER_PARAM_COUNT
+from .shader import ShaderParams, SHADER_PARAM_COUNT, STARFIELD
 from .direct import Palette, PALETTE_SIZE, stride_for, buffer_len_for
 
 from .indexed import (

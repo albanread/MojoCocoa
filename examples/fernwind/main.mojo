@@ -54,6 +54,10 @@ from std.objc import (
     CGPoint,
     CGSize,
     CGRect,
+    MTLOrigin,
+    MTLSize,
+    MTLRegion,
+    MTLClearColor,
 )
 from std.ffi import external_call, c_char
 from std.memory import OpaquePointer, Pointer
@@ -96,26 +100,6 @@ comptime NFY = 13
 # ===----------------------------------------------------------------------=== #
 # Metal structs, by value across the ABI (48 bytes, so on the stack).
 # ===----------------------------------------------------------------------=== #
-
-
-@fieldwise_init
-struct MTLOrigin(Copyable, Movable):
-    var x: Int
-    var y: Int
-    var z: Int
-
-
-@fieldwise_init
-struct MTLSize(Copyable, Movable):
-    var width: Int
-    var height: Int
-    var depth: Int
-
-
-@fieldwise_init
-struct MTLRegion(Copyable, Movable):
-    var origin: MTLOrigin
-    var size: MTLSize
 
 
 # ===----------------------------------------------------------------------=== #

@@ -30,6 +30,10 @@ from std.objc import (
     autoreleasepool,
     named_global,
     sel,
+    MTLOrigin,
+    MTLSize,
+    MTLRegion,
+    MTLClearColor,
 )
 from std.ffi import external_call, c_char
 from std.memory import OpaquePointer, Pointer
@@ -47,27 +51,6 @@ comptime WIN_H = GRID_H * CELL  # 720
 comptime CELLS = GRID_W * GRID_H
 comptime PIXELS = WIN_W * WIN_H
 comptime MAX_AGE = 64
-
-
-@fieldwise_init
-struct MTLOrigin(Copyable, Movable):
-    var x: Int
-    var y: Int
-    var z: Int
-
-
-@fieldwise_init
-struct MTLSize(Copyable, Movable):
-    var width: Int
-    var height: Int
-    var depth: Int
-
-
-@fieldwise_init
-struct MTLRegion(Copyable, Movable):
-    var origin: MTLOrigin
-    var size: MTLSize
-
 
 
 @always_inline

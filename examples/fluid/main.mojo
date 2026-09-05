@@ -51,6 +51,10 @@ from std.objc import (
     CGPoint,
     CGSize,
     CGRect,
+    MTLOrigin,
+    MTLSize,
+    MTLRegion,
+    MTLClearColor,
 )
 from std.ffi import external_call, _get_kgen_string, c_char
 from std.memory import OpaquePointer, Pointer
@@ -95,26 +99,6 @@ comptime PIX_GRID = (PIXELS + BLOCK - 1) // BLOCK
 
 comptime F32 = Pointer[Float32, MutAnyOrigin]
 comptime U32 = Pointer[UInt32, MutAnyOrigin]
-
-
-@fieldwise_init
-struct MTLOrigin(Copyable, Movable):
-    var x: Int
-    var y: Int
-    var z: Int
-
-
-@fieldwise_init
-struct MTLSize(Copyable, Movable):
-    var width: Int
-    var height: Int
-    var depth: Int
-
-
-@fieldwise_init
-struct MTLRegion(Copyable, Movable):
-    var origin: MTLOrigin
-    var size: MTLSize
 
 
 # ===----------------------------------------------------------------------=== #
