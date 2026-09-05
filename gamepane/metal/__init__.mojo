@@ -18,3 +18,5 @@ from .blitter import (
     blit_copy_kernel, blit_transparent_kernel, blit_minterm_kernel,
     blit_fill_kernel, blit_grid, BLOCK, warm_up_blitter,
 )
+
+from .sprites import Sprites, SpriteDef, SPRITE_SHADER

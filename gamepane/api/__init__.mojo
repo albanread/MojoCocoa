@@ -16,3 +16,8 @@ from .indexed import (
 )
 
 from .blit import BlitRect, clip_blit, OP_AND, OP_OR, OP_XOR
+
+from .sprites import (
+    SpriteBitmap, SpriteInstance, parse_sprite_rows, sprites_overlap,
+    quad_vertices, SPRITE_COLORS,
+)
