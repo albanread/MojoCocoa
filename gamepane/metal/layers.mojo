@@ -34,6 +34,11 @@ from std.time import perf_counter_ns
 from max.gpu.host import DeviceContext, DeviceBuffer
 
 from gamepane.api import (
+    BlitRect,
+    clip_blit,
+    OP_AND,
+    OP_OR,
+    OP_XOR,
     ShaderParams,
     Palette,
     PALETTE_SIZE,
@@ -54,6 +59,10 @@ from gamepane.api import (
 from .window import Frame
 from .device import (
     metal_buffer, metal_offset, host_ptr, linear_alignment, index_plane_view,
+)
+from .blitter import (
+    blit_copy_kernel, blit_transparent_kernel, blit_minterm_kernel,
+    blit_fill_kernel, blit_grid, BLOCK, warm_up_blitter,
 )
 
 
@@ -756,6 +765,153 @@ struct IndexedPane(Movable):
         for i in range(GLOBAL_COLORS):
             let rgb = hsv_to_rgb(Float32(i) / Float32(GLOBAL_COLORS), 1.0, 1.0)
             self.set_rgb(16 + i, rgb[0], rgb[1], rgb[2])
+
+    # ── the blitter ─────────────────────────────────────────────────────
+    #
+    # Between any two of the eight slots, on the GPU, writing the same bytes
+    # the fragment shader samples. The Rust applies every operation twice --
+    # once to the texture and once to a CPU mirror, because its upload()
+    # would otherwise push stale mirror bytes over the result. There is no
+    # mirror here, so there is one application and nothing to keep in step.
+    #
+    # Clipping happens before launch, in the neutral tier, so a thread never
+    # bounds-checks a plane and an off-edge blit is a no-op rather than a
+    # trap. `finish` before the frame that shows the result: blits travel on
+    # the runtime's stream and frames on the layer's queue.
+
+    def _slots(self, src: Int, dst: Int) -> Tuple[Int, Int]:
+        """Physical indices for two logical slots, both clamped."""
+        var a = src if (src >= 0 and src < NUM_BUFFERS) else self.active
+        var b = dst if (dst >= 0 and dst < NUM_BUFFERS) else self.active
+        return (self.slot_of[a], self.slot_of[b])
+
+    def _clip(
+        self, src_x: Int, src_y: Int, dst_x: Int, dst_y: Int, w: Int, h: Int
+    ) -> BlitRect:
+        return clip_blit(
+            src_x, src_y, dst_x, dst_y, w, h,
+            self.world_width, self.world_height,
+            self.world_width, self.world_height,
+        )
+
+    def blit_copy(
+        mut self,
+        mut ctx: DeviceContext,
+        src_slot: Int,
+        dst_slot: Int,
+        src_x: Int,
+        src_y: Int,
+        dst_x: Int,
+        dst_y: Int,
+        w: Int,
+        h: Int,
+    ) raises:
+        """Unconditional copy of a rectangle from one slot to another."""
+        let r = self._clip(src_x, src_y, dst_x, dst_y, w, h)
+        if r.empty():
+            return
+        let ab = self._slots(src_slot, dst_slot)
+        var kern = ctx.compile_function[blit_copy_kernel]()
+        ctx.enqueue_function(
+            kern,
+            self.planes[ab[0]], self.planes[ab[1]],
+            Int32(self.stride), Int32(self.stride),
+            Int32(r.src_x), Int32(r.src_y), Int32(r.dst_x), Int32(r.dst_y),
+            Int32(r.w), Int32(r.h),
+            grid_dim=(blit_grid(r.w), blit_grid(r.h)),
+            block_dim=(BLOCK, BLOCK),
+        )
+
+    def blit_transparent(
+        mut self,
+        mut ctx: DeviceContext,
+        src_slot: Int,
+        dst_slot: Int,
+        src_x: Int,
+        src_y: Int,
+        dst_x: Int,
+        dst_y: Int,
+        w: Int,
+        h: Int,
+    ) raises:
+        """Copy, with source index 0 leaving the destination alone."""
+        let r = self._clip(src_x, src_y, dst_x, dst_y, w, h)
+        if r.empty():
+            return
+        let ab = self._slots(src_slot, dst_slot)
+        var kern = ctx.compile_function[blit_transparent_kernel]()
+        ctx.enqueue_function(
+            kern,
+            self.planes[ab[0]], self.planes[ab[1]],
+            Int32(self.stride), Int32(self.stride),
+            Int32(r.src_x), Int32(r.src_y), Int32(r.dst_x), Int32(r.dst_y),
+            Int32(r.w), Int32(r.h),
+            grid_dim=(blit_grid(r.w), blit_grid(r.h)),
+            block_dim=(BLOCK, BLOCK),
+        )
+
+    def blit_minterm(
+        mut self,
+        mut ctx: DeviceContext,
+        src_slot: Int,
+        dst_slot: Int,
+        src_x: Int,
+        src_y: Int,
+        dst_x: Int,
+        dst_y: Int,
+        w: Int,
+        h: Int,
+        op: Int,
+    ) raises:
+        """Combine source into destination bitwise: OP_AND, OP_OR, OP_XOR."""
+        let r = self._clip(src_x, src_y, dst_x, dst_y, w, h)
+        if r.empty():
+            return
+        let ab = self._slots(src_slot, dst_slot)
+        var kern = ctx.compile_function[blit_minterm_kernel]()
+        ctx.enqueue_function(
+            kern,
+            self.planes[ab[0]], self.planes[ab[1]],
+            Int32(self.stride), Int32(self.stride),
+            Int32(r.src_x), Int32(r.src_y), Int32(r.dst_x), Int32(r.dst_y),
+            Int32(r.w), Int32(r.h), Int32(op),
+            grid_dim=(blit_grid(r.w), blit_grid(r.h)),
+            block_dim=(BLOCK, BLOCK),
+        )
+
+    def blit_fill(
+        mut self,
+        mut ctx: DeviceContext,
+        dst_slot: Int,
+        dst_x: Int,
+        dst_y: Int,
+        w: Int,
+        h: Int,
+        value: UInt8,
+    ) raises:
+        """Fill a rectangle of one slot with an index, on the GPU."""
+        let r = self._clip(0, 0, dst_x, dst_y, w, h)
+        if r.empty():
+            return
+        let ab = self._slots(dst_slot, dst_slot)
+        var kern = ctx.compile_function[blit_fill_kernel]()
+        ctx.enqueue_function(
+            kern,
+            self.planes[ab[1]], Int32(self.stride),
+            Int32(r.dst_x), Int32(r.dst_y), Int32(r.w), Int32(r.h), value,
+            grid_dim=(blit_grid(r.w), blit_grid(r.h)),
+            block_dim=(BLOCK, BLOCK),
+        )
+
+    def finish(self, mut ctx: DeviceContext) raises:
+        """Wait for every enqueued blit.
+
+        The ordering rule, and the only thing between a blit and the frame
+        that shows it: blits are enqueued on the runtime's stream while the
+        frame is encoded on the layer's command queue -- two submission
+        paths to the same device, with nothing implicit ordering them.
+        """
+        ctx.synchronize()
 
     # ── the composite ───────────────────────────────────────────────────
 

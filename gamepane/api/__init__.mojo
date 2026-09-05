@@ -14,3 +14,5 @@ from .indexed import (
     palette_entries, palette_global_base, palette_line_entry,
     palette_global_entry, hsv_to_rgb, clamp_scroll,
 )
+
+from .blit import BlitRect, clip_blit, OP_AND, OP_OR, OP_XOR

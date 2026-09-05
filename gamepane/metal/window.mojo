@@ -430,6 +430,15 @@ struct GamePane(Movable):
         is False means the compositor had no drawable ready -- skip the
         frame, it is not an error.
         """
+        # THE ORDERING RULE. Blits are enqueued on the runtime's stream and
+        # frames are encoded on the layer's command queue -- two submission
+        # paths to the same device, with nothing implicitly ordering them.
+        # So every enqueued blit is completed here, before the frame that
+        # would show it is encoded. It is done automatically because the
+        # failure mode is a frame late by one, which looks like a game bug
+        # rather than a missing call; a game that wants to blit again
+        # mid-frame can still say `finish` itself.
+        self.ctx.synchronize()
         let mlayer = Obj["CAMetalLayer"](self.layer)
         let drawable = mlayer.nextDrawable()
         if drawable.id == 0:

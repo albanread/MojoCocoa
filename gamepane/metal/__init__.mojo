@@ -13,3 +13,8 @@ from .device import (
     metal_device, metal_buffer, metal_offset, host_ptr, linear_alignment,
     index_plane_view,
 )
+
+from .blitter import (
+    blit_copy_kernel, blit_transparent_kernel, blit_minterm_kernel,
+    blit_fill_kernel, blit_grid, BLOCK, warm_up_blitter,
+)
