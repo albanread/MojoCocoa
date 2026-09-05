@@ -470,7 +470,7 @@ ASCII, so `byte_length()` is right, but the compiler will not guess.
 
 ---
 
-## Sprint G6 — the text overlay and the text plane (NOT STARTED, size S, wants G0)
+## Sprint G6 — the text overlay and the text plane (DONE, size S, wants G0)
 
 **Goal.** Layer 3 both ways: the retained overlay for object-attached text,
 and the cell grid for screens.
@@ -504,6 +504,33 @@ sits over the picture with a transparent background.
 `lowercase_folds_to_the_uppercase_glyph`,
 `geometry_divides_the_viewport_into_six_by_eight_cells`,
 `a_fresh_plane_is_entirely_unused_cells`, `cells_are_writable_and_clear_blanks_them`.
+
+**Status.** Done, all eleven plus five. `gamepane/tests/test_text.mojo`
+passes and `gamepane-platforms` carries both halves of the layer.
+
+One font table, two renderers, and neither has a copy — the overlay
+rasterises from `glyph_for` and the plane bakes its 256-glyph atlas from the
+same function, so they cannot drift.
+
+The overlay keeps its upload, as the sprint said it should, and it is the
+only thing in the package that does. Everywhere else a plane is index bytes
+and a linear texture view removes the copy; here the natural home for RGBA
+at one texel per screen pixel is an ordinary sampled 2D texture. A dirty
+flag guards it, so a HUD that says the same thing this frame as last costs
+nothing.
+
+**Five checks the Rust cannot ask**, all through a real drawable: an empty
+overlay AND an untouched plane are both invisible over the picture — which
+is the rule that lets layer 3 be on always; the overlay's glyph reaches the
+drawable in the colour asked for while the gap beside it stays the picture's
+blue; a transparent-background cell paints its glyph and leaves the leading
+alone; and an opaque background paints the whole cell.
+
+Two Mojo shapes. `List[UInt8](a, b, c)` is not a constructor — a list
+literal `[a, b, c]` is, and the font tables are written that way. And a
+`comptime` array cannot be indexed by a loop variable without an explicit
+`materialize`, so the plane's default sixteen colours are a runtime `var`;
+the diagnostic for getting that wrong is longer than the fix.
 
 ---
 
