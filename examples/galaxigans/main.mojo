@@ -86,11 +86,15 @@ V:3
 C,4 C,4 | C,4 C,4 | F,4 F,4 | G,4 G,4 |
 """)
 
-# The in-game bed. CHITTERY on purpose: arpeggios instead of chords, 16ths
-# at 152, and an envelope with no body at all -- a=0 d=1 s=0 r=1 with a
-# narrow pulse makes every note a TICK rather than a tone, which is the C64
-# way of making an insect. The bass stabs and rests instead of holding, and
-# the third voice is noise, ticking off the beat.
+# The in-game bed, in four sections so a loop lasts twenty-five seconds
+# rather than six. A: the home arpeggio. B: the same figure an octave up.
+# C: a BREAK -- the lead drops out entirely and the bass goes to steady
+# eighths, which is what stops a loop sounding like a loop. D: home again,
+# doubled, with the drum filling.
+#
+# Chittery on purpose: arpeggios instead of chords, 16ths at 152, and an
+# envelope with no body -- a=0 d=1 s=0 r=1 with a narrow pulse makes every
+# note a tick rather than a tone, which is how a C64 made an insect.
 comptime MUSIC_ALIENS = String("""X:1
 T:Aliens approach
 M:4/4
@@ -99,16 +103,33 @@ Q:1/4=152
 K:Am
 V:1
 [I:chip v=0 wave=pulse pw=150 a=0 d=1 s=0 r=1 vol=14]
-|:aeca eaca aeca ecae | gdBg dgBg gdBg dBgd |
-fcAf cfAf fcAf cAfc | e^GBe ^GBe^G e^GBe B^Ge :|
+aeca eaca aeca ecae | gdBg dgBg gdBg dBgd |
+fcAf cfAf fcAf cAfc | e^GBe ^GBe^G e^GBe B^Ge |
+a'e'c'a' e'a'c'a' a'e'c'a' e'c'a'e' | g'd'bg' d'g'bg' g'd'bg' d'bg'd' |
+f'c'af' c'f'af' f'c'af' c'af'c' | e'^g'be' ^g'be'^g' e'^g'be' b^g'e'b |
+z16 | z16 | z16 | z16 |
+aeca aeca eaec aeca | gdBg gdBg dgdB gdBg |
+fcAf fcAf cfcA fcAf | e^GBe e^GBe ^GBe^G ecae |
 V:2
 [I:chip v=1 wave=pulse pw=900 a=0 d=3 s=5 r=2]
-|:A,4 z4 A,2 A,2 z4 | G,4 z4 G,2 G,2 z4 |
-F,4 z4 F,2 F,2 z4 | E,4 z4 E,2 E,2 z4 :|
+A,4 z4 A,2 A,2 z4 | G,4 z4 G,2 G,2 z4 |
+F,4 z4 F,2 F,2 z4 | E,4 z4 E,2 E,2 z4 |
+A,4 z4 A,2 A,2 z4 | G,4 z4 G,2 G,2 z4 |
+F,4 z4 F,2 F,2 z4 | E,4 z4 E,2 E,2 z4 |
+A,2 A,2 A,2 A,2 A,2 A,2 A,2 A,2 | G,2 G,2 G,2 G,2 G,2 G,2 G,2 G,2 |
+F,2 F,2 F,2 F,2 F,2 F,2 F,2 F,2 | E,2 E,2 E,2 E,2 E,4 E,4 |
+A,4 z4 A,2 A,2 z4 | G,4 z4 G,2 G,2 z4 |
+F,4 z4 F,2 F,2 z4 | E,4 z4 E,2 E,2 z4 |
 V:3
 [I:chip v=2 wave=noise a=0 d=1 s=0 r=1]
-|:z2 C2 z2 C2 z2 C2 z2 C2 | z2 C2 z2 C2 z2 C2 z2 C2 |
-z2 C2 z2 C2 z2 C2 z2 C2 | z2 C2 z2 C2 C2 C2 C2 C2 :|
+z2 C2 z2 C2 z2 C2 z2 C2 | z2 C2 z2 C2 z2 C2 z2 C2 |
+z2 C2 z2 C2 z2 C2 z2 C2 | z2 C2 z2 C2 C2 C2 C2 C2 |
+z2 C2 z2 C2 z2 C2 z2 C2 | z2 C2 z2 C2 z2 C2 z2 C2 |
+z2 C2 z2 C2 z2 C2 z2 C2 | z2 C2 z2 C2 C2 C2 C2 C2 |
+C2 z2 C2 C2 z2 C2 z2 C2 | C2 z2 C2 C2 z2 C2 z2 C2 |
+C2 z2 C2 C2 z2 C2 z2 C2 | C2 C2 C2 C2 C2 C2 C2 C2 |
+z2 C2 z2 C2 z2 C2 z2 C2 | z2 C2 z2 C2 z2 C2 z2 C2 |
+z2 C2 z2 C2 z2 C2 z2 C2 | C2 C2 C2 C2 C2 C2 C2 C2 |
 """)
 
 # The ALIENS' dance, for when they win. Whole-tone, so it never settles on
@@ -131,18 +152,25 @@ V:3
 |:C,2 z2 C,2 z2 | C,2 z2 C,2 z2 | C,2 z2 C,2 z2 | C,2 C,2 C,4 :|
 """)
 
-comptime MUSIC_WIN = String("""X:1
-T:Player wins
+# What the PLAYER hears on winning is the ALIENS losing: a chromatic
+# descent in both voices at 72, long attack and release so each note sags
+# into the next, and one low noise thud like something falling over.
+# Chromatic is the trick -- nothing resolves, it just sinks.
+comptime MUSIC_SAD = String("""X:1
+T:The aliens are defeated
 M:4/4
 L:1/8
-Q:1/4=140
-K:C
+Q:1/4=72
+K:Am
 V:1
-[I:chip v=0 wave=pulse pw=500 a=0 d=4 s=10 r=6 vol=15]
-C2 E2 G2 c2 | e2 g2 c'4 |
+[I:chip v=0 wave=tri a=2 d=10 s=6 r=13 vol=13]
+c4 B4 | _B4 A4 | _A4 G4 | _G4 F4 | E6 z2 |
 V:2
-[I:chip v=1 wave=pulse pw=250 a=0 d=3 s=8 r=4]
-c2 e2 g2 c'2 | g2 c'2 e'4 |
+[I:chip v=1 wave=pulse pw=700 a=3 d=12 s=4 r=13]
+A,4 ^G,4 | G,4 ^F,4 | F,4 E,4 | ^D,4 D,4 | A,,6 z2 |
+V:3
+[I:chip v=2 wave=noise a=6 d=14 s=2 r=14]
+z8 | z8 | C,8 | z8 | C,,6 z2 |
 """)
 
 
@@ -160,6 +188,10 @@ comptime STATE_INTRO = 0
 comptime STATE_PLAYING = 1
 comptime STATE_GAMEOVER = 2
 comptime STATE_WIN = 3
+comptime STATE_READY = 4
+"""The pause between levels. The BASIC threw you straight from PLAYER WINS
+back to the intro; this holds, counts down, and starts when you say so --
+so a wave never begins while you are still watching the last one end."""
 
 def row_defs() -> List[Int]:
     """The rows, as the BASIC lays them out: ten of each, forty apart.
@@ -230,6 +262,7 @@ struct Game(Movable):
     var saucer_exploding: Int
 
     var rng: Int
+    var level: Int
 
     def __init__(out self, mut sprites: Sprites, ids: List[Int]) raises:
         self.ids = ids.copy()
@@ -293,6 +326,7 @@ struct Game(Movable):
         self.saucer_dx = 0.0
         self.saucer_exploding = 0
         self.rng = 0x2545F4914F6CDD1D
+        self.level = 1
 
     # ── the little things ────────────────────────────────────────────────
 
@@ -431,6 +465,7 @@ struct Game(Movable):
         self.formation_x = 0.0
         self.formation_y = 0.0
         self.formation_dir = 1
+        self.level = 1
         sprites.hide(self.saucer)
         sprites.show(self.player)
         for s in range(STARS):
@@ -443,6 +478,21 @@ struct Game(Movable):
             var sy = self.rnd() * 480.0
             self.place_tl(sprites, self.star[s], sx, sy, STAR_W, STAR_H)
             sprites.show(self.star[s])
+
+    def next_level(mut self, mut sprites: Sprites) raises:
+        """A fresh wave, keeping the score and the ships.
+
+        `reset` is for a new GAME and zeroes both; clearing a stage should
+        not cost you what you earned in it, which is the whole difference
+        between the two.
+        """
+        let keep_score = self.score
+        let keep_ships = self.ships
+        let keep_level = self.level
+        self.reset(sprites)
+        self.score = keep_score
+        self.ships = keep_ships
+        self.level = keep_level + 1
 
     def update_stars(mut self, mut sprites: Sprites):
         for s in range(STARS):
@@ -921,8 +971,10 @@ def main() raises:
                     _ = play_tune(deck, MUSIC_ALIENS, loop=True)
                 elif state == STATE_GAMEOVER:
                     _ = play_tune(deck, MUSIC_DANCE, loop=True)
-                else:
-                    _ = play_tune(deck, MUSIC_WIN, loop=False)
+                elif state == STATE_WIN:
+                    _ = play_tune(deck, MUSIC_SAD, loop=False)
+                else:                               # STATE_READY
+                    _ = play_tune(deck, MUSIC_INTRO, loop=True)
                 music_for = state
 
             game.update_stars(sprites)
@@ -967,7 +1019,7 @@ def main() raises:
                     state = STATE_INTRO
                     intro_timer = 0
 
-            else:                                   # STATE_WIN
+            elif state == STATE_WIN:
                 game.update_player(sprites, deck, attract, frame)
                 game.update_enemies(sprites, deck, frame)
                 game.update_saucer(sprites, deck)
@@ -976,13 +1028,26 @@ def main() raises:
                 flash_timer += 1
                 let pressed = key_held(KEY_SPACE) or key_held(KEY_RETURN)
                 let again = (
-                    (not attract and flash_timer > 60 and pressed)
+                    (not attract and flash_timer > 150 and pressed)
                     or (attract and flash_timer > 180)
                 )
                 if again:
-                    game.reset(sprites)
-                    state = STATE_INTRO
-                    intro_timer = 0
+                    # Into the pause, not straight back into a wave.
+                    game.next_level(sprites)
+                    state = STATE_READY
+                    flash_timer = 0
+
+            elif state == STATE_READY:
+                # A hold with a countdown. It ends on a press, or on its own
+                # after three seconds -- a player who has put the controller
+                # down should not be stuck, and one who is ready should not
+                # have to wait.
+                flash_timer += 1
+                let pressed = key_held(KEY_SPACE) or key_held(KEY_RETURN)
+                if (not attract and flash_timer > 30 and pressed) \
+                   or flash_timer > 180:
+                    state = STATE_PLAYING
+                    frame = 0
 
         # ── drawing, once per screen frame ───────────────────────────────
         let flash = (flash_timer // 10) % 6
@@ -995,7 +1060,8 @@ def main() raises:
             hud.clear()
             hud.draw_text(10, 10, String("SCORE: ") + pad6(game.score),
                           255, 241, 232, 1)
-            hud.draw_text(280, 20, String("STAGE 1"), 255, 241, 232, 1)
+            hud.draw_text(280, 20, String("STAGE ") + String(game.level),
+                          255, 241, 232, 1)
             var flash_r: List[Int] = [255, 255, 255, 0, 41, 131]
             var flash_g: List[Int] = [0, 163, 236, 228, 173, 118]
             var flash_b: List[Int] = [77, 0, 39, 54, 255, 156]
@@ -1013,9 +1079,15 @@ def main() raises:
             elif state == STATE_WIN:
                 hud.draw_text(242, 200, String("PLAYER WINS!"),
                               flash_r[flash], flash_g[flash], flash_b[flash], 1)
-                if flash_timer > 60:
+                if flash_timer > 150:
                     hud.draw_text(224, 230, String("PRESS SPACE OR RETURN"),
                                   194, 195, 199, 1)
+            elif state == STATE_READY:
+                hud.draw_text(206, 190, String("STAGE ") + String(game.level),
+                              flash_r[flash], flash_g[flash], flash_b[flash], 2)
+                let left = (180 - flash_timer) // 60 + 1
+                hud.draw_text(254, 240, String("GET READY  ") + String(left),
+                              194, 195, 199, 1)
             last_score = game.score
             last_ships = game.ships
             last_state = state
