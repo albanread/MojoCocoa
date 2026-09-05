@@ -18,6 +18,8 @@ lock and may not raise.
 | **Audio deadline** | 512 frames at 48 kHz — 10.7 ms |
 | **Also used by** | the [ABC player](../AbcPlayerWalkthrough/index.md), which vendors `chip.mojo` verbatim |
 
+<!-- doccrate:keep-together:start -->
+
 ## These documents
 
 | Chapter | What it covers |
@@ -30,6 +32,8 @@ lock and may not raise.
 | [6. The player routine](06-player.md) | Fifty edits a second, and why that is where the music lives |
 | [7. Two threads, no glue](07-realtime.md) | `fn` as an `AURenderCallback`, `class` as an `NSView`, and two bugs worth keeping |
 | [8. What to understand](08-key-points.md) | The things that will surprise you, and the ones that will bite |
+
+<!-- doccrate:keep-together:end -->
 
 ## The shortest possible summary
 

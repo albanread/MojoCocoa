@@ -20,6 +20,8 @@ cost, which is the part of the story most people miss on first look.
 | **Buffers** | twelve device buffers, one host frame |
 | **Presented via** | `CAMetalLayer`, BGRA8 |
 
+<!-- doccrate:keep-together:start -->
+
 ## These documents
 
 | Chapter | What it covers |
@@ -30,6 +32,8 @@ cost, which is the part of the story most people miss on first look.
 | [4. A frame, end to end](04-a-frame.md) | The dispatch sequence, the buffer choreography, and the run loop around it |
 | [5. What to understand](05-key-points.md) | The eight things that will surprise you, and the ones that will bite |
 | [6. How this demo came to be](06-this-implementation.md) | The spike, the launch-cost measurement it was built to take, and the two things it got wrong |
+
+<!-- doccrate:keep-together:end -->
 
 ## The shortest possible summary
 

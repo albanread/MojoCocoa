@@ -17,6 +17,8 @@ The other three are not, and *that is the point of the example.*
 | **Threads per move** | 4,096 per candidate — about 40,000 for a typical position |
 | **Verified against** | published perft counts to depth 7 (55,092) |
 
+<!-- doccrate:keep-together:start -->
+
 ## These documents
 
 | Chapter | What it covers |
@@ -28,6 +30,8 @@ The other three are not, and *that is the point of the example.*
 | [5. The window and the pump](05-the-app.md) | `main.mojo`: why the event loop is hand-rolled, and the bug that taught it |
 | [6. What to understand](06-key-points.md) | The things that will surprise you, and the ones that will bite |
 | [7. The sequel that does not work](07-mcts.md) | The hybrid UCT spike, four fixed bugs, and why it still loses 0–6 |
+
+<!-- doccrate:keep-together:end -->
 
 ## The shortest possible summary
 

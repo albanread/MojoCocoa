@@ -138,6 +138,8 @@ matters more than the numbers:
 Those are two completely different investigations, and five seconds of smoke
 test tells you which one you are in.
 
+<!-- doccrate:keep-together:start -->
+
 ## A short list of things that will bite
 
 | If you change… | …this happens |
@@ -150,6 +152,8 @@ test tells you which one you are in.
 | nearest-neighbour sampling in render | a visible 320×240 mosaic |
 | an extra `synchronize()` per frame | the batch splits; back to the 2.6× slow path |
 | `-lz` removed from the driver | links under bazel, fails under `cocoamojo` |
+
+<!-- doccrate:keep-together:end -->
 
 ## Controls
 

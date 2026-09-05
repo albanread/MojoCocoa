@@ -125,8 +125,7 @@ write the four-line reproducer and run it before working around a compiler.
 
 | If you change… | …this happens |
 |:---|:---|
-| ticks to a float | voices drift apart after a few hundred notes |
-| `tick_to_sample` to accumulate from the previous event | the same drift, faster |
+| ticks to a float, or `tick_to_sample` accumulating from the previous event | voices drift apart after a few hundred notes |
 | the accidental map to store raw alterations | `=F` silently does nothing |
 | repeat expansion to work on text | endings break; line breaks and voices need special cases |
 | a chord member to take the current tick | `[CEG]` arpeggiates, one member per beat |
@@ -134,7 +133,6 @@ write the four-line reproducer and run it before working around a compiler.
 | a `List` on the audio thread | an allocation under a 10.7 ms deadline |
 | `midi_to_hz`'s clamp | a nonsense note hangs the audio thread — silence, no crash |
 | a lock around the registers | the audio thread waits on the UI thread; clicks |
-| fonts built inside `drawRect:` | nil after a while, and a trap inside AppKit |
 
 ## Running it
 
