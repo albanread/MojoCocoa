@@ -270,6 +270,36 @@ struct Sprites(Movable):
         self.defs[id].palette[index * 4 + 3] = 1.0
         self.defs[id].palette_dirty = True
 
+    def frame_pixels(
+        self, id: Int, frame: Int
+    ) raises -> Tuple[Int, Int, Int, List[UInt8]]:
+        """A frame's index bytes, for anything that wants to take the sprite
+        apart -- the particle field turning it into debris, for one.
+
+        Returns (width, height, stride, bytes). Copied rather than a view of
+        the plane: the caller reads it once at the moment something dies,
+        and handing out a pointer into a live GPU buffer to be read later is
+        the borrow trap this package keeps meeting.
+        """
+        if id < 0 or id >= len(self.defs):
+            return (0, 0, 0, List[UInt8]())
+        let d = self.defs[id]
+        var f = frame
+        if f < 0 or f >= d.frame_count():
+            f = 0
+        let base = host_ptr(d.frames[f])
+        var out = List[UInt8](length=d.stride * d.height, fill=0)
+        for i in range(d.stride * d.height):
+            out[i] = base[unsafe_offset=i]
+        return (d.width, d.height, d.stride, out^)
+
+    def palette_rgb(self, id: Int, index: Int) -> Tuple[Float32, Float32, Float32]:
+        """One colour of a definition's own sixteen, 0..1."""
+        if id < 0 or id >= len(self.defs) or index < 0 or index >= SPRITE_COLORS:
+            return (0.0, 0.0, 0.0)
+        let p = self.defs[id].palette
+        return (p[index * 4], p[index * 4 + 1], p[index * 4 + 2])
+
     def frame_count(self, id: Int) -> Int:
         if id < 0 or id >= len(self.defs):
             return 0

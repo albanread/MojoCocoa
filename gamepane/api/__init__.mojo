@@ -59,3 +59,7 @@ from .voices import (
     is_voice_active, active_voices, allocate_voice,
 )
 from .wav import wav_bytes, write_wav, read_wav, WAV_HEADER_BYTES
+
+from .particles import (
+    particle_colour, burst_velocity, PARTICLE_COLOURS_PER_DEF,
+)

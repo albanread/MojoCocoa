@@ -36,18 +36,19 @@
 # ===----------------------------------------------------------------------=== #
 
 from std.math import sin, cos, atan2, sqrt
+from max.gpu.host import DeviceContext
 from std.objc import load_framework, autoreleasepool
 from std.os import getenv
 from std.time import perf_counter_ns
 
 from gamepane.api import (
-    P,
+    P, particle_colour,
     KEY_ESCAPE, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_SPACE, KEY_RETURN,
     SFX_SHOOT, SFX_EXPLODE, SFX_BANG, SFX_SAUCER, SFX_POWERUP, SFX_HURT,
     SFX_COIN, SFX_BLIP,
 )
 from gamepane.metal import (
-    GamePane, Sprites, TextOverlay, key_held,
+    GamePane, Sprites, TextOverlay, ParticleField, key_held,
     deck_new, deck_free, sfx_play, play_tune, stop_tune,
     start_audio, stop_audio,
 )
@@ -347,6 +348,29 @@ struct Game(Movable):
     ):
         """The BASIC's top-left placement, in our centre-anchored world."""
         sprites.move_to(inst, x + Float64(w) / 2.0, y + Float64(h) / 2.0)
+
+    def shatter(
+        mut self,
+        mut sprites: Sprites,
+        mut field: ParticleField,
+        mut ctx: DeviceContext,
+        inst: Int,
+        definition: Int,
+        scale: Float64,
+        speed: Float64,
+    ) raises:
+        """Turn a sprite instance into debris made of its own pixels."""
+        let f = sprites.sprite_frame(inst)
+        let px = sprites.frame_pixels(definition, f)
+        if px[0] == 0:
+            return
+        var seed = self.rng
+        _ = field.spawn(
+            Span(px[3]), px[0], px[1], px[2], definition,
+            sprites.sprite_x(inst), sprites.sprite_y(inst),
+            scale, speed, seed,
+        )
+        _ = self.rnd()
 
     def spawn_boom(
         mut self, mut sprites: Sprites, x: Float64, y: Float64, fps: Float64
@@ -795,7 +819,10 @@ struct Game(Movable):
             self.saucer_spawn = 240 + Int(self.rnd() * 360.0)
             sprites.hide(self.saucer)
 
-    def update_bullets(mut self, mut sprites: Sprites, deck: P) raises:
+    def update_bullets(
+        mut self, mut sprites: Sprites, deck: P,
+        mut field: ParticleField, mut ctx: DeviceContext,
+    ) raises:
         for b in range(BULLETS):
             if self.bullet_active[b] != 1:
                 continue
@@ -820,6 +847,13 @@ struct Game(Movable):
                     self.enemy_alive[j] = 0
                     self.bullet_active[b] = 0
                     self.score += 10
+                    # The alien comes apart into its own pixels before it
+                    # is hidden -- after, and there is nothing left to read.
+                    self.shatter(
+                        sprites, field, ctx, self.enemy[j],
+                        self.ids[BOSS_SLOT] if j < 10 else self.ids[BEE_SLOT],
+                        1.0, 90.0,
+                    )
                     sprites.hide(self.enemy[j])
                     sprites.hide(self.bullet[b])
                     if self.spawn_boom(
@@ -837,6 +871,10 @@ struct Game(Movable):
             ):
                 self.bullet_active[b] = 0
                 sprites.hide(self.bullet[b])
+                self.shatter(
+                    sprites, field, ctx, self.saucer,
+                    self.ids[SAUCER_SLOT], 1.1, 120.0,
+                )
                 self.saucer_active = 0
                 sprites.hide(self.saucer)
                 self.saucer_spawn = 300 + Int(self.rnd() * 360.0)
@@ -906,6 +944,15 @@ def main() raises:
     let ids = define_all(pane.ctx, sprites)
     var game = Game(sprites, ids)
     var hud = TextOverlay(pane.device, VIEW_W, VIEW_H)
+
+    # The debris field. Its palette is every sprite's colours in one table:
+    # colour `16 * definition + index`, which is the arithmetic
+    # `particle_colour` does and the only reason a particle can be one byte.
+    var field = ParticleField(pane.ctx, pane.device, VIEW_W, VIEW_H, 12000)
+    for d in range(len(ids)):
+        for c in range(1, 16):
+            let rgb = sprites.palette_rgb(ids[d], c)
+            field.set_colour(particle_colour(ids[d], c), rgb[0], rgb[1], rgb[2])
 
     # Headless means attract mode: see update_player.
     let attract = getenv("GAMEPANE_FRAMES").byte_length() > 0
@@ -993,7 +1040,7 @@ def main() raises:
                 game.update_player(sprites, deck, attract, frame)
                 game.update_enemies(sprites, deck, frame)
                 game.update_saucer(sprites, deck)
-                game.update_bullets(sprites, deck)
+                game.update_bullets(sprites, deck, field, pane.ctx)
                 if game.ships <= 0 and game.p_death_timer <= 0:
                     state = STATE_GAMEOVER
                     flash_timer = 0
@@ -1023,7 +1070,7 @@ def main() raises:
                 game.update_player(sprites, deck, attract, frame)
                 game.update_enemies(sprites, deck, frame)
                 game.update_saucer(sprites, deck)
-                game.update_bullets(sprites, deck)
+                game.update_bullets(sprites, deck, field, pane.ctx)
                 frame += 1
                 flash_timer += 1
                 let pressed = key_held(KEY_SPACE) or key_held(KEY_RETURN)
@@ -1099,11 +1146,15 @@ def main() raises:
         # different dumps, because the explosion and wing frames were being
         # advanced by real elapsed time.
         sprites.tick(TICK if attract else pane.dt())
+        # Two GPU kernels a frame: clear the debris plane, then advance and
+        # scatter every particle. `begin_frame` waits for them.
+        field.step(pane.ctx, TICK if attract else pane.dt())
 
         with autoreleasepool():
             let f = pane.begin_frame()
             pane.clear(f)                       # layer 0: the empty sky
             sprites.render(f, 0.0, 0.0, Float64(VIEW_W), Float64(VIEW_H))
+            field.render(f)
             hud.render(f)
             pane.end_frame(f)
 
