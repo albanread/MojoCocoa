@@ -28,6 +28,7 @@ section ends with a plain verdict, and some of those verdicts are "none".
 | [`chip`](04-sound-and-time.md#chip) | 2,176 lines | A Mojo `fn` serving as a C function pointer on a real-time thread — dissected in [chapter 6](06-inside-the-chip.md) |
 | [`abcplayer`](04-sound-and-time.md#abcplayer) | 4,650 lines | The largest example: a real parser, and exact timing without floats |
 | [`bifurcation`](05-python-used-well.md#bifurcation) | 250 lines | What Python is genuinely better at, measured rather than assumed |
+| [`gamepane`](07-the-game-pane.md) | 11,548 lines | A retro game engine as a package: four composited layers, GPU kernels, two chips — [chapter 7](07-the-game-pane.md) |
 | [`fern`](../gpu/04-three-ferns.md) | 289 lines | Wide work with no deadline — correctly on the CPU |
 | [`ferns`](../gpu/04-three-ferns.md) | 641 lines | A deadline, but work too narrow to move |
 | [`fernwind`](../gpu/04-three-ferns.md) | 760 lines | Wide *and* out of time — the crossing, measured at 104× |
