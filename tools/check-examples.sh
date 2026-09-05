@@ -61,13 +61,16 @@ echo "== pure-Mojo examples =="
 for ex in hello animals fern bifurcation; do build_run "$ex"; done
 
 echo "== the ratchet =="
-n=$(grep -rc "msg_send\[" examples/ --include="*.mojo" | awk -F: '{s+=$2} END {print s+0}')
+# gamepane is held to the same line as examples/. Protocol-typed Metal calls
+# go through `send`, which IS the sanctioned spelling -- what is banned is the
+# raw msg_send escape hatch, which nothing in this tree needs any more.
+n=$(grep -rc "msg_send\[" examples/ gamepane/ --include="*.mojo" | awk -F: '{s+=$2} END {print s+0}')
 if [ "$n" -eq 0 ]; then
-  echo "  OK   msg_send count under examples/: 0 (sprint P6 line, held)"
+  echo "  OK   msg_send count under examples/ and gamepane/: 0 (sprint P6 line, held)"
   pass=$((pass+1))
 else
-  echo "  FAIL msg_send count under examples/: $n (was 0 at sprint P6)"
-  grep -rl "msg_send\[" examples/ --include="*.mojo" | sed 's/^/      /'
+  echo "  FAIL msg_send count under examples/ and gamepane/: $n (was 0 at sprint P6)"
+  grep -rl "msg_send\[" examples/ gamepane/ --include="*.mojo" | sed 's/^/      /'
   fail=$((fail+1))
 fi
 
