@@ -28,6 +28,10 @@ from std.ffi import external_call
 from std.memory import OpaquePointer, Pointer
 from std.objc import load_framework, named_global
 
+from gamepane.abc import (
+    Tune, Step, parse_abc, resolve_ties, build_schedule, sort_steps,
+    flatten_schedule, render_scheduled,
+)
 from gamepane.api import (
     P, SAMPLE_RATE, chip_new, chip_free, chip_render, get, put,
     gate_off, set_volume, vget, V_ENV, V_GATE,
@@ -65,6 +69,7 @@ comptime D_WRITE = 2         # producer's counter; only the game writes it
 comptime D_READ = 3          # consumer's counter; only the callback writes it
 comptime D_DROPPED = 4       # triggers refused because the ring was full
 comptime D_MUTED = 5
+comptime D_TUNE = 7          # 1 when a tune is scheduled on chip A
 comptime D_TICK_A = 6        # the music player hook, as an Int
 comptime D_VOICE_BASE = 8    # three (effect, frames_left, frame) triples
 comptime D_VOICE_STRIDE = 4
@@ -122,6 +127,42 @@ fn music_chip(d: P) -> P:
 
 fn sfx_chip(d: P) -> P:
     return P(unsafe_from_address=dget(d, D_CHIP_B))
+
+
+def play_tune(d: P, source: String) raises -> Int:
+    """Parse ABC and schedule it on chip A. Returns the number of steps.
+
+    The schedule is flattened into plain memory HERE, on the game's thread,
+    before the callback ever looks at it -- the audio thread only reads an
+    array of integers. That is the whole reason a tune can be
+    sample-accurate without a lock: there is nothing to lock, because
+    nothing is built while it plays.
+    """
+    var tune = Tune()
+    parse_abc(source, tune)
+    resolve_ties(tune)
+    var steps = List[Step]()
+    build_schedule(tune, SAMPLE_RATE, steps)
+    sort_steps(steps)
+    # `flatten_schedule` takes the chip state mutably, and `music_chip`
+    # returns a value rather than a place, so it needs a name first.
+    var a = music_chip(d)
+    # flatten_schedule returns the ADDRESS of the flattened block, not a
+    # count -- so what comes back to the caller is len(steps), which is what
+    # "how much tune is there" means to anyone asking.
+    let addr = flatten_schedule(steps, a)
+    dput(d, D_TUNE, 1 if (addr != 0 and len(steps) > 0) else 0)
+    return len(steps)
+
+
+fn stop_tune(d: P):
+    """Silence the tune. The schedule stays flattened, so playing it again
+    costs nothing -- and a game that stops and starts a level theme should
+    not pay for the parse twice."""
+    dput(d, D_TUNE, 0)
+    let a = music_chip(d)
+    for v in range(3):
+        gate_off(a, v)
 
 
 fn set_music_tick(d: P, tick: Tick):
@@ -318,6 +359,25 @@ fn render(
     var m = n
     if m > MAX_BUFFER:
         m = MAX_BUFFER
+
+    if dget(d, D_TUNE) != 0:
+        # A scheduled tune drives chip A sample-accurately, applying every
+        # event that falls inside this buffer at the sample it falls on --
+        # rather than on the 50 Hz grid the player hook runs on.
+        render_scheduled(music_chip(d), dest, m)
+        chip_render(sfx_chip(d), sb, m, _sfx_tick)
+        for i in range(m):
+            var v0 = Float64(dest[unsafe_offset=i]) * 0.5 + Float64(
+                sb[unsafe_offset=i]
+            ) * 0.5
+            if v0 > 1.0:
+                v0 = 1.0
+            elif v0 < -1.0:
+                v0 = -1.0
+            dest[unsafe_offset=i] = Float32(v0)
+        for i in range(m, n):
+            dest[unsafe_offset=i] = Float32(0.0)
+        return 0
 
     let tick_a = dget(d, D_TICK_A)
     if tick_a != 0:

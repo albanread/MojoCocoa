@@ -635,7 +635,7 @@ listening test nobody has run.
 
 ---
 
-## Sprint G8 — audio: tunes (NOT STARTED, size S, needs no Metal, wants G7)
+## Sprint G8 — audio: tunes (DONE, size S, needs no Metal, wants G7)
 
 **Goal.** ABC in, sample-accurate notes on chip A out; the one parser gap
 closed; SMF export kept.
@@ -676,6 +676,39 @@ tempo), `key_signature_g_makes_f_sharp`, `no_key_signature_f_is_natural`,
 `lowercase_c_is_octave_above_uppercase`, `tempo_header_changes_bpm`,
 `structural_fields_and_tempo_meta_present`, `write_smf_rejects_empty_tune`,
 `vlq_round_trips_multi_byte_values`.
+
+**Status.** Done. `gamepane/tests/test_tunes.mojo` passes all nineteen
+checks, and the demo opens with Twinkle on chip A while the space bar lands
+zaps on chip B.
+
+**A second vendored chip is gone.** `examples/abcplayer` had its OWN copy of
+`chip.mojo`, with a comment asking whoever changed the original to remember
+to update it — and by the time G7 landed that copy was four fixes behind.
+Lifting `model/parse/music/repeats/schedule/midi/chipplay` into
+`gamepane/abc/` let the example import the one chip instead of carrying a
+stale twin. That is the same staleness class as the dist copies, in source
+form.
+
+**`to_ms_events` is the flat form, and it does three things a caller kept
+forgetting.** It expands repeats before scheduling — `parse_abc` only
+records `|:` and `:|` as marks, so a caller that skipped `expand_repeats`
+got a tune quietly half its length. It assigns a channel per voice through
+`channel_for`, which skips 9, because 9 is percussion and would turn a
+melody into a drum solo — the same rule the SMF writer uses, so a tune
+sounds the same whichever way it leaves. And it puts note-OFFS before
+note-ONS within a millisecond, because a tie or a repeated note lands its
+off at the same instant as the next on, and the other order makes a
+synthesiser retrigger and immediately silence what it just struck.
+
+**Two of the three first failures were the test, not the code.** `0x100000`
+is a THREE-byte variable-length quantity, not four — seven bits a byte, and
+`0x200000` is the first value needing four. Worth pinning down, because an
+off-by-one there corrupts every delta after it.
+
+`play_tune` flattens the schedule on the game's thread before the unit
+starts, so the callback only ever reads an array of integers and needs no
+lock. `stop_tune` leaves it flattened: a level theme that stops and starts
+should not pay for the parse twice.
 
 ---
 

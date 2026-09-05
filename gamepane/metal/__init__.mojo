@@ -25,7 +25,7 @@ from .text import TextOverlay, TextPlane, OVERLAY_SHADER, PLANE_SHADER
 
 from .audio import (
     deck_new, deck_free, music_chip, sfx_chip, set_muted, set_music_tick,
-    sfx_play,
+    play_tune, stop_tune, sfx_play,
     pending_triggers, dropped_triggers, drain_triggers, advance_effects,
     start_audio, stop_audio, RING_SIZE, MAX_BUFFER,
 )

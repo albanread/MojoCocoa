@@ -17,11 +17,12 @@
 #     frame. Nothing is redrawn to scroll, ever -- the composite reads a
 #     different window of the same bytes.
 #
-#   * THE SOUND IS TWO CHIPS. Chip A runs a bass line on its own 50 Hz
-#     player hook -- inside the audio callback, on the beat, where a raster
-#     interrupt would have been. Chip B plays effects. The game thread never
-#     touches either: it pushes an effect number onto a lock-free ring and
-#     the callback drains it at the top of the next buffer.
+#   * THE SOUND IS TWO CHIPS. Chip A plays a tune written in ABC, scheduled
+#     to the SAMPLE -- the schedule is flattened into plain memory before
+#     the audio unit starts, so the callback only reads integers and needs
+#     no lock. Chip B plays effects. The game thread never touches either:
+#     it pushes an effect number onto a lock-free ring and the callback
+#     drains it at the top of the next buffer.
 #
 #   * LAYER 3 IS TEXT, TWICE. The overlay rasterises a title and a HUD line
 #     into an RGBA buffer -- retained, right for something that changes when
@@ -50,47 +51,30 @@ from gamepane.api import (
     FLAG_TRANSPARENT_BG, P, SFX_COIN, SFX_JUMP, SFX_ZAP, SFX_EXPLODE,
     SFX_POWERUP, SFX_BLIP, WAVE_PULSE, WAVE_TRI,
     set_freq_hz, set_pulse_width, set_wave, set_adsr, gate_on, gate_off,
-    set_volume, get, put, PLAYER_BASE,
+    set_volume,
 )
 from gamepane.metal import (
     GamePane, ShaderPane, IndexedPane, Sprites, TextOverlay, TextPlane,
-    key_held, deck_new, deck_free, music_chip, set_music_tick, sfx_play,
+    key_held, deck_new, deck_free, music_chip, play_tune, sfx_play,
     start_audio, stop_audio,
 )
 
 
-# ── the bass line, as a 50 Hz player routine ────────────────────────────────
-#
-# This runs on CHIP A's own player hook, inside the audio callback, on the
-# beat -- exactly where a raster interrupt would have put it. It is a `fn`
-# because that is what the chip's hook takes: no allocation, no raising, and
-# nothing that could block the audio thread.
+# Twinkle Twinkle, in ABC. `[I:chip ...]` directives would switch the
+# waveform mid-tune; this one leaves the chip as the pane set it up.
+comptime TWINKLE = String(
+    """X:1
+T:Twinkle Twinkle Little Star
+M:4/4
+L:1/4
+Q:1/4=132
+K:C
+|:C C G G | A A G2 | F F E E | D D C2 |
+G G F F | E E D2 | G G F F | E E D2 :|
+"""
+)
 
-comptime M_STEP = 0        # which note of the pattern
-comptime M_COUNT = 1       # frames left on this note
-comptime M_FRAMES = 10     # 10 frames at 50 Hz -- a note every fifth of a second
 
-
-fn music_tick(st: P):
-    var left = get(st, PLAYER_BASE + M_COUNT)
-    if left > 0:
-        put(st, PLAYER_BASE + M_COUNT, left - 1)
-        return
-    var step = get(st, PLAYER_BASE + M_STEP)
-    # A minor pentatonic walk: A, C, D, E, G, E, D, C.
-    var hz = 110.0
-    if step == 1: hz = 130.81
-    elif step == 2: hz = 146.83
-    elif step == 3: hz = 164.81
-    elif step == 4: hz = 196.0
-    elif step == 5: hz = 164.81
-    elif step == 6: hz = 146.83
-    elif step == 7: hz = 130.81
-    gate_off(st, 0)
-    set_freq_hz(st, 0, hz)
-    gate_on(st, 0)
-    put(st, PLAYER_BASE + M_STEP, (step + 1) % 8)
-    put(st, PLAYER_BASE + M_COUNT, M_FRAMES)
 
 
 # An 8x8 coin in two frames. The digits are palette indices into the
@@ -236,7 +220,10 @@ def main() raises:
     set_wave(music, 0, WAVE_PULSE)
     set_pulse_width(music, 0, 0x300)
     set_adsr(music, 0, 0, 7, 6, 5)
-    set_music_tick(deck, music_tick)
+    # Twinkle, parsed and flattened into plain memory before the audio unit
+    # is started -- so the callback only ever reads an array of integers,
+    # and the notes land on the sample rather than on the 50 Hz grid.
+    let steps = play_tune(deck, TWINKLE)
     let unit = start_audio(deck)
 
     var scroll_x = Float64(WORLD_W - VIEW_W) / 2.0
@@ -301,4 +288,4 @@ def main() raises:
     stop_audio(unit)
     deck_free(deck)
     pane.close()
-    print("presented", pane.frame_count(), "frames")
+    print("presented", pane.frame_count(), "frames;", steps, "tune steps")

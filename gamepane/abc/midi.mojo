@@ -14,7 +14,7 @@
 from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
 from std.ffi import external_call
 
-from model import (
+from .model import (
     Tune, Event, EV_NOTE, TICKS_PER_QUARTER, F_GCHORD,
 )
 

@@ -17,7 +17,9 @@
 # only jitter left is the buffer boundary, which the callback already knows
 # about and can subtract exactly.
 
-from model import (
+from .repeats import expand_repeats
+from .midi import channel_for
+from .model import (
     Tune, Event, EV_NOTE, EV_REST, EV_BAR, EV_CHIP, F_TIE, F_CHORD, F_GRACE,
     TICKS_PER_WHOLE,
 )
@@ -190,3 +192,85 @@ fn step_before(a: Step, b: Step) -> Bool:
     if a.sample != b.sample:
         return a.sample < b.sample
     return a.kind > b.kind          # NOTE_OFF (1) sorts before NOTE_ON (0)
+
+
+# ── the flat millisecond form ───────────────────────────────────────────────
+
+
+@fieldwise_init
+struct MsEvent(ImplicitlyCopyable, Copyable, Movable):
+    """One MIDI-shaped event at an absolute millisecond.
+
+    The `Step` above is in SAMPLES, because that is what a synthesiser
+    needs. This is the same material in MILLISECONDS, which is what anything
+    outside the audio thread wants -- an SMF writer, a piano roll, a test
+    that asserts a tie merged two notes into one.
+    """
+
+    var ms: Int
+    var kind: Int          # SE_NOTE_ON / SE_NOTE_OFF
+    var channel: Int
+    var midi: Int
+    var velocity: Int
+
+
+def to_ms_events(var tune: Tune) raises -> List[MsEvent]:
+    """Every note on and off, in absolute milliseconds, time-sorted.
+
+    Ordering within a millisecond is note-OFFS before note-ONS. That is not
+    arbitrary: a tie or a repeated note lands its off at the same instant as
+    the next on, and emitting the on first makes a synthesiser retrigger and
+    then immediately silence the note it just struck. Offs first is the
+    convention every sequencer settled on for the same reason.
+    """
+    # By value: this rewrites the events, and a caller that still wants its
+    # own tune afterwards should say so rather than discover it.
+    var t = tune^
+    # Repeats FIRST. `parse_abc` records `|:` and `:|` as marks; nothing is
+    # doubled until expand_repeats replays the enclosed material, and a
+    # caller that forgets gets a tune that is quietly half the length it
+    # should be -- which is what this function existing is meant to prevent.
+    expand_repeats(t)
+    resolve_ties(t)
+    var steps = List[Step]()
+    # A sample rate of exactly 1000 makes a "sample" a millisecond, so the
+    # existing tick-to-sample arithmetic does this conversion unchanged
+    # rather than growing a second copy of it that can disagree.
+    build_schedule(t, 1000, steps)
+    sort_steps(steps)
+
+    var out = List[MsEvent]()
+    for i in range(len(steps)):
+        let st = steps[i]
+        if st.kind == SE_CHIP:
+            continue
+        # A voice's channel, or its position if it never said. `channel_for`
+        # skips 9, which is percussion and would turn a melody into a drum
+        # solo -- the same rule the SMF writer uses, because a tune must
+        # sound the same whichever way it leaves here.
+        var ch = 0
+        for v in range(len(t.voices)):
+            if t.voices[v].number == st.voice:
+                ch = t.voices[v].channel if t.voices[v].channel > 0 else channel_for(v)
+                break
+        out.append(MsEvent(st.sample, st.kind, ch, st.midi, st.velocity))
+
+    # Offs before ons at the same millisecond. `sort_steps` already orders
+    # by sample; this is a stable pass over equal timestamps.
+    var i = 0
+    while i < len(out):
+        var j = i
+        while j + 1 < len(out) and out[j + 1].ms == out[i].ms:
+            j += 1
+        # Bubble the offs to the front of [i, j]; the runs are a handful of
+        # events long, so this is cheaper than a general stable sort.
+        var w = i
+        for k in range(i, j + 1):
+            if out[k].kind == SE_NOTE_OFF:
+                var tmp = out[k]
+                for m in range(k, w, -1):
+                    out[m] = out[m - 1]
+                out[w] = tmp
+                w += 1
+        i = j + 1
+    return out^

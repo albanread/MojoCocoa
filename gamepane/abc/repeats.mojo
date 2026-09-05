@@ -11,7 +11,7 @@
 # range and re-stamping the clock -- and a repeat that crosses a line break,
 # or sits inside one voice of several, needs no special handling at all.
 
-from model import (
+from .model import (
     Tune, Event, EV_NOTE, EV_REST, EV_BAR,
     F_CHORD, F_GRACE,
     BAR_REPEAT_START, BAR_REPEAT_END, BAR_ENDING_1, BAR_ENDING_2,

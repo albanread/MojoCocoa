@@ -18,14 +18,14 @@
 from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
 from std.ffi import external_call
 
-from chip import (
+from gamepane.api.audio import (
     P, get, put, vget, vput, chip_render, set_freq_hz, set_wave, set_adsr,
     set_filter, set_volume, set_pulse_width, gate_on, gate_off, route_filter,
     PLAYER_BASE, S_CUTOFF, S_RES, S_FMODE, V_ENV, V_PHASE, ENV_IDLE,
     ENV_RELEASE, WAVE_PULSE, WAVE_SAW, WAVE_TRI, Tick,
 )
-from schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
-from model import (
+from gamepane.abc.schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
+from gamepane.abc.model import (
     CP_WAVE, CP_PW, CP_A, CP_D, CP_S, CP_R, CP_FILT,
     CP_CUTOFF, CP_RES, CP_FMODE, CP_VOL,
 )

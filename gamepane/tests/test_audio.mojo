@@ -20,9 +20,11 @@ from gamepane.api import (
     wav_bytes, read_wav, WAV_HEADER_BYTES,
     WAVE_PULSE, set_volume, vget, V_ENV,
 )
+from gamepane.abc import render_scheduled
 from gamepane.metal import (
     deck_new, deck_free, music_chip, sfx_chip, sfx_play, pending_triggers,
     dropped_triggers, drain_triggers, advance_effects, RING_SIZE,
+    play_tune, stop_tune,
 )
 
 
@@ -398,6 +400,40 @@ def main() raises:
         failures += 1
     else:
         print("ok    an empty sound is refused, not written")
+
+    # ── a tune, through the deck ─────────────────────────────────────────
+    # play_tune flattens the schedule on THIS thread, before the callback
+    # ever looks at it; render_scheduled is what the callback then runs.
+    let steps = play_tune(
+        d,
+        String(
+            "X:1\nT:t\nM:4/4\nL:1/4\nQ:1/4=120\nK:C\nC C G G | A A G2 |\n"
+        ),
+    )
+    if steps <= 0:
+        print("FAIL  play_tune scheduled", steps, "steps")
+        failures += 1
+    else:
+        var tune_buf = List[Float32](length=SAMPLE_RATE, fill=0.0)
+        let tp = Pointer[Float32, MutUntrackedOrigin](
+            unsafe_from_address=Int(tune_buf.unsafe_ptr())
+        )
+        render_scheduled(music_chip(d), tp, SAMPLE_RATE)
+        var tune_energy = 0.0
+        var tune_nan = 0
+        for i in range(SAMPLE_RATE):
+            let v = Float64(tune_buf[i])
+            if v != v:
+                tune_nan += 1
+            tune_energy += abs(v)
+        if tune_nan != 0 or tune_energy <= 1.0:
+            print("FAIL  the tune rendered", tune_energy, "energy,",
+                  tune_nan, "NaN")
+            failures += 1
+        else:
+            print("ok   ", steps, "scheduled steps render a second of music")
+        stop_tune(d)
+        _ = tune_buf
 
     deck_free(d)
 

@@ -26,22 +26,22 @@ from std.sys import argv
 from std.pathlib import cwd
 from std.os import getenv
 
-from chip import (
+from gamepane.api.audio import (
     P, chip_new, get, put, vget, vput, set_wave, set_adsr, set_filter,
     route_filter, set_volume, set_pulse_width, PLAYER_BASE, SAMPLE_RATE,
     V_ENV, WAVE_PULSE, WAVE_SAW, WAVE_TRI, FILT_LP,
 )
-from model import Tune, EV_NOTE
-from parse import parse_abc
-from repeats import expand_repeats
-from schedule import Step, build_schedule, resolve_ties, ticks_per_beat
-from chipplay import (
+from gamepane.abc.model import Tune, EV_NOTE
+from gamepane.abc.parse import parse_abc
+from gamepane.abc.repeats import expand_repeats
+from gamepane.abc.schedule import Step, build_schedule, resolve_ties, ticks_per_beat
+from gamepane.abc.chipplay import (
     flatten_schedule, render_scheduled, midi_to_hz,
     SC_ADDR, SC_COUNT, SC_CURSOR, SC_SAMPLE, SC_END, SC_LOOP, SC_PAUSE,
     SC_DONE, SC_VOICE_NOTE, STEP_SLOTS,
 )
-from schedule import SE_NOTE_ON, SE_NOTE_OFF
-from midi import write_midi
+from gamepane.abc.schedule import SE_NOTE_ON, SE_NOTE_OFF
+from gamepane.abc.midi import write_midi
 from ui import (
     WIN_W, WIN_H, UI_SCOPE, UI_SCOPE_POS, UI_BACKEND, UI_SYNTH, SCOPE_LEN,
     BACKEND_CHIP, BACKEND_MIDI, CMD_QUIT, CMD_ADD, CMD_PLAY, CMD_STOP,

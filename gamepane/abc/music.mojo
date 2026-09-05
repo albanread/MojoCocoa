@@ -16,8 +16,8 @@
 # readable to a musician, and a parser that skips it plays wrong notes in
 # roughly every tune that has an accidental in it.
 
-from chip import WAVE_TRI, WAVE_SAW, WAVE_PULSE, WAVE_NOISE, FILT_LP, FILT_BP, FILT_HP
-from model import (
+from gamepane.api.audio import WAVE_TRI, WAVE_SAW, WAVE_PULSE, WAVE_NOISE, FILT_LP, FILT_BP, FILT_HP
+from .model import (
     Tune, Event, Voice, TICKS_PER_QUARTER, TICKS_PER_WHOLE,
     EV_NOTE, EV_REST, EV_BAR, EV_TEMPO, EV_KEY, EV_METER, EV_VOICE, EV_CHIP,
     CP_WAVE, CP_PW, CP_A, CP_D, CP_S, CP_R, CP_FILT,

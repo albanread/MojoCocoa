@@ -5,11 +5,11 @@
 # everything after it is music, except that field lines are still allowed in
 # the body and most real tunes use them for voice switches.
 
-from model import (
+from .model import (
     Tune, Event, Voice, new_voice, TICKS_PER_WHOLE,
     EV_NOTE, EV_REST, EV_BAR, key_sharps_for,
 )
-from music import (
+from .music import (
     MusicCtx, parse_music_line, read_int, read_fraction, apply_tempo,
 )
 
@@ -46,6 +46,14 @@ def parse_abc(source: String, mut tune: Tune):
         if len(b) == 0:
             continue
         if Int(b[0]) == 37:              # % comment or %% directive
+            # %%MIDI is the one directive that changes what is heard, so it
+            # is read rather than skipped. Everything else after % is a
+            # comment or a formatting hint for a typesetter, and neither has
+            # anything to say to a synthesiser.
+            if len(b) > 2 and Int(b[1]) == 37:
+                apply_midi_directive(
+                    String(line[byte = 2 : len(b)]), tune, ctx
+                )
             continue
 
         # A field line: one letter, a colon, and the value.
@@ -135,6 +143,68 @@ def parse_abc(source: String, mut tune: Tune):
     # A tune with no explicit voice still has one.
     if len(tune.voices) == 0:
         _ = tune.ensure_voice(1)
+
+
+def apply_midi_directive(body: String, mut tune: Tune, mut ctx: MusicCtx):
+    """`%%MIDI program|channel|transpose|drum ...`.
+
+    The four that reach the sound. `program` is a General MIDI number: the
+    DLS backend plays it as itself, and the chip maps it onto one of its
+    three recipes, because a chip has no piano. `channel` and `drum` are
+    carried through for the MIDI backends -- channel 10 IS the drum channel,
+    so `%%MIDI drum` sets it rather than inventing a flag. `transpose` adds
+    to the voice's existing transpose rather than replacing it, which is
+    what lets a `V:` line and a directive both have their say.
+
+    Anything else after %%MIDI is ignored in silence: the directive space is
+    large, most of it is for typesetters, and refusing to parse a tune
+    because of a line about beam grouping would be absurd.
+    """
+    var rest = String(body.strip())
+    if not rest.lower().startswith("midi"):
+        return
+    rest = String(String(rest[byte = 4 : rest.byte_length()]).strip())
+    if rest.byte_length() == 0:
+        return
+
+    # The keyword, then whatever follows it.
+    var word = rest
+    var arg = String()
+    let rb = rest.as_bytes()
+    for i in range(len(rb)):
+        if Int(rb[i]) == 32 or Int(rb[i]) == 9:
+            word = String(rest[byte = 0 : i])
+            arg = String(String(rest[byte = i : len(rb)]).strip())
+            break
+    let key = word.lower()
+
+    let vi = tune.ensure_voice(ctx.voice if ctx.voice > 0 else 1)
+    let v = read_int(arg, 0)
+    let negative = arg.startswith("-")
+    let n = v[0] if v[2] != 0 else 0
+
+    if key == "program":
+        # `%%MIDI program [channel] instrument` -- a bare number is the
+        # instrument, two numbers are channel then instrument.
+        var prog = n
+        let after = String(String(arg[byte = v[1] : arg.byte_length()]).strip())
+        if after.byte_length() > 0:
+            let second = read_int(after, 0)
+            if second[2] != 0:
+                tune.voices[vi].channel = n
+                prog = second[0]
+        tune.voices[vi].instrument = prog
+    elif key == "channel":
+        if v[2] != 0:
+            tune.voices[vi].channel = n
+    elif key == "transpose":
+        if v[2] != 0:
+            tune.voices[vi].transpose += -n if negative else n
+    elif key == "drum":
+        # Channel 10 (1-based) is the percussion channel in General MIDI,
+        # which is 9 zero-based -- and `channel` here is zero-based, as the
+        # SMF writer expects.
+        tune.voices[vi].channel = 9
 
 
 def apply_to_all_voices(

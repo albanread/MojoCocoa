@@ -29,7 +29,7 @@ from std.objc import (
 from std.ffi import external_call
 from std.memory import OpaquePointer, Pointer, MutUntrackedOrigin
 
-from chip import (
+from gamepane.api.audio import (
     P, get, put, vget, vput, set_wave, set_adsr, set_filter, route_filter,
     set_volume, set_pulse_width, set_freq_hz, PLAYER_BASE, SAMPLE_RATE,
     V_ENV, V_GATE, V_WAVE, V_PW, V_FILT, gate_on, gate_off,
@@ -37,7 +37,7 @@ from chip import (
     WAVE_TRI, WAVE_SAW, WAVE_PULSE, WAVE_NOISE,
     FILT_LP, FILT_BP, FILT_HP,
 )
-from chipplay import (
+from gamepane.abc.chipplay import (
     SC_PAUSE, SC_SAMPLE, SC_END, SC_VOICE_NOTE, midi_to_hz, record_adsr,
     CHIP_ADSR,
 )
