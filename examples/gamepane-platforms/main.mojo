@@ -17,14 +17,35 @@
 #     frame. Nothing is redrawn to scroll, ever -- the composite reads a
 #     different window of the same bytes.
 #
+#   * SPRITES ARE COMPOSITED, NOT BLITTED. The coins are quads drawn in
+#     their own pass with source-alpha blending, so they move over the
+#     platforms without disturbing a single index byte -- nothing has to be
+#     erased and repainted behind them, and scale, rotation and alpha are
+#     per instance and free. They are placed in WORLD coordinates, so they
+#     scroll with the background without being told to.
+#
 # Headless:
 #   GAMEPANE_FRAMES=30 GAMEPANE_DUMP=/tmp/platforms.bgra \
 #       cocoamojo run examples/gamepane-platforms/main.mojo
 # ===----------------------------------------------------------------------=== #
 
 from std.objc import load_framework, autoreleasepool
-from gamepane.api import KEY_ESCAPE, KEY_LEFT, KEY_RIGHT, FRONT
-from gamepane.metal import GamePane, ShaderPane, IndexedPane, key_held
+from gamepane.api import (
+    KEY_ESCAPE, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, FRONT,
+)
+from gamepane.metal import GamePane, ShaderPane, IndexedPane, Sprites, key_held
+
+
+# An 8x8 coin in two frames. The digits are palette indices into the
+# sprite's OWN sixteen colours, `.` is transparent, and the only difference
+# between the frames is where the highlight sits -- which is the whole
+# animation.
+comptime COIN_A = String(
+    "..2222../.222222./22233222/22333222/22333222/22233222/.222222./..2222.."
+)
+comptime COIN_B = String(
+    "..2222../.223222./22332222/23332222/22322222/22222222/.222222./..2222.."
+)
 
 
 comptime VIEW_W = 480
@@ -109,25 +130,70 @@ def main() raises:
     )
     build_world(world)
 
+    # Layer 2. One definition, two frames, seven instances.
+    var sprites = Sprites(pane.device)
+    let coin = sprites.define_sprite(pane.ctx, COIN_A)
+    _ = sprites.add_frame(pane.ctx, coin, COIN_B)
+    sprites.sprite_rgb(coin, 2, 220, 170, 40)      # gold
+    sprites.sprite_rgb(coin, 3, 255, 245, 190)     # the glint
+
+    # Five decorative coins across the world, glinting at 4 fps and half a
+    # beat out of step with each other.
+    let spots = [
+        (140, 90), (360, 170), (660, 110), (880, 210), (460, 330),
+    ]
+    for i in range(len(spots)):
+        let c = sprites.place(coin, Float64(spots[i][0]), Float64(spots[i][1]))
+        sprites.set_scale(c, 2.0)
+        sprites.animate(c, 4.0)
+        sprites.set_alpha(c, 0.85)
+        sprites.tick(Float64(i) * 0.06)
+
+    # And one the player drives.
+    var player = sprites.place(
+        coin, Float64(WORLD_W) / 2.0, Float64(WORLD_H) / 2.0
+    )
+    sprites.set_scale(player, 4.0)
+    sprites.animate(player, 6.0)
+
     var scroll_x = Float64(WORLD_W - VIEW_W) / 2.0
     let scroll_y = (WORLD_H - VIEW_H) // 2
 
     while pane.pump():
         if key_held(KEY_ESCAPE):
             break
-        # A slow drift, and the arrow keys on top of it. Neither redraws
-        # anything -- they move where the composite reads from.
+        # A slow drift. Nothing is redrawn to scroll -- it moves where the
+        # composite reads from.
         scroll_x += 0.3
-        if key_held(KEY_LEFT):
-            scroll_x -= 4.0
-        if key_held(KEY_RIGHT):
-            scroll_x += 4.0
+        if scroll_x > Float64(WORLD_W - VIEW_W):
+            scroll_x = 0.0
         world.set_scroll(Int(scroll_x), scroll_y)
+
+        # The arrow keys drive the player sprite, in WORLD coordinates, so
+        # it stays where it was put as the camera drifts past.
+        let speed = 140.0 * pane.dt()
+        var px = sprites.sprite_x(player)
+        var py = sprites.sprite_y(player)
+        if key_held(KEY_LEFT):
+            px -= speed
+        if key_held(KEY_RIGHT):
+            px += speed
+        if key_held(KEY_UP):
+            py -= speed
+        if key_held(KEY_DOWN):
+            py += speed
+        sprites.move_to(player, px, py)
+        sprites.set_rotation(player, sprites.instances[player].rotation_degrees + 60.0 * pane.dt())
+        sprites.tick(pane.dt())
 
         with autoreleasepool():
             let frame = pane.begin_frame()
             sky.render(frame)          # layer 0: Clear
             world.render(frame)        # layer 1: Load, index 0 discards
+            sprites.render(            # layer 2: quads, alpha-blended
+                frame, Float64(Int(scroll_x)), Float64(scroll_y),
+                Float64(VIEW_W), Float64(VIEW_H),
+            )
             pane.end_frame(frame)
 
     pane.close()
