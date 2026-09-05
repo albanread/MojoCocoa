@@ -20,6 +20,15 @@ comptime KEY_DOWN = 125
 comptime KEY_UP = 126
 comptime KEY_SPACE = 49
 comptime KEY_ESCAPE = 53
+# The number row, for a demo that wants a key per effect. Apple's codes are
+# not in numeric order past 3, which is why these are written out.
+comptime KEY_1 = 18
+comptime KEY_2 = 19
+comptime KEY_3 = 20
+comptime KEY_4 = 21
+comptime KEY_5 = 23
+comptime KEY_6 = 22
+
 comptime KEY_RETURN = 36
 comptime KEY_A = 0
 comptime KEY_S = 1

@@ -3,6 +3,7 @@
 from .input import (
     KEY_LEFT, KEY_RIGHT, KEY_DOWN, KEY_UP, KEY_SPACE, KEY_ESCAPE,
     KEY_A, KEY_S, KEY_D, KEY_W, KEY_Z, KEY_X, KEY_RETURN,
+    KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6,
     MAX_KEY_CODE, MouseState, GamepadState,
 )
 
@@ -46,3 +47,15 @@ from .audio import (
     S_TICK, S_CUTOFF, S_RES, S_FMODE, S_VOL, S_FRAME, S_DIRTY,
     S_LOW, S_BAND, S_F, S_Q,
 )
+
+from .sfx import (
+    SFX_COUNT, SFX_COIN, SFX_JUMP, SFX_ZAP, SFX_SHOOT, SFX_EXPLODE,
+    SFX_POWERUP, SFX_HURT, SFX_CLICK, SFX_BANG, SFX_BLIP, SFX_SAUCER,
+    SFX_BOSS_HUM, sfx_name, sfx_frames, sfx_start, sfx_frame, sfx_stop,
+)
+
+from .voices import (
+    Instrument, midi_to_hz, set_instrument, note_on, note_off,
+    is_voice_active, active_voices, allocate_voice,
+)
+from .wav import wav_bytes, write_wav, read_wav, WAV_HEADER_BYTES
