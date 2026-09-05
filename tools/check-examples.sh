@@ -50,6 +50,8 @@ headless mandelbrot MANDEL_FRAMES
 headless ferns FERNS_FRAMES
 headless fernwind FERNWIND_FRAMES
 headless fluid FLUID_AUTOSHOT
+headless gamepane-starfield GAMEPANE_FRAMES
+headless gamepane-plasma GAMEPANE_FRAMES
 
 echo "== gui examples (build + launch) =="
 for ex in window othello chip life abcplayer; do build_run "$ex"; done
