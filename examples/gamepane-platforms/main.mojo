@@ -17,6 +17,12 @@
 #     frame. Nothing is redrawn to scroll, ever -- the composite reads a
 #     different window of the same bytes.
 #
+#   * THE SOUND IS TWO CHIPS. Chip A runs a bass line on its own 50 Hz
+#     player hook -- inside the audio callback, on the beat, where a raster
+#     interrupt would have been. Chip B plays effects. The game thread never
+#     touches either: it pushes an effect number onto a lock-free ring and
+#     the callback drains it at the top of the next buffer.
+#
 #   * LAYER 3 IS TEXT, TWICE. The overlay rasterises a title and a HUD line
 #     into an RGBA buffer -- retained, right for something that changes when
 #     the game says so. The text plane is a grid of four-byte cells with a
@@ -37,13 +43,54 @@
 
 from std.objc import load_framework, autoreleasepool
 from gamepane.api import (
-    KEY_ESCAPE, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, FRONT,
+    KEY_ESCAPE, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, KEY_SPACE, KEY_1,
+    FRONT,
 )
-from gamepane.api import FLAG_TRANSPARENT_BG
+from gamepane.api import (
+    FLAG_TRANSPARENT_BG, P, SFX_COIN, SFX_JUMP, SFX_ZAP, SFX_EXPLODE,
+    SFX_POWERUP, SFX_BLIP, WAVE_PULSE, WAVE_TRI,
+    set_freq_hz, set_pulse_width, set_wave, set_adsr, gate_on, gate_off,
+    set_volume, get, put, PLAYER_BASE,
+)
 from gamepane.metal import (
     GamePane, ShaderPane, IndexedPane, Sprites, TextOverlay, TextPlane,
-    key_held,
+    key_held, deck_new, deck_free, music_chip, set_music_tick, sfx_play,
+    start_audio, stop_audio,
 )
+
+
+# ── the bass line, as a 50 Hz player routine ────────────────────────────────
+#
+# This runs on CHIP A's own player hook, inside the audio callback, on the
+# beat -- exactly where a raster interrupt would have put it. It is a `fn`
+# because that is what the chip's hook takes: no allocation, no raising, and
+# nothing that could block the audio thread.
+
+comptime M_STEP = 0        # which note of the pattern
+comptime M_COUNT = 1       # frames left on this note
+comptime M_FRAMES = 10     # 10 frames at 50 Hz -- a note every fifth of a second
+
+
+fn music_tick(st: P):
+    var left = get(st, PLAYER_BASE + M_COUNT)
+    if left > 0:
+        put(st, PLAYER_BASE + M_COUNT, left - 1)
+        return
+    var step = get(st, PLAYER_BASE + M_STEP)
+    # A minor pentatonic walk: A, C, D, E, G, E, D, C.
+    var hz = 110.0
+    if step == 1: hz = 130.81
+    elif step == 2: hz = 146.83
+    elif step == 3: hz = 164.81
+    elif step == 4: hz = 196.0
+    elif step == 5: hz = 164.81
+    elif step == 6: hz = 146.83
+    elif step == 7: hz = 130.81
+    gate_off(st, 0)
+    set_freq_hz(st, 0, hz)
+    gate_on(st, 0)
+    put(st, PLAYER_BASE + M_STEP, (step + 1) % 8)
+    put(st, PLAYER_BASE + M_COUNT, M_FRAMES)
 
 
 # An 8x8 coin in two frames. The digits are palette indices into the
@@ -182,8 +229,21 @@ def main() raises:
     for i in range(len(items)):
         menu.write(2, menu.rows - 3 + i, items[i], 26, 16, FLAG_TRANSPARENT_BG)
 
+    # Two chips on one audio unit. Chip A plays; chip B waits for triggers.
+    var deck = deck_new()
+    let music = music_chip(deck)
+    set_volume(music, 12)
+    set_wave(music, 0, WAVE_PULSE)
+    set_pulse_width(music, 0, 0x300)
+    set_adsr(music, 0, 0, 7, 6, 5)
+    set_music_tick(deck, music_tick)
+    let unit = start_audio(deck)
+
     var scroll_x = Float64(WORLD_W - VIEW_W) / 2.0
     let scroll_y = (WORLD_H - VIEW_H) // 2
+    var held_space = False
+    var held_num = List[Bool](length=6, fill=False)
+    let effects = [SFX_COIN, SFX_JUMP, SFX_EXPLODE, SFX_POWERUP, SFX_BLIP, SFX_ZAP]
 
     while pane.pump():
         if key_held(KEY_ESCAPE):
@@ -208,6 +268,18 @@ def main() raises:
             py -= speed
         if key_held(KEY_DOWN):
             py += speed
+        # Space fires a zap; the number keys try the others. sfx_play only
+        # writes a ring slot and bumps a counter -- it never blocks, so it
+        # is safe to call from the frame loop.
+        if key_held(KEY_SPACE) and not held_space:
+            _ = sfx_play(deck, SFX_ZAP)
+        held_space = key_held(KEY_SPACE)
+        for k in range(6):
+            let code = KEY_1 + k
+            if key_held(code) and not held_num[k]:
+                _ = sfx_play(deck, effects[k])
+            held_num[k] = key_held(code)
+
         sprites.move_to(player, px, py)
         sprites.set_rotation(player, sprites.instances[player].rotation_degrees + 60.0 * pane.dt())
         sprites.tick(pane.dt())
@@ -224,5 +296,9 @@ def main() raises:
             menu.render(frame)         # layer 3b: the cell grid
             pane.end_frame(frame)
 
+    # ALWAYS, before main returns: an audio unit outliving the state its
+    # callback reads is a crash on the way out.
+    stop_audio(unit)
+    deck_free(deck)
     pane.close()
     print("presented", pane.frame_count(), "frames")

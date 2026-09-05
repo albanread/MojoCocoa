@@ -534,7 +534,7 @@ the diagnostic for getting that wrong is longer than the fix.
 
 ---
 
-## Sprint G7 — audio: the chip as the engine (NOT STARTED, size M, needs no Metal)
+## Sprint G7 — audio: the chip as the engine (DONE, size M, needs no Metal)
 
 **Goal.** Sound effects and a voice bank from `chip.mojo`, on one audio
 unit, with the trigger path from the main thread proven lock-free. This
@@ -592,6 +592,46 @@ passes.
 `write_wav_rejects_empty_sound`, `volume_scales_output_amplitude`.
 Not carried, by decision: `synth.rs`'s LCG, waveform and ADSR-curve tests,
 and `playback.rs`'s pool tests.
+
+**Status.** Done. `gamepane/tests/test_chip.mojo` and
+`gamepane/tests/test_audio.mojo` pass, and `gamepane-platforms` runs both
+chips.
+
+The four chip fixes each have a test that FAILS without them — verified by
+reverting each fix in turn, not assumed. The fourth turned out to be
+defence in depth rather than a live bug and the test says so: a diverging
+filter reaches ±inf, and inf is handled, because the output clamp catches
+it. Only NaN slips through — every comparison against NaN is false — and
+inside `chip_render` the state can never arrive NaN. Poison it from outside
+and exactly one sample of 512 comes out NaN without the line.
+
+**The twelve hashes are committed.** Any change to the oscillator, the
+envelope, the filter or a recipe shows up as a different number rather than
+as someone eventually noticing the laser sounds wrong.
+
+**Three measurement mistakes, worth recording because each looked like a
+code bug.** A peak-envelope detector reads a flat line for `boss_hum`: two
+PULSE waves a few hertz apart beat in how much TIME their sum spends at each
+of its three values, not in how large the largest gets — mean absolute sees
+it, peak cannot. And mean absolute is exactly the wrong metric for "voices
+sum": two 50%-duty pulses at unrelated pitches sum to a signal that is zero
+half the time, so its mean absolute value equals one voice's and the test
+read "the second voice did nothing" — power adds, and does. The WAV round
+trip was off by a whole step because the writer scaled by 32767 and the
+reader divided by 32768; both conventions are in the wild, but mixing them
+costs a step at full amplitude.
+
+**And the lifetime trap again**, in the test this time: a raw pointer into a
+`List` outlived the list, because Mojo destroys a value at its LAST USE.
+It did not crash at the write — it crashed in the next list reallocation, a
+long way from the cause. `_ = buf` is the whole fix, as it was for the
+`DeviceBuffer` in G0.
+
+**Not verified by ear.** The Done-when asks for "no click and no dropout";
+what is actually checked is that every effect renders in range with no NaN,
+that the ring loses nothing under 1,000 triggers, and that the callback
+allocates nothing. Whether it clicks on real hardware under load is a
+listening test nobody has run.
 
 ---
 
