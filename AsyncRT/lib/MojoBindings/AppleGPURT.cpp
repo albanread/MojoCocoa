@@ -910,6 +910,31 @@ AsyncRT_DeviceContext_metal_device(void **result, const DeviceContext *ctx) {
   return AppleGPUMetal_mtlDevice(ctx->metal, result);
 }
 
+// The id<MTLBuffer> behind a device buffer, plus its offset within that
+// buffer (non-zero only for a sub-buffer view). The counterpart of
+// metal_device above, and the other half of what a caller needs to make a
+// Metal texture over memory a Mojo kernel writes.
+extern "C" const char *
+AsyncRT_DeviceBuffer_metal_buffer(void **result, const DeviceBuffer *buffer) {
+  if (!buffer->mtl)
+    return vrErrorf("AppleGPURT: metal_buffer on a non-metal buffer");
+  return AppleGPUMetal_mtlBuffer(buffer->mtl, result, nullptr);
+}
+
+// The view offset within that buffer -- non-zero only for a sub-buffer.
+// Split from metal_buffer above rather than returned beside it: the shape
+// that works from Mojo is hostPtr's, one out-parameter and the handle.
+extern "C" size_t
+AsyncRT_DeviceBuffer_metal_offset(const DeviceBuffer *buffer) {
+  if (!buffer->mtl)
+    return 0;
+  void *ignored = nullptr;
+  size_t off = 0;
+  if (AppleGPUMetal_mtlBuffer(buffer->mtl, &ignored, &off))
+    return 0;
+  return off;
+}
+
 VR_STUB_ERR(AsyncRT_DeviceContext_selectStream)
 VR_STUB_ERR(AsyncRT_DeviceFunction_copyToConstantMemory)
 VR_STUB_ERR(AsyncRT_occupancyMaxActiveBlocksPerMultiprocessor)

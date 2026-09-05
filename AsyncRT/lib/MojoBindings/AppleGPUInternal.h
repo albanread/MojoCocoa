@@ -17,6 +17,8 @@ const char *AppleGPUMetal_createContext(AGMetalCtx **out, int id, char *nameOut,
                                       size_t archCap);
 void AppleGPUMetal_destroyContext(AGMetalCtx *ctx);
 const char *AppleGPUMetal_mtlDevice(AGMetalCtx *ctx, void **out);
+const char *AppleGPUMetal_mtlBuffer(AGMetalBuf *buf, void **out,
+                                    size_t *offset);
 const char *AppleGPUMetal_synchronize(AGMetalCtx *ctx);
 const char *AppleGPUMetal_memInfo(AGMetalCtx *ctx, size_t *freeMem, size_t *total);
 size_t AppleGPUMetal_maxAlloc(AGMetalCtx *ctx);

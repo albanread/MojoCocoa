@@ -65,12 +65,51 @@ and the decision is made here, not discovered in G3.
    (ported verbatim), a render, a readback: pixel `(1, 1)` is palette entry
    7 and pixel `(0, 0)` was discarded.
 
-**Done when** all five pieces pass as a headless test under
-`cocoamojo run gamepane/tests/spike_pipeline.mojo`, with the output printed
-and the accessor patch committed separately from the spike. If piece 2 or 5
-cannot be made to pass, the sprint ends with the fallback written into the
-design's §6 as the decision and G4's kernels become CPU loops — the same
-tests, different implementation.
+**Status (2026-09-03): four of five pieces done; the fifth has a narrow,
+named blocker.**
+
+Passing, in `gamepane/tests/`:
+
+- `spike_pipeline.mojo` — MSL compiles, a pipeline builds, a draw into a 4x4
+  texture reads back rgba(0.25, 0.50, 0.75) as B=191 G=128 R=64 A=255.
+  `MTLClearColor` (four doubles) and `MTLRegion` (48 bytes) both cross by
+  value. A CPU byte store into a Shared buffer reaches the indexed shader
+  through a linear texture view, and index 0 discards. Alignment for R8Uint
+  is 16 here, so a 4-wide plane has a 16-byte row — the stride rule is real.
+- `spike_device.mojo` — the layers' device and the runtime's are the SAME
+  object. `AsyncRT_DeviceContext_metal_device` already existed; no runtime
+  change was needed to ask.
+
+The accessor landed: `AppleGPUMetal_mtlBuffer` plus
+`AsyncRT_DeviceBuffer_metal_buffer` / `_metal_offset`, built into
+`libCocoaMojoGPU.dylib`. **It is correct** — instrumented, the C side holds
+`buffer=0x…e40` whose `contents` equals what the known-good
+`AsyncRT_DeviceBuffer_hostPtr` reports, and Mojo receives that exact
+pointer.
+
+**The blocker.** `send[…]("contents" / "length" / "storageMode")` from Mojo
+to *that* object crashes, while the identical call on an `MTLBuffer` Mojo
+made itself with `newBufferWithLength:options:` works (spike_pipeline does
+it). So the pointer is good and the handoff is good; something about
+messaging the runtime's own buffer object from `std.objc` is not. Neither an
+autorelease pool nor matching `hostPtr`'s two-argument C shape changed it.
+
+**Two ways out, and the second may be better.** Either find why `send`
+rejects that object — likely a private class whose selector encoding differs
+from the one the database picks by name — or invert the ownership: create
+the `MTLBuffer` in Mojo, where messaging demonstrably works, and hand it to
+the runtime through its existing "buffer from a device pointer" entry point.
+The second keeps every plane's lifetime in the game pane rather than split
+across the runtime, which is the tidier design regardless. G4 decides.
+
+Nothing downstream is blocked: G1–G3, G5–G8 need none of this, and G4's
+blitter can be CPU loops over the same bytes until it resolves.
+
+**Done when** all five pieces pass as a headless test, with the output
+printed and the accessor patch committed separately from the spike. If
+piece 5 cannot be made to pass, the sprint ends with the fallback written
+into the design's §6 as the decision and G4's kernels become CPU loops —
+the same tests, different implementation.
 
 **Rust tests covered.** `a_trivial_solid_color_shader_compiles_and_renders_one_frame`,
 `a_shader_missing_fmain_fails_to_compile_with_a_clear_error`,

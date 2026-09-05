@@ -795,6 +795,34 @@ const char *AppleGPUMetal_mtlDevice(AGMetalCtx *ctx, void **out) {
   return nullptr;
 }
 
+// The id<MTLBuffer> behind a device buffer, and the view's offset within it.
+//
+// Every buffer this backend makes on unified memory is StorageModeShared, so
+// the same bytes a kernel writes can also back a LINEAR TEXTURE VIEW that a
+// fragment shader samples -- which is what lets the game pane keep one copy
+// of an index plane instead of a CPU mirror and a texture. A sub-buffer is a
+// view into its parent, so the offset is part of the answer: a caller making
+// a texture over it must add it to the byte offset it passes.
+//
+// Private (non-host-visible) buffers are returned too. Whether the CPU may
+// touch the contents is a separate question -- AppleGPUMetal_hostPtr answers
+// that one -- and a texture view over a private buffer is still legal for
+// the GPU alone.
+const char *AppleGPUMetal_mtlBuffer(AGMetalBuf *buf, void **out,
+                                    size_t *offset) {
+  if (!buf)
+    return agmErrorf("AppleGPURT[metal]: mtlBuffer on a null buffer");
+  // A dispatch may still be in flight, and the caller is about to hand these
+  // bytes to a texture the render pipeline will read this frame. Drain for
+  // the same reason hostPtr does.
+  if (const char *e = drainPending(buf->ctx))
+    return e;
+  *out = buf->buffer;
+  if (offset)
+    *offset = buf->offset;
+  return nullptr;
+}
+
 const char *AppleGPUMetal_synchronize(AGMetalCtx *ctx) {
   // Drain whatever asynchronous launch left in flight. This is where a failed
   // dispatch is reported when launches no longer wait individually.
