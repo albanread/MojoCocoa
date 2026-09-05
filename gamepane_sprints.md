@@ -332,7 +332,7 @@ different constant.
 
 ---
 
-## Sprint G4 — the blitter, as Mojo kernels (NOT STARTED, size M, wants G0 and G3)
+## Sprint G4 — the blitter, as Mojo kernels (DONE, size M, wants G0 and G3)
 
 **Goal.** `copy`, `transparent`, `minterm` (AND/OR/XOR) and `clear` between
 any two slots, on the GPU, through this fork's own backend — and the rule
@@ -358,6 +358,46 @@ proves the ordering rule.
 (renamed: there is no mirror), `transparent_copy_skips_index_zero_source_pixels`,
 `minterm_and_masks_the_destination_by_the_source`,
 `clear_fills_the_rectangle_with_the_given_index`.
+
+**Status.** Done. `gamepane/tests/test_blitter.mojo` passes. Piece 3 — the
+CPU-loop fallback — is not needed; these are real kernels.
+
+Four Mojo `def`s in `metal/blitter.mojo`, no hand-written Metal compute
+shaders anywhere, writing the same bytes the fragment shader samples. The
+Rust applies every operation twice, to the texture and to a CPU mirror,
+because its `upload()` would otherwise push stale mirror bytes over the
+result; with no mirror there is one application and nothing to keep in step.
+
+**Clipping moved to the neutral tier and happens once.** `api/blit.mojo`
+holds `clip_blit`, which trims a requested rectangle against both planes
+before any thread launches — so a kernel never bounds-checks a plane, an
+off-edge blit is a no-op rather than a trap, and both origins move together
+(trimming two pixels off the destination's left trims two off the source, or
+the copy shears).
+
+**Compilation is cached, measured rather than assumed.** The first
+`compile_function` for a kernel costs about 140 ms and every later one about
+28 µs, so the operations call it per blit and `warm_up_blitter` exists only
+so a game pays the 140 ms at startup instead of at its first sprite.
+
+**The ordering rule is automatic, and the test for it took three tries.**
+`begin_frame` calls `ctx.synchronize()`: blits are enqueued on the runtime's
+stream while frames are encoded on the layer's command queue, two submission
+paths to one device with nothing implicitly ordering them, and the failure
+mode is a frame late by one — which reads as a game bug, not a missing call.
+
+Getting a test that could actually fail was the work. `enqueue_function`
+**does** commit; it just does not wait. So a 32×4 fill finishes long before
+`nextDrawable` returns and passed with the synchronize deleted; so did 240
+fills of a 64×64 world. Sixty fills of a 1024×1024 world take a measured
+4.5 ms to drain and the plane's last byte is still unwritten the instant
+enqueue returns — but `nextDrawable` blocks longer than 4.5 ms, so even that
+passed through the composite path. The race is masked on this machine, not
+absent, and a faster drawable or a slower blit unmasks it. The test
+therefore asks the plane directly: after `begin_frame`, the queue must be
+drained. With the synchronize removed that check reports 0 instead of 200.
+The composite check stays as the end-to-end confirmation, with a note saying
+it cannot fail here on its own.
 
 ---
 
