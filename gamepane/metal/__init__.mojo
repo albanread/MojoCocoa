@@ -20,3 +20,5 @@ from .blitter import (
 )
 
 from .sprites import Sprites, SpriteDef, SPRITE_SHADER
+
+from .text import TextOverlay, TextPlane, OVERLAY_SHADER, PLANE_SHADER

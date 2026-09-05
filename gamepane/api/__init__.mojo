@@ -21,3 +21,9 @@ from .sprites import (
     SpriteBitmap, SpriteInstance, parse_sprite_rows, sprites_overlap,
     quad_vertices, SPRITE_COLORS,
 )
+
+from .text import (
+    RgbaCanvas, glyph_for, text_cols, text_rows,
+    GLYPH_W, GLYPH_H, GLYPH_ADVANCE, CELL_W, CELL_H, CELL_BYTES,
+    FLAG_TRANSPARENT_BG,
+)
