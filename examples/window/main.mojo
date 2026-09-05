@@ -40,9 +40,7 @@ class ExampleActions:
             # keyword, so the String crosses by hand -- the bridging the
             # keyword surface does automatically arrives here with P4's
             # follow-up.
-            _ = Obj["NSTextField"](label_addr()[]).setStringValue(
-                nsstring("clicked " + String(clicks()[])).ptr()
-            )
+            _ = Obj["NSTextField"](label_addr()[]).setStringValue("clicked " + String(clicks()[]))
 
 
 def main() raises:
@@ -73,7 +71,7 @@ def main() raises:
             backing=nsenum["NSBackingStoreBuffered"](),
             defer=False,
         )
-        _ = win.setTitle(nsstring("Mojo").ptr())
+        win.title = "Mojo"
 
         let content = win.contentView()
         let label = Obj["NSTextField"](labelWithString="not clicked yet")

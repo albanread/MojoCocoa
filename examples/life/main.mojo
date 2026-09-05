@@ -23,7 +23,6 @@ from std.objc import (
     ObjCObject,
     send,
     nsenum,
-    nsstring,
     ns_to_string,
     CGPoint,
     CGSize,
@@ -403,7 +402,7 @@ def handle_key(event: P):
 def update_title():
     var state = "running" if g_running()[] != 0 else "paused"
     var title = (
-        String("Life — gen ")
+        "Life — gen "
         + String(g_gen()[])
         + "  ·  pop "
         + String(population())
@@ -414,7 +413,7 @@ def update_title():
         + "   [space] pause  [drag] draw  [⇧drag] erase  [.] step  [r]"
         + " random  [c] clear  [ [ ] ] speed"
     )
-    _ = Obj["NSWindow"](g_window()[]).setTitle(nsstring(title).ptr())
+    _ = Obj["NSWindow"](g_window()[]).setTitle(title)
 
 
 def present():

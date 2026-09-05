@@ -327,8 +327,8 @@ fn draw_text(text: String, x: Float64, y: Float64, font_addr: Int,
 fn wave_name(wave: Int) -> String:
     """The waveform bits, spelled the way the register reads."""
     if wave == 0:
-        return String("---- ")
-    var s = String("")
+        return "---- "
+    var s = ""
     s += "T" if (wave & WAVE_TRI) != 0 else "."
     s += "S" if (wave & WAVE_SAW) != 0 else "."
     s += "P" if (wave & WAVE_PULSE) != 0 else "."
@@ -344,21 +344,21 @@ fn note_name(step: Int) -> String:
     multiply up from A0 until it passes.
     """
     if step <= 0:
-        return String("--- ")
+        return "--- "
     # step = freq_reg * CLOCK * 256 / SR, and freq_reg = hz * 2^24 / CLOCK,
     # so hz = step * SR / (2^24 * 256).
     let hz = Float64(step) * Float64(SAMPLE_RATE) / 4294967296.0
     if hz < 20.0:
-        return String("--- ")
+        return "--- "
     var midi = 0
     var probe = 8.1757989156  # C-1
     while probe * 1.0293022366 < hz and midi < 127:
         probe *= 1.0594630943592953
         midi += 1
-    let names = String("C C#D D#E F F#G G#A A#B ")
+    let names = "C C#D D#E F F#G G#A A#B "
     let pc = midi % 12
     let octave = midi // 12 - 1
-    return names[byte = pc * 2 : pc * 2 + 2] + String(octave) + String(" ")
+    return names[byte = pc * 2 : pc * 2 + 2] + String(octave) + " "
 
 
 fn draw_screen():
@@ -375,15 +375,15 @@ fn draw_screen():
         var y = WIN_H - FRAME - 34.0
 
         draw_text(
-            String("**** MOJO CHIP SYNTHESISER ****"),
+            "**** MOJO CHIP SYNTHESISER ****",
             left, y, g_font_title()[], c64_light_blue(),
         )
         y -= 22.0
         let paused = get(st, PLAYER_BASE + UI_PAUSE) != 0
         let frame_no = get(st, S_FRAME)
         draw_text(
-            String("3 VOICES  48 KHZ  FRAME ") + String(frame_no)
-            + (String("  [PAUSED]") if paused else String("")),
+            "3 VOICES  48 KHZ  FRAME " + String(frame_no)
+            + ("  [PAUSED]" if paused else ""),
             left, y, g_font_body()[], c64_light_blue(),
         )
 
@@ -427,7 +427,7 @@ fn draw_screen():
         # ── The voices ──────────────────────────────────────────────────────
         y = 182.0
         draw_text(
-            String("VOICE  WAVE  NOTE   ENVELOPE"),
+            "VOICE  WAVE  NOTE   ENVELOPE",
             left, y, g_font_body()[], c64_light_blue(),
         )
         y -= 8.0
@@ -436,9 +436,9 @@ fn draw_screen():
             let muted = get(st, PLAYER_BASE + UI_MUTE + v) != 0
             let ink = c64_light_red() if muted else c64_yellow()
             let env = vget(st, v, V_ENV) >> 16
-            var line = String(" ") + String(v + 1) + String("     ")
+            var line = " " + String(v + 1) + "     "
             line += wave_name(vget(st, v, V_WAVE))
-            line += String(" ") + note_name(vget(st, v, V_STEP))
+            line += " " + note_name(vget(st, v, V_STEP))
             draw_text(line, left, y, g_font_body()[], ink)
 
             # The envelope, as a bar. This is read while the audio thread is
@@ -453,28 +453,28 @@ fn draw_screen():
                     c64_light_red() if muted else c64_light_green(),
                 )
             if muted:
-                draw_text(String("MUTE"), bar_x + bar_w + 12.0, y, g_font_body()[],
+                draw_text("MUTE", bar_x + bar_w + 12.0, y, g_font_body()[],
                           c64_light_red())
 
         # ── The filter ──────────────────────────────────────────────────────
         y -= 34.0
         let mode = get(st, S_FMODE)
-        var mode_name = String("OFF")
+        var mode_name = "OFF"
         if mode == FILT_LP:
-            mode_name = String("LOW")
+            mode_name = "LOW"
         elif mode == FILT_BP:
-            mode_name = String("BAND")
+            mode_name = "BAND"
         elif mode == FILT_HP:
-            mode_name = String("HIGH")
+            mode_name = "HIGH"
         draw_text(
-            String("FILTER ") + mode_name
-            + String("  CUTOFF ") + String(get(st, S_CUTOFF))
-            + String("  RES ") + String(get(st, S_RES)),
+            "FILTER " + mode_name
+            + "  CUTOFF " + String(get(st, S_CUTOFF))
+            + "  RES " + String(get(st, S_RES)),
             left, y, g_font_body()[], c64_light_blue(),
         )
 
         draw_text(
-            String("SPACE PAUSE  1 2 3 MUTE  < > CUTOFF  - + RES  F FILTER  Q QUIT"),
+            "SPACE PAUSE  1 2 3 MUTE  < > CUTOFF  - + RES  F FILTER  Q QUIT",
             left, FRAME + 12.0, g_font_small()[], c64_light_blue(),
         )
 
@@ -560,11 +560,11 @@ def main() raises:
     # A named .abc file replaces the built-in tune. The parse happens here,
     # before the audio unit exists: it allocates and it can raise, and the
     # render callback may do neither.
-    var loaded = String("")
+    var loaded = ""
     let args = argv()
     if len(args) > 1:
         var path = String(args[1])
-        var text = String("")
+        var text = ""
         try:
             with open(path, "r") as f:
                 text = f.read()
@@ -616,7 +616,7 @@ def main() raises:
             backing=nsenum["NSBackingStoreBuffered"](),
             defer=False,
         )
-        _ = win.setTitle(nsstring("CHIP").ptr())
+        win.title = "CHIP"
 
         let view = ObjCObject(SidView().__objc_id)
         _ = Obj["NSView"](view.addr()).setFrame(rect(0.0, 0.0, WIN_W, WIN_H))
@@ -632,7 +632,7 @@ def main() raises:
         _ = win.makeKeyAndOrderFront(ObjCObject(win.id))
         _ = app.activateIgnoringOtherApps(True)
 
-        var mode = nsstring("kCFRunLoopDefaultMode")
+        var mode = "kCFRunLoopDefaultMode"
 
         # The loop is hand-rolled rather than [NSApp run] for the same reason
         # the other examples give: the thing that owns the resource has to be

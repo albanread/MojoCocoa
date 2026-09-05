@@ -332,7 +332,7 @@ def main() raises:
             backing=nsenum["NSBackingStoreBuffered"](),
             defer=False,
         )
-        _ = win.setTitle(nsstring("Mandelbrot — every pixel is Mojo").ptr())
+        win.title = "Mandelbrot — every pixel is Mojo"
 
         # The content view is ours: instantiating the class registers it,
         # methods, encodings and all.
@@ -376,7 +376,7 @@ def main() raises:
         _ = app.finishLaunching()
 
         var region = MTLRegion(MTLOrigin(0, 0, 0), MTLSize(WIDTH, HEIGHT, 1))
-        var mode = nsstring("kCFRunLoopDefaultMode")
+        var mode = "kCFRunLoopDefaultMode"
 
         print("Rendering. click recenters · space pauses · r resets · q quits")
         var frames = 0
@@ -455,9 +455,7 @@ def main() raises:
                 # Also to stdout: the title bar is invisible to a captured
                 # run, which is every run that is not a person watching.
                 print("  frame", frames, "—", fps, "fps")
-                _ = win.setTitle(
-                    nsstring(String("Mandelbrot — ") + String(Int(fps)) + " fps").ptr(),
-                )
+                win.title = "Mandelbrot — " + String(Int(fps)) + " fps"
             if frame_limit != 0 and frames >= frame_limit:
                 running = False
 

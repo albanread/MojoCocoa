@@ -449,7 +449,7 @@ def main() raises:
             backing=nsenum["NSBackingStoreBuffered"](),
             defer=False,
         )
-        _ = win.setTitle(nsstring("Ferns — click to plant").ptr())
+        win.title = "Ferns — click to plant"
 
         var view = ObjCObject(FernView().__objc_id)
         _ = Obj["NSView"](view.addr()).setFrame(
@@ -484,7 +484,7 @@ def main() raises:
         _ = app.finishLaunching()
 
         var region = MTLRegion(MTLOrigin(0, 0, 0), MTLSize(W, H, 1))
-        var mode = nsstring("kCFRunLoopDefaultMode")
+        var mode = "kCFRunLoopDefaultMode"
 
         print("Ferns. click plants · space pauses · r reseeds · q quits")
         var frames = 0

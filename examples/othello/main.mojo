@@ -122,12 +122,12 @@ fn new_game():
 
 fn level_name(level: Int) -> String:
     if level == LEVEL_BEGINNER:
-        return String("Beginner")
+        return "Beginner"
     if level == LEVEL_INTERMEDIATE:
-        return String("Intermediate")
+        return "Intermediate"
     if level == LEVEL_ADVANCED:
-        return String("Advanced")
-    return String("Master · GPU") if g_gpu_ok()[] != 0 else String("Master · CPU")
+        return "Advanced"
+    return "Master · GPU" if g_gpu_ok()[] != 0 else "Master · CPU"
 
 
 # ── Colour ──────────────────────────────────────────────────────────────────
@@ -238,27 +238,27 @@ fn draw_status():
     let w = popcount(white)
     let ink = rgb(250, 250, 240)
 
-    var line = String("B:") + String(b) + String("  W:") + String(w)
-    line += String("   ") + level_name(g_level()[])
+    var line = "B:" + String(b) + "  W:" + String(w)
+    line += "   " + level_name(g_level()[])
     draw_text(line, MARGIN, 28.0, 15.0, ink)
 
     var note = String()
     if g_over()[] != 0:
         if b > w:
-            note = String("Black wins by ") + String(b - w)
+            note = "Black wins by " + String(b - w)
         elif w > b:
-            note = String("White wins by ") + String(w - b)
+            note = "White wins by " + String(w - b)
         else:
-            note = String("Drawn")
-        note += String("   ·  N for a new game")
+            note = "Drawn"
+        note += "   ·  N for a new game"
     elif g_thinking()[] != 0:
-        note = String("White is thinking…")
+        note = "White is thinking…"
     elif g_black_turn()[] != 0:
-        note = String("Your move  ·  N new  ·  B I A M level  ·  Q quit")
+        note = "Your move  ·  N new  ·  B I A M level  ·  Q quit"
     else:
-        note = String("White to play")
+        note = "White to play"
     if g_last_ms()[] > 0 and g_over()[] == 0:
-        note += String("   (") + String(g_last_ms()[]) + String(" ms)")
+        note += "   (" + String(g_last_ms()[]) + " ms)"
     draw_text(note, MARGIN, 8.0, 11.0, rgb(170, 175, 165))
 
 
@@ -418,14 +418,14 @@ def main() raises:
             defer=False,
         )
         g_window()[] = win.addr()
-        _ = win.setTitle(nsstring("Othello").ptr())
+        win.title = "Othello"
         _ = win.setContentView(view)
         _ = win.makeFirstResponder(view)
         _ = win.makeKeyAndOrderFront(ObjCObject(win.id))
         _ = app.activateIgnoringOtherApps(True)
         _ = app.finishLaunching()
 
-        var mode = nsstring("kCFRunLoopDefaultMode")
+        var mode = "kCFRunLoopDefaultMode"
         var rng = UInt64(perf_counter_ns()) | 1
         var running = True
 

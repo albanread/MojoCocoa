@@ -368,8 +368,7 @@ def write_shot(view: ObjCObject, var path: String):
         if data.id == 0:
             return
         var pth = path
-        _ = Obj["NSData"](data.id).writeToFile(
-            nsstring(pth).ptr(), atomically=True
+        _ = Obj["NSData"](data.id).writeToFile(pth, atomically=True
         )
 
 
@@ -415,12 +414,11 @@ def tune_index(var name: String) -> Int:
 
 def scan_tunes() raises:
     """Whatever is in tunes/ beside the project, so the list is never empty."""
-    let dir = String(cwd()) + String("/tunes")
+    let dir = String(cwd()) + "/tunes"
     with autoreleasepool():
         let fm = Cls["NSFileManager"]().defaultManager()
         var d = dir
-        let names = fm.contentsOfDirectoryAtPath(
-            nsstring(d).ptr(), error=ObjCObject(0)
+        let names = fm.contentsOfDirectoryAtPath(d, error=ObjCObject(0)
         )
         if names.id == 0:
             return
@@ -429,7 +427,7 @@ def scan_tunes() raises:
         for i in range(n):
             let nm = ns_to_string(ObjCObject(arr.objectAtIndex(i).id))
             if nm.endswith(".abc"):
-                add_tune(dir + String("/") + nm)
+                add_tune(dir + "/" + nm)
 
 
 def open_panel():
@@ -505,12 +503,12 @@ def play_tune(index: Int) raises:
     if index < 0 or index >= len(paths[]):
         return
     let path = paths[][index]
-    var text = String("")
+    var text = ""
     try:
         with open(path, "r") as f:
             text = f.read()
     except:
-        set_status(String("could not read ") + basename(path))
+        set_status("could not read " + basename(path))
         return
 
     var tune = Tune()
@@ -526,7 +524,7 @@ def play_tune(index: Int) raises:
     var steps = List[Step]()
     build_schedule(tune, SAMPLE_RATE, steps)
     if len(steps) == 0:
-        set_status(String("nothing to play in ") + basename(path))
+        set_status("nothing to play in " + basename(path))
         return
 
     var st = P(unsafe_from_address=g_chip()[])
@@ -541,26 +539,26 @@ def play_tune(index: Int) raises:
     put(st, PLAYER_BASE + SC_LOOP, 1)
     put(st, PLAYER_BASE + SC_DONE, 0)
 
-    var sub = String("")
+    var sub = ""
     if len(tune.composer.as_bytes()) > 0:
-        sub += tune.composer + String("   ·   ")
-    sub += String(len(tune.voices)) + String(" voices   ·   ")
-    sub += String(notes) + String(" notes   ·   ")
-    sub += String(tune.tempo_bpm) + String(" bpm")
+        sub += tune.composer + "   ·   "
+    sub += String(len(tune.voices)) + " voices   ·   "
+    sub += String(notes) + " notes   ·   "
+    sub += String(tune.tempo_bpm) + " bpm"
     set_header(
         tune.title if len(tune.title.as_bytes()) > 0 else basename(path),
         sub^,
     )
     iset(I_MODE, MODE_TUNE)
     iset(I_LOADED, index)
-    set_status(String("playing"))
+    set_status("playing")
     put(st, PLAYER_BASE + SC_PAUSE, 0)
 
 
 def main() raises:
     var backend = BACKEND_CHIP
-    var write_only = String("")
-    var first = String("")
+    var write_only = ""
+    var first = ""
     let args = argv()
     for i in range(1, len(args)):
         let a = String(args[i])
@@ -578,7 +576,7 @@ def main() raises:
         if len(first.as_bytes()) == 0:
             print("usage: abcplayer <tune.abc> --write=out.mid")
             return
-        var text = String("")
+        var text = ""
         with open(first, "r") as f:
             text = f.read()
         var tune = Tune()
@@ -611,7 +609,7 @@ def main() raises:
     g_font_title()[] = make_font(16.0)
     g_font_body()[] = make_font(13.0)
     g_font_small()[] = make_font(11.0)
-    set_header(String("ABC player"), String("chip · three voices"))
+    set_header("ABC player", "chip · three voices")
 
     scan_tunes()
     if len(first.as_bytes()) > 0:
@@ -646,7 +644,7 @@ def main() raises:
             backing=nsenum["NSBackingStoreBuffered"](),
             defer=False,
         )
-        _ = win.setTitle(nsstring("ABC player").ptr())
+        win.title = "ABC player"
         # An NSWindow made this way is RELEASED WHEN CLOSED by default, so
         # closing it deallocates the object this loop is about to ask whether
         # it is still visible. The answer then comes from freed memory: often
@@ -666,7 +664,7 @@ def main() raises:
         _ = win.makeKeyAndOrderFront(ObjCObject(win.id))
         _ = app.activateIgnoringOtherApps(True)
 
-        var mode = nsstring("kCFRunLoopDefaultMode")
+        var mode = "kCFRunLoopDefaultMode"
         var running = True
         while running:
             while True:
@@ -702,7 +700,7 @@ def main() raises:
                     open_panel()
                 if want_stop:
                     go_live()
-                    set_status(String("ready"))
+                    set_status("ready")
                 if want_play:
                     play_tune(iget(I_SEL))
 

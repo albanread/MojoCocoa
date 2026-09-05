@@ -541,7 +541,7 @@ def main() raises:
             backing=nsenum["NSBackingStoreBuffered"](),
             defer=False,
         )
-        _ = win.setTitle(nsstring("Fernwind — the GPU, swaying").ptr())
+        win.title = "Fernwind — the GPU, swaying"
 
         var view = ObjCObject(FernwindView().__objc_id)
         _ = Obj["NSView"](view.addr()).setFrame(
@@ -576,7 +576,7 @@ def main() raises:
         _ = app.finishLaunching()
 
         var region = MTLRegion(MTLOrigin(0, 0, 0), MTLSize(W, H, 1))
-        var mode = nsstring("kCFRunLoopDefaultMode")
+        var mode = "kCFRunLoopDefaultMode"
 
         print("Fernwind. click plants · space stills the air · r reseeds · q quits")
         var frames = 0
