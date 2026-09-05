@@ -58,7 +58,7 @@ echo "== gui examples (build + launch) =="
 for ex in window othello chip life abcplayer; do build_run "$ex"; done
 
 echo "== pure-Mojo examples =="
-for ex in hello fern bifurcation; do build_run "$ex"; done
+for ex in hello animals fern bifurcation; do build_run "$ex"; done
 
 echo "== the ratchet =="
 n=$(grep -rc "msg_send\[" examples/ --include="*.mojo" | awk -F: '{s+=$2} END {print s+0}')

@@ -7,6 +7,9 @@ which opens itself when a build starts and toggles with ⌘0.
     hello/        the smallest thing that runs — one file
     fern/         Barnsley's fern, saved as a png — three files, so a
                   project with more than one file in it
+    animals/      dog barks, cat meows -- the same example twice, once
+                  with a trait the compiler resolves and once with a real
+                  Objective-C class the runtime does, and what each costs
     window/       a Cocoa window with a button, in Mojo
     life/         Conway's Life: a real app -- mouse, keyboard, a Metal
                   layer, and three `class` declarations Cocoa calls into
