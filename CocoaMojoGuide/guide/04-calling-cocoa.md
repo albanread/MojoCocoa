@@ -398,8 +398,9 @@ Strings cross automatically: a bare `String` argument is bridged to
 `NSString` wherever the metadata says the argument is an object —
 `NSButton(buttonWithTitle="Click")` needs no wrapping. Where the selector
 takes a NON-object, a String is a compile error rather than corruption.
-The positional spelling (`w.setTitle(...)` without labels) still crosses by
-hand with `nsstring(...).ptr()`.
+One-part selectors (`w.setTitle("Hello")`, with no label to keyword) bridge
+the bare String the same way the keyword surface does, and property writes
+(`w.title = "Hello"`) bridge the value they assign.
 <!-- doccrate:keep-together:start -->
 
 

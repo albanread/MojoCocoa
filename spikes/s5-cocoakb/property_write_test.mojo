@@ -34,13 +34,13 @@ def main() raises:
         if w.title().length() != 0:
             raise Error("a fresh window should have no title")
 
-        # Write, read back.
-        win.title = nsstring(String("Set by property")).ptr()
+        # Write, read back -- the bare String crosses at the assignment.
+        win.title = "Set by property"
         if w.title().length() != 15:
             raise Error("the property write did not take")
 
         # Write again, read back: the write path is live, not one-shot.
-        win.title = nsstring(String("Longer title now")).ptr()
+        win.title = "Longer title now"
         if w.title().length() != 16:
             raise Error("the second property write did not take")
 

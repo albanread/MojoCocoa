@@ -143,6 +143,20 @@ nonsense size deserves an abort that names itself.
 
 ---
 
+## 2026-09-01 — the property-write bridge and the shared `__bridge_string`
+
+**Files:** `std/objc/typed.mojo` (unchanged this time — the change is the
+compiler's, but the effect is stdlib surface): bare Strings now cross in
+positional calls (`win.setTitle("Hello")`) and property writes
+(`win.title = "Hello"`), not only keyword calls and constructions. The
+`__bridge_string` helper in typed.mojo is now consulted by all three call
+arms and the assign arm; the guard in the positional tier is unchanged and
+still refuses a String where the selector takes a non-object.
+
+**Carry forward:** yes, with the rest of `std.objc`.
+
+---
+
 ## 2026-09-01 — `nsenum`: enum values by their SDK names
 
 **Files:** `std/objc/foundation.mojo`, `std/objc/__init__.mojo`
