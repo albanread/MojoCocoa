@@ -42,13 +42,14 @@ from std.time import perf_counter_ns
 
 from gamepane.api import (
     P,
-    KEY_ESCAPE, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_SPACE,
+    KEY_ESCAPE, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_SPACE, KEY_RETURN,
     SFX_SHOOT, SFX_EXPLODE, SFX_BANG, SFX_SAUCER, SFX_POWERUP, SFX_HURT,
     SFX_COIN, SFX_BLIP,
 )
 from gamepane.metal import (
     GamePane, Sprites, TextOverlay, key_held,
-    deck_new, deck_free, sfx_play, start_audio, stop_audio,
+    deck_new, deck_free, sfx_play, play_tune, stop_tune,
+    start_audio, stop_audio,
 )
 
 from art import (
@@ -60,6 +61,89 @@ from art import (
     BULLET_W, BULLET_H, BOMB_W, BOMB_H, STAR_W, STAR_H,
     EXPLOSION_W, EXPLOSION_H, SAUCER_W, SAUCER_H,
 )
+
+
+# ── the music ───────────────────────────────────────────────────────────────
+#
+# Three tunes in ABC, played on chip A while chip B does the effects. The
+# schedule is flattened before the audio unit sees it, so a tune costs one
+# parse however long it plays.
+
+comptime MUSIC_INTRO = String("""X:1
+T:Galaxigans
+M:4/4
+L:1/8
+Q:1/4=132
+K:C
+V:1
+[I:chip v=0 wave=pulse pw=600 a=0 d=6 s=9 r=6 vol=14]
+C2 G2 c2 G2 | E2 c2 e4 | F2 c2 f2 c2 | G2 d2 g4 |
+V:2
+[I:chip v=1 wave=pulse pw=300 a=0 d=4 s=6 r=4]
+c'2 g2 e2 g2 | c'2 e'2 g'4 | f'2 c'2 a2 c'2 | g'2 d'2 g'4 |
+V:3
+[I:chip v=2 wave=saw a=0 d=8 s=4 r=6]
+C,4 C,4 | C,4 C,4 | F,4 F,4 | G,4 G,4 |
+""")
+
+# The in-game bed. CHITTERY on purpose: arpeggios instead of chords, 16ths
+# at 152, and an envelope with no body at all -- a=0 d=1 s=0 r=1 with a
+# narrow pulse makes every note a TICK rather than a tone, which is the C64
+# way of making an insect. The bass stabs and rests instead of holding, and
+# the third voice is noise, ticking off the beat.
+comptime MUSIC_ALIENS = String("""X:1
+T:Aliens approach
+M:4/4
+L:1/16
+Q:1/4=152
+K:Am
+V:1
+[I:chip v=0 wave=pulse pw=150 a=0 d=1 s=0 r=1 vol=14]
+|:aeca eaca aeca ecae | gdBg dgBg gdBg dBgd |
+fcAf cfAf fcAf cAfc | e^GBe ^GBe^G e^GBe B^Ge :|
+V:2
+[I:chip v=1 wave=pulse pw=900 a=0 d=3 s=5 r=2]
+|:A,4 z4 A,2 A,2 z4 | G,4 z4 G,2 G,2 z4 |
+F,4 z4 F,2 F,2 z4 | E,4 z4 E,2 E,2 z4 :|
+V:3
+[I:chip v=2 wave=noise a=0 d=1 s=0 r=1]
+|:z2 C2 z2 C2 z2 C2 z2 C2 | z2 C2 z2 C2 z2 C2 z2 C2 |
+z2 C2 z2 C2 z2 C2 z2 C2 | z2 C2 z2 C2 C2 C2 C2 C2 :|
+""")
+
+# The ALIENS' dance, for when they win. Whole-tone, so it never settles on
+# a key -- which is what makes it sound like the wrong side is celebrating
+# -- with the third voice on noise, as a drum.
+comptime MUSIC_DANCE = String("""X:1
+T:The aliens win
+M:4/4
+L:1/8
+Q:1/4=126
+K:C
+V:1
+[I:chip v=0 wave=pulse pw=400 a=0 d=5 s=8 r=5 vol=14]
+|:C2 E2 ^F2 ^G2 | ^A2 c2 ^A2 ^G2 | ^F2 E2 D2 C2 | ^A,4 C4 :|
+V:2
+[I:chip v=1 wave=pulse pw=200 a=0 d=3 s=5 r=3]
+|:c2 e2 ^f2 ^g2 | ^a2 c'2 ^a2 ^g2 | ^f2 e2 d2 c2 | ^a,4 c4 :|
+V:3
+[I:chip v=2 wave=noise a=0 d=2 s=0 r=2]
+|:C,2 z2 C,2 z2 | C,2 z2 C,2 z2 | C,2 z2 C,2 z2 | C,2 C,2 C,4 :|
+""")
+
+comptime MUSIC_WIN = String("""X:1
+T:Player wins
+M:4/4
+L:1/8
+Q:1/4=140
+K:C
+V:1
+[I:chip v=0 wave=pulse pw=500 a=0 d=4 s=10 r=6 vol=15]
+C2 E2 G2 c2 | e2 g2 c'4 |
+V:2
+[I:chip v=1 wave=pulse pw=250 a=0 d=3 s=8 r=4]
+c2 e2 g2 c'2 | g2 c'2 e'4 |
+""")
 
 
 comptime VIEW_W = 640
@@ -723,6 +807,31 @@ struct Game(Movable):
                 if self.boom_timer[k] >= 15:
                     sprites.hide(self.boom[k])
 
+    def celebrate(mut self, mut sprites: Sprites, frame: Int):
+        """The aliens' victory dance, when the player has run out of ships.
+
+        Ported from the BASIC's UpdateEnemiesCelebration: a ring turning
+        about the middle of the screen whose radius BREATHES, so the
+        formation opens and closes as it spins rather than just rotating.
+        Every survivor gets a phase offset from its own index, which is what
+        turns a circle into a spiral.
+        """
+        for i in range(ENEMIES):
+            if self.enemy_alive[i] != 1:
+                continue
+            let angle = Float64(frame) * 0.04 + Float64(i) * 0.2
+            let radius = 120.0 + sin(Float64(frame) * 0.02 + Float64(i) * 0.1) * 100.0
+            let w = BOSS_W if i < 10 else BEE_W
+            let h = BOSS_H if i < 10 else BEE_H
+            self.place_tl(
+                sprites, self.enemy[i],
+                320.0 + cos(angle) * radius - Float64(w) / 2.0,
+                240.0 + sin(angle) * radius - Float64(h) / 2.0,
+                w, h,
+            )
+            sprites.set_rotation(self.enemy[i], angle * 57.295 + 90.0)
+            sprites.show(self.enemy[i])
+
     def all_dead(self) -> Bool:
         for i in range(ENEMIES):
             if self.enemy_alive[i] == 1:
@@ -764,14 +873,118 @@ def main() raises:
     var last_ships = -1
     var last_state = -1
     var last_flash = -1
+    var music_for = -1              # which state's tune is playing
+
+    # A FIXED LOGIC RATE. The BASIC ran at VSYNC on a 60 Hz machine and every
+    # constant in it -- 4 pixels a frame, a 15-frame cooldown, 0.004 added to
+    # a dive each step -- is written in those frames. This display may run at
+    # 120, and simply doing one step per drawn frame made the whole game run
+    # at twice the speed it was tuned for. So the logic steps at 60 Hz
+    # whatever the screen does, and the screen just draws whatever the last
+    # step left. Four steps a frame is the cap: a stall should drop time, not
+    # spend a second catching up.
+    comptime TICK = 1.0 / 60.0
+    comptime MAX_STEPS = 4
+    var accumulator = 0.0
 
     while pane.pump():
-        if key_held(KEY_ESCAPE):
+        # NO input at all in attract mode, Escape included: the window is an
+        # unfocused Accessory and still sees keys typed elsewhere, so three
+        # runs ended at 493, 288 and 900 frames until this was guarded. The
+        # frame limit is what stops a headless run.
+        if not attract and key_held(KEY_ESCAPE):
             break
 
-        # The overlay is RETAINED, so it is redrawn only when what it says
-        # changes -- which for a score and three words is almost never. The
-        # BASIC redraws its text every frame because it has to.
+        # Attract mode steps ONCE per rendered frame, deliberately. The
+        # accumulator makes real play frame-rate independent, but it also
+        # makes the state at frame N depend on wall-clock time -- and a
+        # headless run has to produce the same frame every time or the
+        # harness's dump check is a coin toss. Measured: with the
+        # accumulator, two runs diverged.
+        var steps_left = 1
+        if not attract:
+            accumulator += pane.dt()
+            if accumulator > TICK * Float64(MAX_STEPS):
+                accumulator = TICK * Float64(MAX_STEPS)
+            steps_left = 0
+            while accumulator >= TICK and steps_left < MAX_STEPS:
+                accumulator -= TICK
+                steps_left += 1
+
+        for _ in range(steps_left):
+
+            # The tune follows the state, and is started once on entry.
+            if state != music_for:
+                if state == STATE_INTRO:
+                    _ = play_tune(deck, MUSIC_INTRO, loop=True)
+                elif state == STATE_PLAYING:
+                    _ = play_tune(deck, MUSIC_ALIENS, loop=True)
+                elif state == STATE_GAMEOVER:
+                    _ = play_tune(deck, MUSIC_DANCE, loop=True)
+                else:
+                    _ = play_tune(deck, MUSIC_WIN, loop=False)
+                music_for = state
+
+            game.update_stars(sprites)
+
+            if state == STATE_INTRO:
+                intro_timer += 1
+                # A human starts when they are ready: the intro waits, it
+                # does not count down. Only attract mode starts itself.
+                let pressed = key_held(KEY_SPACE) or key_held(KEY_RETURN)
+                if (not attract and pressed) or (attract and intro_timer > 60):
+                    state = STATE_PLAYING
+                    frame = 0
+                flash_timer = intro_timer
+
+            elif state == STATE_PLAYING:
+                game.update_player(sprites, deck, attract, frame)
+                game.update_enemies(sprites, deck, frame)
+                game.update_saucer(sprites, deck)
+                game.update_bullets(sprites, deck)
+                if game.ships <= 0 and game.p_death_timer <= 0:
+                    state = STATE_GAMEOVER
+                    flash_timer = 0
+                elif game.all_dead():
+                    state = STATE_WIN
+                    flash_timer = 0
+                frame += 1
+
+            elif state == STATE_GAMEOVER:
+                # The aliens won, so the aliens dance -- and the player can
+                # start again the moment they want to, rather than waiting
+                # out a timer with nothing to press. That was the missing
+                # half of the flow: the BASIC only ever timed out.
+                game.celebrate(sprites, flash_timer)
+                flash_timer += 1
+                let pressed = key_held(KEY_SPACE) or key_held(KEY_RETURN)
+                let restart = (
+                    (not attract and flash_timer > 60 and pressed)
+                    or (attract and flash_timer > 240)
+                )
+                if restart:
+                    game.reset(sprites)
+                    state = STATE_INTRO
+                    intro_timer = 0
+
+            else:                                   # STATE_WIN
+                game.update_player(sprites, deck, attract, frame)
+                game.update_enemies(sprites, deck, frame)
+                game.update_saucer(sprites, deck)
+                game.update_bullets(sprites, deck)
+                frame += 1
+                flash_timer += 1
+                let pressed = key_held(KEY_SPACE) or key_held(KEY_RETURN)
+                let again = (
+                    (not attract and flash_timer > 60 and pressed)
+                    or (attract and flash_timer > 180)
+                )
+                if again:
+                    game.reset(sprites)
+                    state = STATE_INTRO
+                    intro_timer = 0
+
+        # ── drawing, once per screen frame ───────────────────────────────
         let flash = (flash_timer // 10) % 6
         if (
             game.score != last_score
@@ -789,64 +1002,31 @@ def main() raises:
             if state == STATE_INTRO:
                 hud.draw_text(230, 200, String("PLAYER 1 READY"),
                               flash_r[flash], flash_g[flash], flash_b[flash], 1)
+                hud.draw_text(206, 230, String("PRESS SPACE OR RETURN"),
+                              194, 195, 199, 1)
             elif state == STATE_GAMEOVER:
                 hud.draw_text(266, 200, String("GAME OVER"),
                               flash_r[flash], flash_g[flash], flash_b[flash], 1)
+                if flash_timer > 60:
+                    hud.draw_text(224, 230, String("PRESS SPACE OR RETURN"),
+                                  194, 195, 199, 1)
             elif state == STATE_WIN:
                 hud.draw_text(242, 200, String("PLAYER WINS!"),
                               flash_r[flash], flash_g[flash], flash_b[flash], 1)
+                if flash_timer > 60:
+                    hud.draw_text(224, 230, String("PRESS SPACE OR RETURN"),
+                                  194, 195, 199, 1)
             last_score = game.score
             last_ships = game.ships
             last_state = state
             last_flash = flash
 
         game.draw_hud_ships(sprites)
-        game.update_stars(sprites)
-
-        if state == STATE_INTRO:
-            if intro_timer == 0:
-                _ = sfx_play(deck, SFX_COIN)
-            intro_timer += 1
-            if (not attract and key_held(KEY_SPACE)) or intro_timer > 60:
-                state = STATE_PLAYING
-                frame = 0
-            flash_timer = intro_timer
-
-        elif state == STATE_PLAYING:
-            game.update_player(sprites, deck, attract, frame)
-            game.update_enemies(sprites, deck, frame)
-            game.update_saucer(sprites, deck)
-            game.update_bullets(sprites, deck)
-            if game.ships <= 0 and game.p_death_timer <= 0:
-                state = STATE_GAMEOVER
-                flash_timer = 0
-                _ = sfx_play(deck, SFX_HURT)
-            elif game.all_dead():
-                state = STATE_WIN
-                flash_timer = 0
-                _ = sfx_play(deck, SFX_POWERUP)
-            frame += 1
-
-        elif state == STATE_GAMEOVER:
-            flash_timer += 1
-            if flash_timer > 600:
-                game.reset(sprites)
-                state = STATE_INTRO
-                intro_timer = 0
-
-        else:                                   # STATE_WIN
-            game.update_player(sprites, deck, attract, frame)
-            game.update_enemies(sprites, deck, frame)
-            game.update_saucer(sprites, deck)
-            game.update_bullets(sprites, deck)
-            frame += 1
-            flash_timer += 1
-            if flash_timer > 180:
-                game.reset(sprites)
-                state = STATE_INTRO
-                intro_timer = 0
-
-        sprites.tick(pane.dt())
+        # The animation clock, like the logic clock: a fixed step in attract
+        # mode. Three runs had identical score and ships and still produced
+        # different dumps, because the explosion and wing frames were being
+        # advanced by real elapsed time.
+        sprites.tick(TICK if attract else pane.dt())
 
         with autoreleasepool():
             let f = pane.begin_frame()

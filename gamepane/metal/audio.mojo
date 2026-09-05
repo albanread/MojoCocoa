@@ -30,10 +30,10 @@ from std.objc import load_framework, named_global
 
 from gamepane.abc import (
     Tune, Step, parse_abc, resolve_ties, build_schedule, sort_steps,
-    flatten_schedule, render_scheduled,
+    flatten_schedule, render_scheduled, SC_LOOP,
 )
 from gamepane.api import (
-    P, SAMPLE_RATE, chip_new, chip_free, chip_render, get, put,
+    P, SAMPLE_RATE, PLAYER_BASE, chip_new, chip_free, chip_render, get, put,
     gate_off, set_volume, vget, V_ENV, V_GATE,
     SFX_COUNT, SFX_CLICK, sfx_frames, sfx_start, sfx_frame, sfx_stop,
     Tick,
@@ -129,7 +129,7 @@ fn sfx_chip(d: P) -> P:
     return P(unsafe_from_address=dget(d, D_CHIP_B))
 
 
-def play_tune(d: P, source: String) raises -> Int:
+def play_tune(d: P, source: String, loop: Bool = False) raises -> Int:
     """Parse ABC and schedule it on chip A. Returns the number of steps.
 
     The schedule is flattened into plain memory HERE, on the game's thread,
@@ -151,6 +151,9 @@ def play_tune(d: P, source: String) raises -> Int:
     # count -- so what comes back to the caller is len(steps), which is what
     # "how much tune is there" means to anyone asking.
     let addr = flatten_schedule(steps, a)
+    # Looping is the player's own, so a level theme costs one parse however
+    # long the level lasts.
+    put(a, PLAYER_BASE + SC_LOOP, 1 if loop else 0)
     dput(d, D_TUNE, 1 if (addr != 0 and len(steps) > 0) else 0)
     return len(steps)
 

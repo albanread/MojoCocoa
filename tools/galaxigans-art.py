@@ -127,9 +127,16 @@ for raw in body.splitlines():
         m = re.match(r'SPRITE ROW' + NUM + r',\s*"([0-9a-fA-F]*)"$', stmt)
         if m:
             row, data = int(m.group(1)), m.group(2)
+            # Frame-LOCAL, like every other drawing command. Getting this
+            # wrong is invisible in a single-frame definition (the origin is
+            # 0) and silently destroys a multi-frame one: the scorpion's two
+            # frames both wrote rows 0..13, so frame 1 landed on top of
+            # frame 0 and frame 1's own half of the strip stayed empty --
+            # which showed up in the game as an alien flashing on and off.
             for x, ch in enumerate(data):
-                if 0 <= x < w and 0 <= row < h:
-                    g[row][x] = int(ch, 16)
+                xx = x + frame_origin
+                if 0 <= xx < w and 0 <= row < h:
+                    g[row][xx] = int(ch, 16)
             continue
         m = re.match(r'GCLS' + NUM + '$', stmt)
         if m:
@@ -167,16 +174,86 @@ NAMES = {0: "PLAYER", 1: "BEE", 2: "BOSS", 3: "BULLET", 4: "BOMB",
          5: "STAR", 6: "EXPLOSION", 7: "BUTTERFLY", 8: "SCORPION",
          9: "BLUE_BEE", 10: "MOTH", 11: "SAUCER"}
 
-for i in order:
+def art_rows(i):
     w, h, g = defs[i]
     fw, fh, n = frames.get(i, (w, h, 1))
-    print("DEF %d %dx%d frames=%d %s" % (i, fw, fh, n, NAMES.get(i, "DEF%d" % i)))
-    for f in range(n):
-        rows = "/".join(
+    return fw, fh, n, [
+        "/".join(
             "".join(("%x" % c) if c else "." for c in row[f * fw:(f + 1) * fw])
             for row in g[:fh]
         )
-        print("ROWS %d %s" % (f, rows))
+        for f in range(n)
+    ]
+
+
+if len(sys.argv) > 2 and sys.argv[2] == "--mojo":
+    import textwrap
+    out = ['''"""Galaxigans' sprite art, converted from the BASIC original.
+
+GENERATED. Regenerate with:
+
+    python3 tools/galaxigans-art.py <the .bas> --mojo > examples/galaxigans/art.mojo
+
+The conversion runs once and the result is committed, because it is art a
+person can read and edit -- and because half of it was DRAWN in the original
+with ellipses, triangles and filled circles into the definition's pixel
+buffer, which `define_sprite` cannot take.
+
+A digit is an index into the sprite's OWN sixteen colours and `.` is
+transparent, exactly as the BASIC's own `SPRITE ROW` art was written.
+"""
+
+from gamepane.metal import Sprites
+from max.gpu.host import DeviceContext
+
+''']
+    for i in order:
+        fw, fh, n, rs = art_rows(i)
+        name = NAMES.get(i, "DEF%d" % i)
+        for f, r in enumerate(rs):
+            suffix = "" if n == 1 else "_F%d" % f
+            wrapped = "\n".join('    "%s"' % c for c in textwrap.wrap(
+                r, 68, break_long_words=True, drop_whitespace=False))
+            out.append('comptime %s%s = String(\n%s\n)\n' % (name, suffix, wrapped))
+    out.append('''
+
+def define_all(mut ctx: DeviceContext, mut sprites: Sprites) raises -> List[Int]:
+    """Every definition and its palette, in the BASIC's own order. The
+    returned handles are indexed by the *_SLOT constants below."""
+    var ids = List[Int]()
+''')
+    for i in order:
+        fw, fh, n, rs = art_rows(i)
+        name = NAMES.get(i, "DEF%d" % i)
+        low = name.lower()
+        first = name if n == 1 else name + "_F0"
+        out.append("\n    # %s -- %dx%d, %d frame%s\n"
+                   % (name, fw, fh, n, "" if n == 1 else "s"))
+        out.append("    let %s_ID = sprites.define_sprite(ctx, %s)\n" % (low, first))
+        for f in range(1, n):
+            out.append("    _ = sprites.add_frame(ctx, %s_ID, %s_F%d)\n" % (low, name, f))
+        for idx in sorted(palettes.get(i, {})):
+            r, gg, b = palettes[i][idx]
+            out.append("    sprites.sprite_rgb(%s_ID, %d, %d, %d, %d)\n"
+                       % (low, idx, r, gg, b))
+        out.append("    ids.append(%s_ID)\n" % low)
+    out.append("    return ids^\n\n")
+    out.append("\n# Where each definition sits in the list `define_all` returns.\n")
+    for n_, i in enumerate(order):
+        out.append("comptime %s_SLOT = %d\n" % (NAMES.get(i, "DEF%d" % i), n_))
+    out.append("\n# Frame sizes, for collision boxes and placement.\n")
+    for i in order:
+        fw, fh, n, rs = art_rows(i)
+        name = NAMES.get(i, "DEF%d" % i)
+        out.append("comptime %s_W = %d\ncomptime %s_H = %d\n" % (name, fw, name, fh))
+    sys.stdout.write("".join(out))
+    sys.exit(0)
+
+for i in order:
+    fw, fh, n, rs = art_rows(i)
+    print("DEF %d %dx%d frames=%d %s" % (i, fw, fh, n, NAMES.get(i, "DEF%d" % i)))
+    for f, r in enumerate(rs):
+        print("ROWS %d %s" % (f, r))
     for idx in sorted(palettes.get(i, {})):
         r, gg, b = palettes[i][idx]
         print("PAL %d %d %d %d %d" % (i, idx, r, gg, b))
