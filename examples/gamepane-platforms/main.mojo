@@ -17,6 +17,12 @@
 #     frame. Nothing is redrawn to scroll, ever -- the composite reads a
 #     different window of the same bytes.
 #
+#   * LAYER 3 IS TEXT, TWICE. The overlay rasterises a title and a HUD line
+#     into an RGBA buffer -- retained, right for something that changes when
+#     the game says so. The text plane is a grid of four-byte cells with a
+#     transparent background, so a menu sits over the picture without a box
+#     around it and without a draw call per line.
+#
 #   * SPRITES ARE COMPOSITED, NOT BLITTED. The coins are quads drawn in
 #     their own pass with source-alpha blending, so they move over the
 #     platforms without disturbing a single index byte -- nothing has to be
@@ -33,7 +39,11 @@ from std.objc import load_framework, autoreleasepool
 from gamepane.api import (
     KEY_ESCAPE, KEY_LEFT, KEY_RIGHT, KEY_UP, KEY_DOWN, FRONT,
 )
-from gamepane.metal import GamePane, ShaderPane, IndexedPane, Sprites, key_held
+from gamepane.api import FLAG_TRANSPARENT_BG
+from gamepane.metal import (
+    GamePane, ShaderPane, IndexedPane, Sprites, TextOverlay, TextPlane,
+    key_held,
+)
 
 
 # An 8x8 coin in two frames. The digits are palette indices into the
@@ -156,6 +166,22 @@ def main() raises:
     sprites.set_scale(player, 4.0)
     sprites.animate(player, 6.0)
 
+    # Layer 3a: the retained overlay. Drawn once here -- it does not change,
+    # so it costs nothing per frame beyond the composite.
+    var hud = TextOverlay(pane.device, VIEW_W, VIEW_H)
+    hud.draw_text(6, 6, String("0-9 :- DEMO %"), 255, 241, 232, 1)
+    hud.draw_text(6, 20, String("GAMEPANE"), 255, 163, 0, 3)
+
+    # Layer 3b: the cell grid, transparent-backed, so the menu sits over the
+    # picture rather than in a box. Writing it is byte stores, not calls.
+    var menu = TextPlane(pane.device, VIEW_W, VIEW_H)
+    let items = [
+        String("ARROWS  MOVE"),
+        String("ESC     QUIT"),
+    ]
+    for i in range(len(items)):
+        menu.write(2, menu.rows - 3 + i, items[i], 26, 16, FLAG_TRANSPARENT_BG)
+
     var scroll_x = Float64(WORLD_W - VIEW_W) / 2.0
     let scroll_y = (WORLD_H - VIEW_H) // 2
 
@@ -194,6 +220,8 @@ def main() raises:
                 frame, Float64(Int(scroll_x)), Float64(scroll_y),
                 Float64(VIEW_W), Float64(VIEW_H),
             )
+            hud.render(frame)          # layer 3a: the retained overlay
+            menu.render(frame)         # layer 3b: the cell grid
             pane.end_frame(frame)
 
     pane.close()
