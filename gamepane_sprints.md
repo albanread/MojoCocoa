@@ -255,7 +255,7 @@ plasma and not a diagonal smear.
 
 ---
 
-## Sprint G3 — the indexed pane (NOT STARTED, size M, wants G0)
+## Sprint G3 — the indexed pane (DONE, size M, wants G0)
 
 **Goal.** Layer 1 entire: eight slots, the per-line/global palette, overscan
 scrolling, and every drawing primitive — with no CPU mirror.
@@ -290,6 +290,45 @@ scroll drifts across the world with nothing redrawn.
 `scroll_is_clamped_to_the_overscan_margin`,
 `palette_index_math_matches_the_per_line_vs_global_split`,
 `set_line_rgb_rejects_index_0_and_global_range`.
+
+**Status.** Done, all nine plus five the Rust has no equivalent of.
+`gamepane/tests/test_indexed.mojo` passes and
+`examples/gamepane-platforms` is the demo.
+
+**The mirror is gone, as designed.** Each of the eight slots is one
+`DeviceBuffer` with a linear `R8Uint` texture view over it, so a `pset`
+stores into the exact bytes the fragment shader samples. That deletes the
+Rust's `Vec<u8>` per slot, its `dirty` flags and its `upload()` — and with
+them the reason its blitter had to apply every operation twice, which is
+what G4 inherits.
+
+**The primitives went to the neutral tier.** An index plane is a rectangle of
+bytes `stride` apart, which is all Bresenham needs, so `api/indexed.mojo`
+holds `Plane` — base pointer, stride, width, height — and every primitive on
+it. It cannot tell a Metal buffer from a `List`, which is what makes the
+neutral tier a real boundary rather than a claim. The backend's whole job is
+to say where the bytes are.
+
+**The window now uses the runtime's device.** `GamePane` owns a
+`DeviceContext` and takes its `MTLDevice` from `metal_device()` rather than
+`MTLCreateSystemDefaultDevice`, so every layer, pipeline, texture and kernel
+shares one device by construction. G0 found them to be the same object here;
+this makes that irrelevant rather than load-bearing. The G0 accessors moved
+out of the spikes into `metal/device.mojo`, which is also where the borrow
+rule is written down.
+
+**Five checks the Rust does not have.** `blit` repacks a width-major source
+into stride-major rows, so it is tested at a width the alignment does not
+divide; a second pane 641 wide proves the stride is 656 and that row 1
+begins a stride in rather than a width in; and the composite is read back
+through a real drawable, where the same index 3 comes out red on line 1 and
+green on line 2, a global index 200 resolves through the other half of the
+palette, index 0 discards to the ground, and world row 300 arrives at screen
+row 60 after a scroll that redrew nothing.
+
+640 divides by 16, so the Rust's own dimensions never exercise the stride at
+all — which is why the awkward width is a separate pane rather than a
+different constant.
 
 ---
 
