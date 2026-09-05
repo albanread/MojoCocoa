@@ -8,3 +8,9 @@ from .input import (
 
 from .shader import ShaderParams, SHADER_PARAM_COUNT
 from .direct import Palette, PALETTE_SIZE, stride_for, buffer_len_for
+
+from .indexed import (
+    Plane, NUM_BUFFERS, FRONT, BACK, TRANSPARENT, GLOBAL_COLORS, LINE_COLORS,
+    palette_entries, palette_global_base, palette_line_entry,
+    palette_global_entry, hsv_to_rgb, clamp_scroll,
+)

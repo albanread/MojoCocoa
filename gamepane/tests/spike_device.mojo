@@ -46,7 +46,7 @@ def main() raises:
         if Int(err) != 0:
             print(
                 "FAIL  metal_device returned an error:",
-                String(unsafe_from_utf8_ptr=err.bitcast[c_char]()),
+                String(unsafe_from_utf8_ptr=err.unsafe_bitcast[c_char]()),
             )
             failures += 1
         let runtime_dev = slot[0]

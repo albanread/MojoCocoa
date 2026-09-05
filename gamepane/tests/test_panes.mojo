@@ -21,7 +21,7 @@ from std.memory import Pointer
 from gamepane.api import (
     ShaderParams, Palette, PALETTE_SIZE, stride_for, buffer_len_for,
 )
-from gamepane.metal import GamePane, ShaderPane, DirectPane, NUM_BUFFERS
+from gamepane.metal import GamePane, ShaderPane, DirectPane, DIRECT_BUFFERS
 
 
 comptime W = 64
@@ -106,8 +106,8 @@ def main() raises:
             print("ok    a source without fmain fails and names it")
 
         var direct = DirectPane(pane.device, W, H)
-        if direct.buffer_count() != NUM_BUFFERS:
-            print("FAIL  buffer_count is not", NUM_BUFFERS)
+        if direct.buffer_count() != DIRECT_BUFFERS:
+            print("FAIL  buffer_count is not", DIRECT_BUFFERS)
             failures += 1
         if direct.stride_bytes() < W:
             print("FAIL  stride is narrower than the pane")
@@ -137,11 +137,11 @@ def main() raises:
 
         # Every buffer is a distinct allocation -- the rotation is real.
         let ptrs = direct.buffer_ptrs()
-        if len(ptrs) != NUM_BUFFERS or ptrs[0] == ptrs[1] or ptrs[1] == ptrs[2]:
+        if len(ptrs) != DIRECT_BUFFERS or ptrs[0] == ptrs[1] or ptrs[1] == ptrs[2]:
             print("FAIL  buffer_ptrs did not give distinct buffers")
             failures += 1
         else:
-            print("ok    the rotation is", NUM_BUFFERS, "distinct buffers")
+            print("ok    the rotation is", DIRECT_BUFFERS, "distinct buffers")
 
         # ── layer 0, drawn and read back ─────────────────────────────────
         var frame = pane.begin_frame()

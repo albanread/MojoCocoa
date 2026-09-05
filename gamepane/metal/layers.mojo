@@ -31,17 +31,33 @@ from std.objc import (
 from std.memory import Pointer
 from std.time import perf_counter_ns
 
+from max.gpu.host import DeviceContext, DeviceBuffer
+
 from gamepane.api import (
     ShaderParams,
     Palette,
     PALETTE_SIZE,
     stride_for,
     buffer_len_for,
+    Plane,
+    NUM_BUFFERS,
+    FRONT,
+    BACK,
+    GLOBAL_COLORS,
+    palette_entries,
+    palette_global_base,
+    palette_line_entry,
+    palette_global_entry,
+    hsv_to_rgb,
+    clamp_scroll,
 )
 from .window import Frame
+from .device import (
+    metal_buffer, metal_offset, host_ptr, linear_alignment, index_plane_view,
+)
 
 
-comptime NUM_BUFFERS = 3
+comptime DIRECT_BUFFERS = 3
 """Rotating write buffers for the direct pane.
 
 Three is the number that lets the host write one while the GPU may still be
@@ -319,7 +335,7 @@ struct DirectPane(Movable):
         let bytes = buffer_len_for(self.stride, height)
         self.buffers = List[Int]()
         self.textures = List[Int]()
-        for _ in range(NUM_BUFFERS):
+        for _ in range(DIRECT_BUFFERS):
             let buf = send[ObjCObject, "newBufferWithLength:options:"](
                 dev, bytes, nsenum["MTLResourceStorageModeShared"]()
             )
@@ -365,7 +381,7 @@ struct DirectPane(Movable):
         return buffer_len_for(self.stride, self.height)
 
     def buffer_count(self) -> Int:
-        return NUM_BUFFERS
+        return DIRECT_BUFFERS
 
     def backbuffer_ptr(self) -> Pointer[UInt8, MutUntrackedOrigin]:
         """The buffer to write RIGHT NOW. Changes after every `render`.
@@ -388,7 +404,7 @@ struct DirectPane(Movable):
         buffer `n % count` for the nth frame, so a writer counting frames
         the same way agrees which buffer is safe with no synchronisation."""
         var out = List[Int]()
-        for i in range(NUM_BUFFERS):
+        for i in range(DIRECT_BUFFERS):
             out.append(
                 Int(
                     send[ObjCObject, "contents"](
@@ -446,4 +462,333 @@ struct DirectPane(Movable):
         )
         _ = send[ObjCObject, "endEncoding"](enc)
 
-        self.write = (drawn + 1) % NUM_BUFFERS
+        self.write = (drawn + 1) % DIRECT_BUFFERS
+
+
+# ── Layer 1: the indexed pane ───────────────────────────────────────────────
+
+
+# Quoted verbatim from the Rust `HEADER` in indexed_pane.rs. Three things are
+# specification rather than style: index 0 discards (so the layer below shows
+# through), the scroll offset is added in WORLD space after the viewport
+# lookup (so panning costs nothing), and the palette index splits at 16 into
+# per-scanline and global halves.
+comptime INDEXED_SHADER = String(
+    """
+#include <metal_stdlib>
+using namespace metal;
+
+struct VOut { float4 pos [[position]]; float2 uv; };
+struct Uniforms { float scroll_x; float scroll_y; float viewport_w; float viewport_h; };
+
+vertex VOut vmain(uint vid [[vertex_id]]) {
+    float2 positions[3] = { float2(-1.0, -1.0), float2(3.0, -1.0), float2(-1.0, 3.0) };
+    VOut out;
+    float2 pos = positions[vid];
+    out.pos = float4(pos, 0.0, 1.0);
+    out.uv = float2((pos.x + 1.0) * 0.5, 1.0 - (pos.y + 1.0) * 0.5);
+    return out;
+}
+
+fragment float4 fmain(VOut in [[stage_in]],
+                       constant Uniforms& u [[buffer(0)]],
+                       texture2d<uint> indexTex [[texture(0)]],
+                       constant uchar4* palette [[buffer(1)]]) {
+    uint screenX = uint(in.uv.x * u.viewport_w);
+    uint screenY = uint(in.uv.y * u.viewport_h);
+    uint worldX = uint(int(screenX) + int(u.scroll_x));
+    uint worldY = uint(int(screenY) + int(u.scroll_y));
+    uint ci = indexTex.read(uint2(worldX, worldY)).r;
+    if (ci == 0u) { discard_fragment(); }
+    uint k;
+    if (ci < 16u) { k = screenY * 16u + ci; } else { k = uint(u.viewport_h) * 16u + (ci - 16u); }
+    // The palette is RGBA BYTES, not floats: four bytes an entry instead of
+    // sixteen, no conversion when a demo sets a colour, and -- the reason it
+    // matters -- a layout a guest VM can write directly with ordinary byte
+    // stores. Normalising here is one divide in the shader.
+    return float4(palette[k]) / 255.0;
+}
+"""
+)
+
+
+@fieldwise_init
+struct IndexedUniforms(Copyable, Movable):
+    """`Uniforms{scroll_x, scroll_y, viewport_w, viewport_h}` at buffer 0."""
+
+    var scroll_x: Float32
+    var scroll_y: Float32
+    var viewport_w: Float32
+    var viewport_h: Float32
+
+
+struct IndexedPane(Movable):
+    """Eight index planes, a per-line palette, and a world larger than the
+    viewport that the compositor pans across.
+
+    **There is no CPU mirror.** The Rust keeps a `Vec<u8>` per slot, marks it
+    dirty, and pushes it to a texture in an `upload()` every frame; here each
+    slot is one `DeviceBuffer` with a linear texture view over it, so `pset`
+    stores into the exact bytes the fragment shader samples. That deletes the
+    mirror, the dirty flags, the upload, and the reason the Rust's blitter
+    had to apply every operation twice.
+
+    The overscan is the other half of the same idea: draw once into a world
+    bigger than the screen, then move `set_scroll` instead of redrawing.
+    """
+
+    var world_width: Int
+    var world_height: Int
+    var viewport_width: Int
+    var viewport_height: Int
+    var stride: Int
+    var scroll_x: Int
+    var scroll_y: Int
+    var active: Int
+    # The DeviceBuffers, and they MUST be held: the texture views below are
+    # borrows over them, and a borrow that outlives its owner is a message to
+    # freed memory.
+    var planes: List[DeviceBuffer[DType.uint8]]
+    var bases: List[Int]
+    var views: List[Int]
+    # Logical slot -> physical index. swap_buffers permutes THIS rather than
+    # moving buffers about, which keeps a move-only DeviceBuffer where it was
+    # put and makes the swap two integer stores.
+    var slot_of: List[Int]
+    var palette_len: Int
+    var palette_buffer: Int
+    var pipeline: Int
+
+    def __init__(
+        out self,
+        mut ctx: DeviceContext,
+        device: Int,
+        world_width: Int,
+        world_height: Int,
+        viewport_width: Int,
+        viewport_height: Int,
+    ) raises:
+        if world_width < viewport_width or world_height < viewport_height:
+            raise Error(
+                "world size must be >= viewport size (that is the overscan"
+                " margin)"
+            )
+        self.world_width = world_width
+        self.world_height = world_height
+        self.viewport_width = viewport_width
+        self.viewport_height = viewport_height
+        self.stride = stride_for(
+            world_width,
+            linear_alignment(device, nsenum["MTLPixelFormatR8Uint"]()),
+        )
+        self.scroll_x = 0
+        self.scroll_y = 0
+        self.active = FRONT
+
+        self.planes = List[DeviceBuffer[DType.uint8]]()
+        self.bases = List[Int]()
+        self.views = List[Int]()
+        self.slot_of = List[Int]()
+        let bytes = self.stride * world_height
+        for i in range(NUM_BUFFERS):
+            var buf = ctx.enqueue_create_buffer[DType.uint8](bytes)
+            let base = host_ptr(buf)
+            for b in range(bytes):
+                base[unsafe_offset=b] = 0
+            let view = index_plane_view(
+                metal_buffer(buf),
+                metal_offset(buf),
+                world_width,
+                world_height,
+                self.stride,
+            )
+            self.bases.append(Int(base))
+            self.views.append(view)
+            self.slot_of.append(i)
+            self.planes.append(buf^)
+
+        # The palette lives HERE and nowhere else. There is nothing to upload
+        # FROM, so nothing can copy a stale mirror over a game's work -- which
+        # is exactly what a mirror would do the moment a guest wrote to it.
+        self.palette_len = palette_entries(viewport_height)
+        let pal = send[ObjCObject, "newBufferWithLength:options:"](
+            ObjCObject(device),
+            self.palette_len * 4,
+            nsenum["MTLResourceStorageModeShared"](),
+        )
+        if pal.addr() == 0:
+            raise Error("indexed pane: no palette buffer")
+        self.palette_buffer = pal.addr()
+        let pp = Pointer[UInt8, MutUntrackedOrigin](
+            unsafe_from_address=Int(send[ObjCObject, "contents"](pal).addr())
+        )
+        for i in range(self.palette_len):
+            pp[unsafe_offset = i * 4 + 0] = 0
+            pp[unsafe_offset = i * 4 + 1] = 0
+            pp[unsafe_offset = i * 4 + 2] = 0
+            pp[unsafe_offset = i * 4 + 3] = 255
+
+        self.pipeline = _build_pipeline(
+            device, INDEXED_SHADER, String("indexed pane")
+        )
+        self.load_default_palette()
+
+    # ── slots ───────────────────────────────────────────────────────────
+
+    def plane(self, slot: Int) -> Plane:
+        """The plane for a slot, ready to draw into. Slots out of range give
+        the active one rather than trapping."""
+        var s = slot
+        if s < 0 or s >= NUM_BUFFERS:
+            s = self.active
+        return Plane(
+            Pointer[UInt8, MutUntrackedOrigin](
+                unsafe_from_address=self.bases[self.slot_of[s]]
+            ),
+            self.stride,
+            self.world_width,
+            self.world_height,
+        )
+
+    def active_plane(self) -> Plane:
+        return self.plane(self.active)
+
+    def set_active(mut self, slot: Int):
+        if slot >= 0 and slot < NUM_BUFFERS:
+            self.active = slot
+
+    def swap_buffers(mut self):
+        """Exchange FRONT and BACK -- the views and the buffers, never the
+        bytes. Two integer stores in the indirection table, so a page flip
+        costs the same whatever the world size is."""
+        var f = self.slot_of[FRONT]
+        self.slot_of[FRONT] = self.slot_of[BACK]
+        self.slot_of[BACK] = f
+        if self.active == FRONT:
+            self.active = BACK
+        elif self.active == BACK:
+            self.active = FRONT
+
+    # ── scrolling ───────────────────────────────────────────────────────
+
+    def set_scroll(mut self, x: Int, y: Int):
+        """Pan the window the compositor reads. Clamped so the viewport
+        never reads outside the world."""
+        self.scroll_x = clamp_scroll(x, self.world_width, self.viewport_width)
+        self.scroll_y = clamp_scroll(
+            y, self.world_height, self.viewport_height
+        )
+
+    def scroll(self) -> Tuple[Int, Int]:
+        return (self.scroll_x, self.scroll_y)
+
+    # ── palette ─────────────────────────────────────────────────────────
+
+    def palette_ptr(self) -> Pointer[UInt8, MutUntrackedOrigin]:
+        """The palette bytes themselves, for a writer that wants stores
+        rather than calls -- the copper-bars case, where 240 commands a frame
+        become none.
+
+        Layout, stated exactly because a writer has to address it:
+        `viewport_height` groups of 16 PER-LINE entries first, so line `y`'s
+        colour `i` (1..15) is entry `y * 16 + i`; then the 240 GLOBAL
+        entries, so index `c` (16..255) is entry `viewport_height * 16 +
+        (c - 16)`. Four bytes each, R G B A, and A should be 255.
+        """
+        return Pointer[UInt8, MutUntrackedOrigin](
+            unsafe_from_address=Int(
+                send[ObjCObject, "contents"](
+                    ObjCObject(self.palette_buffer)
+                ).addr()
+            )
+        )
+
+    def palette_entry_count(self) -> Int:
+        return self.palette_len
+
+    def palette_global_start(self) -> Int:
+        """Where the 240 global entries begin, in entries."""
+        return palette_global_base(self.viewport_height)
+
+    def _write_palette(self, k: Int, r: Int, g: Int, b: Int) raises:
+        if k < 0 or k >= self.palette_len:
+            return
+        let p = self.palette_ptr()
+        p[unsafe_offset = k * 4 + 0] = UInt8(r & 255)
+        p[unsafe_offset = k * 4 + 1] = UInt8(g & 255)
+        p[unsafe_offset = k * 4 + 2] = UInt8(b & 255)
+        p[unsafe_offset = k * 4 + 3] = 255
+
+    def set_rgb(self, index: Int, r: Int, g: Int, b: Int) raises:
+        """A global colour, index 16..255. Below 16 is per-line and belongs
+        to `set_line_rgb`; asking here is a mistake worth naming."""
+        if index < 16 or index > 255:
+            raise Error(
+                "set_rgb: index 0..15 are per-line -- use set_line_rgb"
+            )
+        self._write_palette(
+            palette_global_entry(self.viewport_height, index), r, g, b
+        )
+
+    def set_line_rgb(
+        self, line: Int, index: Int, r: Int, g: Int, b: Int
+    ) raises:
+        """A per-scanline colour: index 1..15, line within the viewport.
+        Index 0 is transparent and is never assignable."""
+        if index < 1 or index > 15:
+            raise Error(
+                "set_line_rgb: index 1..15 are per-line -- use set_rgb for"
+                " 16..255"
+            )
+        if line < 0 or line >= self.viewport_height:
+            raise Error("set_line_rgb: line out of range")
+        self._write_palette(palette_line_entry(line, index), r, g, b)
+
+    def load_default_palette(self) raises:
+        """Something usable before a game says anything: a 16-step grey ramp
+        on every line, so per-line effects show up with no setup, and a
+        240-step hue wheel for the globals."""
+        for line in range(self.viewport_height):
+            for index in range(1, 16):
+                let v = Float32(index) / 15.0
+                let c = Int(v * 255.0)
+                self.set_line_rgb(line, index, c, c, c)
+        for i in range(GLOBAL_COLORS):
+            let rgb = hsv_to_rgb(Float32(i) / Float32(GLOBAL_COLORS), 1.0, 1.0)
+            self.set_rgb(16 + i, rgb[0], rgb[1], rgb[2])
+
+    # ── the composite ───────────────────────────────────────────────────
+
+    def render(self, frame: Frame, clear: Bool = False) raises:
+        """Composite FRONT at the current scroll offset.
+
+        `clear` is False almost always: this draws OVER whatever the shader
+        pane already put there, which is what index 0's `discard_fragment`
+        is for. Clear only makes sense when this is the bottom layer of a
+        frame.
+        """
+        if not frame.valid:
+            return
+        var uni = IndexedUniforms(
+            Float32(self.scroll_x),
+            Float32(self.scroll_y),
+            Float32(self.viewport_width),
+            Float32(self.viewport_height),
+        )
+        let enc = ObjCObject(_begin_pass(frame, clear))
+        _ = send[ObjCObject, "setRenderPipelineState:"](
+            enc, ObjCObject(self.pipeline).ptr()
+        )
+        _ = send[ObjCObject, "setFragmentBytes:length:atIndex:"](
+            enc, Pointer(to=uni).unsafe_bitcast[NoneType]()[], Int(16), Int(0)
+        )
+        _ = send[ObjCObject, "setFragmentTexture:atIndex:"](
+            enc, ObjCObject(self.views[self.slot_of[FRONT]]).ptr(), Int(0)
+        )
+        _ = send[ObjCObject, "setFragmentBuffer:offset:atIndex:"](
+            enc, ObjCObject(self.palette_buffer).ptr(), Int(0), Int(1)
+        )
+        _ = send[ObjCObject, "drawPrimitives:vertexStart:vertexCount:"](
+            enc, nsenum["MTLPrimitiveTypeTriangle"](), Int(0), Int(3)
+        )
+        _ = send[ObjCObject, "endEncoding"](enc)

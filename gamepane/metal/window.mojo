@@ -36,7 +36,10 @@ from std.memory import OpaquePointer, Pointer
 from std.time import perf_counter_ns
 from std.os import getenv
 
+from max.gpu.host import DeviceContext
+
 from gamepane.api import MAX_KEY_CODE, MouseState, GamepadState
+from .device import metal_device
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -260,6 +263,7 @@ struct GamePane(Movable):
     var window: Int
     var view: Int
     var layer: Int
+    var ctx: DeviceContext
     var device: Int
     var queue: Int
     var app: Int
@@ -309,9 +313,13 @@ struct GamePane(Movable):
                 )
             self.app = app.id
 
-            let dev = ObjCObject(
-                Int(external_call["MTLCreateSystemDefaultDevice", P]())
-            )
+            # The RUNTIME's device, not MTLCreateSystemDefaultDevice's.
+            # Every layer, pipeline, texture and kernel in the pane then
+            # shares one MTLDevice, and a texture made by one and sampled by
+            # another is impossible rather than merely unlikely. G0 found
+            # them to be the same object here; this makes that irrelevant.
+            self.ctx = DeviceContext(api="metal")
+            let dev = ObjCObject(metal_device(self.ctx))
             if dev.addr() == 0:
                 raise Error("no Metal device")
             _ = external_call["objc_retain", P](dev.ptr())
