@@ -23,14 +23,15 @@ source rather than asserted.
 
 ---
 
-## Sprint G0 — the render-pipeline spike, and the runtime accessors (NOT STARTED, size M)
+## Sprint G0 — the render-pipeline spike, and the runtime accessors (DONE, size M)
 
 **Goal.** Establish, before a single layer is written, that Mojo can compile
 an MSL fragment shader, build a render pipeline, draw into a texture and
 read the pixel back — and that a buffer a Mojo kernel wrote can be sampled
 by that pipeline through a texture view. If this sprint passes, every layer
 is a port of known code. If it does not, §6 of the design names the fallback
-and the decision is made here, not discovered in G3.
+and the decision is made here, not discovered in G3. (It passed; the
+fallback is not taken.)
 
 **Pieces.**
 
@@ -65,8 +66,8 @@ and the decision is made here, not discovered in G3.
    (ported verbatim), a render, a readback: pixel `(1, 1)` is palette entry
    7 and pixel `(0, 0)` was discarded.
 
-**Status (2026-09-03): four of five pieces done; the fifth has a narrow,
-named blocker.**
+**Status (2026-09-05): all five pieces pass.** `./tools/check-gamepane.sh`
+runs them.
 
 Passing, in `gamepane/tests/`:
 
@@ -80,36 +81,42 @@ Passing, in `gamepane/tests/`:
   object. `AsyncRT_DeviceContext_metal_device` already existed; no runtime
   change was needed to ask.
 
+- `spike_shared.mojo` — a Mojo KERNEL's write, read by the fragment shader
+  through a linear texture view over the same allocation. `hostPtr` and the
+  MTLBuffer's `contents` are the same address; pixel (3,3) comes back as the
+  palette entry the kernel indexed and (0,0) stays transparent. **This is the
+  design's "one memory, three readers" (§4.3), demonstrated.**
+
 The accessor landed: `AppleGPUMetal_mtlBuffer` plus
 `AsyncRT_DeviceBuffer_metal_buffer` / `_metal_offset`, built into
-`libCocoaMojoGPU.dylib`. **It is correct** — instrumented, the C side holds
-`buffer=0x…e40` whose `contents` equals what the known-good
-`AsyncRT_DeviceBuffer_hostPtr` reports, and Mojo receives that exact
-pointer.
+`libCocoaMojoGPU.dylib` by `tools/make-gpu-runtime.sh`.
 
-**The blocker.** `send[…]("contents" / "length" / "storageMode")` from Mojo
-to *that* object crashes, while the identical call on an `MTLBuffer` Mojo
-made itself with `newBufferWithLength:options:` works (spike_pipeline does
-it). So the pointer is good and the handoff is good; something about
-messaging the runtime's own buffer object from `std.objc` is not. Neither an
-autorelease pool nor matching `hostPtr`'s two-argument C shape changed it.
+**Two bugs cost most of this sprint, and neither was where it looked.**
 
-**Two ways out, and the second may be better.** Either find why `send`
-rejects that object — likely a private class whose selector encoding differs
-from the one the database picks by name — or invert the ownership: create
-the `MTLBuffer` in Mojo, where messaging demonstrably works, and hand it to
-the runtime through its existing "buffer from a device pointer" entry point.
-The second keeps every plane's lifetime in the game pane rather than split
-across the runtime, which is the tidier design regardless. G4 decides.
+1. *A three-argument Mojo call to a two-parameter C function.* The offset
+   was split into its own `_metal_offset` entry point in the C, and the
+   Mojo call site was never updated — so the handle landed in `x2` and the
+   `buffer` parameter held the offset slot's data pointer, which the C then
+   read as a `DeviceBuffer`. It found a plausible non-null `mtl` in that
+   list's storage and crashed locking the mutex of a context that had never
+   been a context.
+2. *A borrow outliving its owner.* The returned `id<MTLBuffer>` is not
+   retained; it lives as long as the `DeviceBuffer` that owns it. Mojo
+   destroys a value at its **last use**, not at the end of the scope, so
+   `plane` died at the `plane._handle` that fetched the handle, and every
+   message to the buffer after that went to freed memory. `_ = plane` after
+   the last use of the view is the fix, and the accessor now says so.
 
-Nothing downstream is blocked: G1–G3, G5–G8 need none of this, and G4's
-blitter can be CPU loops over the same bytes until it resolves.
+Both were masked by a third thing worth knowing: **under `cocoamojo run`,
+buffered stdout is lost on a crash, and `flush=True` does not save it.** The
+bisect prints all vanished, which made the crash look like it happened
+several statements earlier than it did. `cocoamojo build` to a binary and
+run that — the same crash then prints every line first.
 
 **Done when** all five pieces pass as a headless test, with the output
-printed and the accessor patch committed separately from the spike. If
-piece 5 cannot be made to pass, the sprint ends with the fallback written
-into the design's §6 as the decision and G4's kernels become CPU loops —
-the same tests, different implementation.
+printed and the accessor patch committed separately from the spike. They
+do, so the §6 fallback — index planes made through `send` and a CPU blitter
+— is not taken, and G4's kernels are real kernels.
 
 **Rust tests covered.** `a_trivial_solid_color_shader_compiles_and_renders_one_frame`,
 `a_shader_missing_fmain_fails_to_compile_with_a_clear_error`,
@@ -117,7 +124,7 @@ the same tests, different implementation.
 
 ---
 
-## Sprint G1 — window, loop, input (NOT STARTED, size S)
+## Sprint G1 — window, loop, input (DONE, size S)
 
 **Goal.** A `GamePane` that opens, pumps events, presents a cleared frame,
 and knows what the keyboard, mouse and a gamepad are doing. Independent of
@@ -158,6 +165,31 @@ button under a human, and the storage-level input tests pass.
 `mouse_state_defaults_to_released`, `clear_all_releases_stuck_mouse_buttons`,
 `mouse_position_round_trips_normalized_and_top_left`,
 `gamepad_first_connected_is_none_or_valid_without_crashing`.
+
+**Status.** Done. `gamepane/tests/test_window.mojo` passes headless:
+`GAMEPANE_FRAMES=30 GAMEPANE_DUMP=…` presents thirty frames through a real
+`CAMetalLayer` drawable and writes 480×320×4 = 614400 bytes in which every
+pixel is BGRA 23 13 13 255 — `round(CLEAR_* × 255)` for the ground colour,
+which also proves the drawable is `BGRA8Unorm` and not its sRGB twin (that
+would encode these to 63 and 83). Piece 4 landed with the rest rather than
+separately: `GameController` and `Metal` joined the framework list in the
+database generator's `ingest_runtime.py`, and `GCController`,
+`GCExtendedGamepad` and `GCControllerDirectionPad` are now real rows, so
+piece 3 is on the typed surface from the start.
+
+Two things the sprint did not anticipate:
+
+- **The package needed a home.** `bin/cocoamojo` carried a fixed
+  `-I` list of stdlib/max/kernels, so `import gamepane` could not resolve
+  whatever the file layout was. `gamepane` is now a fourth package on the
+  same footing — `lib/mojo/gamepane` is the container the driver puts on
+  `-I`, `gamepane/` inside it is the package, exactly as `lib/mojo/max`
+  holds `max/` — synced by `tools/sync-dist-sources.sh` for a release and
+  by `tools/gp.sh` for development.
+- **`f.write(String)` is not how you write a frame.** The dump went through
+  a `StringSlice(unsafe_from_utf8=…)`, which claims bytes are UTF-8 that
+  are not; reading it back raised *Cannot construct a String from invalid
+  UTF-8 data*. `write_bytes`/`read_bytes` on both sides.
 
 ---
 
@@ -487,7 +519,8 @@ out, neither waited on.
 # the gate
 cocoamojo run gamepane/tests/spike_pipeline.mojo
 
-# everything headless
+# everything headless -- every spike_* and test_* in gamepane/tests,
+# against dist/CocoaMojo, stealing nobody's focus
 ./tools/check-gamepane.sh
 
 # the demo, without a screen

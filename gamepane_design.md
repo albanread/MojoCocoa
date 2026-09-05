@@ -275,10 +275,21 @@ identity for good: the `CAMetalLayer`, every pipeline and every kernel use
 the runtime's device, so there is never a texture from one device sampled by
 another. About twenty lines, in a runtime this fork owns.
 
-Should the patch be refused or delayed, the fallback is explicit and loses
-nothing a game can see: index planes become `MTLBuffer`s created through
-`send`, and the blitter runs its four operations as CPU loops over the same
-bytes. Identical semantics; the Mojo-kernel blitter comes later.
+The patch landed and G0 proves it end to end, so the fallback below is
+recorded rather than taken: had the accessor been refused, index planes
+would have become `MTLBuffer`s created through `send` and the blitter four
+CPU loops over the same bytes — identical semantics, and the Mojo-kernel
+blitter later. It is not needed. `spike_shared.mojo` writes a plane from a
+Mojo kernel and reads it back through the fragment shader, and the
+`MTLBuffer`'s `contents` is the same address `hostPtr` reports: one
+allocation, three readers.
+
+One rule comes with the accessor. The `id<MTLBuffer>` it returns is a
+**borrow**, not a retained reference, and Mojo destroys a value at its last
+use rather than at the end of its scope — so the `DeviceBuffer` that owns
+the plane must be kept alive for as long as any texture view over it. Every
+plane therefore holds its `DeviceBuffer` as a field, which is where it
+belongs anyway.
 
 ### 4.4 The compositor: four pipelines, one command buffer
 
@@ -506,10 +517,10 @@ SMF is `abcplayer`'s writer. Sampled-sound playback (a `.wav` through
    are not yet. G0 exercises each once.
 3. **Linear-texture alignment.** The stride rule is real and the Rust's test
    for it (widths 1, 64, 320, 321) ports as-is.
-4. **Device identity.** Removed by the accessor; present in the fallback,
-   where the layer uses `MTLCreateSystemDefaultDevice` and the runtime uses
-   `MTLCopyAllDevices[0]` — the same object on a single-GPU Mac, and G0
-   asserts it.
+4. **Device identity.** Removed by the accessor; it would have been live in
+   the fallback, where the layer uses `MTLCreateSystemDefaultDevice` and the
+   runtime uses `MTLCopyAllDevices[0]`. G0 asserts it anyway, and they are
+   the same object.
 5. **Kernel/render ordering.** The runtime's queue and the layer's command
    buffer are separate; `synchronize()` before encoding is the rule, and a
    test blits then presents and reads the composite back.
