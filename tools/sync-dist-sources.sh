@@ -49,8 +49,15 @@ echo "== examples =="
 # --delete-excluded as well as --delete: without it rsync protects excluded
 # files that are already in the destination, so a build/ from an earlier run
 # would survive every rebuild of the distribution.
+# The three gamepane demos stay in the repository as coverage -- they are
+# the only running programs that exercise the shader pane and the direct
+# pane -- but they do not SHIP. An example in the distribution is something
+# someone opens to learn from, and one layer on its own does not earn a
+# folder next to a whole game. Galaxigans ships instead.
 rsync -a --delete --delete-excluded \
       --exclude 'build/' --exclude '*.png' --exclude '.DS_Store' \
+      --exclude 'gamepane-starfield/' --exclude 'gamepane-plasma/' \
+      --exclude 'gamepane-platforms/' \
       "$ROOT/examples/" "$D/share/examples/"
 # A binary left behind by someone running `cocoamojo build -o name` inside an
 # example folder is not part of the example, and rsync cannot tell it from a

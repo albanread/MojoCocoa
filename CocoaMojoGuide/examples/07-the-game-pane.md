@@ -182,8 +182,13 @@ there; it crashes in the next allocation, a long way from the cause.
 
 ## A worked example: the indexed pane
 
-The demo draws a world twice the size of the screen, once, and never redraws
-it.
+`examples/galaxigans` is the game that ships with the toolchain -- a Galaga
+ported from 1,447 lines of BASIC, in about the same again of Mojo. It uses
+the sprite layer, the text overlay and the particle field, and the code
+below is from the demos that exercise the indexed pane instead.
+
+That demo draws a world twice the size of the screen, once, and never
+redraws it.
 
 <!-- doccrate:keep-together:start -->
 

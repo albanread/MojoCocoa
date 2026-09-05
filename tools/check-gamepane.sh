@@ -54,25 +54,35 @@ for t in $(ls gamepane/tests/spike_*.mojo gamepane/tests/test_*.mojo 2>/dev/null
   run "$(basename "$t" .mojo)" "$t"
 done
 
-# The demo, and its frame. A dump of pure black would mean every layer drew
-# nothing and every test above still passed -- which is exactly the failure a
-# suite of unit tests cannot see.
+# The GAME's frame, because that is what ships. A dump of pure black would
+# mean every layer drew nothing and every test above still passed -- which
+# is exactly the failure a suite of unit tests cannot see.
+# The demos stay as coverage for the shader pane and the direct pane, which
+# nothing that ships exercises.
+run "demo:starfield" examples/gamepane-starfield/main.mojo
+run "demo:plasma" examples/gamepane-plasma/main.mojo
 run "demo:platforms" examples/gamepane-platforms/main.mojo
 # The game, in attract mode -- it plays itself from the frame counter, so
 # the run is deterministic and does not read the keyboard.
 run "game:galaxigans" examples/galaxigans/main.mojo
-if [ -f "$DUMP/demo:platforms.bgra" ]; then
-  printf '== %-24s ' "demo frame"
-  python3 - "$DUMP/demo:platforms.bgra" <<'PY'
+if [ -f "$DUMP/game:galaxigans.bgra" ]; then
+  printf '== %-24s ' "game frame"
+  python3 - "$DUMP/game:galaxigans.bgra" <<'PY'
 import sys, collections
 d = open(sys.argv[1], 'rb').read()
 px = [tuple(d[i:i+3]) for i in range(0, len(d), 4)]
 colours = collections.Counter(px)
-# "Bright" means brighter than the starfield's own ground, which is
-# BGRA 15 5 5 and would otherwise count every pixel in the frame as lit.
-# What this asks is whether the layers ABOVE layer 0 drew anything.
+# "Bright" means clearly above the ground the pane clears to, so what this
+# asks is whether the layers ABOVE layer 0 drew anything at all.
+#
+# An ABSOLUTE floor, not a fraction of the screen: a Galaga is mostly black
+# sky, and 1,082 lit pixels out of 307,200 is a full formation, a HUD and a
+# ship -- while a fraction of one per cent would call that a blank frame.
+# What a blank frame actually looks like is one or two colours and a
+# handful of stray pixels, and no threshold between there and here is
+# delicate.
 bright = sum(n for c, n in colours.items() if sum(c) > 90)
-if len(colours) < 8 or bright < len(px) // 200:
+if len(colours) < 8 or bright < 400:
     print("FAIL  %d colours, %d bright pixels of %d -- nothing drew"
           % (len(colours), bright, len(px)))
     sys.exit(1)
