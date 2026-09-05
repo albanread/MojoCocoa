@@ -3594,6 +3594,45 @@ def close_box(x: Float64, w: Float64) -> CGRect:
                 TAB_CLOSE, TAB_CLOSE)
 
 
+class RoastConsolePane(NSView):
+    """The console's half of the split: an input line above its output.
+
+    This exists because AUTORESIZING CANNOT DO IT. The pane is collapsed to
+    zero height at startup -- `show_console(False)`, because an empty
+    console taking a third of the window is a worse first sight than none --
+    and a subview whose superview has been squeezed to nothing has lost the
+    margins its mask is expressed in. Growing it again put the output back
+    at full height with the input line lying on top of it.
+
+    Laying the two out from the pane's own bounds has no such memory. The
+    input keeps CONSOLE_INPUT_H at the top, the output takes the rest, and
+    the arithmetic is the same whether the pane arrived at this size by a
+    drag, a window resize or a restore from zero.
+    """
+
+    def resizeSubviewsWithOldSize_(self, old: CGSize):
+        let view = ObjCObject(self.__objc_id)
+        let b = Obj["NSView"](view.addr()).bounds()
+        let kids = Obj["NSView"](view.addr()).subviews()
+        let n = Int(Obj["NSArray"](kids.addr()).count())
+        if n < 2:
+            return
+        # Added in this order: the output scroll first, then the input.
+        let out = ObjCObject(Obj["NSArray"](kids.addr()).objectAtIndex(0).addr())
+        let inp = ObjCObject(Obj["NSArray"](kids.addr()).objectAtIndex(1).addr())
+        var input_h = CONSOLE_INPUT_H
+        if b.size.height < input_h:
+            # A pane too short for the input line gives it what there is
+            # rather than handing the output a negative height.
+            input_h = b.size.height
+        Obj["NSView"](out.addr()).setFrame(
+            rect(0.0, 0.0, b.size.width, b.size.height - input_h)
+        )
+        Obj["NSView"](inp.addr()).setFrame(
+            rect(0.0, b.size.height - input_h, b.size.width, input_h)
+        )
+
+
 class RoastTabBar(NSView):
     """The tab strip.
 
@@ -6335,6 +6374,35 @@ def agent_command(text: String) -> String:
         except:
             return String("usage: sidebar <points>")
 
+    if cmd == "console-geometry":
+        # What the console pane and its two children actually measure.
+        # A splitter bug is invisible from outside -- the divider moves, and
+        # whether anything followed it is a question about frames.
+        if g_vsplit()[] == 0:
+            return String("error: no split")
+        with autoreleasepool():
+            let vs = ObjCObject(g_vsplit()[])
+            let subs = Obj["NSView"](vs.addr()).subviews()
+            let pane = ObjCObject(
+                Obj["NSArray"](subs.addr()).objectAtIndex(1).addr()
+            )
+            let pf = Obj["NSView"](pane.addr()).frame()
+            var out = String("pane h=") + String(Int(pf.size.height))
+            let kids = Obj["NSView"](pane.addr()).subviews()
+            let n = Int(Obj["NSArray"](kids.addr()).count())
+            for i in range(n):
+                let k = ObjCObject(
+                    Obj["NSArray"](kids.addr()).objectAtIndex(i).addr()
+                )
+                let f = Obj["NSView"](k.addr()).frame()
+                out += (
+                    String("  [") + String(i) + String("] y=")
+                    + String(Int(f.origin.y)) + String(" h=")
+                    + String(Int(f.size.height))
+                )
+            return out
+        return String("")
+
     if cmd.startswith("console-size "):
         let f0 = String(cmd[byte=13 : cmd.byte_length()])
         try:
@@ -7018,8 +7086,8 @@ def main() raises:
         # with an input line above it. The stack container exists so the
         # field and the output can share the split's pane: field on top,
         # scroll below, one pane to the divider.
-        var console_stack = Cls["NSView"]().alloc()
-        console_stack = Obj["NSView"](console_stack.addr()).initWithFrame(
+        var console_stack = ObjCObject(RoastConsolePane().__objc_id)
+        Obj["NSView"](console_stack.addr()).setFrame(
             rect(0.0, 0.0, w - 240.0, 160.0)
         )
         var out_scroll = Cls["NSScrollView"]().alloc()
