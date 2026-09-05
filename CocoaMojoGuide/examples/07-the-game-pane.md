@@ -56,16 +56,18 @@ pass and its own load action.
 <!-- doccrate:keep-together:start -->
 
 ```mermaid
-flowchart TB
-    S["Layer 0 — ShaderPane<br/>a fragment function and ten floats<br/><b>Clear</b>"]
-    I["Layer 1 — IndexedPane<br/>eight index planes, per-line palette,<br/>a world larger than the screen<br/><b>Load</b>, index 0 discards"]
-    P["Layer 2 — Sprites<br/>textured quads, per-instance<br/>scale · rotation · alpha<br/><b>Load</b>, alpha-blended"]
-    T["Layer 3 — TextOverlay · TextPlane<br/>a 5×7 font, rasterised or as cells<br/><b>Load</b>, alpha-blended"]
-    D["one CAMetalDrawable"]
-    S --> I --> P --> T --> D
+flowchart LR
+    S["0 · Shader"] --> I["1 · Indexed"] --> P["2 · Sprites"] --> T["3 · Text"] --> D["drawable"]
 ```
 
 <!-- doccrate:keep-together:end -->
+
+| Layer | What it is | Load action |
+|:---|:---|:---|
+| 0 · `ShaderPane` | A fragment function and ten floats | `Clear` |
+| 1 · `IndexedPane` | Eight index planes, a per-line palette, a world larger than the screen | `Load`, index 0 discards |
+| 2 · `Sprites` | Textured quads, per-instance scale · rotation · alpha | `Load`, alpha-blended |
+| 3 · `TextOverlay` · `TextPlane` | A 5×7 font, rasterised or as cells | `Load`, alpha-blended |
 
 Index 0 is transparent everywhere: the indexed pane discards on it, a sprite
 discards on it, and an unused text cell emits alpha zero. That single
@@ -117,14 +119,10 @@ establish before anything depended on it.
 
 ```mermaid
 flowchart LR
-    B["one MTLBuffer<br/>MTLStorageModeShared"]
-    C["the CPU<br/>pset, cls, blit"]
-    K["a Mojo GPU kernel<br/>copy · transparent · minterm · fill"]
-    F["the fragment shader<br/>samples indices,<br/>looks up the palette"]
-    C --> B
-    K --> B
-    B --> V["linear R8Uint texture view<br/>newTextureWithDescriptor:offset:bytesPerRow:"]
-    V --> F
+    C["CPU · pset, cls"] --> B
+    K["Mojo kernel · blit"] --> B
+    B["one Shared MTLBuffer"] --> V["linear R8Uint view"]
+    V --> F["fragment shader"]
 ```
 
 <!-- doccrate:keep-together:end -->
@@ -321,15 +319,10 @@ CoreAudio. There is no shim: an `AURenderCallback` is a C function pointer, and
 
 ```mermaid
 flowchart LR
-    G["the game thread<br/>sfx_play(id)"]
-    R["a ring of 256<br/>two counters,<br/>release / acquire"]
-    CB["the audio callback<br/>CoreAudio real-time thread"]
-    A["chip A — music<br/>a schedule flattened<br/>before the unit started"]
-    B["chip B — effects<br/>three voices,<br/>oldest stolen"]
-    O["one mono Float32 buffer"]
-    G --> R --> CB
-    CB --> A --> O
-    CB --> B --> O
+    G["game thread · sfx_play"] --> R["ring of 256"]
+    R --> CB["audio callback"]
+    CB --> A["chip A · music"] --> O["one mono buffer"]
+    CB --> B["chip B · effects"] --> O
 ```
 
 <!-- doccrate:keep-together:end -->
