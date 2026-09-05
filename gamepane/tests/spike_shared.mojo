@@ -161,10 +161,27 @@ def main() raises:
     ctx.synchronize()
 
     # ── the accessor: the id<MTLBuffer> behind that DeviceBuffer ──────────
+    # Two parameters, exactly like AsyncRT_DeviceBuffer_hostPtr: one
+    # out-slot and the handle. The offset is a SEPARATE call returning a
+    # size_t -- passing it here as a third argument put the handle in x2 and
+    # left the `buffer` parameter holding the offset slot's data pointer,
+    # which the C side then dereferenced as a DeviceBuffer. It read a
+    # plausible non-null `mtl` out of that list's storage and crashed
+    # locking the mutex of a context that was never a context.
+    # hostPtr first, as the cross-check: it is the address Mojo writes the
+    # plane through, and `contents` on the MTLBuffer below must be the same
+    # address or the texture is not looking at the bytes the kernel wrote.
+    var hslot = List[Int](length=1, fill=0)
+    _ = external_call["AsyncRT_DeviceBuffer_hostPtr", P](
+        hslot.unsafe_ptr(), plane._handle
+    )
+
     var bslot = List[Int](length=1, fill=0)
-    var offslot = List[Int](length=1, fill=0)
     let berr = external_call["AsyncRT_DeviceBuffer_metal_buffer", P](
-        bslot.unsafe_ptr(), offslot.unsafe_ptr(), plane._handle
+        bslot.unsafe_ptr(), plane._handle
+    )
+    let view_offset = Int(
+        external_call["AsyncRT_DeviceBuffer_metal_offset", Int](plane._handle)
     )
     if Int(berr) != 0:
         print(
@@ -173,7 +190,7 @@ def main() raises:
         )
         failures += 1
     let mtl_buf = ObjCObject(bslot[0])
-    print("MTLBuffer:", hex(bslot[0]), " offset:", offslot[0])
+    print("MTLBuffer:", hex(bslot[0]), " offset:", view_offset)
     if mtl_buf.addr() == 0:
         print("FAIL  the runtime gave no MTLBuffer")
         failures += 1
@@ -199,18 +216,22 @@ def main() raises:
         let blen = Int(send[Int, "length"](mtl_buf))
         let bmode = Int(send[Int, "storageMode"](mtl_buf))
         print("  buffer length:", blen, " storageMode:", bmode)
+        let contents = Int(send[ObjCObject, "contents"](mtl_buf).addr())
+        if contents != hslot[0]:
+            print("FAIL  contents", hex(contents), "!= hostPtr", hex(hslot[0]))
+            failures += 1
+        else:
+            print("ok    one allocation: hostPtr and MTLBuffer.contents agree")
         _ = send[ObjCObject, "setStorageMode:"](vdesc, bmode)
-        print("  A: descriptor made")
         let view = send[
             ObjCObject, "newTextureWithDescriptor:offset:bytesPerRow:"
-        ](mtl_buf, vdesc.ptr(), offslot[0], Int(stride))
+        ](mtl_buf, vdesc.ptr(), view_offset, Int(stride))
         if view.addr() == 0:
             print("FAIL  no texture view over the kernel's buffer")
             failures += 1
         else:
             print("ok    texture view over the kernel's own buffer")
 
-        print("  B: view made")
         # Palette: entry 5 is a colour we can recognise.
         let pal = send[ObjCObject, "newBufferWithLength:options:"](
             device, Int(256 * 4), nsenum["MTLResourceStorageModeShared"]()
@@ -225,7 +246,6 @@ def main() raises:
         pp[unsafe_offset = 5 * 4 + 2] = 70
         pp[unsafe_offset = 5 * 4 + 3] = 255
 
-        print("  C: palette written")
         # Pipeline, target, draw.
         var err = ObjCObject(0)
         let lib = send[ObjCObject, "newLibraryWithSource:options:error:"](
@@ -257,7 +277,6 @@ def main() raises:
             print("FAIL  no pipeline")
             failures += 1
 
-        print("  D: pipeline built")
         let tdesc = ObjCObject(
             Cls["MTLTextureDescriptor"]()
             .texture2DDescriptorWithPixelFormat_width_height_mipmapped(
@@ -274,7 +293,6 @@ def main() raises:
             device, tdesc.ptr()
         )
 
-        print("  E: target made")
         let pass_desc = ObjCObject(
             Cls["MTLRenderPassDescriptor"]().renderPassDescriptor().id
         )
@@ -292,7 +310,6 @@ def main() raises:
             c0, MTLClearColor(1.0, 0.0, 0.0, 1.0)
         )
 
-        print("  F: pass configured")
         var uni = U(Float32(W), Float32(H))
         let queue = send[ObjCObject, "newCommandQueue"](device)
         let cb = send[ObjCObject, "commandBuffer"](queue)
@@ -316,7 +333,6 @@ def main() raises:
         _ = send[ObjCObject, "commit"](cb)
         _ = send[ObjCObject, "waitUntilCompleted"](cb)
 
-        print("  G: draw committed")
         var px = List[UInt8](length=W * H * 4, fill=0)
         _ = send[ObjCObject, "getBytes:bytesPerRow:fromRegion:mipmapLevel:"](
             target,
@@ -347,6 +363,14 @@ def main() raises:
         else:
             print("FAIL  index 0 was not transparent")
             failures += 1
+
+    # KEEPALIVE. The id<MTLBuffer> the accessor hands back is a BORROW: the
+    # runtime does not retain it for us, so it lives exactly as long as the
+    # DeviceBuffer that owns it. Mojo destroys a value at its LAST USE, not
+    # at the end of the scope, so without this line `plane` dies at the
+    # `plane._handle` above -- and every message sent to `mtl_buf` after
+    # that goes to freed memory. It crashed on `length`, the first one.
+    _ = plane
 
     print()
     if failures == 0:

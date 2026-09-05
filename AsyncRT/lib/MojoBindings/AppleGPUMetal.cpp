@@ -808,6 +808,14 @@ const char *AppleGPUMetal_mtlDevice(AGMetalCtx *ctx, void **out) {
 // touch the contents is a separate question -- AppleGPUMetal_hostPtr answers
 // that one -- and a texture view over a private buffer is still legal for
 // the GPU alone.
+//
+// The id is a BORROW and is not retained on the way out. It lives exactly as
+// long as the DeviceBuffer that owns it, which matters more from Mojo than it
+// looks: Mojo destroys a value at its LAST USE, not at the end of the scope,
+// so a caller that reads the handle out of a buffer and then never mentions
+// that buffer again has already freed the MTLBuffer by the time it sends the
+// first message to it. Keep the owner alive (`_ = plane`) for as long as the
+// texture view over it is in use.
 const char *AppleGPUMetal_mtlBuffer(AGMetalBuf *buf, void **out,
                                     size_t *offset) {
   if (!buf)
