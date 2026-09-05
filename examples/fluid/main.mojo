@@ -629,7 +629,7 @@ def main() raises:
         _ = app.finishLaunching()
 
         var region = MTLRegion(MTLOrigin(0, 0, 0), MTLSize(WIN_W, WIN_H, 1))
-        var mode = nsstring("kCFRunLoopDefaultMode")
+        var mode = "kCFRunLoopDefaultMode"
 
         # A puff to start with, so the window is never blank.
         var c0 = hue_rgb(Float32(0.05))
@@ -865,9 +865,7 @@ def main() raises:
                 # Also to stdout: the title bar is invisible to a run captured
                 # in a log, which is every run that is not a person watching.
                 print("  frame", frames, "—", fps, "fps")
-                _ = win.setTitle(
-                    nsstring(
-                        String("Fluid — ") + String(Int(fps)) + " fps"
-                        + "   [space] pause  [c] clear  [r] rain"
-                    ).ptr(),
+                win.title = (
+                    "Fluid — " + String(Int(fps)) + " fps"
+                    + "   [space] pause  [c] clear  [r] rain"
                 )
