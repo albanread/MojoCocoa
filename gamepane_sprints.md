@@ -401,7 +401,7 @@ it cannot fail here on its own.
 
 ---
 
-## Sprint G5 — sprites (NOT STARTED, size M, wants G0)
+## Sprint G5 — sprites (DONE, size M, wants G0)
 
 **Goal.** Layer 2: definitions from the row format, retained per-definition
 GPU state, instances with the full transform set, animation and hit
@@ -432,6 +432,41 @@ the stars.
 `parse_sprite_rows_rejects_ragged_rows`, `define_and_place_a_sprite`,
 `add_frame_rejects_mismatched_size`, `animate_cycles_frames_over_time`,
 `hit_detects_overlapping_and_separate_instances`.
+
+**Status.** Done, all six plus five more.
+`gamepane/tests/test_sprites.mojo` passes and `gamepane-platforms` gained
+the layer.
+
+**Composited, not blitted** — worth stating because it is the point of the
+layer. Nothing in `metal/sprites.mojo` writes into the indexed pane's
+planes and the blitter is not involved: each visible instance is a textured
+quad in the sprite layer's own render pass, blended source-alpha over
+whatever the layers below left on the drawable. That is what makes scale,
+rotation and alpha per-instance and free, and why a moving sprite never has
+to repair the background it covered — there is no background underneath it,
+only an earlier pass. Frames are stored as index planes with texture views
+like everything else, but that is storage; the compositing is the quad draw.
+
+The transform is CPU-side, per instance, as in the Rust: scale by
+half-extents, rotate, subtract the scroll, map to NDC, triangle-strip order.
+One small draw call per sprite instead of one instanced draw — the right
+trade at these counts and the wrong one at hundreds, and the comment in
+`api/sprites.mojo` says so rather than leaving it to be rediscovered.
+
+**Five checks beyond the Rust's six**, all through a real drawable: the
+sprite's own 16-colour palette resolves (BGRA 250 10 20 where the Rust only
+checks the definition exists); its index 0 discards to the indexed pane
+below, so the notch in the middle of the test sprite shows blue; alpha 0.5
+over blue comes back BGRA 110 5 125, which is blending rather than
+switching; a hidden instance draws nothing at all; and the quad transform is
+checked as arithmetic — centre-anchored, rotating about its own centre, and
+tracking the scroll.
+
+Two Mojo shapes worth recording. A move-only value cannot be moved out of a
+tuple, so `_make_plane` returns the `DeviceBuffer` alone and the caller
+builds the view from the buffer it now owns — which it has to hold anyway,
+the view being a borrow. And `len(String)` is refused outright: rows are
+ASCII, so `byte_length()` is right, but the compiler will not guess.
 
 ---
 
