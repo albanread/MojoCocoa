@@ -2958,6 +2958,41 @@ AnyValue CallNode::emitIR(ExprDest &dest, IREmitter &emitter) const {
   ASTDecl *hookDeclScope =
       calleeTypeDecl ? calleeTypeDecl->getParentDecl() : nullptr;
 
+  // Bridge one already-emitted operand: a String (or StringLiteral, which
+  // is what a bare string emits as) where the metadata says the argument
+  // position is an object becomes __bridge_string(value), emitted now,
+  // against the hook module's scope. Returns an empty value on failure.
+  auto bridgeOperand = [&](const AnyValue &emitted, bool positionIsObject,
+                           const ExprNode *expr) -> AnyValue {
+    if (!positionIsObject || !emitted)
+      return emitted;
+    ASTType ty = emitted.getRValueTypeIfResolvable();
+    if (!ty)
+      return emitted;
+    auto structType = sugarDynCast<LIT::StructType>(ty);
+    if (!structType)
+      return emitted;
+    StringRef leaf = structType.getSymbol().getLeafReference().strref();
+    if (leaf != "String" && leaf != "StringLiteral")
+      return emitted;
+    if (!hookDeclScope)
+      return {};
+    ExprDest fnDest(ExprContext::EC_CallCalleeValue);
+    auto nsFn = DeclRefNode::emitUnqualLookup(
+        "__bridge_string", expr, *hookDeclScope, fnDest, emitter,
+        /*isSpeculative=*/false);
+    if (nsFn.isFailure() || nsFn.getIfExprNode())
+      return {};
+    AnyValue fnValue = nsFn.getIfValue();
+    if (!fnValue)
+      return {};
+    SyntheticNode fnNode(getLoc(), std::move(fnValue));
+    SyntheticNode argNode(getLoc(), emitted);
+    Operand callOperand(&argNode, getLoc(), ArgUnpackStyle::kPositional);
+    CallNode nsCall(&fnNode, getLoc(), callOperand, getLoc());
+    return emitter.emitExpr(&nsCall, EC_CallArgValue);
+  };
+
   auto emitKwParamHook = [&](StringRef hookName,
                              std::optional<int64_t> argKinds) -> AnyValue {
     // Sprint P4's blocked half, unblocked: where the metadata says an
@@ -3007,35 +3042,15 @@ AnyValue CallNode::emitIR(ExprDest &dest, IREmitter &emitter) const {
           emitter.emitExpr(operand.expr, ExprContext::EC_CallArgValue);
       if (!emitted)
         return {};
-      if (operandIsString(emitted) && argKindsQueryIsObjectAt(position)) {
-        // value = __bridge_string(value), emitted now against the hook's
-        // own module scope, where that name is a declaration.
-        ExprDest fnDest(ExprContext::EC_CallCalleeValue);
-        if (!hookDeclScope)
+      AnyValue value = std::move(emitted);
+      if (operandIsString(value) && argKindsQueryIsObjectAt(position)) {
+        value = bridgeOperand(value, /*positionIsObject=*/true,
+                              operand.expr);
+        if (!value)
           return {};
-        auto nsFn = DeclRefNode::emitUnqualLookup(
-            "__bridge_string", operand.expr, *hookDeclScope, fnDest, emitter,
-            /*isSpeculative=*/false);
-        if (nsFn.isFailure() || nsFn.getIfExprNode())
-          return {};
-        AnyValue fnValue = nsFn.getIfValue();
-        if (!fnValue)
-          return {};
-        SyntheticNode fnNode(operand.getLoc(), std::move(fnValue));
-        SyntheticNode argNode(operand.getLoc(), emitted);
-        Operand callOperand(&argNode, operand.getLoc(),
-                            ArgUnpackStyle::kPositional);
-        CallNode nsCall(&fnNode, operand.getLoc(), callOperand,
-                        operand.getLoc());
-        AnyValue bridged = emitter.emitExpr(&nsCall, EC_CallArgValue);
-        if (!bridged)
-          return {};
-        operandNodes.push_back(std::make_unique<SyntheticNode>(
-            operand.getLoc(), std::move(bridged)));
-      } else {
-        operandNodes.push_back(std::make_unique<SyntheticNode>(
-            operand.getLoc(), std::move(emitted)));
       }
+      operandNodes.push_back(
+          std::make_unique<SyntheticNode>(operand.getLoc(), std::move(value)));
       valueOperands.emplace_back(operandNodes.back().get(), operand.getLoc(),
                                  // A '*'/'**' unpack cannot carry keyword
                                  // names to a parameter list; the callee
@@ -3171,6 +3186,101 @@ AnyValue CallNode::emitIR(ExprDest &dest, IREmitter &emitter) const {
                 ? argKindsFor("arg_kinds_for_init_parts_", labelCount,
                               queryArgs)
                 : std::optional<int64_t>{});
+      }
+    }
+  }
+
+  // cocoa-mojo: POSITIONAL calls into the tier bridge too. A bare String
+  // where the metadata says the argument is an object reaches the call as
+  // an NSString -- `win.setTitle("Hello")`, no nsstring(...).ptr() -- which
+  // the keyword surface has had since the P4 unblock and one-part selectors
+  // could never spell, because they have no label to keyword. This arm does
+  // not re-dispatch onto a hook: the callee is the ORIGINAL callee and only
+  // the operands change, so `Bound.__call__` runs as it always did, with
+  // the bridged values arriving as objects its guard already accepts.
+  if (!llvm::any_of(operands,
+                    [](const Operand &op) { return op.isKeyword(); })) {
+    if (auto calleeCVal = calleeVal.getIfCValue()) {
+      ASTType calleeType = calleeCVal.getRValueType();
+      if (emitter.shared.typeHasMember(calleeType, "__call_kw_param__",
+                                       getLoc()) &&
+          operands.size() >= 1 && operands.size() <= 6) {
+        auto params = paramStrings(calleeType);
+        auto structType = sugarDynCast<LIT::StructType>(calleeType);
+        bool isClass =
+            structType &&
+            structType.getSymbol().getLeafReference().strref() == "BoundClass";
+        std::optional<int64_t> argKinds;
+        if (params.size() == 2) {
+          SmallString<40> query("arg_kinds_for_name_");
+          query += std::to_string(operands.size());
+          SmallVector<StringRef, 4> queryArgs;
+          queryArgs.push_back(params[0]);
+          queryArgs.push_back(params[1]);
+          queryArgs.push_back(isClass ? "1" : "0");
+          auto kinds = M::KGEN::CocoaKB::CocoaKBDatabase::get().queryInt(
+              query.str(), queryArgs);
+          if (kinds)
+            argKinds = *kinds;
+          else
+            llvm::consumeError(kinds.takeError());
+        }
+
+        // Only take the rewrite when something actually bridges; otherwise
+        // leave the call alone and save the synthesized round trip.
+        SmallVector<AnyValue, 6> emitted;
+        emitted.reserve(operands.size());
+        bool anyBridged = false;
+        bool failed = false;
+        for (size_t position = 0; position < operands.size(); ++position) {
+          auto value = emitter.emitExpr(operands[position].expr,
+                                        ExprContext::EC_CallArgValue);
+          if (!value) {
+            failed = true;
+            break;
+          }
+          bool positionIsObject =
+              argKinds &&
+              ((uint64_t(*argKinds) >> (7 * position)) & 127) == '@';
+          if (positionIsObject) {
+            bool wasString = false;
+            if (ASTType before = value.getRValueTypeIfResolvable())
+              if (auto st = sugarDynCast<LIT::StructType>(before)) {
+                StringRef leaf = st.getSymbol().getLeafReference().strref();
+                wasString = leaf == "String" || leaf == "StringLiteral";
+              }
+            auto bridged =
+                bridgeOperand(value, true, operands[position].expr);
+            if (!bridged) {
+              failed = true;
+              break;
+            }
+            if (wasString)
+              anyBridged = true;
+            value = std::move(bridged);
+          }
+          emitted.push_back(std::move(value));
+        }
+        if (!failed && anyBridged) {
+          SmallVector<std::unique_ptr<SyntheticNode>, 6> operandNodes;
+          SmallVector<Operand, 6> wrappedOperands;
+          operandNodes.reserve(operands.size());
+          for (size_t position = 0; position < operands.size(); ++position) {
+            operandNodes.push_back(std::make_unique<SyntheticNode>(
+                operands[position].getLoc(), std::move(emitted[position])));
+            wrappedOperands.emplace_back(operandNodes.back().get(),
+                                         operands[position].getLoc(),
+                                         ArgUnpackStyle::kPositional);
+          }
+          SyntheticNode calleeNode(getLoc(), calleeVal);
+          CallNode callNode(&calleeNode, lparenLoc, wrappedOperands,
+                            rparenLoc);
+          return emitter.emitExpr(&callNode, dest);
+        }
+        // Nothing bridged (or emission failed): fall through untouched.
+        // The values were emitted speculatively; the normal path below
+        // re-emits the same expressions, which is safe because the
+        // operands of a positional tier call are pure reads.
       }
     }
   }
@@ -4042,6 +4152,42 @@ static void warnIfWriteChangesLet(IREmitter &emitter, const ExprNode *lhs,
       << "'" << record->bindingName << "' bound here";
 }
 
+/// The property-write arm of operand bridging: a String value where the
+/// setter takes an object becomes __bridge_string(value), emitted against
+/// the std.objc module that declares the hooks (reached through the base
+/// type's declaration scope).
+static AnyValue bridgeStringForSetter(AnyValue value, ASTType baseType,
+                                      IREmitter &emitter, SMLoc loc) {
+  ASTType ty = value.getRValueTypeIfResolvable();
+  if (!ty)
+    return value;
+  auto structType = sugarDynCast<LIT::StructType>(ty);
+  if (!structType)
+    return value;
+  StringRef leaf = structType.getSymbol().getLeafReference().strref();
+  if (leaf != "String" && leaf != "StringLiteral")
+    return value;
+  ASTDecl *typeDecl = baseType.getDecl(emitter.shared);
+  ASTDecl *scope = typeDecl ? typeDecl->getParentDecl() : nullptr;
+  if (!scope)
+    return {};
+  ExprDest fnDest(ExprContext::EC_CallCalleeValue);
+  SyntheticNode probe(loc);
+  auto fn = DeclRefNode::emitUnqualLookup(
+      "__bridge_string", &probe, *scope, fnDest, emitter,
+      /*isSpeculative=*/false);
+  if (fn.isFailure() || fn.getIfExprNode())
+    return {};
+  AnyValue fnValue = fn.getIfValue();
+  if (!fnValue)
+    return {};
+  SyntheticNode fnNode(loc, std::move(fnValue));
+  SyntheticNode argNode(loc, std::move(value));
+  Operand callOperand(&argNode, loc, ArgUnpackStyle::kPositional);
+  CallNode nsCall(&fnNode, loc, callOperand, loc);
+  return emitter.emitExpr(&nsCall, EC_CallArgValue);
+}
+
 AnyValue BinOpNode::emitAssign(ExprDest &dest, IREmitter &emitter) const {
   // cocoa-mojo (sprint P5): a `let name = place` records the place it will
   // read through live, and a plain write through the same place warns --
@@ -4082,15 +4228,47 @@ AnyValue BinOpNode::emitAssign(ExprDest &dest, IREmitter &emitter) const {
           ASTType baseType = baseCVal.getRValueType();
           if (emitter.shared.typeHasMember(baseType, "__setattr_param__",
                                            getLoc())) {
+            // Bridge a bare String where the setter takes an object, the
+            // same as every call arm: `win.title = "Hello"` crosses here,
+            // at the assignment, where the value's type is still concrete.
+            SmallVector<StringRef, 4> baseParams;
+            if (auto st = sugarDynCast<LIT::StructType>(baseType))
+              for (TypedAttr param : st.getParamValues())
+                if (auto str = dyn_cast<StringAttr>(param))
+                  baseParams.push_back(str.getValue());
+            std::optional<int64_t> setterKinds;
+            if (baseParams.size() == 1) {
+              auto kinds = M::KGEN::CocoaKB::CocoaKBDatabase::get().queryInt(
+                  "arg_kinds_for_setter", {baseParams[0], attr->spelling});
+              if (kinds)
+                setterKinds = *kinds;
+              else
+                llvm::consumeError(kinds.takeError());
+            }
+            AnyValue rhsValue =
+                emitter.emitExpr(rhs, ExprContext::EC_CallArgValue);
+            if (!rhsValue)
+              return {};
+            if (setterKinds && (*setterKinds & 127) == '@') {
+              AnyValue bridged = bridgeStringForSetter(
+                  std::move(rhsValue), baseType, emitter, getLoc());
+              if (!bridged)
+                return {};
+              rhsValue = std::move(bridged);
+            }
+
             std::string quoted = ("\"" + attr->spelling.str() + "\"");
             StringRef spelling(quoted);
             auto *nameNode =
                 new StringLiteralNode(ArrayRef<StringRef>(spelling));
             llvm::scope_exit freeNode([&] { delete nameNode; });
+            auto *valueNode =
+                new SyntheticNode(getLoc(), std::move(rhsValue));
+            llvm::scope_exit freeValue([&] { delete valueNode; });
             Operand nameOperand(nameNode, attr->getLoc(),
                                 ArgUnpackStyle::kPositional);
-            Operand valueOperand(rhs, rhs->getLoc(),
-                                 ArgUnpackStyle::kPositional);
+            Operand valueOperand(valueNode, rhs->getLoc(),
+                                ArgUnpackStyle::kPositional);
 
             SyntheticNode baseNode(getLoc(), baseVal);
             AttributeRefNode hookNode(
