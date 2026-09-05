@@ -49,6 +49,7 @@ from gamepane.api import (
 )
 from gamepane.metal import (
     GamePane, Sprites, TextOverlay, ParticleField, key_held,
+    any_key_held,
     deck_new, deck_free, sfx_play, play_tune, stop_tune,
     start_audio, stop_audio,
 )
@@ -537,7 +538,8 @@ struct Game(Movable):
                 sprites.hide(self.hud_icon[i])
 
     def update_player(
-        mut self, mut sprites: Sprites, deck: P, attract: Bool, frame: Int
+        mut self, mut sprites: Sprites, deck: P, self_playing: Bool,
+        frame: Int,
     ) raises:
         if self.p_alive == 0:
             if self.p_death_timer > 0:
@@ -559,17 +561,21 @@ struct Game(Movable):
                 sprites.show(self.player)
             return
 
-        # ATTRACT MODE. A headless run must not read the keyboard: the
-        # window is an unfocused Accessory, but it still receives keys typed
-        # elsewhere, so the harness result would depend on what someone was
-        # doing at the time. Measured, not assumed -- a check run picked up
-        # two stray shots. So when GAMEPANE_FRAMES is set the game plays
-        # ITSELF, from the frame counter, and the same run produces the same
-        # frame every time.
+        # THE GAME PLAYING ITSELF -- for the harness, and for the cabinet.
+        #
+        # A headless run must not read the keyboard at all: the window is an
+        # unfocused Accessory but still receives keys typed elsewhere, so
+        # the result would depend on what somebody was doing at the time.
+        # Measured, not assumed: a check run picked up two stray shots.
+        #
+        # The demo wants the same synthesised input for a different reason
+        # -- to show the game off to an empty room. Driving it from the
+        # frame counter serves both, and makes the headless run reproduce
+        # exactly.
         var want_left = key_held(KEY_LEFT)
         var want_right = key_held(KEY_RIGHT)
         var want_fire = key_held(KEY_SPACE)
-        if attract:
+        if self_playing:
             let sweep = (frame // 3) % 200
             want_left = sweep >= 100
             want_right = sweep < 100
@@ -585,7 +591,7 @@ struct Game(Movable):
             self.px += 4.0
             angle = 12.0
             aim_dx = 2.0
-        if not attract and key_held(KEY_UP):
+        if not self_playing and key_held(KEY_UP):
             angle = 0.0
             aim_dx = 0.0
         if self.px < 10.0:
@@ -954,8 +960,21 @@ def main() raises:
             let rgb = sprites.palette_rgb(ids[d], c)
             field.set_colour(particle_colour(ids[d], c), rgb[0], rgb[1], rgb[2])
 
-    # Headless means attract mode: see update_player.
-    let attract = getenv("GAMEPANE_FRAMES").byte_length() > 0
+    # Two different things used to share the name `attract`.
+    #
+    # HEADLESS is the harness: no window anyone is looking at, no input read
+    # at all, fixed clocks, a deterministic dump.
+    #
+    # DEMO is the cabinet: nobody has touched it for forty seconds, so it
+    # plays itself to show what it is -- and stops the moment anyone does.
+    # Both make the game synthesise its own input, which is why they were
+    # one flag until now and why they must not be.
+    let headless = getenv("GAMEPANE_FRAMES").byte_length() > 0
+    var demo = False
+    var idle = 0
+
+    comptime IDLE_TO_DEMO = 60 * 40          # forty seconds
+
 
     var deck = deck_new()
     let unit = start_audio(deck)
@@ -970,6 +989,7 @@ def main() raises:
     var last_ships = -1
     var last_state = -1
     var last_flash = -1
+    var last_demo = False
     var music_for = -1              # which state's tune is playing
 
     # A FIXED LOGIC RATE. The BASIC ran at VSYNC on a 60 Hz machine and every
@@ -984,12 +1004,13 @@ def main() raises:
     comptime MAX_STEPS = 4
     var accumulator = 0.0
 
+
     while pane.pump():
         # NO input at all in attract mode, Escape included: the window is an
         # unfocused Accessory and still sees keys typed elsewhere, so three
         # runs ended at 493, 288 and 900 frames until this was guarded. The
         # frame limit is what stops a headless run.
-        if not attract and key_held(KEY_ESCAPE):
+        if not headless and key_held(KEY_ESCAPE):
             break
 
         # Attract mode steps ONCE per rendered frame, deliberately. The
@@ -998,8 +1019,10 @@ def main() raises:
         # headless run has to produce the same frame every time or the
         # harness's dump check is a coin toss. Measured: with the
         # accumulator, two runs diverged.
+        let self_playing = headless or demo
+
         var steps_left = 1
-        if not attract:
+        if not headless:
             accumulator += pane.dt()
             if accumulator > TICK * Float64(MAX_STEPS):
                 accumulator = TICK * Float64(MAX_STEPS)
@@ -1026,18 +1049,41 @@ def main() raises:
 
             game.update_stars(sprites)
 
+            # THE CABINET'S CLOCK. Anything at all resets it; nothing for
+            # forty seconds on a waiting screen starts the demo, and one
+            # touch during the demo puts the machine back in the player's
+            # hands with a clean game in front of them.
+            if not headless:
+                if any_key_held():
+                    idle = 0
+                    if demo:
+                        demo = False
+                        game.reset(sprites)
+                        state = STATE_INTRO
+                        intro_timer = 0
+                        music_for = -1
+                elif not demo:
+                    idle += 1
+                    if idle > IDLE_TO_DEMO and state != STATE_PLAYING:
+                        demo = True
+                        idle = 0
+                        game.reset(sprites)
+                        state = STATE_PLAYING
+                        frame = 0
+                        music_for = -1
+
             if state == STATE_INTRO:
                 intro_timer += 1
                 # A human starts when they are ready: the intro waits, it
                 # does not count down. Only attract mode starts itself.
                 let pressed = key_held(KEY_SPACE) or key_held(KEY_RETURN)
-                if (not attract and pressed) or (attract and intro_timer > 60):
+                if (not self_playing and pressed) or (self_playing and intro_timer > 60):
                     state = STATE_PLAYING
                     frame = 0
                 flash_timer = intro_timer
 
             elif state == STATE_PLAYING:
-                game.update_player(sprites, deck, attract, frame)
+                game.update_player(sprites, deck, self_playing, frame)
                 game.update_enemies(sprites, deck, frame)
                 game.update_saucer(sprites, deck)
                 game.update_bullets(sprites, deck, field, pane.ctx)
@@ -1058,8 +1104,8 @@ def main() raises:
                 flash_timer += 1
                 let pressed = key_held(KEY_SPACE) or key_held(KEY_RETURN)
                 let restart = (
-                    (not attract and flash_timer > 60 and pressed)
-                    or (attract and flash_timer > 240)
+                    (not self_playing and flash_timer > 60 and pressed)
+                    or (self_playing and flash_timer > 240)
                 )
                 if restart:
                     game.reset(sprites)
@@ -1067,7 +1113,7 @@ def main() raises:
                     intro_timer = 0
 
             elif state == STATE_WIN:
-                game.update_player(sprites, deck, attract, frame)
+                game.update_player(sprites, deck, self_playing, frame)
                 game.update_enemies(sprites, deck, frame)
                 game.update_saucer(sprites, deck)
                 game.update_bullets(sprites, deck, field, pane.ctx)
@@ -1075,8 +1121,8 @@ def main() raises:
                 flash_timer += 1
                 let pressed = key_held(KEY_SPACE) or key_held(KEY_RETURN)
                 let again = (
-                    (not attract and flash_timer > 150 and pressed)
-                    or (attract and flash_timer > 180)
+                    (not self_playing and flash_timer > 150 and pressed)
+                    or (self_playing and flash_timer > 180)
                 )
                 if again:
                     # Into the pause, not straight back into a wave.
@@ -1091,7 +1137,7 @@ def main() raises:
                 # have to wait.
                 flash_timer += 1
                 let pressed = key_held(KEY_SPACE) or key_held(KEY_RETURN)
-                if (not attract and flash_timer > 30 and pressed) \
+                if (not self_playing and flash_timer > 30 and pressed) \
                    or flash_timer > 180:
                     state = STATE_PLAYING
                     frame = 0
@@ -1103,6 +1149,7 @@ def main() raises:
             or game.ships != last_ships
             or state != last_state
             or flash != last_flash
+            or demo != last_demo
         ):
             hud.clear()
             hud.draw_text(10, 10, String("SCORE: ") + pad6(game.score),
@@ -1135,20 +1182,25 @@ def main() raises:
                 let left = (180 - flash_timer) // 60 + 1
                 hud.draw_text(254, 240, String("GET READY  ") + String(left),
                               194, 195, 199, 1)
+            if demo:
+                hud.draw_text(250, 440, String("ATTRACT MODE"), 95, 87, 79, 1)
+                hud.draw_text(190, 458, String("PRESS ANY KEY TO PLAY"),
+                              95, 87, 79, 1)
             last_score = game.score
             last_ships = game.ships
             last_state = state
             last_flash = flash
+            last_demo = demo
 
         game.draw_hud_ships(sprites)
         # The animation clock, like the logic clock: a fixed step in attract
         # mode. Three runs had identical score and ships and still produced
         # different dumps, because the explosion and wing frames were being
         # advanced by real elapsed time.
-        sprites.tick(TICK if attract else pane.dt())
+        sprites.tick(TICK if headless else pane.dt())
         # Two GPU kernels a frame: clear the debris plane, then advance and
         # scatter every particle. `begin_frame` waits for them.
-        field.step(pane.ctx, TICK if attract else pane.dt())
+        field.step(pane.ctx, TICK if headless else pane.dt())
 
         with autoreleasepool():
             let f = pane.begin_frame()

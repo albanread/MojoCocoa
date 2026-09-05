@@ -88,6 +88,20 @@ def mouse_state() -> MouseState:
     return MouseState(m[M_X], m[M_Y], m[M_LEFT] != 0.0, m[M_RIGHT] != 0.0)
 
 
+def any_key_held() -> Bool:
+    """Is ANY key down?
+
+    An attract mode needs this and nothing else: it is not interested in
+    which key woke the cabinet up, only that somebody touched it. Asking
+    each key it cares about instead would miss the one it forgot.
+    """
+    _ensure_state()
+    for i in range(MAX_KEY_CODE):
+        if g_keys()[][i] != 0:
+            return True
+    return False
+
+
 def clear_input():
     """Release every key and button.
 
