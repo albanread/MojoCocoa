@@ -25,7 +25,7 @@
 
 from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
 from std.ffi import external_call
-from chip import P
+from gamepane.api.audio import P
 from tune import score_alloc, score_put, voice_part, EVENT_SLOTS
 
 comptime MAX_VOICES = 3

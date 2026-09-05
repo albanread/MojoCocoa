@@ -24,7 +24,7 @@
 
 from std.memory import Pointer, MutUntrackedOrigin, OpaquePointer
 from std.ffi import external_call
-from chip import (
+from gamepane.api.audio import (
     P, get, put, vget, vput, set_freq_hz, set_pulse_width, set_wave, set_adsr,
     gate_on, gate_off, route_filter, set_filter, _sin,
     S_FRAME, PLAYER_BASE, WAVE_PULSE, WAVE_SAW, WAVE_TRI, WAVE_NOISE, FILT_LP,

@@ -198,7 +198,11 @@ fn set_pulse_width(st: P, voice: Int, pw: Int):
 
 @always_inline
 fn set_wave(st: P, voice: Int, wave: Int):
-    vput(st, voice, V_WAVE, wave)
+    # Masked, like every other register setter here. Four waveform bits
+    # exist; storing anything else meant a stray bit rode along in the
+    # register and read back out of `vget`, which is the sort of thing that
+    # is invisible until something compares registers.
+    vput(st, voice, V_WAVE, wave & 15)
 
 
 # The chip's attack times in milliseconds, 0..15. Decay and release run three
@@ -261,9 +265,19 @@ fn gate_off(st: P, voice: Int):
 
 @always_inline
 fn set_filter(st: P, cutoff: Int, res: Int, mode: Int):
-    put(st, S_CUTOFF, cutoff & 0x7FF)
+    # CLAMPED, not masked. `cutoff & 0x7FF` wraps 2048 back to 0, so a sweep
+    # that runs off the top of the range slams the filter shut instead of
+    # leaving it open -- an effect that opens up ends in a thud, and the
+    # register looks perfectly reasonable afterwards. Nothing about a sweep
+    # says "stop at 2047" to the caller, so the chip says it here.
+    var c = cutoff
+    if c < 0:
+        c = 0
+    elif c > 0x7FF:
+        c = 0x7FF
+    put(st, S_CUTOFF, c)
     put(st, S_RES, res & 15)
-    put(st, S_FMODE, mode)
+    put(st, S_FMODE, mode & 7)
     put(st, S_DIRTY, 1)
 
 
@@ -442,21 +456,44 @@ fn chip_render(
         var dry = 0.0
         var wet = 0.0
 
+        # ADVANCE ALL THREE FIRST, then apply sync.
+        #
+        # Sync is a RING -- voice 1 syncs to 0, voice 2 to 1, and voice 0 to
+        # voice 2 -- so there is no order in which every source is already
+        # up to date. Advancing inside the voice loop meant voices 1 and 2
+        # saw a source that had moved this sample while voice 0 saw one that
+        # had not, and voice 0's sync fired a sample late. On a real chip all
+        # three oscillators advance together, so the wrap each voice reacts
+        # to is detected from that voice's OWN prev-to-raw step, before any
+        # of them is reset.
+        var prev0 = vget(st, voice=0, field=V_ACC)
+        var prev1 = vget(st, voice=1, field=V_ACC)
+        var prev2 = vget(st, voice=2, field=V_ACC)
+        var raw0 = (prev0 + vget(st, voice=0, field=V_STEP)) & 0xFFFFFFFF
+        var raw1 = (prev1 + vget(st, voice=1, field=V_STEP)) & 0xFFFFFFFF
+        var raw2 = (prev2 + vget(st, voice=2, field=V_STEP)) & 0xFFFFFFFF
+        var wrapped0 = ((raw0 >> 8) & 0xFFFFFF) < ((prev0 >> 8) & 0xFFFFFF)
+        var wrapped1 = ((raw1 >> 8) & 0xFFFFFF) < ((prev1 >> 8) & 0xFFFFFF)
+        var wrapped2 = ((raw2 >> 8) & 0xFFFFFF) < ((prev2 >> 8) & 0xFFFFFF)
+
         for v in range(3):
-            let step = vget(st, voice=v, field=V_STEP)
-            # A copy: this is read before V_ACC is written below.
-            var prev = vget(st, voice=v, field=V_ACC)
-            var acc = (prev + step) & 0xFFFFFFFF
+            var prev = prev0
+            var acc = raw0
+            var src_wrapped = wrapped2      # voice 0 syncs to voice 2
+            if v == 1:
+                prev = prev1
+                acc = raw1
+                src_wrapped = wrapped0
+            elif v == 2:
+                prev = prev2
+                acc = raw2
+                src_wrapped = wrapped1
 
             # Hard sync: when the previous voice's accumulator wraps, this one
             # is slammed back to zero. Two oscillators at unrelated pitches,
             # one resetting the other, is the chip lead sound.
-            if vget(st, voice=v, field=V_SYNC) != 0:
-                let src = (v + 2) % 3
-                let s_now = (vget(st, voice=src, field=V_ACC) >> 8) & 0xFFFFFF
-                let s_was = (vget(st, voice=src, field=V_PREV) >> 8) & 0xFFFFFF
-                if s_now < s_was:
-                    acc = 0
+            if vget(st, voice=v, field=V_SYNC) != 0 and src_wrapped:
+                acc = 0
 
             let acc24 = (acc >> 8) & 0xFFFFFF
             let was24 = (prev >> 8) & 0xFFFFFF
@@ -473,9 +510,16 @@ fn chip_render(
             vput(st, voice=v, field=V_PREV, value=prev)
             vput(st, voice=v, field=V_ACC, value=acc)
 
+            # Ring modulation reads the same generation sync did -- the raw
+            # accumulators from this sample, before any of them was reset.
             var ring_msb = 0
             if vget(st, voice=v, field=V_RING) != 0:
-                ring_msb = (vget(st, voice=(v + 2) % 3, field=V_ACC) >> 8) & 0xFFFFFF
+                var rsrc = raw2
+                if v == 1:
+                    rsrc = raw0
+                elif v == 2:
+                    rsrc = raw1
+                ring_msb = (rsrc >> 8) & 0xFFFFFF
 
             let w = waveform(st, v, acc24, ring_msb)
             let env = advance_envelope(st, v)
@@ -495,7 +539,7 @@ fn chip_render(
         var low = fget(st, S_LOW)
         var band = fget(st, S_BAND)
         low += f * band
-        let high = wet - low - q * band
+        var high = wet - low - q * band
         band += f * high
 
         # A state-variable filter is only CONDITIONALLY stable, and nothing
@@ -511,6 +555,13 @@ fn chip_render(
         if low != low or band != band:
             low = 0.0
             band = 0.0
+            # `high` was computed from the state BEFORE this reset, so on the
+            # sample that diverged it is still NaN -- and in HP or BP+HP mode
+            # it goes straight into the output. The output clamp cannot catch
+            # it either: every comparison against NaN is false, so `value`
+            # passes through both branches unchanged and a NaN Float32
+            # reaches the audio device. Reset the tap with the state.
+            high = 0.0
         if low > FILTER_CEILING:
             low = FILTER_CEILING
         elif low < -FILTER_CEILING:

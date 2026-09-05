@@ -39,7 +39,7 @@ from std.ffi import external_call, c_char
 from std.time import sleep
 from std.sys import argv
 
-from chip import (
+from gamepane.api.audio import (
     P, chip_new, chip_render, get, put, vget, vput, set_filter,
     S_CUTOFF, S_RES, S_FMODE, S_FRAME, V_ENV, V_WAVE, V_PHASE, V_STEP,
     PLAYER_BASE, SAMPLE_RATE, CLOCK_PAL,
