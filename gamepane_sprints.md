@@ -193,7 +193,7 @@ Two things the sprint did not anticipate:
 
 ---
 
-## Sprint G2 — the shader pane and the direct pane (NOT STARTED, size S, wants G0)
+## Sprint G2 — the shader pane and the direct pane (DONE, size S, wants G0)
 
 **Goal.** Layer 0 and the framebuffer-you-write-yourself — the two layers
 with no drawing API of their own, so they are the smallest.
@@ -216,6 +216,42 @@ anywhere in it.
 
 **Rust tests covered.** `the_backbuffer_pointer_is_writable_memory`, plus
 G0's two shader tests now running against the real `ShaderPane`.
+
+**Status.** Done. `gamepane/tests/test_panes.mojo` passes, and both demos
+run headless in `check-examples.sh`.
+
+The frame became a type. `GamePane` now hands out a `Frame` — drawable,
+target texture, command buffer, and whether there was a drawable at all —
+from `begin_frame()`, and every layer encodes into that one command buffer
+before `end_frame()` presents and commits it. That is what makes a composite
+a composite rather than a stack of submissions, and it is the API G3–G6 all
+plug into. `present()` survives as begin/clear/end for a pane with no layers.
+`read_frame()` reads a finished frame back as BGRA, so a test can assert
+about what was DRAWN: a pipeline that compiles and a pipeline that puts the
+right colour on the drawable are different claims, and only the second one
+matters.
+
+Both panes are checked through real pixels. `u.p[0..2]` set to (1, 0, 0.5)
+comes back from the drawable as BGRA 128 0 255. A direct-pane plane filled
+with index 200, whose palette entry is (12, 200, 60), comes back as BGRA
+60 200 12 — a host byte became a colour on screen with no upload call in
+between. The negative case is checked too: a source with no `fmain` raises
+an error that names `fmain`, because an empty source compiles cleanly and it
+is `newFunctionWithName:` that fails.
+
+The compiler caught a `let` aliasing bug in `DirectPane.render` — `let drawn
+= self.write` binds to the field the rotation at the end of the function
+overwrites. Harmless as written, since every use precedes the write, and a
+trap the moment anyone adds a use after it.
+
+**The demos.** `examples/gamepane-starfield` is the Rust demo's fragment
+shader quoted verbatim: thirteen lines of MSL, no vertex buffer, no texture,
+no CPU work, and `u.time` the only thing that changes between frames — 141
+pixels differ between frame 5 and frame 90, so it really twinkles.
+`examples/gamepane-plasma` is forty lines that write bytes into
+`backbuffer_ptr()`; there is no upload call anywhere in it, and the rows are
+`stride_bytes()` apart rather than `width` apart, which is why it is a
+plasma and not a diagonal smear.
 
 ---
 
@@ -523,9 +559,11 @@ cocoamojo run gamepane/tests/spike_pipeline.mojo
 # against dist/CocoaMojo, stealing nobody's focus
 ./tools/check-gamepane.sh
 
-# the demo, without a screen
+# the demos, without a screen
 GAMEPANE_FRAMES=30 GAMEPANE_DUMP=/tmp/starfield.bgra \
   cocoamojo run examples/gamepane-starfield/main.mojo
+GAMEPANE_FRAMES=30 GAMEPANE_DUMP=/tmp/plasma.bgra \
+  cocoamojo run examples/gamepane-plasma/main.mojo
 
 # the whole example set, msg_send held at zero
 ./tools/check-examples.sh
