@@ -163,10 +163,14 @@ for raw in body.splitlines():
             triangle(g, w, h, *vals); continue
         print("  UNPARSED: %s" % stmt, file=sys.stderr)
 
+NAMES = {0: "PLAYER", 1: "BEE", 2: "BOSS", 3: "BULLET", 4: "BOMB",
+         5: "STAR", 6: "EXPLOSION", 7: "BUTTERFLY", 8: "SCORPION",
+         9: "BLUE_BEE", 10: "MOTH", 11: "SAUCER"}
+
 for i in order:
     w, h, g = defs[i]
     fw, fh, n = frames.get(i, (w, h, 1))
-    print("DEF %d %dx%d frames=%d" % (i, fw, fh, n))
+    print("DEF %d %dx%d frames=%d %s" % (i, fw, fh, n, NAMES.get(i, "DEF%d" % i)))
     for f in range(n):
         rows = "/".join(
             "".join(("%x" % c) if c else "." for c in row[f * fw:(f + 1) * fw])

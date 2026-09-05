@@ -58,6 +58,9 @@ done
 # nothing and every test above still passed -- which is exactly the failure a
 # suite of unit tests cannot see.
 run "demo:platforms" examples/gamepane-platforms/main.mojo
+# The game, in attract mode -- it plays itself from the frame counter, so
+# the run is deterministic and does not read the keyboard.
+run "game:galaxigans" examples/galaxigans/main.mojo
 if [ -f "$DUMP/demo:platforms.bgra" ]; then
   printf '== %-24s ' "demo frame"
   python3 - "$DUMP/demo:platforms.bgra" <<'PY'

@@ -738,7 +738,7 @@ menu of an installed Roast, and the chapter is in the PDF.
 
 ---
 
-## Sprint G10 — the first game: Galaxigans (NOT STARTED, size L, wants G9)
+## Sprint G10 — the first game: Galaxigans (DONE, size L, wants G9)
 
 **Goal.** The reason for all of it: port a Rust MacGamePane game to
 `gamepane.api` and have it play. Galaxigans is the candidate — the Rust
@@ -752,6 +752,41 @@ run in `check-gamepane.sh` that plays the attract mode headless.
 
 **Done when** it runs, and when a second game starts from it as a template
 rather than from the engine.
+
+**Status.** It runs. `examples/galaxigans` is 800 lines of Mojo against
+`gamepane.api`, and `check-gamepane.sh` plays its attract mode headless.
+
+**The sprint was wrong about the source.** Galaxigans is a 1,447-line BASIC
+Galaga, not a Rust MacGamePane game — the Rust repository carries only the
+ENGINE extensions its port needed. Three variants exist; this ports the
+newest.
+
+**What mapped and what did not.** `SPRITE DEF/PALETTE`, `SPRITE POS/ROT/
+SCALE/SHOW/HIDE/ANIMATE`, `SPRITEHIT`, `GKEYDOWN` and `DRAWTEXT` all have a
+direct equivalent, and `GKEYDOWN`'s codes are ours unchanged. Two things did
+not. The BASIC anchors sprites TOP-LEFT and this package anchors them at
+their centre — a better pivot for the rotation this game leans on — so every
+placement adds half the sprite and `place_tl` is the only place that lives.
+And half the art was DRAWN rather than written as rows, which
+`tools/galaxigans-art.py` converts once, offline.
+
+**Frames, not seconds.** The dive curves, the fire cooldown and the
+three-frame release debounce are all written in frames, so the port counts
+frames too. Reinterpreting them as seconds would have changed the game
+rather than ported it; `dt` is used only for sprite animation.
+
+**Attract mode exists because of a measurement.** A headless run scored
+twenty points with nobody playing: the window is an unfocused Accessory, but
+it still receives keys typed elsewhere, so the harness result depended on
+what someone happened to be doing. Under `GAMEPANE_FRAMES` the game now
+plays ITSELF from the frame counter and reads no input at all — two runs
+produce byte-identical frames, which is what makes the harness's dump check
+worth anything.
+
+The compiler caught the one real bug during the port: `self.rnd()` mutates
+the game while `self.star[s]` is a live interior reference, and passing both
+to the same call is an *"use of invalidated interior reference"* error
+rather than the aliasing bug it would have been.
 
 ---
 
