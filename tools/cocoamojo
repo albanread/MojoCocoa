@@ -12,7 +12,8 @@
 #   bin/cocoamojo-compiler          the compiler
 #   lib/libKGENCompilerRTShared     Mojo runtime
 #   lib/libCocoaMojoGPU             Metal/AsyncRT device runtime (GPU kernels)
-#   lib/mojo/{stdlib,max,kernels}   the packages
+#   lib/mojo/{stdlib,max,kernels,gamepane}
+#                                   the packages
 #   share/cocoa.sqlite              the SDK database the elaborator reads
 #
 # Binaries produced by --build carry an rpath to lib/, so they run anywhere on
@@ -40,7 +41,11 @@ export COCOAMOJO_ROOT="$HERE"
 # to Application Support so people can edit it); COCOAMOJO_STDLIB points
 # there. max and kernels stay the toolchain's own.
 STD="${COCOAMOJO_STDLIB:-$PKG/stdlib}"
-INC=(-I "$STD" -I "$PKG/max" -I "$PKG/kernels")
+# gamepane is a fourth package on the same footing: `lib/mojo/gamepane` is
+# the container and `gamepane/` inside it is the package, exactly as
+# `lib/mojo/max` holds `max/`. A distribution built before it existed
+# simply has no such directory, and an -I at a missing path is ignored.
+INC=(-I "$STD" -I "$PKG/max" -I "$PKG/kernels" -I "$PKG/gamepane")
 
 # Cocoa is not a library you opt into here -- it is the platform. Every build
 # gets libobjc and the frameworks, and the GPU runtime that makes DeviceContext

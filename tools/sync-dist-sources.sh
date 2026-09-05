@@ -34,6 +34,12 @@ mkdir -p "$D/lib/mojo"
 rsync -a --delete "$ROOT/mojo/stdlib/"      "$D/lib/mojo/stdlib/"
 rsync -a --delete "$ROOT/max/mojo/"         "$D/lib/mojo/max/"
 rsync -a --delete "$ROOT/max/kernels/src/"  "$D/lib/mojo/kernels/"
+# gamepane, the retro game pane: shipped as a package like the rest, minus
+# its tests, which build from the repository against the same sources.
+rsync -a --delete --delete-excluded \
+      --exclude='tests/' \
+      --include='*/' --include='*.mojo' --exclude='*' \
+      "$ROOT/gamepane/" "$D/lib/mojo/gamepane/gamepane/"
 
 echo "== examples =="
 # Shipped with the toolchain because they are the answer to "what does a

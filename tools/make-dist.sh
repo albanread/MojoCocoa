@@ -258,19 +258,11 @@ done
 # ARC is off for AppleGPUMetal.cpp: it does its own retain/release and calls
 # dispatch_release, which ARC forbids.
 echo "== GPU runtime (libCocoaMojoGPU) =="
-TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-M="$ROOT/AsyncRT/lib/MojoBindings"
-clang++ -std=c++17 -O2 -arch arm64 -fvisibility=default -x objective-c++ \
-        -fobjc-arc    -c "$M/AppleGPURT.cpp"    -o "$TMP/AppleGPURT.o"
-clang++ -std=c++17 -O2 -arch arm64 -fvisibility=default -x objective-c++ \
-        -fno-objc-arc -c "$M/AppleGPUMetal.cpp" -o "$TMP/AppleGPUMetal.o"
-clang++ -dynamiclib -arch arm64 -install_name '@rpath/libCocoaMojoGPU.dylib' \
-        -o "$D/lib/libCocoaMojoGPU.dylib" "$TMP/AppleGPURT.o" "$TMP/AppleGPUMetal.o" \
-        -framework Metal -framework Foundation -framework CoreGraphics \
-        -framework IOKit -lobjc
-n=$(nm -gU "$D/lib/libCocoaMojoGPU.dylib" | grep -c 'AsyncRT') || true
-[ "$n" -gt 100 ] || { echo "GPU runtime exported only $n AsyncRT symbols -- visibility regression"; exit 1; }
-echo "   $n AsyncRT symbols exported"
+# Two lines of clang++, so they live in their own script and this calls it:
+# working on the runtime otherwise means a full distribution build to pick up
+# a C++ change, and what people do instead is not rebuild and then debug a
+# stale dylib for an hour. ./tools/make-gpu-runtime.sh is that loop.
+"$ROOT/tools/make-gpu-runtime.sh" "$D"
 
 # The stdlib, the examples and the IDE's own source are copies, not builds,
 # and the copies must also happen on the bazel-free path (make-app.sh), so
