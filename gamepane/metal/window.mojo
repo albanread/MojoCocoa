@@ -230,6 +230,27 @@ comptime CLEAR_G = 0.05
 comptime CLEAR_B = 0.09
 
 
+# ── One frame ──────────────────────────────────────────
+
+
+@fieldwise_init
+struct Frame(Copyable, Movable):
+    """The three Objective-C objects a layer needs to draw one frame, and
+    whether there was a frame to draw at all.
+
+    Plain `Int`s rather than retained handles: everything here lives inside
+    the autorelease pool of the `begin_frame`/`end_frame` pair, and a layer
+    that outlives that pair has already lost. `valid` is False when the
+    compositor had no drawable ready -- a normal thing under load, and every
+    layer's `render` returns immediately on it.
+    """
+
+    var drawable: Int
+    var target: Int
+    var cb: Int
+    var valid: Bool
+
+
 # ── The pane ────────────────────────────────────────────────────────────────
 
 
@@ -391,51 +412,103 @@ struct GamePane(Movable):
     def frame_count(self) -> Int:
         return self.frames
 
+    def begin_frame(mut self) raises -> Frame:
+        """Acquire the drawable and open one command buffer for the frame.
+
+        Every layer encodes into THIS command buffer, in the order the game
+        calls them, which is what makes the composite a composite: layer 0
+        loads `Clear` and each layer above it loads `Load`, and the GPU sees
+        one submission rather than a stack of them. A `Frame` whose `valid`
+        is False means the compositor had no drawable ready -- skip the
+        frame, it is not an error.
+        """
+        let mlayer = Obj["CAMetalLayer"](self.layer)
+        let drawable = mlayer.nextDrawable()
+        if drawable.id == 0:
+            return Frame(0, 0, 0, False)
+        let target = Obj["CAMetalDrawable"](drawable.addr()).texture()
+        let cb = send[ObjCObject, "commandBuffer"](ObjCObject(self.queue))
+        return Frame(drawable.addr(), target.addr(), cb.addr(), True)
+
+    def end_frame(mut self, frame: Frame) raises:
+        """Present and commit. Under GAMEPANE_DUMP the last frame is waited
+        on and written out, which is the only thing that costs anything."""
+        if not frame.valid:
+            return
+        let cb = ObjCObject(frame.cb)
+        _ = send[ObjCObject, "presentDrawable:"](cb, ObjCObject(frame.drawable).ptr())
+        _ = send[ObjCObject, "commit"](cb)
+
+        self.frames += 1
+        if (
+            self.frame_limit > 0
+            and self.frames >= self.frame_limit
+            and len(self.dump_path.as_bytes()) > 0
+        ):
+            _ = send[ObjCObject, "waitUntilCompleted"](cb)
+            self._dump(ObjCObject(frame.target))
+
+    def clear(self, frame: Frame) raises:
+        """The ground, and nothing else -- an empty render pass whose only
+        job is its load action. This is layer 0 when there is no layer 0."""
+        if not frame.valid:
+            return
+        let pass_desc = ObjCObject(
+            Cls["MTLRenderPassDescriptor"]().renderPassDescriptor().id
+        )
+        let c0 = send[ObjCObject, "objectAtIndexedSubscript:"](
+            send[ObjCObject, "colorAttachments"](pass_desc), Int(0)
+        )
+        _ = send[ObjCObject, "setTexture:"](c0, ObjCObject(frame.target).ptr())
+        _ = send[ObjCObject, "setLoadAction:"](c0, nsenum["MTLLoadActionClear"]())
+        _ = send[ObjCObject, "setStoreAction:"](
+            c0, nsenum["MTLStoreActionStore"]()
+        )
+        _ = send[ObjCObject, "setClearColor:"](
+            c0, MTLClearColor(CLEAR_R, CLEAR_G, CLEAR_B, 1.0)
+        )
+        let enc = send[ObjCObject, "renderCommandEncoderWithDescriptor:"](
+            ObjCObject(frame.cb), pass_desc.ptr()
+        )
+        _ = send[ObjCObject, "endEncoding"](enc)
+
     def present(mut self) raises:
-        """Show a frame. In G1 that is a cleared drawable; the layers land in
-        G2 and after, each encoding into this same command buffer."""
+        """Show a frame with nothing in it -- begin, clear, end. Kept as the
+        one-liner for a pane with no layers yet, and as G1's own test."""
         with autoreleasepool():
-            let mlayer = Obj["CAMetalLayer"](self.layer)
-            let drawable = mlayer.nextDrawable()
-            if drawable.id == 0:
-                return  # the compositor had none ready; skip, not an error
-            let target = Obj["CAMetalDrawable"](drawable.addr()).texture()
+            let frame = self.begin_frame()
+            self.clear(frame)
+            self.end_frame(frame)
 
-            let pass_desc = ObjCObject(
-                Cls["MTLRenderPassDescriptor"]().renderPassDescriptor().id
-            )
-            let c0 = send[ObjCObject, "objectAtIndexedSubscript:"](
-                send[ObjCObject, "colorAttachments"](pass_desc), Int(0)
-            )
-            _ = send[ObjCObject, "setTexture:"](c0, target.ptr())
-            _ = send[ObjCObject, "setLoadAction:"](
-                c0, nsenum["MTLLoadActionClear"]()
-            )
-            _ = send[ObjCObject, "setStoreAction:"](
-                c0, nsenum["MTLStoreActionStore"]()
-            )
-            _ = send[ObjCObject, "setClearColor:"](
-                c0, MTLClearColor(CLEAR_R, CLEAR_G, CLEAR_B, 1.0)
-            )
+    def aspect(self) -> Float32:
+        """Width over height, which is what a shader wants for `u.aspect`."""
+        if self.height == 0:
+            return 1.0
+        return Float32(self.width) / Float32(self.height)
 
-            let cb = send[ObjCObject, "commandBuffer"](
-                ObjCObject(self.queue)
-            )
-            let enc = send[ObjCObject, "renderCommandEncoderWithDescriptor:"](
-                cb, pass_desc.ptr()
-            )
-            _ = send[ObjCObject, "endEncoding"](enc)
-            _ = send[ObjCObject, "presentDrawable:"](cb, drawable.ptr())
-            _ = send[ObjCObject, "commit"](cb)
+    def read_frame(self, frame: Frame) raises -> List[UInt8]:
+        """The pixels of a frame that has been ended, as raw BGRA.
 
-            self.frames += 1
-            if (
-                self.frame_limit > 0
-                and self.frames >= self.frame_limit
-                and len(self.dump_path.as_bytes()) > 0
-            ):
-                _ = send[ObjCObject, "waitUntilCompleted"](cb)
-                self._dump(target)
+        This is how a test asserts about what was DRAWN rather than about
+        what was built: a pipeline that compiles and a pipeline that puts
+        the right colour on the drawable are different claims. It waits for
+        the frame's command buffer, so it costs a stall and belongs in
+        tests and in GAMEPANE_DUMP, not in a game loop. An invalid frame --
+        the compositor had no drawable -- gives an empty list rather than an
+        error, because skipping a frame is normal.
+        """
+        if not frame.valid:
+            return List[UInt8]()
+        _ = send[ObjCObject, "waitUntilCompleted"](ObjCObject(frame.cb))
+        var px = List[UInt8](length=self.width * self.height * 4, fill=0)
+        _ = send[ObjCObject, "getBytes:bytesPerRow:fromRegion:mipmapLevel:"](
+            ObjCObject(frame.target),
+            px.unsafe_ptr().unsafe_bitcast[NoneType](),
+            Int(self.width * 4),
+            MTLRegion(MTLOrigin(0, 0, 0), MTLSize(self.width, self.height, 1)),
+            Int(0),
+        )
+        return px^
 
     def _dump(self, target: ObjCObject) raises:
         """Write the presented frame as raw BGRA, so a harness (or a

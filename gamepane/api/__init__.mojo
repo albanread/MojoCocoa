@@ -5,3 +5,6 @@ from .input import (
     KEY_A, KEY_S, KEY_D, KEY_W, KEY_Z, KEY_X, KEY_RETURN,
     MAX_KEY_CODE, MouseState, GamepadState,
 )
+
+from .shader import ShaderParams, SHADER_PARAM_COUNT
+from .direct import Palette, PALETTE_SIZE, stride_for, buffer_len_for
