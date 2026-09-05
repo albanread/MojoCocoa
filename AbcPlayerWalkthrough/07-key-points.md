@@ -54,7 +54,8 @@ set".
 
 Sharps arrive F C G D A E B; flats take that list backwards. Two sharps means F
 and C are raised, and that *is* D major. `key_alter` derives it; there is no
-table to half-fill, which is the shape the original C++ bug had.
+table to half-fill — which is the shape that let the earlier version's key
+handling go unnoticed.
 
 Modes are a subtraction on the circle of fifths — Dorian −2, Mixolydian −1,
 minor −3 — and they matter, because `K:Ador` is in G major's signature and

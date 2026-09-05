@@ -1,7 +1,8 @@
 # 1. Where it came from
 
 Two histories meet in this program: a notation designed so that folk tunes
-could be sent by email, and a C++ player that read it badly.
+could be sent by email, and a player that has been written several times over,
+in several languages, of which this is the latest.
 
 ## ABC notation
 
@@ -40,17 +41,25 @@ about it. Briefly:
 Each of those ambiguities is resolved by looking at the *next* character, and
 all four occur in ordinary tunes.
 
-## The C++ ancestor, and five things that had never worked
+## One player, several languages
 
-This is a port of a C++ ABC player, and the commit is blunt about what the
-port found:
+An ABC player is a good thing to port. It is small enough to finish, it has a
+genuinely awkward grammar, and the output is checkable — so it makes a decent
+way to get the measure of an unfamiliar language. This one has been through
+C++, Rust, Modula-2 and Smalltalk before arriving here, and the Mojo version
+took the C++ as its starting text simply because that was the handy one to
+read from.
 
-> *Five things in the original had never worked, found by reading it before
-> porting rather than by running it.*
+The commit records what came out of that read-through — five behaviours the
+port had to change. They are worth keeping not as a verdict on any of the
+earlier versions but because of the property they share: **every one of them
+still produced music.**
 
-That distinction matters. These are not regressions or edge cases. They are
-features that were written, compiled, shipped, and never functioned — and the
-program still played something, which is why nobody noticed.
+None of them announces itself. A tune with the wrong key signature is still a
+tune; a note an octave low is still a note. Nothing crashes, nothing logs, and
+the output is plausible — which is exactly the class of fault that survives
+being tested by listening to it, and exactly why the
+[MIDI file output](04-time.md) earns its place.
 
 ### 1. Key signatures did nothing
 
@@ -59,22 +68,18 @@ Nothing anywhere assigned `.sharps`. And `applyKeySignature()` returned its
 argument unchanged, under a comment reading *"For now, just return the
 semitone unchanged"*.
 
-**Every tune played in C major**, whatever its `K:` field said. Folk material
-is overwhelmingly in G, D and A — so that is most notes wrong, in most tunes,
-all the time. It still sounded like music, because a tune played in the wrong
-key is still a tune.
+So tunes played in C major whatever the `K:` field said. Folk material is
+mostly G, D and A, so that covers most of the corpus — and it still sounded
+like music, because a tune transposed into the wrong mode is still a tune.
 
 ### 2. Explicit accidentals were dropped
 
 `isAccidental()` tested for `#` and `b`. Those are not ABC's accidental
 characters — ABC uses `^` and `_`.
 
-And it could not have fired anyway: the note branch was guarded by
-`isNote(*p)`, so `parseAccidental` only ever ran once the pointer was already
-on a letter. `^C` fell through to *"Ignoring unknown character"*.
-
-Two independent bugs in one function, either of which alone would have been
-enough.
+It was also unreachable: the note branch was guarded by `isNote(*p)`, so
+`parseAccidental` only ran once the pointer was already on a letter. `^C` fell
+through to *"Ignoring unknown character"*.
 
 ### 3. First and second endings were ignored
 
@@ -82,25 +87,25 @@ enough.
 expression. So `|: A |1 B :|2 C |` — which means *play A B, then A C* — came
 out as **A B A B**.
 
-Every repeated strain ended on the wrong phrase. The `REP1` and `REP2` feature
-types existed in the enum and were never used.
+So a repeated strain ended on its first ending rather than its second. The
+`REP1` and `REP2` feature types were in the enum, waiting to be used.
 
 ### 4. Middle C was an octave low
 
 `calculateMidiNote` computed `base_octave * 12 + semitone` with `base_octave =
-4` for an uppercase note, giving **48**. Two lines below sat a comment saying
+4` for an uppercase note, giving 48, against a comment two lines below reading
 *"C4 = 60"*.
 
-The model file's docstring now states the arithmetic and why it is easy to get
-wrong:
+The model file now states the arithmetic and why the off-by-one octave is easy
+to land on:
 
 > *ABC's `C` is middle C, so the octave that letter sits in is 5 in the
 > `(octave * 12)` convention — 5 * 12 + 0 = 60. Writing `base_octave * 12`
 > with base_octave 4 gives 48, which is a C, an octave low, and sounds
 > plausible enough to survive review.*
 
-That last clause is the whole problem. An octave error does not sound broken.
-It sounds like a bass part.
+The last clause is the point. An octave error does not sound broken; it
+sounds like a lower part.
 
 ### 5. Chord symbols corrupted the melody's timeline
 
@@ -111,20 +116,18 @@ after it out of step.
 Here chord symbols go to their own voice — `GCHORD_VOICE_BASE = 100` — so the
 melody's clock is untouched.
 
-## Why this is a port and not a rewrite
+## What the port took from that
 
-The README answers directly:
+The README puts the justification in one line:
 
 > *Numbers 1 and 2 are why this port is not a rewrite for its own sake: a tune
 > in `K:D` now plays in D.*
 
-Bugs 1 and 2 together mean the original could not play a tune in a key, and
-could not play an accidental. Between them that is most of what pitch means in
-folk music. The port is not a tidier version of a working program; it is the
-first version that plays the right notes.
+Between them the first two cover most of what pitch means in folk music, which
+is what gives this port something to do beyond translating.
 
-Two design decisions follow directly from that experience, and both are stated
-as invariants in the source rather than left to care:
+The more useful outcome is that two of the fixes are structural rather than
+corrective — the shapes that allowed the faults are gone, not just the faults:
 
 **A key signature is arithmetic, not a table.**
 
@@ -147,12 +150,15 @@ The regex approach that produced bug 3 operates on characters, which know
 nothing about voices or line breaks. Working on events makes the hard cases
 disappear rather than requiring extra code.
 
-## Why port it at all
+## What this one is testing
+
+Each language this player has been written in gets tested on the same two
+things, and the README names them:
 
 > *It was worth doing for two reasons that have nothing to do with Mojo being
 > new: a complicated parser is a real test of a language, and a music player is
 > a real test of timing.*
 
-Both halves are genuine exercises. ABC is an awkward grammar with real corpora
-to test against. And a music player has a deadline you can hear — which is
-[chapter 2](02-timing.md), and the more interesting half.
+The parser half is [chapter 3](03-parser.md). The timing half is where this
+version departs from its predecessors rather than merely translating them —
+and it is [chapter 2](02-timing.md).

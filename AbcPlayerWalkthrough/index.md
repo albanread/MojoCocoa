@@ -23,7 +23,7 @@ was not written here.
 
 | Chapter | What it covers |
 |:---|:---|
-| [1. Where it came from](01-history.md) | ABC notation, the C++ player this ports, and the five things in it that had never worked |
+| [1. Where it came from](01-history.md) | ABC notation, a player written several times in several languages, and what the read-through turned up |
 | [2. The timing argument](02-timing.md) | Why sleeping until an event is due is the wrong design, and what replaces it |
 | [3. Reading ABC](03-parser.md) | A notation that is ambiguous exactly where real tunes live |
 | [4. Time as an integer](04-time.md) | Ticks, repeats, ties, and the single conversion to samples |

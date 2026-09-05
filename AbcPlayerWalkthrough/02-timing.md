@@ -6,16 +6,17 @@ wanting, and replaced by one that is measured too.
 
 ## The design almost everybody uses
 
-An event scheduler usually looks like this, and this is what the C++ ancestor
-does:
+An event scheduler usually looks like this, and it is what the earlier
+versions of this player did:
 
 ```cpp
 std::this_thread::sleep_until(start + std::chrono::duration<double>(when));
 sendMIDIEvent(event);
 ```
 
-Compute when the note is due, sleep until then, send it. It is obvious, it is
-correct in intent, and it is wrong in a way that is audible.
+Compute when the note is due, sleep until then, send it. It is the obvious
+design, it is what almost every player does, and it has a ceiling you can
+hear.
 
 **It asks the operating system to wake a thread at a moment.** The kernel will
 oblige when it next gets round to it — late by whatever the scheduler is busy
