@@ -99,10 +99,20 @@ assumed, because each one decides a piece of the design.
    `Obj["MTLDevice"]` cannot be spelled, and calls on those objects go
    through `send[...]` with the caller naming the shape, exactly as
    `mandelbrot` already does for `newCommandQueue` and `replaceRegion:`. The
-   *descriptor* classes are real: `MTLTextureDescriptor` (8 methods),
-   `MTLRenderPipelineDescriptor` (16), `MTLRenderPassDescriptor` (16),
-   `MTLCompileOptions` (3), `CAMetalLayer` (73) — the typed surface applies
-   to them. The selectors the compositor needs
+   *descriptor* classes are named — `MTLTextureDescriptor`,
+   `MTLRenderPipelineDescriptor`, `MTLRenderPassDescriptor`,
+   `MTLCompileOptions`, `CAMetalLayer` (73 methods) — **but the runtime
+   enumeration records only a handful of selectors on each, and the ordinary
+   property setters are not among them**: `MTLTextureDescriptor` has eight,
+   none of which is `setWidth:` or `setUsage:`; `MTLRenderPipelineDescriptor`
+   has sixteen, none of which is `setVertexFunction:`. So `send` is the
+   spelling for nearly every Metal call, descriptors included — measured in
+   G0, not assumed. The exceptions are worth using where they exist:
+   `texture2DDescriptorWithPixelFormat:width:height:mipmapped:` and
+   `renderPassDescriptor` are in the metadata and take the typed surface,
+   and `CAMetalLayer` is fully covered. Every `MTL*` **enum** is in
+   `bs_enums`, so `nsenum` names all of them and no folklore integer is
+   needed. The selectors the compositor needs
    (`newLibraryWithSource:options:error:`,
    `newRenderPipelineStateWithDescriptor:error:`,
    `newTextureWithDescriptor:offset:bytesPerRow:`,
