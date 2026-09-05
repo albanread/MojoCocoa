@@ -297,22 +297,22 @@ class OthelloView(NSView):
         if len(text.as_bytes()) == 0:
             return
         let c = Int(text.as_bytes()[0])
-        if c == 110 or c == 78:              # n
-                g_cmd()[] = g_cmd()[] | CMD_NEW
-            elif c == 113 or c == 81 or c == 27:  # q or escape
-                g_cmd()[] = g_cmd()[] | CMD_QUIT
-            elif c == 98 or c == 66:             # b
-                g_level()[] = LEVEL_BEGINNER
-                g_cmd()[] = g_cmd()[] | CMD_LEVEL
-            elif c == 105 or c == 73:            # i
-                g_level()[] = LEVEL_INTERMEDIATE
-                g_cmd()[] = g_cmd()[] | CMD_LEVEL
-            elif c == 97 or c == 65:             # a
-                g_level()[] = LEVEL_ADVANCED
-                g_cmd()[] = g_cmd()[] | CMD_LEVEL
-            elif c == 109 or c == 77:            # m
-                g_level()[] = LEVEL_MASTER
-                g_cmd()[] = g_cmd()[] | CMD_LEVEL
+        if c == 110 or c == 78:               # n
+            g_cmd()[] = g_cmd()[] | CMD_NEW
+        elif c == 113 or c == 81 or c == 27:  # q or escape
+            g_cmd()[] = g_cmd()[] | CMD_QUIT
+        elif c == 98 or c == 66:              # b
+            g_level()[] = LEVEL_BEGINNER
+            g_cmd()[] = g_cmd()[] | CMD_LEVEL
+        elif c == 105 or c == 73:             # i
+            g_level()[] = LEVEL_INTERMEDIATE
+            g_cmd()[] = g_cmd()[] | CMD_LEVEL
+        elif c == 97 or c == 65:              # a
+            g_level()[] = LEVEL_ADVANCED
+            g_cmd()[] = g_cmd()[] | CMD_LEVEL
+        elif c == 109 or c == 77:             # m
+            g_level()[] = LEVEL_MASTER
+            g_cmd()[] = g_cmd()[] | CMD_LEVEL
 
 
 fn redraw():
