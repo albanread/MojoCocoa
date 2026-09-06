@@ -35,7 +35,7 @@ from std.objc import load_framework, named_global
 
 from gamepane.abc import (
     Tune, Step, parse_abc, resolve_ties, build_schedule, sort_steps,
-    flatten_schedule, render_scheduled, SC_LOOP,
+    render_trio, flatten_schedule, render_scheduled, SC_LOOP,
 )
 from gamepane.api import (
     P, SAMPLE_RATE, PLAYER_BASE, chip_new, chip_free, chip_render, get, put,
@@ -430,8 +430,43 @@ fn render(
     return 0
 
 
-def start_audio(d: P) raises -> Int:
-    """Open the default output and install the Mojo callback."""
+fn _trio_render(
+    ref_con: P,
+    action_flags: P,
+    timestamp: P,
+    bus: UInt32,
+    frames: UInt32,
+    io_data: P,
+) -> Int32:
+    """The trio IS the callback: render_trio writes interleaved stereo,
+    which is exactly what the unit's stream format says arrives."""
+    let base = io_data.unsafe_bitcast[UInt32]()
+    let byte_size = Int(base[unsafe_offset=3])
+    let data_slot = io_data.unsafe_bitcast[Int]()[unsafe_offset=2]
+    if data_slot == 0:
+        return 0
+    render_trio(
+        ref_con,
+        Pointer[Float32, MutUntrackedOrigin](unsafe_from_address=data_slot),
+        byte_size // 8,
+    )
+    return 0
+
+
+def start_trio_audio(t: P) raises -> Int:
+    """Open the default output with the TRIO as its renderer.
+
+    The deck's unit plays games -- two chips, effects ring, mono to both
+    channels. This one plays music: nine voices, pan, echo, all through
+    render_trio. Same shape as start_audio because it is the same job with
+    a different tenant; stop with stop_audio(unit) as ever."""
+    return _open_output(_trio_render, t)
+
+
+def _open_output(cb: AURenderCallback, ref_con: P) raises -> Int:
+    """Open the default output with `cb` rendering and `ref_con` as its
+    state. The deck and the trio both come through here: one unit shape,
+    two tenants."""
     if not load_framework["AudioToolbox"]():
         raise Error("could not load AudioToolbox")
 
@@ -478,11 +513,11 @@ def start_audio(d: P) raises -> Int:
     if rc != 0:
         raise Error("could not set the stream format")
 
-    var cbfn: AURenderCallback = render
+    var cbfn: AURenderCallback = cb
     let fn_addr = Pointer(to=cbfn).unsafe_bitcast[Int]()[]
     var cbs = external_call["calloc", P](Int(2), Int(8))
     cbs.unsafe_bitcast[Int]()[unsafe_offset=0] = fn_addr
-    cbs.unsafe_bitcast[Int]()[unsafe_offset=1] = Int(d)
+    cbs.unsafe_bitcast[Int]()[unsafe_offset=1] = Int(ref_con)
     rc = external_call["AudioUnitSetProperty", Int32](
         unit, UInt32(kAudioUnitProperty_SetRenderCallback),
         UInt32(kAudioUnitScope_Input), UInt32(0), cbs, UInt32(16),
@@ -490,7 +525,6 @@ def start_audio(d: P) raises -> Int:
     if rc != 0:
         raise Error("could not install the render callback")
 
-    g_deck()[] = Int(d)
     rc = external_call["AudioUnitInitialize", Int32](unit)
     if rc != 0:
         raise Error("could not initialise the output unit")
@@ -498,6 +532,12 @@ def start_audio(d: P) raises -> Int:
     if rc != 0:
         raise Error("could not start the output unit")
     return Int(unit)
+
+
+def start_audio(d: P) raises -> Int:
+    """Open the default output and install the deck's callback."""
+    g_deck()[] = Int(d)
+    return _open_output(render, d)
 
 
 fn stop_audio(unit_addr: Int):

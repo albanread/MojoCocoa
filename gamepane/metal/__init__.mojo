@@ -28,9 +28,10 @@ from .audio import (
     deck_new, deck_free, music_chip, sfx_chip, set_muted, set_music_tick,
     play_tune, stop_tune, sfx_play,
     pending_triggers, dropped_triggers, drain_triggers, advance_effects,
-    start_audio, stop_audio, RING_SIZE, MAX_BUFFER,
+    start_audio, start_trio_audio, stop_audio, RING_SIZE, MAX_BUFFER,
 )
 
 from .particles import (
     ParticleField, particles_step_kernel, PARTICLE_PALETTE, PARTICLE_SHADER,
 )
+from .scope import ScopeField, scope_plot_kernel

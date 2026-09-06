@@ -224,10 +224,10 @@ Sizes as elsewhere: **S** a sitting, **M** a day or two, **L** a week.
 - **CT4 — taps and sync (DONE, was S).** Published sample cursor, env reads, scope
   ring. *Checks:* SPSC discipline documented against the deck's; a
   headless reader sees a monotonic cursor.
-- **CT5 — the visuals (M).** Copper VU, scope kernel + fade pass, plasma,
+- **CT5 — the visuals (DONE, was M; the scope's fade pass deferred -- clear-and-plot reads well without it).** Copper VU, scope kernel + fade pass, plasma,
   sprite scroller. *Checks:* headless frame checksums, the game panes'
   own trick.
-- **CT6 — the player and the four tunes (L).** The app, attract mode,
+- **CT6 — the player and the four tunes (IN PROGRESS: the player runs with the showcase tune; the four demos remain).** The app, attract mode,
   offline `--wav`, the demos written and tuned by ear against rendered
   WAVs (the Galaxigans workflow: render, listen, revise, wire).
   *Checks:* `check-examples.sh` headless run; four committed tune hashes.
