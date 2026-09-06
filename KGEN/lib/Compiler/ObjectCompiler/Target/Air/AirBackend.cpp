@@ -2104,6 +2104,37 @@ public:
     });
   }
 
+  /// Runs after the TargetMachine exists and BEFORE optimizeLLVMModule. This
+  /// is where the host target attributes have to come off every function.
+  ///
+  /// KGEN's LLVM lowering stamps `target-cpu`, `target-features` and
+  /// `tune-cpu` on each lowered function from the kgen.target attr
+  /// (attachTargetPassthroughAttrs). For an AIR target the feature string is
+  /// upstream's "+metal3_2,+air2_7_0" (or "+metal4_0,+air2_8_0"), and the
+  /// TargetMachine is arm64 -- AIR has no LLVM subtarget, so we borrow the
+  /// host's for the opt pipeline. The first optimizer pass that asks
+  /// `TM.getSubtargetImpl(F)` builds an AArch64 subtarget FROM THAT ATTRIBUTE,
+  /// and LLVM's feature parser answers, on every GPU compile:
+  ///
+  ///     '+air2_7_0' is not a recognized feature for this target (ignoring feature)
+  ///
+  /// Harmless to the output -- `scrub` below strips the same attributes
+  /// before emission, and the AIR reader never sees them -- but scrub runs
+  /// after the whole pipeline, which is after the warning. So it was noise on
+  /// every build, and a warning nobody reads is the kind that hides the one
+  /// that matters. adjustOptionsForTargetMachine already blanks the
+  /// TargetMachine-level features; this does the per-function half, at the
+  /// one point that is early enough. Declarations too: getSubtargetImpl is
+  /// asked about callees as well as bodies.
+  void finalizeModuleForTarget(llvm::Module &module, llvm::TargetMachine &,
+                               llvm::StringRef) const override {
+    for (llvm::Function &fn : module) {
+      fn.removeFnAttr("target-cpu");
+      fn.removeFnAttr("target-features");
+      fn.removeFnAttr("tune-cpu");
+    }
+  }
+
   /// AIR has no LLVM codegen target. The TargetMachine (opt pipeline only —
   /// emission goes through emitObject/emitBitcode) is built for arm64, the
   /// same convention the upstream comment in CompilationOptions describes.
