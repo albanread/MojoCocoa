@@ -529,9 +529,69 @@ SMF is `abcplayer`'s writer. Sampled-sound playback (a `.wav` through
    the proven pattern, in the other direction. A single-producer,
    single-consumer ring with a power-of-two size and two counters needs no
    more than that; a test fires triggers faster than frames and checks
-   none is lost or applied twice.
+   none is lost or applied twice. The ordering lives on the two counter
+   accesses themselves — acquire to read the other side's, release to
+   publish your own — and not on fences; the section below is why that
+   changed, and why it is still no lock.
 7. **Process-global input state** means one game window per process — the
    Rust's own limit, accepted.
+
+### If it works, why change it — the lock-free trigger ring, revisited
+
+The ring worked. Every test passed, including the one that fires a thousand
+triggers through 256 slots and checks none is lost and none plays twice. It
+had no lock, it took advantage of the M4, and the fences were exactly where
+the design said they should be. So why change it, and what does "it works"
+actually mean?
+
+**What was wrong.** The two counters were read and written as plain loads and
+stores, with a release fence after the payload store and an acquire fence
+after the counter load. In the language's memory model a plain access that
+races with another thread is undefined — and a fence orders *atomic* accesses.
+It does not pin a plain one. The optimizer is entitled to notice that
+`drain_triggers` reads the write counter every iteration, decide the loop does
+not modify it, and hoist the load: one read, before the loop, and an exit
+condition that never changes. It had not done that. Nothing promised it would
+not.
+
+**Why it worked anyway.** Three facts about today, none of them a guarantee.
+Aligned 64-bit loads and stores are single-copy atomic on arm64, so nothing
+tore. The `dmb` barriers really did order the hardware. And the optimizer at
+this version, at this level, did not hoist. That is correctness *borrowed*
+from the silicon and from the compiler's current restraint. The silicon cannot
+change under you; the compiler can. The next toolchain, a different
+optimisation level, or link-time optimisation would surface it as an audio
+glitch — a sound that plays late or never — not as anything that mentions
+memory ordering.
+
+**What changed, and what did not.** The counters are now atomic accesses with
+the ordering on them: `dget_acquire` to read the counter the other thread
+owns, `dput_release` to publish your own, and both standalone fences gone.
+Everything the design was proud of is intact. One producer, one consumer, each
+owns one counter, no read-modify-write, nothing to contend, no lock, and
+neither thread can ever wait on the other. It is still wait-free.
+
+**What it compiles to.** This is where "why change it" gets its real answer.
+Disassembling the built audio test: the counter accesses are `ldapur` and
+`stlur` — ARMv8.4's load-acquire and store-release with an immediate offset,
+which is what `-mcpu=apple-m4` emits for exactly this, seven and four of them
+across the inlined sites — and the ring path emits no `dmb` at all. Before, it
+was a plain `ldr`/`str` plus two full `dmb` barriers, which stall the
+pipeline. ARM added the ordered-access instructions so that you do not need
+the barrier. So the change is not a portability tax paid on the M4; it is the
+idiomatic ARMv8 form, and the cheaper one. Portability to x86 or to a weaker
+future core is a side effect, not the motive.
+
+**The general lesson.** "If it works, why change it" is the right question,
+and the answer has to say *what is doing the working*. When the answer is
+"the hardware, plus the optimizer not having got round to it", that is a
+debt, and it is one that pays out as a bug nobody can reproduce. When the
+answer is "the language guarantees it", it is owned. This change moved the
+ring from borrowed to owned at no cost in speed and no cost in design, and
+that is the only kind of "it works, change it anyway" worth doing. It was
+verified the same way the original was: `test_audio`, fifteen checks, the
+thousand-trigger test among them, built with the change in. See `defects.md`
+D15 for the ledger entry.
 
 ## 7. What this is not
 

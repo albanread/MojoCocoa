@@ -340,11 +340,20 @@ nothing to lock, because nothing is built while it plays.
 
 **The trigger path is single-producer, single-consumer.** The game only ever
 writes the write counter; the callback only the read counter. Neither needs a
-read-modify-write and there is nothing to contend. What it *does* need is
-ordering, and that is what two fences are for — release after the payload and
-before the counter that publishes it, acquire after the counter and before the
-payload. Without them a weakly ordered machine may publish a slot before the
-value in it, and the callback plays whatever was there last time round.
+read-modify-write, there is nothing to contend, and there is no lock. What it
+*does* need is ordering: a weakly ordered machine may otherwise publish a slot
+before the value in it, and the callback plays whatever was there last time
+round. That ordering is on the two counter accesses themselves — an acquire
+load to read the other side's counter, a release store to publish your own —
+which on Apple Silicon compile to single ordered-access instructions
+(`ldapur`, `stlur`) with no barrier.
+
+It used to be two standalone fences around plain loads and stores. That
+worked on this chip, and it was still wrong: a fence orders atomic accesses,
+not plain ones, and nothing stopped the compiler hoisting the counter read out
+of the drain loop one day. The design note *If it works, why change it* in
+`gamepane_design.md` is the full account — why it worked, why that was
+borrowed rather than owned, and why the fix is also the faster form.
 
 A full ring refuses and counts the refusals rather than overwriting. Losing the
 oldest unplayed trigger silently is worse than saying no.
