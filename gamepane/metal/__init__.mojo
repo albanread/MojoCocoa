@@ -23,6 +23,7 @@ from .sprites import Sprites, SpriteDef, SPRITE_SHADER
 
 from .text import TextOverlay, TextPlane, OVERLAY_SHADER, PLANE_SHADER
 
+from .midiplay import play_tune_gm, stop_tune_gm
 from .audio import (
     deck_new, deck_free, music_chip, sfx_chip, set_muted, set_music_tick,
     play_tune, stop_tune, sfx_play,
