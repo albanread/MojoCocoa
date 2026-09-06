@@ -299,6 +299,35 @@ things in the tree to test and have no tests at all. D19 would have been caught
 by three lines of table-driven test the day it was written, instead of by
 reading the two implementations side by side months later.
 
+### D21 — AIR legalization read the arch from an attribute the warning fix had just stripped — FIXED
+Commit 15694245 (the feature-warning fix) removed `target-cpu`,
+`target-features` and `tune-cpu` from every function in
+`finalizeModuleForTarget`, which runs before the opt pipeline. But
+`legalizeModule` -- which runs later -- took the Apple arch FROM
+`target-cpu`, so every kernel legalized with arch `''` and every GPU
+program in the tree failed to build: `no Apple AIR target profile for arch
+''`. Found by `check-examples.sh` (8 of 25 red) and `check-gamepane.sh`
+(3 of 16) while preparing an unrelated commit; the toolchain installed
+before the fix compiled the same sources.
+
+**Why the fix's own verification missed it:** it compiled the STREAM bench
+to a fixed path, ran that path, and counted `not a recognized` lines on
+stderr and `EXACT` lines on stdout. The same bench does not compile with
+that compiler, so the compile step must have failed and the run step ran
+the binary the previous build had left there -- and both counters read as
+success (no warnings, because no compile got as far as the warning). A
+counter that cannot tell "zero" from "never ran" is not a check; the exit
+status of the compile was the number to read. And a compiler change is
+verified by `check-examples.sh` and `check-gamepane.sh`, not by the one
+program that motivated it -- `BUILDING.md` step 4 says so, and it was
+skipped.
+
+**Fix:** `finalizeModuleForTarget` records the archs it is about to strip
+as named module metadata (`air.apple_arch`, one string per distinct arch);
+`legalizeModule` reads that first and falls back to the attributes, keeping
+the mixed-arch diagnosis. The attributes still come off before the pipeline,
+so the warning stays gone.
+
 ## Carried from the review (see improvement_plan.md for detail)
 
 ### D7 — Unrolled register matmul ~9% behind upstream — OPEN

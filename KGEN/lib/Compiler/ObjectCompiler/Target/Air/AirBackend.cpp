@@ -1831,31 +1831,90 @@ void inlineInternalHelpers(llvm::Module &m) {
   mpm.run(m, mam);
 }
 
-llvm::Error legalizeModule(llvm::Module &m) {
-  // Resolve the target profile FIRST. The triple and every version stamp are
-  // derived from it, and scrub() later strips `target-cpu`, which is where the
-  // frontend leaves the selected arch (`metal:4` is normalised to `apple-m4`
-  // upstream, so what arrives here is always the family form).
-  llvm::StringRef arch;
-  for (llvm::Function &fn : m)
-    if (!fn.isDeclaration()) {
-      arch = fn.getFnAttribute("target-cpu").getValueAsString();
-      break;
-    }
-  // One module, one target. Taking the first defined function's arch silently
-  // compiles a mixed-arch module for whichever kernel the iteration happened
-  // to visit first, so a disagreement is diagnosed instead of guessed at.
-  for (llvm::Function &fn : m) {
+/// Where the Apple arch travels from finalizeModuleForTarget to
+/// legalizeModule. The frontend leaves the selected arch in each function's
+/// `target-cpu` (`metal:4` is normalised to `apple-m4` upstream, so it is
+/// always the family form). finalizeModuleForTarget has to strip that
+/// attribute off every function BEFORE the opt pipeline (see it for why), and
+/// legalizeModule runs after the pipeline -- so for one compiler build
+/// (15694245, D21) every kernel legalized with arch '' and nothing on the GPU
+/// compiled. The archs are recorded here first, one MDString per distinct
+/// value in order of first appearance, so a mixed module is still diagnosed
+/// rather than guessed at; the node comes off again with the rest of the
+/// host residue before emission, so the artifact carries nothing Apple's
+/// reader has not seen before.
+static constexpr llvm::StringLiteral kAppleArchMD("air.apple_arch");
+
+/// The distinct `target-cpu` values over the defined functions, in order.
+static llvm::SmallVector<std::string, 2> functionArchs(const llvm::Module &m) {
+  llvm::SmallVector<std::string, 2> archs;
+  for (const llvm::Function &fn : m) {
     if (fn.isDeclaration())
       continue;
-    llvm::StringRef other = fn.getFnAttribute("target-cpu").getValueAsString();
-    if (!arch.empty() && !other.empty() && other != arch)
-      return llvm::createStringError(
-          llvm::inconvertibleErrorCode(),
-          "module mixes Apple archs ('%s' and '%s'); AIR legalization needs "
-          "one target profile per module",
-          arch.str().c_str(), other.str().c_str());
+    llvm::StringRef a = fn.getFnAttribute("target-cpu").getValueAsString();
+    if (a.empty())
+      continue;
+    bool seen = false;
+    for (const std::string &have : archs)
+      seen = seen || have == a;
+    if (!seen)
+      archs.push_back(a.str());
   }
+  return archs;
+}
+
+/// What finalizeModuleForTarget recorded, else what the attributes still say.
+static llvm::SmallVector<std::string, 2> moduleArchs(const llvm::Module &m) {
+  llvm::SmallVector<std::string, 2> archs;
+  if (const llvm::NamedMDNode *md = m.getNamedMetadata(kAppleArchMD))
+    for (const llvm::MDNode *node : md->operands())
+      if (node->getNumOperands() == 1)
+        if (const auto *str =
+                llvm::dyn_cast<llvm::MDString>(node->getOperand(0)))
+          archs.push_back(str->getString().str());
+  if (archs.empty())
+    archs = functionArchs(m);
+  return archs;
+}
+
+/// Record the archs before the attributes that carry them are stripped.
+static void recordModuleArchs(llvm::Module &m) {
+  if (m.getNamedMetadata(kAppleArchMD))
+    return;
+  llvm::SmallVector<std::string, 2> archs = functionArchs(m);
+  if (archs.empty())
+    return;
+  llvm::NamedMDNode *md = m.getOrInsertNamedMetadata(kAppleArchMD);
+  for (const std::string &a : archs)
+    md->addOperand(llvm::MDNode::get(
+        m.getContext(), llvm::MDString::get(m.getContext(), a)));
+}
+
+/// The record has done its job once legalization has read it.
+static void forgetModuleArchs(llvm::Module &m) {
+  if (llvm::NamedMDNode *md = m.getNamedMetadata(kAppleArchMD))
+    m.eraseNamedMetadata(md);
+}
+
+llvm::Error legalizeModule(llvm::Module &m) {
+  // Resolve the target profile FIRST. The triple and every version stamp are
+  // derived from it. The arch comes from the record finalizeModuleForTarget
+  // made (kAppleArchMD -- the `target-cpu` attributes it was read from are
+  // gone by now), or from the attributes when this runs on a module the
+  // pipeline never touched.
+  //
+  // One module, one target. Taking the first function's arch silently compiles
+  // a mixed-arch module for whichever kernel the iteration happened to visit
+  // first, so a disagreement is diagnosed instead of guessed at.
+  llvm::SmallVector<std::string, 2> archs = moduleArchs(m);
+  if (archs.size() > 1)
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "module mixes Apple archs ('%s' and '%s'); AIR legalization needs "
+        "one target profile per module",
+        archs[0].c_str(), archs[1].c_str());
+  std::string archStorage = archs.empty() ? std::string() : archs[0];
+  llvm::StringRef arch = archStorage;
   bool unverifiedProfile = false;
   std::optional<Air::TargetProfile> profileOr =
       Air::profileForArch(arch, unverifiedProfile);
@@ -2051,6 +2110,7 @@ llvm::Error legalizeModule(llvm::Module &m) {
   };
   for (llvm::Function &fn : m)
     scrub(fn);
+  forgetModuleArchs(m); // read by legalizeModule; not for the artifact
   return llvm::Error::success();
 }
 
@@ -2126,8 +2186,13 @@ public:
   /// TargetMachine-level features; this does the per-function half, at the
   /// one point that is early enough. Declarations too: getSubtargetImpl is
   /// asked about callees as well as bodies.
+  ///
+  /// legalizeModule needs the arch these attributes carry, and it runs AFTER
+  /// this. Record it first (kAppleArchMD), then strip -- the order whose
+  /// absence was D21.
   void finalizeModuleForTarget(llvm::Module &module, llvm::TargetMachine &,
                                llvm::StringRef) const override {
+    recordModuleArchs(module);
     for (llvm::Function &fn : module) {
       fn.removeFnAttr("target-cpu");
       fn.removeFnAttr("target-features");
