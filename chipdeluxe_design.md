@@ -231,7 +231,7 @@ Sizes as elsewhere: **S** a sitting, **M** a day or two, **L** a week.
   offline `--wav`, the demos written and tuned by ear against rendered
   WAVs (the Galaxigans workflow: render, listen, revise, wire).
   *Checks:* `check-examples.sh` headless run; four committed tune hashes.
-- **CT7 — the MOD importer (M).** Container, periods, tempo, effect→macro
+- **CT7 — the MOD importer (DONE, was M).** Container, periods, tempo, effect→macro
   map, recipe inference + sidecar. *Checks:* a synthetic test MOD written
   by our own tool round-trips; effect coverage table in the tests.
 - **CT8 — the Paula wave (M, gated).** `WAVE_PCM` behind a listening

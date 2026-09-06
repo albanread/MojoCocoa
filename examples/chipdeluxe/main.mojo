@@ -25,7 +25,7 @@ from std.objc import load_framework, autoreleasepool
 from std.os import getenv
 
 from gamepane.api import (
-    KEY_ESCAPE, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, SAMPLE_RATE, P,
+    KEY_ESCAPE, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, SAMPLE_RATE, P,
 )
 from gamepane.metal import (
     GamePane, ShaderPane, IndexedPane, Sprites, TextOverlay, ScopeField,
@@ -35,6 +35,7 @@ from gamepane.abc import (
     Tune, parse_abc, resolve_ties, build_schedule, sort_steps, Step,
     trio_new, trio_free, flatten_trio, set_trio_loop, render_trio,
     trio_playhead, trio_voice_level,
+    mod_to_steps, set_trio_pinned,
 )
 from gamepane.api.text import glyph_for, GLYPH_W, GLYPH_H
 from tunes import tune_source, tune_name, TUNE_COUNT
@@ -94,16 +95,37 @@ def load_tune(mut trio: P, k: Int, headless: Bool, old_unit: Int) raises -> Int:
     The audio unit is STOPPED for the swap, always: flatten_trio frees the
     schedule the callback is walking, and there is no safe order of those
     two except "the callback is not running". The gap is the gap between
-    two tunes, which is silence anyway."""
+    two tunes, which is silence anyway.
+
+    Slot 5 (key 6) is the imported module, when CHIPDELUXE_MOD names one:
+    the importer's schedule runs the trio PINNED, tracker style, and its
+    sidecar -- the same path with .recipes appended -- can redress any of
+    the 31 instruments through the ordinary [I:chip] keys."""
     if old_unit != 0:
         stop_audio(old_unit)
-    var t = Tune()
-    parse_abc(tune_source(k), t)
-    resolve_ties(t)
     var steps = List[Step]()
-    build_schedule(t, SAMPLE_RATE, steps)
+    var pinned = False
+    if k == 5:
+        let path = getenv("CHIPDELUXE_MOD")
+        var raw = List[UInt8]()
+        with open(path, "r") as f:
+            raw = f.read_bytes()
+        var sidecar = String("")
+        try:
+            with open(path + ".recipes", "r") as f2:
+                sidecar = f2.read()
+        except:
+            pass
+        _ = mod_to_steps(Span(raw), steps, sidecar)
+        pinned = True
+    else:
+        var t = Tune()
+        parse_abc(tune_source(k), t)
+        resolve_ties(t)
+        build_schedule(t, SAMPLE_RATE, steps)
     sort_steps(steps)
     _ = flatten_trio(steps, trio)
+    set_trio_pinned(trio, pinned)
     set_trio_loop(trio, True)
     if headless:
         return 0
@@ -161,6 +183,7 @@ def main() raises:
 
     # ── the music ────────────────────────────────────────────────────────
     let headless = getenv("GAMEPANE_FRAMES").byte_length() > 0
+    let has_mod = getenv("CHIPDELUXE_MOD").byte_length() > 0
     var trio = trio_new()
     var tune_k = 0
     var unit = load_tune(trio, tune_k, headless, 0)
@@ -185,7 +208,10 @@ def main() raises:
                 pick = 4
             elif key_held(KEY_5):
                 pick = 5
-            if pick != 0 and pick != pick_was and pick <= TUNE_COUNT:
+            elif key_held(KEY_6) and has_mod:
+                pick = 6
+            if pick != 0 and pick != pick_was \
+                    and pick <= TUNE_COUNT + (1 if has_mod else 0):
                 tune_k = pick - 1
                 unit = load_tune(trio, tune_k, headless, unit)
             pick_was = pick
@@ -235,7 +261,9 @@ def main() raises:
 
         let ph = trio_playhead(trio)
         hud.clear()
-        hud.draw_text(10, 8, String("CHIPDELUXE  ") + tune_name(tune_k),
+        let title = String("IMPORTED MODULE") if tune_k == 5 \
+            else tune_name(tune_k)
+        hud.draw_text(10, 8, String("CHIPDELUXE  ") + title,
                       140, 255, 200, 2)
         hud.draw_text(438, 8, String("1-5 TUNES  Z ZOOM  ESC"),
                       120, 190, 160, 1)

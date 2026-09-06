@@ -23,7 +23,7 @@ from std.atomic import Atomic, Ordering
 
 from gamepane.api.audio import (
     P, get, put, fget, fput, vget, vput, chip_new, chip_free, chip_render,
-    gate_off, set_freq_hz, set_pulse_width, set_filter, PLAYER_BASE,
+    gate_on, gate_off, set_freq_hz, set_pulse_width, set_filter, PLAYER_BASE,
     SAMPLE_RATE, FRAME_SAMPLES,
     S_CUTOFF, S_RES, S_FMODE, V_SUS, V_PW, V_ENV,
 )
@@ -72,6 +72,9 @@ comptime T_SCOPE = 31        # the oscilloscope ring: SCOPE_FRAMES stereo pairs
 comptime T_SCOPE_POS = 32    # frames ever written, release-stored after the
                              # samples they cover -- the ring's write head is
                              # this modulo SCOPE_FRAMES
+comptime T_PINNED = 32       # 1: tracker mode -- a schedule voice OWNS its
+                             # chip voice, no allocator. MOD imports set it;
+                             # flatten_trio clears it, so ABC stays dynamic.
 comptime T_TONE = 33         # 0..15; 15 is an EXACT bypass, the default
 comptime T_TONE_LS = 34      # float: the tone filter's left state
 comptime T_TONE_RS = 35      # float: and right
@@ -294,6 +297,50 @@ fn set_trio_pan(t: P, chip: Int, pos: Int):
     put(t, T_GAIN_R + chip, gr)
 
 
+fn set_trio_pinned(t: P, pinned: Bool):
+    """Tracker mode. A MOD channel IS a voice -- its vibrato must wobble
+    ITS note -- so a pinned schedule maps voice n to chip (n-1)/3, slot
+    (n-1)%3, permanently, and the allocator never runs. Call it AFTER
+    flatten_trio, which resets the flag for the ABC world's sake."""
+    put(t, T_PINNED, 1 if pinned else 0)
+
+
+fn _pinned_note_on(t: P, voice: Int, midi: Int, velocity: Int):
+    var g = voice - 1
+    if g < 0:
+        g = 0
+    elif g > 8:
+        g = 8
+    let st = trio_chip(t, g // 3)
+    let sub = g % 3
+    put(st, PLAYER_BASE + SC_VOICE_NOTE + sub, midi)
+    if velocity == 0:
+        # Legato: tone portamento's destination. The pitch is NOT set --
+        # the slide macro reads SC_VOICE_NOTE as its target and walks
+        # there; with no slide running, the next tick snaps.
+        return
+    let cur = fget(st, macro_slot(sub, M_SLIDE_CUR))
+    if get(st, macro_slot(sub, M_SLIDE)) != 0 and cur != 0.0:
+        set_freq_hz(st, sub, _hz(cur))
+    else:
+        set_freq_hz(st, sub, _hz(Float64(midi)))
+    gate_on(st, sub)
+
+
+fn _pinned_note_off(t: P, voice: Int, midi: Int):
+    var g = voice - 1
+    if g < 0:
+        g = 0
+    elif g > 8:
+        g = 8
+    let st = trio_chip(t, g // 3)
+    let sub = g % 3
+    if midi >= 0 and get(st, PLAYER_BASE + SC_VOICE_NOTE + sub) != midi:
+        return
+    put(st, PLAYER_BASE + SC_VOICE_NOTE + sub, -1)
+    gate_off(st, sub)
+
+
 fn set_trio_master(t: P, scale: Int):
     """Output scale, /256. The default 128 is the deck's halving, kept for
     the same reason: three chips at full tilt should meet a clamp rarely,
@@ -340,6 +387,7 @@ def flatten_trio(steps: List[Step], mut t: P) -> Int:
     put(t, T_TONE, 15)
     fput(t, T_TONE_LS, 0.0)
     fput(t, T_TONE_RS, 0.0)
+    put(t, T_PINNED, 0)
     put(t, T_DELAY_POS, 0)
     let dl = Pointer[Float32, MutUntrackedOrigin](
         unsafe_from_address=get(t, T_DELAY))
@@ -550,6 +598,13 @@ fn render_trio(
                     put(t, T_TONE, value & 15)
                 else:
                     apply_chip(trio_chip(t, c), sub, param, value)
+            elif kind == SE_NOTE_ON and get(t, T_PINNED) != 0:
+                _pinned_note_on(
+                    t, voice, sched[unsafe_offset=at + 3],
+                    sched[unsafe_offset=at + 4],
+                )
+            elif kind == SE_NOTE_OFF and get(t, T_PINNED) != 0:
+                _pinned_note_off(t, voice, sched[unsafe_offset=at + 3])
             elif kind == SE_NOTE_ON:
                 let st = trio_chip(t, _chip_for_abc_voice(voice))
                 let midi = sched[unsafe_offset=at + 3]
