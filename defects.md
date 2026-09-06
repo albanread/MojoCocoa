@@ -92,6 +92,16 @@ from the known wrong-numbers rowwise failures (which is what the
 unflipped differential test actually shows). Not yet reduced to a kernel;
 the retained-AIR artifacts from the repro run are the starting point.
 
+**Cross-reference, 2026-09-06.** The location work for the *wrong-numbers*
+half of this is already done in the shared repo:
+`oracles/findings/rowwise-apple-broken.md` (25 Aug, M4 Max) establishes by
+measurement that the `rowwise` GPU path returns zeros on Apple while the older
+rms_norm kernels compile and run correctly through this same AIR lowering —
+"this exonerates the AIR backend outright." So the defect is in
+`max/kernels/src/algorithm/rowwise.mojo` as it meets Apple, not in
+`AirBackend`. That narrows D5 and D6 to the rowwise surface and its
+subkernel variants; the XPC crash above is the one part still unlocated.
+
 ### D14 — Device atomics have no model, no rule and no test — OPEN, no design yet
 There is no `air.atomic*` family in `AirBuiltinRegistry.h`, no legality rule
 covering atomics, and no test anywhere under `max/kernels/test/gpu/`. Native
