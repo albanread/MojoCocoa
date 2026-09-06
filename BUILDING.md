@@ -178,6 +178,7 @@ which bundles its own database. If it passes there, suspect the database.
 | `run-cocoa-checks`: "no distribution at dist/CocoaMojo/bin/cocoamojo" | you skipped step 3 | `NO_IDE=1 ./tools/make-dist.sh` |
 | `cocoamojo-compiler` aborts, `libLLVM.dylib (no such file)` | `make-dist` died partway and left a half-built dist | fix the preflight failure it printed, rerun `make-dist` |
 | a full ~45 min rebuild you did not expect | you edited `local.bazelrc` or the sysroot list | it is the cache key; batch such edits, and read `STATUS.md` "Build discipline" |
+| GPU tests report `FAILED TO BUILD` for binaries that built; log says `Resource gpu-memory is not being tracked` | bazel was invoked without going through `tools/bazel`, so `build/local-resources.bazelrc` was never generated and every GPU test is unschedulable, not broken (it mislabelled 218 targets on a sister port) | always go through `./tools/mojo-build.sh` or `./bazelw` -- both use the wrapper. To repair by hand: `bazel/internal/detect_local_resources.sh > build/local-resources.bazelrc`. See `oracles/findings/build-traps.md` |
 
 ## How long things take (Apple M4, 24 GB)
 
