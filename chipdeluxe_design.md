@@ -216,7 +216,7 @@ Sizes as elsewhere: **S** a sitting, **M** a day or two, **L** a week.
 - **CT1 — the grammar (DONE, was S).** `v=1..9`, `pan=`, `echo=`, `etime=`, `efb=`,
   macro keys parsed to triples; old builds still play new tunes' notes.
   *Checks:* parse-triple tests; unknown-key tolerance test.
-- **CT2 — the macros (M).** Arp, vib, slide, pwm, sweep, trem in the trio
+- **CT2 — the macros (DONE, was M).** Arp, vib, slide, pwm, sweep, trem in the trio
   tick. *Checks:* one hash fixture per macro; a determinism run of 100
   renders.
 - **CT3 — echo (S).** Preallocated stereo delay, sends, feedback.

@@ -18,16 +18,20 @@
 
 from std.memory import Pointer, MutUntrackedOrigin
 from std.ffi import external_call
-from std.math import cos, sin
+from std.math import cos, sin, exp2
 
 from gamepane.api.audio import (
-    P, get, put, chip_new, chip_free, chip_render, gate_off, PLAYER_BASE,
+    P, get, put, fget, fput, vget, vput, chip_new, chip_free, chip_render,
+    gate_off, set_freq_hz, set_pulse_width, set_filter, PLAYER_BASE,
+    S_CUTOFF, S_RES, S_FMODE, V_SUS, V_PW,
 )
 from gamepane.abc.schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
 from gamepane.abc.model import CP_PAN, CP_ECHO, CP_ETIME, CP_EFB
 from gamepane.abc.chipplay import (
     apply_chip, apply_note_on, apply_note_off, silent_tick,
-    STEP_SLOTS, SC_VOICE_NOTE,
+    STEP_SLOTS, SC_VOICE_NOTE, CHIP_ADSR, MACRO_BASE, MACRO_STRIDE,
+    macro_slot, M_ARP, M_ARP_POS, M_VIB, M_VIB_PHASE, M_SLIDE, M_SLIDE_CUR,
+    M_PWM, M_PWM_PHASE, M_PWM_BASE, M_TREM, M_TREM_PHASE, M_SWEEP,
 )
 
 # ── the trio block ──────────────────────────────────────────────────────────
@@ -202,6 +206,120 @@ fn _chip_for_abc_voice(voice: Int) -> Int:
     return c
 
 
+# ── the 50 Hz performance layer (CT2) ───────────────────────────────────────
+#
+# This is where the chiptune lives: not in the notes but in the registers
+# being poked fifty times a second. The engine runs as the chips' tick --
+# chip_render calls it at every frame boundary -- and it touches NOTHING
+# whose macro is off. That restraint is a proof obligation, not a nicety:
+# a macro-free tune must render bit-identically to the silent tick, and
+# test_trio holds the trio to that.
+
+
+@always_inline
+fn isin64(phase: Int) -> Int:
+    """Integer sine, 64 steps a cycle, -127..127: Bhaskara's parabola on a
+    quarter wave. No table, so nothing had to be allocated or copied into
+    every chip; smooth enough for a wobble, and exactly reproducible."""
+    let x = phase & 63
+    let h = x & 31
+    let v = 127 * h * (32 - h) // 256
+    return v if x < 32 else -v
+
+
+@always_inline
+fn _hz(midi: Float64) -> Float64:
+    """Equal temperament from A4 = 440, for FRACTIONAL notes -- vibrato and
+    slides live between the semitones."""
+    return 440.0 * exp2((midi - 69.0) / 12.0)
+
+
+fn trio_macro_tick(st: P):
+    """One chip's macros, one 50 Hz frame. Audio-thread rules throughout."""
+    for v in range(3):
+        # ── pitch: arp, then slide, then vibrato, in that order ─────────
+        # Arp picks the note, slide approaches it, vibrato wobbles the
+        # approach. Only runs when a pitch macro is on AND a note is held.
+        let arp = get(st, macro_slot(v, M_ARP))
+        let vib = get(st, macro_slot(v, M_VIB))
+        let slide = get(st, macro_slot(v, M_SLIDE))
+        let midi = get(st, PLAYER_BASE + SC_VOICE_NOTE + v)
+        if midi >= 0 and (arp != 0 or (vib & 255) != 0 or slide != 0):
+            var target = Float64(midi)
+            if arp != 0:
+                let count = arp >> 32
+                let pos = get(st, macro_slot(v, M_ARP_POS))
+                target += Float64((arp >> (4 * (pos % count))) & 15)
+                put(st, macro_slot(v, M_ARP_POS), pos + 1)
+            var cur = fget(st, macro_slot(v, M_SLIDE_CUR))
+            if slide == 0 or cur == 0.0:
+                cur = target
+            else:
+                let step = Float64(slide) / 16.0
+                if cur < target:
+                    cur += step
+                    if cur > target:
+                        cur = target
+                elif cur > target:
+                    cur -= step
+                    if cur < target:
+                        cur = target
+            fput(st, macro_slot(v, M_SLIDE_CUR), cur)
+            var eff = cur
+            if (vib & 255) != 0:
+                let ph = get(st, macro_slot(v, M_VIB_PHASE)) + (vib & 255)
+                put(st, macro_slot(v, M_VIB_PHASE), ph)
+                eff += Float64((vib >> 8) & 255) * Float64(isin64(ph)) \
+                    / (127.0 * 16.0)
+            set_freq_hz(st, v, _hz(eff))
+
+        # ── pulse width breathes even through the release ───────────────
+        let pwm = get(st, macro_slot(v, M_PWM))
+        if (pwm & 255) != 0:
+            let ph = get(st, macro_slot(v, M_PWM_PHASE)) + (pwm & 255)
+            put(st, macro_slot(v, M_PWM_PHASE), ph)
+            # A triangle, the classic shape: depth is in eighths of the
+            # 12-bit range, so pwm=64/2 swings the width by +-512.
+            let tp = ph & 127
+            var tri = tp - 64
+            if tri < 0:
+                tri = -tri
+            tri -= 32
+            var pw = get(st, macro_slot(v, M_PWM_BASE)) \
+                + ((pwm >> 8) & 255) * tri // 4
+            if pw < 16:
+                pw = 16
+            elif pw > 4080:
+                pw = 4080
+            set_pulse_width(st, v, pw)
+
+        # ── tremolo dips the sustain target, and only that ──────────────
+        # Notes in attack or decay pass unwobbled; the SID had no per-voice
+        # volume either, and this is the honest equivalent.
+        let trem = get(st, macro_slot(v, M_TREM))
+        if (trem & 255) != 0:
+            let ph = get(st, macro_slot(v, M_TREM_PHASE)) + (trem & 255)
+            put(st, macro_slot(v, M_TREM_PHASE), ph)
+            let s_rec = get(st, PLAYER_BASE + CHIP_ADSR + v * 4 + 2)
+            var eff_s = s_rec * 17 \
+                - ((trem >> 8) & 255) * (127 + isin64(ph)) // 254
+            if eff_s < 0:
+                eff_s = 0
+            elif eff_s > 255:
+                eff_s = 255
+            vput(st, v, V_SUS, eff_s)
+
+    # ── the chip-level filter sweep ─────────────────────────────────────
+    let sw = get(st, PLAYER_BASE + MACRO_BASE + M_SWEEP)
+    if sw != 0:
+        var c = get(st, S_CUTOFF) + sw
+        if c < 0:
+            c = 0
+        elif c > 2047:
+            c = 2047
+        set_filter(st, c, get(st, S_RES), get(st, S_FMODE))
+
+
 fn render_trio(
     t: P, dest: Pointer[Float32, MutUntrackedOrigin], frames: Int
 ):
@@ -260,10 +378,19 @@ fn render_trio(
                 else:
                     apply_chip(trio_chip(t, c), sub, param, value)
             elif kind == SE_NOTE_ON:
-                apply_note_on(
-                    trio_chip(t, _chip_for_abc_voice(voice)),
-                    sched[unsafe_offset=at + 3], sched[unsafe_offset=at + 4],
-                )
+                let st = trio_chip(t, _chip_for_abc_voice(voice))
+                let midi = sched[unsafe_offset=at + 3]
+                apply_note_on(st, midi, sched[unsafe_offset=at + 4])
+                # apply_note_on jumps straight to the note's own pitch. A
+                # voice with a slide should APPROACH it instead -- from
+                # wherever its last note left off -- so put the frequency
+                # back where the glide stands; the next tick moves it.
+                for v in range(3):
+                    if get(st, PLAYER_BASE + SC_VOICE_NOTE + v) != midi:
+                        continue
+                    let cur = fget(st, macro_slot(v, M_SLIDE_CUR))
+                    if get(st, macro_slot(v, M_SLIDE)) != 0 and cur != 0.0:
+                        set_freq_hz(st, v, _hz(cur))
             else:
                 apply_note_off(
                     trio_chip(t, _chip_for_abc_voice(voice)),
@@ -283,7 +410,7 @@ fn render_trio(
             span = TRIO_SPAN
 
         for c in range(3):
-            chip_render(trio_chip(t, c), scratch, span, silent_tick)
+            chip_render(trio_chip(t, c), scratch, span, trio_macro_tick)
             let gl = Float64(get(t, T_GAIN_L + c)) / 256.0 * master
             let gr = Float64(get(t, T_GAIN_R + c)) / 256.0 * master
             for i in range(span):
