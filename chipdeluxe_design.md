@@ -227,7 +227,7 @@ Sizes as elsewhere: **S** a sitting, **M** a day or two, **L** a week.
 - **CT5 — the visuals (DONE, was M; the scope's fade pass deferred -- clear-and-plot reads well without it).** Copper VU, scope kernel + fade pass, plasma,
   sprite scroller. *Checks:* headless frame checksums, the game panes'
   own trick.
-- **CT6 — the player and the four tunes (IN PROGRESS: the player runs with the showcase tune; the four demos remain).** The app, attract mode,
+- **CT6 — the player and the four tunes (DONE except the offline --wav flag; tunes tuned by ear against rendered WAVs).** The app, attract mode,
   offline `--wav`, the demos written and tuned by ear against rendered
   WAVs (the Galaxigans workflow: render, listen, revise, wire).
   *Checks:* `check-examples.sh` headless run; four committed tune hashes.

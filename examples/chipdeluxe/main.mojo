@@ -25,11 +25,11 @@ from std.objc import load_framework, autoreleasepool
 from std.os import getenv
 
 from gamepane.api import (
-    KEY_ESCAPE, KEY_1, KEY_2, KEY_4, KEY_SPACE, SAMPLE_RATE, P,
+    KEY_ESCAPE, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, SAMPLE_RATE, P,
 )
 from gamepane.metal import (
     GamePane, ShaderPane, IndexedPane, Sprites, TextOverlay, ScopeField,
-    key_held, start_trio_audio, stop_audio,
+    key_held, letter_held, start_trio_audio, stop_audio,
 )
 from gamepane.abc import (
     Tune, parse_abc, resolve_ties, build_schedule, sort_steps, Step,
@@ -37,7 +37,7 @@ from gamepane.abc import (
     trio_playhead, trio_voice_level,
 )
 from gamepane.api.text import glyph_for, GLYPH_W, GLYPH_H
-from tunes import TUNE_SHOWCASE
+from tunes import tune_source, tune_name, TUNE_COUNT
 
 comptime VIEW_W = 640
 comptime VIEW_H = 400
@@ -86,6 +86,28 @@ def glyph_rows(ch: Int) raises -> String:
         if y < GLYPH_H - 1:
             rows += "/"
     return rows
+
+
+def load_tune(mut trio: P, k: Int, headless: Bool, old_unit: Int) raises -> Int:
+    """Put tune k on the trio and return the (re)started unit.
+
+    The audio unit is STOPPED for the swap, always: flatten_trio frees the
+    schedule the callback is walking, and there is no safe order of those
+    two except "the callback is not running". The gap is the gap between
+    two tunes, which is silence anyway."""
+    if old_unit != 0:
+        stop_audio(old_unit)
+    var t = Tune()
+    parse_abc(tune_source(k), t)
+    resolve_ties(t)
+    var steps = List[Step]()
+    build_schedule(t, SAMPLE_RATE, steps)
+    sort_steps(steps)
+    _ = flatten_trio(steps, trio)
+    set_trio_loop(trio, True)
+    if headless:
+        return 0
+    return start_trio_audio(trio)
 
 
 def main() raises:
@@ -138,33 +160,42 @@ def main() raises:
         text_inst.append(inst)
 
     # ── the music ────────────────────────────────────────────────────────
-    var t = Tune()
-    parse_abc(TUNE_SHOWCASE, t)
-    resolve_ties(t)
-    var steps = List[Step]()
-    build_schedule(t, SAMPLE_RATE, steps)
-    sort_steps(steps)
-    var trio = trio_new()
-    _ = flatten_trio(steps, trio)
-    set_trio_loop(trio, True)
-
     let headless = getenv("GAMEPANE_FRAMES").byte_length() > 0
-    var unit = 0
+    var trio = trio_new()
+    var tune_k = 0
+    var unit = load_tune(trio, tune_k, headless, 0)
     var silent = List[Float32](length=1600 * 2, fill=0.0)
-    if not headless:
-        unit = start_trio_audio(trio)
 
     var frame_n = 0
+    var pick_was = 0                     # edge-trigger: a held key is ONE pick
+    var zoom_was = False
+    var zoom_now = 1
     while pane.pump():
         if not headless:
             if key_held(KEY_ESCAPE):
                 break
+            var pick = 0
             if key_held(KEY_1):
-                pane.set_zoom(1)
+                pick = 1
             elif key_held(KEY_2):
-                pane.set_zoom(2)
+                pick = 2
+            elif key_held(KEY_3):
+                pick = 3
             elif key_held(KEY_4):
-                pane.set_zoom(4)
+                pick = 4
+            elif key_held(KEY_5):
+                pick = 5
+            if pick != 0 and pick != pick_was and pick <= TUNE_COUNT:
+                tune_k = pick - 1
+                unit = load_tune(trio, tune_k, headless, unit)
+            pick_was = pick
+            # Z cycles the window x1 -> x2 -> x4, since the digits are
+            # spoken for by the tune list now.
+            let z = letter_held() == ord("Z")
+            if z and not zoom_was:
+                zoom_now = 2 if zoom_now == 1 else (4 if zoom_now == 2 else 1)
+                pane.set_zoom(zoom_now)
+            zoom_was = z
         else:
             # No unit is running: the loop is the renderer, one frame's
             # worth of samples a frame, deterministically.
@@ -204,9 +235,9 @@ def main() raises:
 
         let ph = trio_playhead(trio)
         hud.clear()
-        hud.draw_text(10, 8, String("CHIPDELUXE  TRIO SHOWCASE"),
+        hud.draw_text(10, 8, String("CHIPDELUXE  ") + tune_name(tune_k),
                       140, 255, 200, 2)
-        hud.draw_text(430, 8, String("1 2 4 ZOOM  ESC QUIT"),
+        hud.draw_text(438, 8, String("1-5 TUNES  Z ZOOM  ESC"),
                       120, 190, 160, 1)
         _ = ph
 
