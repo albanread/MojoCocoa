@@ -1567,12 +1567,15 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   if (trace) {
     fprintf(stderr,
             "[applegpu] launch '%s' grid=%ux%ux%u block=%ux%ux%u smem=%u "
-            "argc=%u flags=%s batch=%s static-smem=%llu\n",
+            "argc=%u flags=%s batch=%s static-smem=%llu max-threads=%lu "
+            "simd-width=%lu\n",
             fn->name.c_str(), grid[0], grid[1], grid[2], block[0], block[1],
             block[2], sharedMemBytes, argc,
             argIsDevicePtr ? "explicit" : "heuristic",
             batching ? "open" : "off",
-            (unsigned long long)fn->staticThreadgroupBytes);
+            (unsigned long long)fn->staticThreadgroupBytes,
+            msg<unsigned long>(fn->pipeline, "maxTotalThreadsPerThreadgroup"),
+            msg<unsigned long>(fn->pipeline, "threadExecutionWidth"));
   }
 
   for (uint32_t i = 0; i < argc; i++) {

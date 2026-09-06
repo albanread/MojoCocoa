@@ -75,6 +75,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/Scalar/Scalarizer.h"
+#include "llvm/Transforms/Scalar/LoopUnrollPass.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
@@ -2193,6 +2194,15 @@ public:
   void finalizeModuleForTarget(llvm::Module &module, llvm::TargetMachine &,
                                llvm::StringRef) const override {
     recordModuleArchs(module);
+    // D7 experiment knob: APPLEGPU_AIR_SHARED_ALIGN=N raises every threadgroup
+    // global's alignment to N before the opt pipeline, so alignment inference
+    // can stamp vector loads from them with more than the element's 4.
+    if (const char *sa = ::getenv("APPLEGPU_AIR_SHARED_ALIGN")) {
+      if (long n = atol(sa); n >= 8 && (n & (n - 1)) == 0)
+        for (llvm::GlobalVariable &g : module.globals())
+          if (isSharedMemoryGlobal(g) && g.getAlign().valueOrOne().value() < (uint64_t)n)
+            g.setAlignment(llvm::Align((uint64_t)n));
+    }
     for (llvm::Function &fn : module) {
       fn.removeFnAttr("target-cpu");
       fn.removeFnAttr("target-features");
@@ -2203,6 +2213,47 @@ public:
   /// AIR has no LLVM codegen target. The TargetMachine (opt pipeline only —
   /// emission goes through emitObject/emitBitcode) is built for arm64, the
   /// same convention the upstream comment in CompilationOptions describes.
+  /// D7, resolved 2026-09-06 (oracles findings/d7-unrolled-matmul.md). An
+  /// Apple GPU lane is scalar: SIMD is across threads, MSL vectors stop at
+  /// four wide, and a `<16 x float>` fmul has no unit to land on. SLP
+  /// vectorization of a fully unrolled register matmul turned 512 scalar FMAs
+  /// and 128 scalar threadgroup loads into 32 sixteen-wide ops and 16
+  /// `<4 x float>` loads -- and Apple's compiler ran that at 871 GFLOP/s
+  /// against 955 for the scalar form, which is what Modular's release (956)
+  /// and Apple's own compiler from MSL (951) both produce. Off by default;
+  /// APPLEGPU_AIR_VECTORIZE=1 puts it back for a comparison.
+  bool wantsVectorization() const override {
+    return airKnobEnabled("APPLEGPU_AIR_VECTORIZE", false);
+  }
+
+  /// D7 experiment knob. APPLEGPU_AIR_OPT_LEVEL=0|1|2 replaces the shared O3
+  /// pipeline for the DEVICE module with PassBuilder's default pipeline at
+  /// that level; unset or 3 leaves the shared pipeline in charge. Upstream's
+  /// final AIR for the unrolled register matmul is, instruction for
+  /// instruction, the shape of our PRE-pipeline module (2,607 vs 2,019
+  /// scalar ops, 128 threadgroup loads interleaved per K-step), and Apple's
+  /// compiler makes 956 GFLOP/s of that against 870 of our O3 output.
+  bool buildLLVMPipeline(llvm::ModulePassManager &mpm, llvm::PassBuilder &pb,
+                         const CompilationOptions &) const override {
+    auto lvl = airKnob("APPLEGPU_AIR_OPT_LEVEL");
+    if (!lvl)
+      return false;
+    fprintf(stderr, "[air-knobs] APPLEGPU_AIR_OPT_LEVEL=%s\n", lvl->c_str());
+    if (*lvl == "0") {
+      mpm = pb.buildO0DefaultPipeline(llvm::OptimizationLevel::O0);
+      return true;
+    }
+    if (*lvl == "1") {
+      mpm = pb.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O1);
+      return true;
+    }
+    if (*lvl == "2") {
+      mpm = pb.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
+      return true;
+    }
+    return false;
+  }
+
   CompilationOptions
   adjustOptionsForTargetMachine(const CompilationOptions &options,
                                 llvm::StringRef moduleTriple) const override {
@@ -2341,6 +2392,17 @@ public:
       // Loads and stores are left alone (the pass default): vector memory
       // access is genuinely wide on this hardware, and splitting it would cost
       // rather than gain.
+      // D7 experiment knob: partial/runtime loop unrolling after the main
+      // pipeline. Apple's own compiler unrolls a 4096-trip FMA loop and reaches
+      // 677 GFLOP/s at one chain where we reach 412: per-iteration overhead.
+      if (auto uc = airKnob("APPLEGPU_AIR_UNROLL_PARTIAL")) {
+        fprintf(stderr, "[air-knobs] APPLEGPU_AIR_UNROLL_PARTIAL=%s\n", uc->c_str());
+        llvm::LoopUnrollOptions uo(3, /*OnlyWhenForced=*/false,
+                                   /*ForgetSCEV=*/false);
+        uo.setPartial(true).setRuntime(true).setUpperBound(true);
+        mpm.addPass(llvm::createModuleToFunctionPassAdaptor(
+            llvm::LoopUnrollPass(uo)));
+      }
       if (airKnobEnabled("APPLEGPU_AIR_SCALARIZE_WIDE_VECTORS", false)) {
         unsigned minBits = 128;
         if (auto b = airKnob("APPLEGPU_AIR_SCALARIZE_MIN_BITS"))
@@ -2518,6 +2580,8 @@ public:
       llvm::sys::fs::copy_file(libPath,
                                (std::string(keep) + "/" + stem + ".metallib"));
     }
+    if (const char *keep = ::getenv("APPLEGPU_KEEP_AIR"))
+      llvm::sys::fs::copy_file(libPath, (std::string(keep) + "/" + stem + ".metallib"));
     auto libBufOr = llvm::MemoryBuffer::getFile(libPath);
     llvm::sys::fs::remove(airPath);
     if (!libBufOr) {

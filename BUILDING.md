@@ -148,6 +148,27 @@ dist/CocoaMojo/bin/cocoamojo --run  examples/life/main.mojo
 dist/CocoaMojo/bin/cocoamojo --build examples/life/main.mojo -o life
 ```
 
+## Compiler experiment knobs (AIR)
+
+Environment variables read by the AIR backend at compile time, each printing
+an `[air-knobs] NAME=value` line to stderr when set -- **no line, no
+result** -- and each needing a fresh compile cache (see the table below):
+
+| knob | effect |
+|---|---|
+| `APPLEGPU_AIR_VECTORIZE=1` | run SLP vectorization + VectorCombine on device modules (off by default since D7: 9% slower on Apple's compiler) |
+| `APPLEGPU_AIR_OPT_LEVEL=0|1|2` | replace the shared O3 device pipeline with PassBuilder's default at that level |
+| `APPLEGPU_AIR_UNROLL_PARTIAL=1` | partial/runtime loop unrolling after the pipeline (experiment; see D7) |
+| `APPLEGPU_KEEP_AIR=<dir>` | keep each kernel's `.pre.ll`, `.post.ll`, `.air` and `.metallib` in `<dir>`; the metallib runs unchanged in `oracles/bench/native.m <file>` |
+| `APPLEGPU_AIR_SCALARIZE_WIDE_VECTORS=1` | the older late-scalariser experiment (object path only) |
+
+Typical use:
+
+```bash
+MODULAR_CACHE_DIR=$(mktemp -d) APPLEGPU_AIR_OPT_LEVEL=0 APPLEGPU_KEEP_AIR=/tmp/keep \
+  dist/CocoaMojo/bin/cocoamojo --run ../oracles/bench/matmul_reg_unrolled_bench.mojo
+```
+
 ## Verifying a Mojo change without bazel at all
 
 If you are changing `gamepane/`, `examples/` or `ide/` — not the compiler — you
@@ -179,6 +200,7 @@ which bundles its own database. If it passes there, suspect the database.
 | `cocoamojo-compiler` aborts, `libLLVM.dylib (no such file)` | `make-dist` died partway and left a half-built dist | fix the preflight failure it printed, rerun `make-dist` |
 | a full ~45 min rebuild you did not expect | you edited `local.bazelrc` or the sysroot list | it is the cache key; batch such edits, and read `STATUS.md` "Build discipline" |
 | every GPU program fails with `AIR legalization failed: no Apple AIR target profile for arch ''` | a compiler between 15694245 and its fix (D21): the arch was stripped before legalization read it | `git pull`, `./tools/mojo-build.sh`, `make-dist`; and after ANY compiler change run `check-examples.sh` and `check-gamepane.sh`, not just the program you were fixing |
+| a compiler change (or an `APPLEGPU_AIR_*` knob) has no effect on a kernel; the emitted AIR is identical run after run | the Mojo compile cache (`~/.cache/modular/.mojo_cache`) served the kernel; its key is source + version string, not environment, and not a local rebuild (D22) | `MODULAR_CACHE_DIR=$(mktemp -d)` on the run, or `cocoamojo --clear-cache`; look for the `[air-knobs]` line before believing a knob |
 | GPU tests report `FAILED TO BUILD` for binaries that built; log says `Resource gpu-memory is not being tracked` | bazel was invoked without going through `tools/bazel`, so `build/local-resources.bazelrc` was never generated and every GPU test is unschedulable, not broken (it mislabelled 218 targets on a sister port) | always go through `./tools/mojo-build.sh` or `./bazelw` -- both use the wrapper. To repair by hand: `bazel/internal/detect_local_resources.sh > build/local-resources.bazelrc`. See `oracles/findings/build-traps.md` |
 
 ## How long things take (Apple M4, 24 GB)

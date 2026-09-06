@@ -231,6 +231,14 @@ public:
     return false;
   }
 
+  /// Whether the standard pipeline should run SLP vectorization and
+  /// VectorCombine on this backend's modules. Default true. A backend whose
+  /// lanes are scalar -- Apple's AIR, where SIMD is across threads and a
+  /// `<16 x float>` op has no unit to land on -- returns false: measured on an
+  /// M4, the vectorized form of a fully unrolled register matmul runs 9%
+  /// slower under Apple's compiler than the scalar form it was made from.
+  virtual bool wantsVectorization() const { return true; }
+
   /// Adds backend-specific passes at the start of the standard optimization
   /// pipeline (for backends that augment rather than replace it, e.g. NVPTX).
   virtual void addPipelineStartPasses(llvm::ModulePassManager &mpm,

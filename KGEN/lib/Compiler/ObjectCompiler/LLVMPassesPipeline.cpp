@@ -82,6 +82,7 @@
 #include "llvm/Transforms/Utils/SimplifyCFGOptions.h"
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
+#include <cstdlib>
 
 using namespace llvm;
 using namespace M::KGEN;
@@ -121,7 +122,8 @@ static void addSanitizers(ModulePassManager &modulePassManager,
 
 static FunctionPassManager
 buildFunctionSimplificationPipeline(PassBuilder passBuilder,
-                                    const CompilationOptions &options) {
+                                    const CompilationOptions &options,
+                                    const TargetBackend *backend) {
   OptimizationLevel level = getOptimizationLevel(options.optimizationLevel);
   FunctionPassManager fpm;
   // Form SSA out of local memory accesses after breaking apart aggregates into
@@ -214,7 +216,8 @@ buildFunctionSimplificationPipeline(PassBuilder passBuilder,
 
   // Try vectorization/scalarization transforms that are both improvements
   // themselves and can allow further folds with GVN and InstCombine.
-  fpm.addPass(VectorCombinePass(/*TryEarlyFoldsOnly=*/true));
+  if (!backend || backend->wantsVectorization())
+    fpm.addPass(VectorCombinePass(/*TryEarlyFoldsOnly=*/true));
 
   // Eliminate redundancies.
   fpm.addPass(MergedLoadStoreMotionPass());
@@ -265,7 +268,8 @@ buildFunctionSimplificationPipeline(PassBuilder passBuilder,
 }
 
 static void addInlinerPasses(PassBuilder passBuilder, ModulePassManager &MPM,
-                             const CompilationOptions &options) {
+                             const CompilationOptions &options,
+                             const TargetBackend *backend) {
   ModuleInlinerWrapperPass miwp(
       getInlineParamsFromOptLevel(/*OptLevel=*/3),
       /*PerformMandatoryInliningsFirst*/ true,
@@ -303,7 +307,7 @@ static void addInlinerPasses(PassBuilder passBuilder, ModulePassManager &MPM,
   // Lastly, add the core function simplification pipeline nested inside the
   // CGSCC walk.
   mainCgPipeline.addPass(createCGSCCToFunctionPassAdaptor(
-      buildFunctionSimplificationPipeline(passBuilder, options),
+      buildFunctionSimplificationPipeline(passBuilder, options, backend),
       /*EagerlyInvalidateAnalyses*/ true,
       /*EnableNoRerunSimplificationPipeline*/ true));
 
@@ -315,7 +319,8 @@ static void addInlinerPasses(PassBuilder passBuilder, ModulePassManager &MPM,
 }
 
 static void addVectorPasses(FunctionPassManager &FPM,
-                            const CompilationOptions &options) {
+                            const CompilationOptions &options,
+                             const TargetBackend *backend) {
   // Eliminate loads by forwarding stores from the previous iteration to loads
   // of the current iteration.
   FPM.addPass(LoopLoadEliminationPass());
@@ -342,9 +347,11 @@ static void addVectorPasses(FunctionPassManager &FPM,
                                    .sinkCommonInsts(true),
                                options)));
 
-  FPM.addPass(SLPVectorizerPass());
-  // Enhance/cleanup vector code.
-  FPM.addPass(VectorCombinePass());
+  if (!backend || backend->wantsVectorization()) {
+    FPM.addPass(SLPVectorizerPass());
+    // Enhance/cleanup vector code.
+    FPM.addPass(VectorCombinePass());
+  }
 
   FPM.addPass(InstCombinePass());
   // Now that we are done with loop unrolling, be it either by LoopVectorizer,
@@ -421,7 +428,7 @@ static ModulePassManager buildO3Pipeline(PassBuilder &passBuilder,
       createModuleToFunctionPassAdaptor(std::move(globalCleanupPm),
                                         /*EagerlyInvalidateAnalyses*/ true));
 
-  addInlinerPasses(passBuilder, mpm, options);
+  addInlinerPasses(passBuilder, mpm, options, backend);
 
   // Optimize globals now that the module is fully simplified.
   mpm.addPass(GlobalDCEPass());
@@ -478,7 +485,7 @@ static ModulePassManager buildO3Pipeline(PassBuilder &passBuilder,
   // from the TargetLibraryInfo.
   optimizePm.addPass(InjectTLIMappings());
 
-  addVectorPasses(optimizePm, options);
+  addVectorPasses(optimizePm, options, backend);
 
   // LoopSink pass sinks instructions hoisted by LICM, which serves as a
   // canonicalization pass that enables other optimizations. As a result,

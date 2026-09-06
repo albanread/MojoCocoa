@@ -328,14 +328,73 @@ as named module metadata (`air.apple_arch`, one string per distinct arch);
 the mixed-arch diagnosis. The attributes still come off before the pipeline,
 so the warning stays gone.
 
+### D22 — The Mojo compile cache serves device kernels across compiler rebuilds and knobs — OPEN (documented)
+`~/.cache/modular/.mojo_cache/mojo/transform/<version>/` caches compiled
+modules keyed by source and compiler version string. That key does not
+include the environment, so every `APPLEGPU_AIR_*` knob is invisible to a
+cached kernel; and it evidently does not change across local rebuilds of the
+compiler either, so a `cocoamojo --run` after a compiler change can execute
+a kernel compiled by the previous compiler. On 2026-09-06 six knob
+experiments in a row (vectorisers off, threadgroup alignment, device opt
+level 0/1/2, partial unrolling) measured identical numbers and emitted
+identical AIR; not one had run. Moving the cache aside made all of them
+real in one go.
+
+**Rule:** any run meant to exercise the compiler sets
+`MODULAR_CACHE_DIR` to a fresh directory (or passes `--clear-cache`), and a
+knob experiment prints a `[air-knobs]` line to stderr so a silent cache hit
+cannot pass for a result. The suites in `tools/` should do the same after a
+compiler rebuild; today they do not.
+
+### D23 — `DeviceExternalFunction` launches crashed; now a clean contract error — PARTLY FIXED
+A kernel loaded from source text (`ctx.load_function[sig](function_name=,
+asm=msl)` -- our runtime accepts MSL as well as a metallib) faulted in
+`AppleGPUMetal_launch`: the `_device_context_extras` extension's
+`_call_with_pack` sent a bare pointer array with a null sizes pointer, and
+on Metal a null sizes pointer means "the first entry is the Apple argument
+view", so the runtime read garbage. It now passes sizes (as the compiled
+path does on every backend) and the launch reaches argument binding.
+
+What remains: for an MSL-compiled kernel there is no `air.arg_type_size`
+metadata and Metal's reflection does not expose the address space, so a
+`device float*` binding is classified as a 4-byte constant and a
+`DeviceBuffer` argument is refused with the size-contract error. The
+compiled path avoids this because its argument view flags device pointers
+from the `DevicePassable` types; the external path should go through
+`call_with_pack_checked_metal` the same way, which means its `*Ts` must be
+`DevicePassable`. Reproduction: `oracles/bench/native_msl_bench.mojo`; the
+native reference numbers were taken with `oracles/bench/native.m` instead.
+
 ## Carried from the review (see improvement_plan.md for detail)
 
-### D7 — Unrolled register matmul ~9% behind upstream — OPEN
-Two attributions refuted by intervention (not SLP — the source authors
-`SIMD[16]`; not vector width — scalarize@32 reproduces upstream's exact
-256-scalar shape and moves nothing). Surviving differences: load/GEP
-pattern, index-convert mix. Evidence: oracles
-`findings/air-quality-2026-08-31.md`.
+### D7 — Unrolled register matmul ~9% behind upstream — RESOLVED: SLP vectorization, off for AIR
+Measured 2026-09-06 on one M4 against Modular's released 1.0.0 in a
+venv and against Apple's own compiler given the same algorithm in MSL
+(`oracles/bench/native.m`), all in one session
+(`oracles/findings/d7-unrolled-matmul.md`). At 2048³: rolled kernel ours
+942 vs upstream 899; unrolled ×4 980 vs 985; ×8 961 vs 962; fully unrolled
+×16 **870 vs 956**, Apple-from-MSL 951. One shape, not a general deficit.
+
+Cause, by intervention with a fresh compile cache (see D22): the shared O3
+pipeline's SLP vectorizer and VectorCombine turn the fully unrolled
+K-step's 512 scalar FMAs and 128 scalar threadgroup loads into 32
+sixteen-wide vector ops and 16 `<4 x float>` loads; Apple's compiler runs
+that form 9% slower than the scalar one it came from. With those two passes
+off: **955** in the experiment and **970** as the shipped default (device O0 gives 952; O1/O2 are worse at 790/763; alignment
+and register pressure refuted). The record's two earlier refutations (vector
+width, a late scalariser) may themselves have been cache hits.
+
+Fix: `TargetBackend::wantsVectorization()` (default true), false for AIR,
+gating both passes in the shared pipeline; `APPLEGPU_AIR_VECTORIZE=1`
+restores them for comparison. Experiment knobs kept: `APPLEGPU_AIR_OPT_LEVEL`
+(device pipeline at PassBuilder O0/O1/O2), `APPLEGPU_AIR_UNROLL_PARTIAL`
+(partial/runtime loop unrolling after the pipeline), and `APPLEGPU_KEEP_AIR`
+now also keeps each kernel's `.metallib` for the plain-Metal harness.
+
+Still open from the same measurement: the FMA-chain curve at low ILP,
+where Apple's compiler is far ahead of both Mojo compilers (677 vs 412 vs
+363 GFLOP/s at one chain) because it unrolls the loop and neither of us
+does; the partial-unroll knob is the experiment for that.
 
 ### D8 — Runtime lifetime repairs — OPEN
 `destroyBuffer`/`~VRBuffer` free Metal buffers without draining in-flight
