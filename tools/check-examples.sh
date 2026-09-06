@@ -12,6 +12,14 @@
 # a timeout: exit 124 (killed while running) with no crash output is a pass.
 # The frame-limited apps run their N frames headless and must exit cleanly.
 set -uo pipefail
+# Every compile in this run gets a FRESH Mojo compile cache. The cache under
+# ~/.cache/modular/.mojo_cache is keyed by source and version string, not by
+# the compiler binary or the environment, so after a compiler rebuild it can
+# hand back kernels the previous compiler produced -- and a suite that runs
+# cached kernels verifies nothing about the compiler it is meant to check
+# (defects.md D22).
+export MODULAR_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mojo-cache.XXXXXX")"
+trap 'rm -rf "$MODULAR_CACHE_DIR"' EXIT
 cd "$(dirname "$0")/.."
 DIST="${DIST_DIR:-$PWD/dist/CocoaMojo}"
 RUN="$DIST/bin/cocoamojo"

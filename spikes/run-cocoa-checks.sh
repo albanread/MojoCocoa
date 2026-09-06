@@ -5,6 +5,14 @@
 # that a name the database does not know becomes a COMPILE ERROR rather than a
 # wrong answer, so a run where they quietly succeed is a FAILED run.
 set -uo pipefail
+# Every compile in this run gets a FRESH Mojo compile cache. The cache under
+# ~/.cache/modular/.mojo_cache is keyed by source and version string, not by
+# the compiler binary or the environment, so after a compiler rebuild it can
+# hand back kernels the previous compiler produced -- and a suite that runs
+# cached kernels verifies nothing about the compiler it is meant to check
+# (defects.md D22).
+export MODULAR_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mojo-cache.XXXXXX")"
+trap 'rm -rf "$MODULAR_CACHE_DIR"' EXIT
 cd "$(dirname "$0")/.."
 
 # The raw binary cannot find std.mojoc on its own; something has to supply the
