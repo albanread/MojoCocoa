@@ -23,6 +23,7 @@ from std.math import cos, sin, exp2
 from gamepane.api.audio import (
     P, get, put, fget, fput, vget, vput, chip_new, chip_free, chip_render,
     gate_off, set_freq_hz, set_pulse_width, set_filter, PLAYER_BASE,
+    SAMPLE_RATE, FRAME_SAMPLES,
     S_CUTOFF, S_RES, S_FMODE, V_SUS, V_PW,
 )
 from gamepane.abc.schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
@@ -54,8 +55,14 @@ comptime T_LOOP = 18
 comptime T_DONE = 19
 comptime T_SCRATCH = 20      # one mono span buffer, reused chip by chip
 comptime T_ECHO_SEND = 21    # three slots: per-chip send into the echo, 0..15
-comptime T_ETIME = 24        # echo time in 50 Hz ticks (CT3 consumes)
+comptime T_ETIME = 24        # echo time in 50 Hz ticks
 comptime T_EFB = 25          # echo feedback, 0..15
+comptime T_DELAY = 26        # the delay lines: 2 * SAMPLE_RATE floats, L then R
+comptime T_DELAY_POS = 27    # write head, 0..SAMPLE_RATE-1
+comptime T_ESCRATCH = 28     # the span's summed echo sends, TRIO_SPAN floats
+comptime T_ECHO_USED = 29    # set the first time any send goes live; while
+                             # zero the echo pass is skipped ENTIRELY, which
+                             # is what keeps CT0's equality untouched
 comptime TRIO_SLOTS = 32
 
 comptime TRIO_SPAN = 4096
@@ -80,6 +87,18 @@ def trio_new() raises -> P:
     if Int(scratch) == 0:
         raise Error("trio: no scratch")
     put(t, T_SCRATCH, Int(scratch))
+    # The echo's memory, all of it, before any callback exists: two delay
+    # lines a second long and the span's send bus.
+    let delay = external_call["calloc", P](Int(2 * SAMPLE_RATE), Int(4))
+    if Int(delay) == 0:
+        raise Error("trio: no delay line")
+    put(t, T_DELAY, Int(delay))
+    let ebus = external_call["calloc", P](Int(TRIO_SPAN), Int(4))
+    if Int(ebus) == 0:
+        raise Error("trio: no echo bus")
+    put(t, T_ESCRATCH, Int(ebus))
+    put(t, T_ETIME, 15)          # 300 ms and gentle, until a tune says
+    put(t, T_EFB, 6)
     put(t, T_MASTER, 128)
     # The twin-SID rig: music centre, and the outer chips off to each side.
     set_trio_pan(t, 0, 0)
@@ -95,6 +114,12 @@ fn trio_free(t: P):
         chip_free(P(unsafe_from_address=get(t, T_CHIP_BASE + i)))
     _ = external_call["free", NoneType](
         P(unsafe_from_address=get(t, T_SCRATCH))
+    )
+    _ = external_call["free", NoneType](
+        P(unsafe_from_address=get(t, T_DELAY))
+    )
+    _ = external_call["free", NoneType](
+        P(unsafe_from_address=get(t, T_ESCRATCH))
     )
     let addr = get(t, T_ADDR)
     if addr != 0:
@@ -176,6 +201,17 @@ def flatten_trio(steps: List[Step], mut t: P) -> Int:
         p[unsafe_offset=at + 4] = steps[i].velocity
         if steps[i].sample > last:
             last = steps[i].sample
+    # A new tune states its own sound: the sends come up off, the delay
+    # lines come up silent, and whatever the last tune left ringing dies
+    # with it. (Loop wraps within ONE tune keep their tail on purpose.)
+    for c in range(3):
+        put(t, T_ECHO_SEND + c, 0)
+    put(t, T_ECHO_USED, 0)
+    put(t, T_DELAY_POS, 0)
+    let dl = Pointer[Float32, MutUntrackedOrigin](
+        unsafe_from_address=get(t, T_DELAY))
+    for i in range(2 * SAMPLE_RATE):
+        dl[unsafe_offset=i] = Float32(0.0)
     put(t, T_ADDR, addr)
     put(t, T_COUNT, n)
     put(t, T_CURSOR, 0)
@@ -371,6 +407,8 @@ fn render_trio(
                     set_trio_pan(t, c, value - 128)
                 elif param == CP_ECHO:
                     put(t, T_ECHO_SEND + c, value & 15)
+                    if (value & 15) != 0:
+                        put(t, T_ECHO_USED, 1)
                 elif param == CP_ETIME:
                     put(t, T_ETIME, value)
                 elif param == CP_EFB:
@@ -409,10 +447,18 @@ fn render_trio(
         if span > TRIO_SPAN:
             span = TRIO_SPAN
 
+        let echo_on = get(t, T_ECHO_USED) != 0
+        let ebus = Pointer[Float32, MutUntrackedOrigin](
+            unsafe_from_address=get(t, T_ESCRATCH))
+        if echo_on:
+            for i in range(span):
+                ebus[unsafe_offset=i] = Float32(0.0)
+
         for c in range(3):
             chip_render(trio_chip(t, c), scratch, span, trio_macro_tick)
             let gl = Float64(get(t, T_GAIN_L + c)) / 256.0 * master
             let gr = Float64(get(t, T_GAIN_R + c)) / 256.0 * master
+            let send = Float64(get(t, T_ECHO_SEND + c)) / 16.0
             for i in range(span):
                 let s = Float64(scratch[unsafe_offset=i])
                 let o = (filled + i) * 2
@@ -428,6 +474,52 @@ fn render_trio(
                     r = -1.0
                 dest[unsafe_offset=o] = Float32(l)
                 dest[unsafe_offset=o + 1] = Float32(r)
+                if send > 0.0:
+                    ebus[unsafe_offset=i] = Float32(
+                        Float64(ebus[unsafe_offset=i]) + s * send)
+
+        if echo_on:
+            # Ping-pong: the bus enters the left line, the left line's
+            # output feeds the right, the right's feeds the left. First
+            # tap left, second right, and every repeat quieter by fb --
+            # which is at most 15/16, so the ring is a geometric series
+            # and the ceiling is arithmetic, not hope.
+            let dl = Pointer[Float32, MutUntrackedOrigin](
+                unsafe_from_address=get(t, T_DELAY))
+            var dtime = get(t, T_ETIME)
+            if dtime < 1:
+                dtime = 1
+            elif dtime > 50:
+                dtime = 50
+            dtime *= FRAME_SAMPLES
+            let fb = Float64(get(t, T_EFB) & 15) / 16.0
+            var wp = get(t, T_DELAY_POS)
+            for i in range(span):
+                var rp = wp - dtime
+                if rp < 0:
+                    rp += SAMPLE_RATE
+                let outl = Float64(dl[unsafe_offset=rp])
+                let outr = Float64(dl[unsafe_offset=SAMPLE_RATE + rp])
+                dl[unsafe_offset=wp] = Float32(
+                    Float64(ebus[unsafe_offset=i]) + outr * fb)
+                dl[unsafe_offset=SAMPLE_RATE + wp] = Float32(outl * fb)
+                let o = (filled + i) * 2
+                var l = Float64(dest[unsafe_offset=o]) + outl * master
+                var r = Float64(dest[unsafe_offset=o + 1]) + outr * master
+                if l > 1.0:
+                    l = 1.0
+                elif l < -1.0:
+                    l = -1.0
+                if r > 1.0:
+                    r = 1.0
+                elif r < -1.0:
+                    r = -1.0
+                dest[unsafe_offset=o] = Float32(l)
+                dest[unsafe_offset=o + 1] = Float32(r)
+                wp += 1
+                if wp >= SAMPLE_RATE:
+                    wp = 0
+            put(t, T_DELAY_POS, wp)
 
         filled += span
         put(t, T_SAMPLE, now + span)

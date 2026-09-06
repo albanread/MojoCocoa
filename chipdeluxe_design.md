@@ -219,7 +219,7 @@ Sizes as elsewhere: **S** a sitting, **M** a day or two, **L** a week.
 - **CT2 — the macros (DONE, was M).** Arp, vib, slide, pwm, sweep, trem in the trio
   tick. *Checks:* one hash fixture per macro; a determinism run of 100
   renders.
-- **CT3 — echo (S).** Preallocated stereo delay, sends, feedback.
+- **CT3 — echo (DONE, was S).** Preallocated stereo delay, sends, feedback.
   *Checks:* hash fixture; silence-in silence-out; feedback ceiling proof.
 - **CT4 — taps and sync (S).** Published sample cursor, env reads, scope
   ring. *Checks:* SPSC discipline documented against the deck's; a

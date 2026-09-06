@@ -33,7 +33,11 @@ def wav_bytes(
     if len(samples) == 0:
         raise Error("wav: refusing to write an empty sound")
     let n = len(samples)
-    let data_bytes = n * 2 * channels
+    # `samples` is INTERLEAVED: n already counts every channel's samples,
+    # so the data size is n * 2 and nothing more. Multiplying by channels
+    # here double-counted stereo -- a header that claimed twice the data
+    # the file held, latent for as long as nothing wrote channels=2.
+    let data_bytes = n * 2
     var out = List[UInt8]()
 
     for c in String("RIFF").as_bytes():
@@ -86,9 +90,10 @@ def wav_bytes(
 
 
 def write_wav(
-    path: String, samples: Span[Float32, _], sample_rate: Int
+    path: String, samples: Span[Float32, _], sample_rate: Int,
+    channels: Int = 1,
 ) raises:
-    let bytes = wav_bytes(samples, sample_rate)
+    let bytes = wav_bytes(samples, sample_rate, channels)
     with open(path, "w") as f:
         f.write_bytes(Span(bytes))
 
