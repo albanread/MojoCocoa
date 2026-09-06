@@ -239,12 +239,19 @@ ever copying a stale copy over a guest's direct writes.
 
 `examples/galaxigans-deluxe` is the complete port of MACVM's Galaxigans
 (`world/49_galaxigans.mst`, itself a faithful port of the x64 assembler
-original), and it is the fuller use of the package: a ten-species creature
-library with a twelve-level table and the original's twelve cosmos shaders on
-layer 0; a dive AI whose random seed *is* the flight plan; the bonus saucer, its
-beating warble and its rare spinning mine; the survivors' victory dance; a hall
-of fame in a file; and the CAPTURE BOSS, whose tractor beam is why the indexed
-pane is in the stack.
+original), and it is the fuller use of the package: a fourteen-species
+creature library with a twelve-level table and the original's twelve cosmos
+shaders on layer 0; a dive AI whose random seed *is* the flight plan; the
+bonus saucer, its beating warble and its rare spinning mine; the survivors'
+victory dance; a hall of fame you type your initials into; and the CAPTURE
+BOSS, whose tractor beam is why the indexed pane is in the stack.
+
+Every sprite and palette is generated from the `.mst` by a script rather than
+retyped, and every constant is the original's. It steps at the 30 Hz it was
+tuned for, on a fixed clock — so every number below is in frames, and thirty
+of them is a second.
+
+### The beam
 
 The beam is drawn once a frame as a cone in palette index 1, and it *flows*
 without a pixel being redrawn: index 1 means a different colour on every
@@ -254,13 +261,115 @@ copper-bar trick -- doing what it was kept for. Everything else the game plots
 on that layer (bullets, bombs, sparks) sits in the global indices 16 and up,
 over a layer cleared to 0 so the cosmos shows through.
 
-Every sprite and palette is generated from the `.mst` by a script rather than
-retyped, and every constant is the original's; it steps at the 30 Hz it was
-tuned for on a fixed clock. With `GAMEPANE_FRAMES` set an autopilot plays, so
-the headless run in `check-examples.sh` exercises a game and not a title
-screen; `GDX_WAVE=n` starts at wave *n* (the boss first appears on wave 3),
-`GDX_TRACE=1` logs every event, and `GDX_PACIFIST=1` holds the autopilot's fire
-so the saucer and the boss play out. An autopilot run never writes the hall.
+### Twelve waves, and what moves across them
+
+The level table wraps at twelve, and three things are read out of it. The
+**scene** is the cosmos shader, one of twelve. The **theme** is `level % 6`
+and picks the five species that dress the grid's five rows, top row first and
+toughest. The **boss** turns up when `level % 3 == 2`.
+
+Six and twelve share a factor, and that is the whole trick: the creature set
+repeats every six levels while the sky repeats every twelve, so level 7 wears
+level 1's aliens against a sky it has not used, and no two of the twelve look
+alike.
+
+Three counters then ramp with the wave, and each has a floor:
+
+| | wave 1 | per wave | floor |
+|---|---|---|---|
+| dive period | 60 | −4 | 18 |
+| bomb period | 22 | −1 | 11 |
+| mine chance | 1 in 8 | +1 per 2 waves | 1 in 3 |
+
+Four frames a wave off the dive period rather than six, and the reason is
+worth keeping. At six it reached its floor by wave 8, so waves 8 through 12
+dived at exactly the same rate and only the backdrop changed. At four it lands
+on the floor at wave 12, which is where the table wraps — so every wave in the
+cycle is faster than the one before it, and none of the ramp is spent early.
+
+### Explosions: the same problem, solved twice
+
+The two games in the tree blow an alien up differently, and the difference is
+instructive rather than accidental.
+
+`examples/galaxigans` uses the **GPU particle field**: twelve thousand
+particles, one byte each, stepped by a Mojo kernel, and their colours are
+taken from the dying sprite's own palette through `particle_colour` — so a
+red alien throws red. It has no indexed pane, so its particles need somewhere
+to live, and the field is that somewhere.
+
+`galaxigans-deluxe` throws **fourteen sparks** per burst into the indexed
+pane it already has. The ring is an integer sine table read at `i * 256 / 14`,
+gravity is one line of `vy` arithmetic, and the whole population is capped at
+240 with the oldest dropped. No buffer, no kernel, no second pass: a spark is
+a plot into a plane the compositor is already reading.
+
+Neither is the right answer in general. If a game already has an indexed pane
+in its stack, sparks are nearly free; if it does not, do not add one to hold
+some dust.
+
+### Two sound worlds
+
+Both chips are busy, and they are doing different jobs.
+
+The four **cues** — title, stage clear, saucer, alien victory — go through
+`play_tune_gm` to the system General MIDI synth, so they are the original's
+music rather than a chip impression of it. They mark moments.
+
+The fourteen **motifs** are the chip. Each species has one, a bar long, on
+two voices, and it plays when that species leaves the formation to dive. Two
+rules keep them from becoming wallpaper:
+
+- one motif every 900 frames — thirty seconds — and never two at once;
+- and when the thirty seconds are up, the diver is chosen from the species
+  heard *least recently*, so the same tune cannot come round while another
+  is still waiting to be heard.
+
+The second rule is what makes fourteen motifs worth writing. Without it,
+random diving would play the grunt three times before you ever met the squid.
+Effects stay on chip B, so shooting never cuts a tune.
+
+### The cabinet
+
+Five states, and the machine returns to the start on its own.
+
+<!-- doccrate:keep-together:start -->
+
+```mermaid
+flowchart LR
+    A[attract] --> P[playing]
+    P --> C[cleared] --> P
+    P --> D[dance] --> H[hall of fame]
+    H --> A
+    A --> H
+```
+
+<!-- doccrate:keep-together:end -->
+
+The hall of fame asks for three letters **only if the score earned a row** —
+being asked for your initials after not placing is the machine rubbing it in.
+The letters come from `letter_held`, edge-triggered on the letter rather than
+the frame, so holding a key gives one letter and releasing it allows the same
+letter again: AAA is a perfectly good set of initials. Space ends the screen
+early, because waiting out a timer is not a feature.
+
+The window resizes on 1, 2 and 4 through `GamePane.set_zoom`. Nothing in the
+game changes — every layer maps to NDC through the viewport it is handed, not
+through the drawable, so a bigger drawable carrying the same logical viewport
+is the same picture at more pixels.
+
+### Running it headless
+
+With `GAMEPANE_FRAMES` set an autopilot plays, so the headless run in
+`check-examples.sh` exercises a game and not a title screen. `GDX_WAVE=n`
+starts at wave *n* — the quickest way to reach the boss (wave 3) or the later
+species. `GDX_TRACE=1` logs every event, one line each, including which motif
+fired and when. `GDX_PACIFIST=1` holds the autopilot's fire so the saucer and
+the boss play out. An autopilot run never writes the hall.
+
+A headless run reads **no input at all**, which is not a detail: an unfocused
+Accessory window still receives keys typed elsewhere on the machine, and the
+first headless run scored twenty points with nobody playing.
 
 ## The blitter
 
@@ -401,6 +510,10 @@ MIDI soundbank, so program 52 *is* a choir, 9 a glockenspiel, 80 a square
 lead. That is exactly how MACVM's game pane plays its tunes, which is why
 GalaxigansDeluxe's four cues are the original's music rather than a chip
 impression of it. One GM player at a time; starting a tune stops the last.
+
+The two paths run side by side in that game: the cues on the GM player mark
+the moments, and the fourteen species motifs on chip A carry the minutes --
+see *Two sound worlds* above for the rule that keeps them sparse.
 
 Because the chip is integer arithmetic with a fixed LFSR seed, every effect
 renders byte for byte the same on every run. The twelve hashes are committed,
