@@ -18,7 +18,7 @@ from gamepane.abc import (
 )
 from gamepane.abc.music import chip_settings
 from gamepane.abc.model import (
-    CP_PAN, CP_ECHO, CP_ETIME, CP_EFB, CP_ARP, CP_VIB, CP_SLIDE, CP_PWM,
+    CP_PAN, CP_ECHO, CP_ETIME, CP_EFB, CP_TONE, CP_ARP, CP_VIB, CP_SLIDE, CP_PWM,
     CP_SWEEP, CP_TREM, CP_WAVE,
 )
 from gamepane.abc.chipplay import macro_slot, M_ARP, M_VIB, M_SLIDE, M_PWM
@@ -82,6 +82,8 @@ def main() raises:
           one(String("chip etime=18"), CP_ETIME), 1, 18)
     check(failures, "efb=11",
           one(String("chip efb=11"), CP_EFB), 1, 11)
+    check(failures, "tone=9",
+          one(String("chip tone=9"), CP_TONE), 1, 9)
 
     # ── tolerance: the unknown key rule that versions the format ─────────
     let tol = chip_settings(String("chip v=2 zorble=9 wave=saw"), 1)

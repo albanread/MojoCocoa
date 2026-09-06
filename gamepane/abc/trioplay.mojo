@@ -28,7 +28,7 @@ from gamepane.api.audio import (
     S_CUTOFF, S_RES, S_FMODE, V_SUS, V_PW, V_ENV,
 )
 from gamepane.abc.schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
-from gamepane.abc.model import CP_PAN, CP_ECHO, CP_ETIME, CP_EFB
+from gamepane.abc.model import CP_PAN, CP_ECHO, CP_ETIME, CP_EFB, CP_TONE
 from gamepane.abc.chipplay import (
     apply_chip, apply_note_on, apply_note_off, silent_tick,
     STEP_SLOTS, SC_VOICE_NOTE, CHIP_ADSR, MACRO_BASE, MACRO_STRIDE,
@@ -72,7 +72,52 @@ comptime T_SCOPE = 31        # the oscilloscope ring: SCOPE_FRAMES stereo pairs
 comptime T_SCOPE_POS = 32    # frames ever written, release-stored after the
                              # samples they cover -- the ring's write head is
                              # this modulo SCOPE_FRAMES
+comptime T_TONE = 33         # 0..15; 15 is an EXACT bypass, the default
+comptime T_TONE_LS = 34      # float: the tone filter's left state
+comptime T_TONE_RS = 35      # float: and right
 comptime TRIO_SLOTS = 40
+
+
+@always_inline
+fn _tone_k(t: Int) -> Float64:
+    """One-pole coefficient for tone 0..14: corner at 1.2 kHz times (t+1),
+    k = 1 - e^(-2*pi*fc/48000). A branch chain and not a table, because
+    this runs on the audio thread and a materialised List is an
+    allocation -- the one thing a callback must never do. Tone 15 never
+    reaches here: it is a bypass with no arithmetic at all, which is what
+    keeps CT0's bit-equality exact."""
+    if t <= 0:
+        return 0.145364
+    elif t <= 1:
+        return 0.269597
+    elif t <= 2:
+        return 0.375772
+    elif t <= 3:
+        return 0.466512
+    elif t <= 4:
+        return 0.544062
+    elif t <= 5:
+        return 0.610339
+    elif t <= 6:
+        return 0.666982
+    elif t <= 7:
+        return 0.715390
+    elif t <= 8:
+        return 0.756762
+    elif t <= 9:
+        return 0.792120
+    elif t <= 10:
+        return 0.822339
+    elif t <= 11:
+        return 0.848164
+    elif t <= 12:
+        return 0.870236
+    elif t <= 13:
+        return 0.889099
+    elif t <= 14:
+        return 0.905220
+    return 0.914447
+
 
 comptime SCOPE_FRAMES = 2048
 """About 43 ms of mix in the window -- two full cycles of a bass A, which
@@ -174,6 +219,7 @@ def trio_new() raises -> P:
     if Int(ebus) == 0:
         raise Error("trio: no echo bus")
     put(t, T_ESCRATCH, Int(ebus))
+    put(t, T_TONE, 15)           # the speaker starts as a wire
     put(t, T_ETIME, 15)          # 300 ms and gentle, until a tune says
     put(t, T_EFB, 6)
     let ring = external_call["calloc", P](Int(SCOPE_FRAMES * 2), Int(4))
@@ -291,6 +337,9 @@ def flatten_trio(steps: List[Step], mut t: P) -> Int:
     for c in range(3):
         put(t, T_ECHO_SEND + c, 0)
     put(t, T_ECHO_USED, 0)
+    put(t, T_TONE, 15)
+    fput(t, T_TONE_LS, 0.0)
+    fput(t, T_TONE_RS, 0.0)
     put(t, T_DELAY_POS, 0)
     let dl = Pointer[Float32, MutUntrackedOrigin](
         unsafe_from_address=get(t, T_DELAY))
@@ -497,6 +546,8 @@ fn render_trio(
                     put(t, T_ETIME, value)
                 elif param == CP_EFB:
                     put(t, T_EFB, value & 15)
+                elif param == CP_TONE:
+                    put(t, T_TONE, value & 15)
                 else:
                     apply_chip(trio_chip(t, c), sub, param, value)
             elif kind == SE_NOTE_ON:
@@ -604,6 +655,24 @@ fn render_trio(
                 if wp >= SAMPLE_RATE:
                     wp = 0
             put(t, T_DELAY_POS, wp)
+
+        # The speaker: a one-pole lowpass on the finished mix, per
+        # channel. Tone 15 is a wire -- not a unity multiply, NO arithmetic
+        # -- so every bit-equality contract above this line survives. A
+        # lowpass of clamped samples stays clamped: convexity, not luck.
+        let tone = get(t, T_TONE) & 15
+        if tone < 15:
+            let k = _tone_k(tone)
+            var ls = fget(t, T_TONE_LS)
+            var rs = fget(t, T_TONE_RS)
+            for i in range(span):
+                let o = (filled + i) * 2
+                ls += k * (Float64(dest[unsafe_offset=o]) - ls)
+                rs += k * (Float64(dest[unsafe_offset=o + 1]) - rs)
+                dest[unsafe_offset=o] = Float32(ls)
+                dest[unsafe_offset=o + 1] = Float32(rs)
+            fput(t, T_TONE_LS, ls)
+            fput(t, T_TONE_RS, rs)
 
         # The span's mix is finished: copy it into the scope ring, THEN
         # publish how far the ring reaches, then where the tune stands.

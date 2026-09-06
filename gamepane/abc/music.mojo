@@ -22,7 +22,7 @@ from .model import (
     EV_NOTE, EV_REST, EV_BAR, EV_TEMPO, EV_KEY, EV_METER, EV_VOICE, EV_CHIP,
     CP_WAVE, CP_PW, CP_A, CP_D, CP_S, CP_R, CP_FILT,
     CP_CUTOFF, CP_RES, CP_FMODE, CP_VOL,
-    CP_PAN, CP_ECHO, CP_ETIME, CP_EFB,
+    CP_PAN, CP_ECHO, CP_ETIME, CP_EFB, CP_TONE,
     CP_ARP, CP_VIB, CP_SLIDE, CP_PWM, CP_SWEEP, CP_TREM,
     F_CHORD, F_TIE, F_GRACE, F_GCHORD,
     BAR_SINGLE, BAR_DOUBLE, BAR_REPEAT_START, BAR_REPEAT_END,
@@ -896,6 +896,8 @@ def chip_settings(value: String, cur_voice: Int) -> List[Int]:
                 param = CP_ETIME
             elif key == "efb":
                 param = CP_EFB
+            elif key == "tone":
+                param = CP_TONE
             elif key == "slide":
                 param = CP_SLIDE
             if param >= 0:

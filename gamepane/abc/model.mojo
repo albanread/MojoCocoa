@@ -53,6 +53,7 @@ comptime CP_PAN = 30
 comptime CP_ECHO = 31
 comptime CP_ETIME = 32
 comptime CP_EFB = 33
+comptime CP_TONE = 34
 
 # The 50 Hz performance macros (stored by CT1, played by CT2's tick).
 # Pairs pack as depth<<8 | rate; an arpeggio packs its digit count above

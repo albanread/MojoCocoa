@@ -23,7 +23,7 @@ C2 C C2 C C | C2 C C2 C C | C2 C C2 C C | C C C C C2 C2 |
 C2 C C2 C C | C2 C C2 C C | C2 C C2 C C | C2 C C2 C2 |
 C2 C C2 C C | C2 C C2 C C | C2 C C2 C C | C C C C C C C C
 V:2
-[I:chip v=2 wave=pulse pw=1100 a=0 d=5 s=8 r=3 arp=037 pwm=20/2]
+[I:chip v=2 wave=pulse pw=1100 a=0 d=5 s=8 r=3 arp=037 pwm=20/2 filt=1 cutoff=1300 res=3 mode=lp tone=8]
 A,8 | A,8 | [I:chip v=2 arp=047] F,8 | F,8 |
 [I:chip v=2 arp=047] C8 | C8 | [I:chip v=2 arp=047] G,8 | G,8 |
 [I:chip v=2 arp=037] A,8 | A,8 | [I:chip v=2 arp=047] F,8 | F,8 |
@@ -41,9 +41,9 @@ C, C C, C C, C C, C | C, C C, C C, C C, C | G,, G, G,, G, G,, G, G,, G, | G,, G,
 A,, A, A,, A, A,, A, A,, A, | A,, A, A,, A, A,, A, A,, A, | F,, F, F,, F, F,, F, F,, F, | F,, F, F,, F, F,, F, F,, F, |
 C, C C, C C, C C, C | C, C C, C C, C C, C | G,, G, G,, G, G,, G, G,, G, | A,, A, A,, A, A,, A, A,, A,
 V:7
-[I:chip v=7 wave=saw a=0 d=4 s=8 r=4 vib=8/4 slide=3 filt=1 cutoff=400 res=6 mode=lp sweep=3 vol=14 echo=6 etime=10 efb=6]
+[I:chip v=7 wave=saw a=0 d=4 s=8 r=4 vib=6/4 slide=3 filt=1 cutoff=500 res=6 mode=lp sweep=2 vol=14 echo=6 etime=10 efb=6]
 z8 | z8 | z8 | z8 |
-e2 e2 g2 a2 | e2 d2 c2 d2 | e2 g2 b2 g2 | e4 d4 |
+[I:chip v=7 sweep=0 cutoff=1250] e2 e2 g2 a2 | e2 d2 c2 d2 | e2 g2 b2 g2 | e4 d4 |
 c2 c2 e2 a2 | a2 g2 e2 g2 | a2 c'2 b2 g2 | e4 d4 |
 e2 g2 a2 c'2 | b2 a2 g2 e2 | d2 e2 g2 b2 | a8
 """)
@@ -60,16 +60,16 @@ L:1/4
 Q:1/4=76
 K:Dm
 V:1
-[I:chip v=1 wave=tri a=9 d=0 s=13 r=10 vol=13]
+[I:chip v=1 wave=tri a=9 d=0 s=13 r=10 vol=13 tone=6]
 D,4 | D,4 | D,4 | D,4 | D,4 | D,4 | C,4 | C,4 | _B,,4 | _B,,4 | A,,4 | A,,2 A,,2 | D,4 | D,4
 V:2
 [I:chip v=2 wave=tri a=8 d=0 s=12 r=9 vol=11]
 z4 | z4 | A,4 | A,4 | A,4 | A,4 | G,4 | G,4 | F,4 | F,4 | E,4 | E,4 | A,4 | A,4
 V:4
-[I:chip v=4 wave=pulse pw=1600 a=6 d=2 s=11 r=8 pwm=30/1 vol=12 echo=9 etime=32 efb=9]
+[I:chip v=4 wave=pulse pw=1600 a=6 d=2 s=11 r=8 pwm=30/1 filt=1 cutoff=1100 res=2 mode=lp vol=12 echo=9 etime=32 efb=9]
 z4 | z4 | z4 | z4 | d2 e2 | f2 e2 | e2 d2 | e2 c2 | d2 f2 | f2 e2 | e2 ^c2 | e2 ^c2 | d4 | d4
 V:7
-[I:chip v=7 wave=tri a=5 d=2 s=12 r=9 vib=14/4 vol=13 echo=10 etime=32 efb=9]
+[I:chip v=7 wave=tri a=5 d=2 s=12 r=9 vib=10/3 vol=13 echo=10 etime=32 efb=9]
 z4 | z4 | z4 | z4 | z4 | z4 | z4 | z4 | d'2 f'2 | f'2 e'2 | e'2 ^c'2 | e'2 ^c'2 | d'4 | d'4
 V:8
 [I:chip v=8 wave=tri a=6 d=2 s=11 r=9 vib=10/3 vol=10]
@@ -87,7 +87,7 @@ L:1/8
 Q:1/4=120
 K:C
 V:1
-[I:chip v=1 wave=noise a=0 d=2 s=0 r=2 vol=10]
+[I:chip v=1 wave=noise a=0 d=2 s=0 r=2 vol=10 tone=7]
 C2 z2 C2 z2 | C2 z2 C2 z2 | C2 z2 C2 z2 | C2 z2 C2 C2 |
 C2 z2 C2 z2 | C2 z2 C2 z2 | C2 z2 C2 z2 | C2 z2 C2 C2 |
 C2 z2 C2 z2 | C2 z2 C2 z2 | C2 z2 C2 z2 | C2 z2 C2 C2 |
@@ -99,19 +99,19 @@ C8 | C8 | [I:chip v=2 arp=037] A,8 | A,8 |
 [I:chip v=2 arp=047] C8 | C8 | [I:chip v=2 arp=037] A,8 | A,8 |
 [I:chip v=2 arp=047] F,8 | F,8 | [I:chip v=2 arp=047] G,8 | [I:chip v=2 arp=047] C8
 V:4
-[I:chip v=4 wave=pulse pw=500 a=0 d=4 s=8 r=4 slide=6 filt=1 cutoff=800 res=5 mode=lp vol=14]
+[I:chip v=4 wave=pulse pw=500 a=0 d=4 s=8 r=4 slide=6 filt=1 cutoff=950 res=5 mode=lp vol=14]
 C,2 C2 G,2 C2 | C,2 C2 G,2 E2 | A,,2 A,2 E,2 A,2 | A,,2 A,2 C2 A,2 |
 F,,2 F,2 C,2 F,2 | F,,2 F,2 A,2 F,2 | G,,2 G,2 D2 G,2 | G,,2 G,2 B,2 G,2 |
 C,2 C2 G,2 C2 | C,2 C2 G,2 E2 | A,,2 A,2 E,2 A,2 | A,,2 A,2 C2 A,2 |
 F,,2 F,2 C,2 F,2 | F,,2 F,2 A,2 F,2 | G,,2 G,2 D2 G,2 | C,2 C2 G,2 C,2
 V:5
-[I:chip v=5 wave=saw a=0 d=4 s=9 r=5 vib=7/4 vol=12 echo=7 etime=25 efb=7]
+[I:chip v=5 wave=saw a=0 d=4 s=9 r=5 vib=6/4 filt=1 vol=12 echo=7 etime=25 efb=7]
 z8 | z8 | e2 g2 a2 e2 | a2 g2 e2 d2 |
 z8 | z8 | d2 f2 g2 b2 | g4 e4 |
 z8 | z8 | e2 g2 a2 c'2 | a2 g2 e2 g2 |
 z8 | z8 | d2 g2 b2 d'2 | c'8
 V:7
-[I:chip v=7 wave=pulse pw=1500 a=0 d=4 s=9 r=5 vib=9/5 pwm=30/2 vol=12 echo=7 etime=25 efb=7]
+[I:chip v=7 wave=pulse pw=1500 a=0 d=4 s=9 r=5 vib=7/4 pwm=30/2 filt=1 cutoff=1250 res=3 mode=lp vol=12 echo=7 etime=25 efb=7]
 e2 g2 c'2 g2 | e'2 c'2 g2 e2 | z8 | z8 |
 a2 c'2 f'2 c'2 | a'2 f'2 c'2 a2 | z8 | z8 |
 g2 c'2 e'2 c'2 | g'2 e'2 c'2 g2 | z8 | z8 |
@@ -130,7 +130,7 @@ L:1/4
 Q:1/4=140
 K:G
 V:1
-[I:chip v=1 wave=noise a=0 d=1 s=0 r=1 vol=7]
+[I:chip v=1 wave=noise a=0 d=1 s=0 r=1 vol=7 tone=6]
 z C C | z C C | z C C | z C C | z C C | z C C | z C C | z C C |
 z C C | z C C | z C C | z C C | z C C | z C C | z C C | z C C |
 z C C | z C C | z C C | z C C | z C C | z C C | z C C | C C C
@@ -140,7 +140,7 @@ G,, z z | D, z z | G,, z z | D, z z | E,, z z | B,, z z | C, z z | D, z z |
 G,, z z | D, z z | E,, z z | B,, z z | C, z z | A,, z z | D, z z | D, z z |
 G,, z z | D, z z | E,, z z | C, z z | G,, z z | D, z z | C, z z | G,, z z
 V:7
-[I:chip v=7 wave=tri a=2 d=3 s=10 r=7 vib=8/3 vol=14 echo=13 etime=21 efb=9]
+[I:chip v=7 wave=tri a=2 d=3 s=10 r=7 vib=6/3 vol=14 echo=13 etime=21 efb=9]
 b z z | a z z | g z z | d z z | e z z | f z z | e z d | d z z |
 b z z | a z z | g z e | d z z | c z z | e z z | a z ^f | d z z |
 g z z | b z z | e' z z | c' z b | a z g | b z a | g z ^f | g z z
@@ -153,7 +153,7 @@ L:1/8
 Q:1/4=140
 K:Am
 V:1
-[I:chip v=1 wave=pulse pw=1000 a=0 d=4 s=9 r=4 arp=037 pwm=24/2 filt=1 cutoff=500 res=5 mode=lp sweep=4 vol=13]
+[I:chip v=1 wave=pulse pw=1000 a=0 d=4 s=9 r=4 arp=037 pwm=24/2 filt=1 cutoff=500 res=5 mode=lp sweep=4 vol=13 tone=7]
 A,8 | [I:chip v=1 arp=047] F,8 | [I:chip v=1 arp=047] C8 | [I:chip v=1 arp=047] G,8 |
 [I:chip v=1 arp=037] A,8 | [I:chip v=1 arp=047] F,8 | [I:chip v=1 arp=047] C4 [I:chip v=1 arp=047] G,4 | [I:chip v=1 arp=037] A,8
 V:2
@@ -165,7 +165,7 @@ V:4
 A,,4 A,4 | F,,4 F,4 | C,4 C4 | G,,4 G,4 |
 A,,4 A,4 | F,,4 F,4 | C,2 C2 G,,2 G,2 | A,,8
 V:7
-[I:chip v=7 wave=pulse pw=1800 a=1 d=4 s=10 r=6 vib=10/5 pwm=40/3 vol=13 echo=8 etime=13 efb=7]
+[I:chip v=7 wave=pulse pw=1800 a=1 d=4 s=10 r=6 vib=7/4 pwm=40/3 filt=1 cutoff=1200 res=3 mode=lp vol=13 echo=8 etime=13 efb=7]
 z8 | z8 | e4 d4 | e2 d2 c2 =b2 |
 a4 c'2 b2 | a4 e4 | g2 e2 d2 e2 | a8
 """)
