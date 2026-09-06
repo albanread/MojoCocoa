@@ -35,13 +35,15 @@ from std.os import getenv
 from gamepane.api import (
     P,
     KEY_ESCAPE, KEY_LEFT, KEY_RIGHT, KEY_SPACE, KEY_RETURN,
+    KEY_1, KEY_2, KEY_4,
     SFX_SHOOT, SFX_EXPLODE, SFX_HURT, SFX_COIN, SFX_BANG, SFX_SAUCER,
     SFX_BOSS_HUM,
 )
 from gamepane.metal import (
     GamePane, Sprites, TextOverlay, ShaderPane, IndexedPane, key_held,
+    letter_held,
     deck_new, deck_free, sfx_play, start_audio, stop_audio,
-    play_tune_gm, stop_tune_gm,
+    play_tune, stop_tune, play_tune_gm, stop_tune_gm,
 )
 from art import (
     SPECIES_COUNT, species_name,
@@ -50,6 +52,7 @@ from art import (
 )
 from cosmos import COSMOS_SHADER
 from tunes import TUNE_ALIEN_VICTORY, TUNE_TITLE, TUNE_STAGE_CLEAR, TUNE_SAUCER
+from motifs import motif_for
 
 # ── the field, straight from the original's galaxigans_data.inc ──────────
 comptime FIELD_W = 640
@@ -73,10 +76,20 @@ comptime DANCE_R1 = 70
 comptime DANCE_ANGLE_STEP = 6
 comptime DANCE_RAD_STEP = 10
 comptime DANCE_LENGTH = 420
+# The floor between two species motifs: thirty seconds, in frames at 30 Hz.
+# A motif is a bar long, so this is not a fade or a crossfade rule -- it is
+# twenty-eight seconds of no music at all between them, which is what makes
+# the one you do hear mean something.
+comptime MOTIF_GAP = 900
 # The attract cycle: the title holds ~20s, the hall of fame ~33s, and round
 # again -- the machine never stops on its own, it waits for a player.
 comptime ATTRACT_LENGTH = 600
-comptime HISCORE_LENGTH = 1000
+# Five seconds, not seventeen. A table nobody can dismiss is a table
+# people sit through resenting, and space dismisses this one.
+comptime HISCORE_LENGTH = 300
+# How long the table sits after the third letter -- long enough to read your
+# own name in it, short enough not to be a wait.
+comptime HISCORE_LINGER = 90
 # The capture boss, and the pilot row it comes for.
 comptime BOSS_FIRST = 40
 comptime BOSS_DWELL = 60
@@ -565,15 +578,22 @@ def save_hall(names: List[String], scores: List[Int]) raises:
 # ── the level table, the themes, the scenes ──────────────────────────────
 
 def theme_rows(theme: Int) raises -> List[Int]:
-    """The species for grid rows 0..4, top row first (and toughest). Four
-    themes, rotated through the level table: classic, then the newer species,
-    then a mix. 0-based into the creature library."""
+    """The species for grid rows 0..4, top row first (and toughest).
+
+    SIX themes now rather than four, so the fourteen creatures all get a
+    wave. Six and twelve share a factor, so themes repeat every six levels
+    while the backdrop repeats every twelve -- which means level 7 wears
+    theme 0 against a different sky, and no two of the twelve look alike."""
     if theme == 1:
         return [5, 8, 1, 2, 0]      # + ray: hornet stingray moth beetle grunt
     if theme == 2:
         return [9, 6, 8, 7, 4]      # new-heavy: squid jellyfish stingray spider mantis
     if theme == 3:
         return [6, 5, 8, 3, 1]      # full mix: jellyfish hornet stingray scorpion moth
+    if theme == 4:
+        return [11, 10, 12, 12, 0]  # hive: crab wasp drone drone grunt
+    if theme == 5:
+        return [13, 11, 10, 4, 2]   # deep: serpent crab wasp mantis beetle
     return [5, 1, 0, 0, 2]          # classic: hornet moth grunt grunt beetle
 
 
@@ -582,7 +602,7 @@ def level_scene(level: Int) raises -> Int:
 
 
 def level_theme(level: Int) raises -> Int:
-    return level % 4
+    return level % 6
 
 
 def level_boss(level: Int) raises -> Bool:
@@ -627,6 +647,8 @@ struct Game(Movable):
     var level: Int
     var scene: Int
     var theme: Int
+    var motif_gap: Int        # frames until a diving species may play its motif again
+    var motif_age: List[Int]  # the frame each species' motif last played, -1 for never
     var respawn: Int
     var cooldown: Int
     var fire_was_down: Bool
@@ -646,6 +668,9 @@ struct Game(Movable):
     var hall_names: List[String]
     var hall_scores: List[Int]
     var hi_new_row: Int
+    var initials: String
+    var last_letter: Int
+    var hi_done: Int
     var boss: Boss
     var boss_on: Bool
     var abducting: Int        # 0 nobody, 1 rising up the beam, 2 falling home
@@ -681,6 +706,8 @@ struct Game(Movable):
         self.level = 0
         self.scene = 0
         self.theme = 0
+        self.motif_gap = 0
+        self.motif_age = List[Int](length=SPECIES_COUNT, fill=-1)
         self.respawn = 0
         self.cooldown = 0
         self.fire_was_down = False
@@ -688,7 +715,7 @@ struct Game(Movable):
         self.sway_x = 0
         self.sway_dir = 1
         self.dive_timer = DIVE_PERIOD
-        self.bomb_timer = BOMB_PERIOD
+        self.bomb_timer = BOMB_PERIOD  # wave 1; start_wave re-arms from the ramp
         self.bullets = List[Shot]()
         self.bombs = List[Shot]()
         self.mines = List[Mine]()
@@ -700,6 +727,9 @@ struct Game(Movable):
         self.hall_names = List[String]()
         self.hall_scores = List[Int]()
         self.hi_new_row = 0
+        self.initials = String()
+        self.last_letter = 0
+        self.hi_done = 0
         self.boss = Boss()
         self.boss_on = False
         self.abducting = 0
@@ -782,11 +812,40 @@ struct Game(Movable):
         self.flap = 0
         self.state = ATTRACT
         self.state_timer = ATTRACT_LENGTH
+        # A game opens with an introduction: the floor starts at zero, so
+        # the first alien to leave the formation brings its motif with it.
+        self.motif_gap = 0
         self.start_wave(sprites)
 
     def dive_period_now(self) raises -> Int:
-        """Each wave dives harder -- the original ramps gDivePeriod so."""
-        return max(DIVE_PERIOD - (self.wave - 1) * 6, 18)
+        """Each wave dives harder -- the original ramps gDivePeriod so.
+
+        Four frames a wave, not six: at six the period hit its floor by wave
+        8, so waves 8 through 12 dived at exactly the same rate and only the
+        backdrop changed. Four reaches the same floor at wave 12, which is
+        where the table wraps -- so every wave in the cycle is faster than
+        the one before it and none of the ramp is spent early.
+        """
+        return max(DIVE_PERIOD - (self.wave - 1) * 4, 18)
+
+    def bomb_period_now(self) raises -> Int:
+        """Bombs fall closer together as the waves go by.
+
+        This did not scale at all: every wave dropped at BOMB_PERIOD, so a
+        formation that dived twice as often still shot at the same rate and
+        wave 12 was only busier, not harder.
+
+        One frame a wave, reaching eleven at wave 12 -- half the opening
+        cadence over the whole cycle. Steeper than that bottoms out early
+        and wastes the back half of the table, which is the mistake the dive
+        ramp above had made.
+        """
+        return max(BOMB_PERIOD - (self.wave - 1), 11)
+
+    def mine_chance_now(self) raises -> Int:
+        """One in N of the saucer's drops is a mine. Rarer early, common
+        late; 1-in-3 is the floor, because near-always is not a decision."""
+        return max(8 - (self.wave - 1) // 2, 3)
 
     def start_wave(mut self, mut sprites: Sprites) raises:
         """A wave is a reset, not a reallocation: the objects persist. Pick
@@ -802,7 +861,7 @@ struct Game(Movable):
         self.sway_x = 0
         self.sway_dir = 1
         self.dive_timer = self.dive_period_now()
-        self.bomb_timer = BOMB_PERIOD
+        self.bomb_timer = self.bomb_period_now()
         self.saucer_x = -60
         self.saucer_dir = 0
         self.saucer_timer = SAUCER_PERIOD
@@ -845,7 +904,8 @@ struct Game(Movable):
 
     # ── the frame ────────────────────────────────────────────────────────
     def step(mut self, mut sprites: Sprites, field: IndexedPane, deck: P,
-             left: Bool, right: Bool, fire_down: Bool) raises:
+             left: Bool, right: Bool, fire_down: Bool,
+             typing: Bool = False) raises:
         self.frame += 1
         if self.state == PLAYING:
             self.step_play(sprites, field, deck, left, right, fire_down)
@@ -856,7 +916,7 @@ struct Game(Movable):
         elif self.state == OVER:
             self.step_over()
         elif self.state == HISCORE:
-            self.step_hiscores(sprites)
+            self.step_hiscores(sprites, typing, fire_down)
 
     def fire_pressed(mut self, down: Bool) raises -> Bool:
         """Tap to fire: the key must be RELEASED between shots."""
@@ -940,19 +1000,61 @@ struct Game(Movable):
             self.log(String("hall of fame: row ") + String(self.hi_new_row))
         self.state = HISCORE
         self.state_timer = HISCORE_LENGTH
+        self.initials = String()
+        self.last_letter = 0
+        self.hi_done = 0
 
-    def step_hiscores(mut self, mut sprites: Sprites) raises:
+    def step_hiscores(
+        mut self, mut sprites: Sprites, typing: Bool, fire_down: Bool
+    ) raises:
+        """Take three letters, then linger a few seconds and go back.
+
+        Only when the score EARNED a row -- being asked for your initials
+        after not placing is the machine rubbing it in. Without a row, or
+        headless, this is the old countdown.
+        """
+        if typing and self.hi_new_row > 0 and self.initials.byte_length() < 3:
+            let c = letter_held()
+            # Edge-triggered on the letter, not the frame: a key held down
+            # should give one letter, and releasing it should allow the same
+            # letter again -- AAA is a perfectly good set of initials.
+            if c != 0 and c != self.last_letter:
+                self.initials += chr(c)
+                self.log(String("initials: ") + self.initials)
+                if self.initials.byte_length() == 3:
+                    self.hall_names[self.hi_new_row - 1] = self.initials
+                    if self.keep_scores:
+                        save_hall(self.hall_names, self.hall_scores)
+                    # A few seconds to admire it, then the attract resumes.
+                    self.hi_done = HISCORE_LINGER
+            self.last_letter = c
+            if self.hi_done == 0:
+                return                      # the clock waits for the player
+
+        # Space ends it. Through `fire_pressed`, so the shot the player was
+        # holding when they died does not skip the table before they have
+        # seen it: the key has to be released and pressed again, which is
+        # the same rule firing already has.
+        if typing and self.fire_pressed(fire_down):
+            self.new_game(sprites)
+            return
+
+        if self.hi_done > 0:
+            self.hi_done -= 1
+            if self.hi_done > 0:
+                return
         self.state_timer -= 1
         if self.state_timer <= 0:
             self.new_game(sprites)
 
-    def begin_dance(mut self) raises:
+    def begin_dance(mut self, deck: P) raises:
         """The aliens have won: they leave formation, and their own tune
         plays over it -- 'Alien Victory', the square-lead triumph."""
         self.state = OVER
         self.state_timer = DANCE_LENGTH
         self.dance_t = 0
         self.log(String("game over: the dance, score ") + String(self.score))
+        stop_tune(deck)          # no bug still humming under the fanfare
         _ = play_tune_gm(TUNE_ALIEN_VICTORY)
 
     def step_play(mut self, mut sprites: Sprites, field: IndexedPane, deck: P,
@@ -966,7 +1068,7 @@ struct Game(Movable):
         for i in range(len(self.bombs)):
             self.bombs[i].step()
         self.sway_fleet()
-        self.step_fleet()
+        self.step_fleet(deck)
         self.step_saucer(deck)
         for i in range(len(self.mines)):
             self.mines[i].step()
@@ -1009,14 +1111,16 @@ struct Game(Movable):
         if self.sway_x <= -16:
             self.sway_dir = 1
 
-    def step_fleet(mut self) raises:
+    def step_fleet(mut self, deck: P) raises:
+        if self.motif_gap > 0:
+            self.motif_gap -= 1
         self.dive_timer -= 1
         if self.dive_timer <= 0:
             self.dive_timer = self.dive_period_now()
-            self.launch_diver()
+            self.launch_diver(deck)
         self.bomb_timer -= 1
         if self.bomb_timer <= 0:
-            self.bomb_timer = BOMB_PERIOD
+            self.bomb_timer = self.bomb_period_now()
             self.drop_bomb()
         let ship_x = self.ship_x
         let sway = self.sway_x
@@ -1031,18 +1135,41 @@ struct Game(Movable):
             else:
                 self.fleet[i].follow_formation(sway)
 
-    def launch_diver(mut self) raises:
+    def launch_diver(mut self, deck: P) raises:
         """Pick a live alien still sitting in formation and launch it, with a
-        random seed for its flight plan."""
+        random seed for its flight plan -- and, if the floor has run out,
+        let it announce itself."""
         var candidates = List[Int]()
         for i in range(len(self.fleet)):
             if self.fleet[i].alive and self.fleet[i].state == A_FORM:
                 candidates.append(i)
         if len(candidates) == 0:
             return
-        let pick = candidates[Int(self.rand() * Float64(len(candidates)))]
+        var pick = candidates[Int(self.rand() * Float64(len(candidates)))]
+        if self.motif_gap <= 0:
+            # The thirty seconds are up, so this dive carries a tune -- and
+            # at one tune every half minute, WHICH tune matters more than
+            # which alien. So the diver becomes the one whose species has
+            # been silent longest, and the same motif cannot come round
+            # twice while another is waiting to be heard. Everything still
+            # equal, the random pick stands.
+            var best = pick
+            var best_age = self.motif_age[self.fleet[pick].species]
+            for c in range(len(candidates)):
+                let i = candidates[c]
+                let age = self.motif_age[self.fleet[i].species]
+                if age < best_age:
+                    best = i
+                    best_age = age
+            pick = best
         let seed = Int(self.rand() * 65535.0)
         self.fleet[pick].dive_with_seed(seed)
+        if self.motif_gap <= 0:
+            self.motif_gap = MOTIF_GAP
+            let sp = self.fleet[pick].species
+            self.motif_age[sp] = self.frame
+            _ = play_tune(deck, motif_for(sp), loop=False)
+            self.log(String("motif: ") + species_name(sp))
 
     def drop_bomb(mut self) raises:
         """The lowest diver drops the bomb -- a bomb from the back of the
@@ -1087,8 +1214,12 @@ struct Game(Movable):
 
     def saucer_drop(mut self) raises:
         """Something from its belly every 28 frames while it is over the
-        field -- and about one drop in eight is a MINE rather than a bomb,
-        the original's own ratio (Rng & 7)."""
+        field -- and one drop in N is a MINE rather than a bomb.
+
+        The original's ratio is one in eight (Rng & 7); that is wave one's,
+        and `mine_chance_now` tightens it every second wave to a floor of
+        one in two. A mine is the saucer's most dangerous drop, so how often
+        it chooses one is the clearest dial the saucer has."""
         if self.saucer_x < 0 or self.saucer_x > FIELD_W - 16:
             return
         self.saucer_bomb_t -= 1
@@ -1096,7 +1227,7 @@ struct Game(Movable):
             return
         self.saucer_bomb_t = SAUCER_BOMB_GAP
         self.saucer_drops += 1
-        if Int(self.rand() * 8.0) == 0:
+        if Int(self.rand() * Float64(self.mine_chance_now())) == 0:
             for i in range(len(self.mines)):
                 if not self.mines[i].live:
                     self.mines[i].drop_at(self.saucer_x, SAUCER_Y + 12)
@@ -1158,7 +1289,7 @@ struct Game(Movable):
         _ = sfx_play(deck, SFX_HURT)
         self.burst_at(self.boss.beam_x(), self.boss.y + 26, IX_SPARK_GOLD)
         if self.lives <= 0:
-            self.begin_dance()
+            self.begin_dance(deck)
             self.boss.vanish()
         else:
             self.boss.retreat()
@@ -1273,7 +1404,7 @@ struct Game(Movable):
         self.log(String("ship lost, lives ") + String(self.lives))
         self.ship_x = FIELD_W // 2
         if self.lives <= 0:
-            self.begin_dance()
+            self.begin_dance(deck)
 
     # ── explosions ───────────────────────────────────────────────────────
     def burst_at(mut self, bx: Int, by: Int, c: Int) raises:
@@ -1418,6 +1549,17 @@ struct Game(Movable):
 
     def draw_hiscores(mut self, mut hud: TextOverlay) raises:
         hud.draw_text(130, 46, String("H I G H   S C O R E S"), 255, 210, 60, 3)
+
+        # THE PLAYER'S OWN SCORE, flashing, above the table. It is the thing
+        # they came to see, and reading it out of a six-row list is not the
+        # same as being shown it.
+        if (self.frame // 10) % 2 == 0:
+            hud.draw_text(196, 86, String("YOUR SCORE  ") + score6(self.score),
+                          255, 255, 255, 2)
+        else:
+            hud.draw_text(196, 86, String("YOUR SCORE  ") + score6(self.score),
+                          255, 160, 40, 2)
+
         var y = 110
         for i in range(len(self.hall_names)):
             let row = i + 1
@@ -1430,8 +1572,23 @@ struct Game(Movable):
             else:
                 hud.draw_text(190, y, line, 150, 200, 255, 2)
             y += 26
-        if self.hi_new_row > 0:
+        if self.hi_new_row > 0 and self.initials.byte_length() < 3:
+            # Three boxes, the one being typed blinking. An arcade asks for
+            # initials by showing you the space they go in.
+            hud.draw_text(150, 300, String("ENTER YOUR INITIALS"), 120, 255, 140, 2)
+            var slot = String()
+            for i in range(3):
+                if i < self.initials.byte_length():
+                    slot += String(self.initials[byte = i : i + 1]) + " "
+                elif i == self.initials.byte_length() and (self.frame // 8) % 2 == 0:
+                    slot += "_ "
+                else:
+                    slot += ". "
+            hud.draw_text(268, 330, slot, 255, 240, 120, 3)
+        elif self.hi_new_row > 0:
             hud.draw_text(208, 300, String("A PLACE IN THE HALL"), 120, 255, 140, 2)
+        if self.initials.byte_length() == 3 or self.hi_new_row == 0:
+            hud.draw_text(232, 356, String("SPACE TO CONTINUE"), 150, 160, 180, 2)
 
     def summary(self) raises -> String:
         var names: List[String] = ["attract", "playing", "cleared", "over", "hiscore"]
@@ -1526,6 +1683,18 @@ def main() raises:
     var last_hud = String("")
     var last_scene = -1
     while pane.pump():
+        # 1, 2, 4 -- x1, x2, x4. The window and the drawable grow; not one
+        # game coordinate changes, because every layer maps to NDC through
+        # the logical viewport it is handed rather than through the
+        # drawable. The GPU does the scaling.
+        if not headless:
+            if key_held(KEY_1):
+                pane.set_zoom(1)
+            elif key_held(KEY_2):
+                pane.set_zoom(2)
+            elif key_held(KEY_4):
+                pane.set_zoom(4)
+
         if not headless and key_held(KEY_ESCAPE):
             break
         var steps = 1
@@ -1543,7 +1712,8 @@ def main() raises:
                 else (key_held(KEY_LEFT), key_held(KEY_RIGHT),
                       key_held(KEY_SPACE) or key_held(KEY_RETURN))
             )
-            game.step(sprites, field, deck, keys[0], keys[1], keys[2])
+            game.step(sprites, field, deck, keys[0], keys[1], keys[2],
+                      typing=not auto)
         if game.scene != last_scene:
             cosmos.set_param(0, Float32(game.scene))
             last_scene = game.scene
