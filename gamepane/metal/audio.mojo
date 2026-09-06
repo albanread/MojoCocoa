@@ -16,14 +16,19 @@ callback drains at the top of each buffer. That is a single-producer,
 single-consumer ring with two counters -- the producer only ever writes the
 write counter, the consumer only the read counter, so neither needs a
 read-modify-write and there is nothing to contend. What it does need is
-ORDERING, and that is what the two fences are for: a release fence after the
-payload is stored and before the counter is bumped, and an acquire fence
-after the counter is read and before the payload is. Without them a weakly
-ordered machine may publish the counter before the slot it refers to, and
-the callback plays whatever was in that slot last time round.
+ORDERING: a weakly ordered machine may otherwise publish the counter before
+the slot it refers to, and the callback plays whatever was in that slot last
+time round.
+
+That ordering lives on the counter accesses themselves -- `dget_acquire` and
+`dput_release` below. It used to be two standalone fences around plain loads
+and stores, which was wrong for a reason that never showed on this hardware:
+a fence orders ATOMIC accesses, so plain accesses racing across threads stayed
+undefined however the fences were placed, and nothing prevented the compiler
+hoisting the write-counter load out of the drain loop.
 """
 
-from std.atomic import Ordering, fence
+from std.atomic import Atomic, Ordering
 from std.ffi import external_call
 from std.memory import OpaquePointer, Pointer
 from std.objc import load_framework, named_global
@@ -91,6 +96,36 @@ fn dget(d: P, slot: Int) -> Int:
 @always_inline
 fn dput(d: P, slot: Int, value: Int):
     d.unsafe_bitcast[Int]()[unsafe_offset=slot] = value
+
+
+# The two ring counters are the only slots touched by both threads, and plain
+# accesses racing across threads are undefined however many fences surround
+# them -- a standalone fence orders ATOMIC accesses, and nothing stopped the
+# compiler hoisting the `dget(d, D_WRITE)` in drain_triggers out of its loop,
+# whose exit condition would then never change. It happened to work on arm64,
+# which is the worst way for this to be wrong.
+#
+# `Int` is `Scalar[DType.int]`, so it satisfies Atomic's static load/store
+# directly; `Pointer.__add__` gives the slot address. The acquire/release pair
+# below carries what the two fences used to, and carries it on the accesses
+# that actually need ordering rather than on the thread.
+
+
+@always_inline
+fn dget_acquire(d: P, slot: Int) -> Int:
+    """Acquire-load a counter the OTHER thread writes."""
+    return Atomic[Int].load[ordering = Ordering.ACQUIRE](
+        d.unsafe_bitcast[Int]() + slot
+    )
+
+
+@always_inline
+fn dput_release(d: P, slot: Int, value: Int):
+    """Release-store a counter this thread owns, publishing the payload
+    written before it."""
+    Atomic[Int].store[ordering = Ordering.RELEASE](
+        d.unsafe_bitcast[Int]() + slot, value
+    )
 
 
 def deck_new() raises -> P:
@@ -199,20 +234,20 @@ fn sfx_play(d: P, effect: Int) -> Bool:
     arrived without the callback running once. Nothing blocks and nothing
     allocates, so this is safe to call from anywhere a game runs.
     """
-    let w = dget(d, D_WRITE)
-    let r = dget(d, D_READ)
+    let w = dget(d, D_WRITE)          # ours; no other writer
+    let r = dget_acquire(d, D_READ)   # the callback's; acquire
     if w - r >= RING_SIZE:
         dput(d, D_DROPPED, dget(d, D_DROPPED) + 1)
         return False
     dput(d, D_RING_BASE + (w & (RING_SIZE - 1)), effect)
-    # RELEASE: the slot must be visible before the counter that publishes it.
-    fence[Ordering.RELEASE]()
-    dput(d, D_WRITE, w + 1)
+    # Release: publishes the slot store above along with the counter.
+    dput_release(d, D_WRITE, w + 1)
     return True
 
 
 fn pending_triggers(d: P) -> Int:
-    return dget(d, D_WRITE) - dget(d, D_READ)
+    # Called from either side, so both counters are foreign here.
+    return dget_acquire(d, D_WRITE) - dget_acquire(d, D_READ)
 
 
 fn _start_effect(d: P, effect: Int):
@@ -235,10 +270,7 @@ fn _start_effect(d: P, effect: Int):
             if age < oldest:
                 oldest = age
                 slot = v
-        try:
-            sfx_stop(b, slot, dget(d, D_VOICE_BASE + slot * D_VOICE_STRIDE))
-        except:
-            pass
+        sfx_stop(b, slot, dget(d, D_VOICE_BASE + slot * D_VOICE_STRIDE))
 
     let serial = dget(d, D_SERIAL) + 1
     dput(d, D_SERIAL, serial)
@@ -250,23 +282,19 @@ fn _start_effect(d: P, effect: Int):
     dput(d, base + D_V_LEFT, sfx_frames(e))
     dput(d, base + D_V_FRAME, 0)
     dput(d, base + D_V_AGE, serial)
-    try:
-        sfx_start(b, slot, e)
-    except:
-        pass
+    sfx_start(b, slot, e)
 
 
 fn drain_triggers(d: P):
     """Consume everything queued. Runs at the top of each buffer."""
-    var r = dget(d, D_READ)
-    let w = dget(d, D_WRITE)
-    # ACQUIRE: the counter has been read, so the slots it covers must be
-    # visible before they are read.
-    fence[Ordering.ACQUIRE]()
+    var r = dget(d, D_READ)           # ours; no other writer
+    # Acquire: pairs with the producer's release, so every slot this counter
+    # covers is visible before the loop reads it.
+    let w = dget_acquire(d, D_WRITE)
     while r != w:
         _start_effect(d, dget(d, D_RING_BASE + (r & (RING_SIZE - 1))))
         r += 1
-    dput(d, D_READ, r)
+    dput_release(d, D_READ, r)
 
 
 fn advance_effects(d: P):
@@ -280,16 +308,10 @@ fn advance_effects(d: P):
             continue
         let left = dget(d, base + D_V_LEFT)
         if left <= 0:
-            try:
-                sfx_stop(b, v, e)
-            except:
-                pass
+            sfx_stop(b, v, e)
             dput(d, base + D_V_EFFECT, -1)
             continue
-        try:
-            sfx_frame(b, v, e, dget(d, base + D_V_FRAME))
-        except:
-            pass
+        sfx_frame(b, v, e, dget(d, base + D_V_FRAME))
         dput(d, base + D_V_FRAME, dget(d, base + D_V_FRAME) + 1)
         dput(d, base + D_V_LEFT, left - 1)
 

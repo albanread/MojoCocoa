@@ -26,8 +26,51 @@ HEAD_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 D="${DIST_DIR:-$ROOT/dist/CocoaMojo}"
 KB="${COCOAKB:-$ROOT/../CocoaBaseMCP/cocoa.sqlite}"
 
-[ -x "$B/KGEN/tools/mojo/mojo" ] || { echo "build the compiler first:"; \
-  echo "  ./bazelw build --config=build-mojo //KGEN:mojo"; exit 1; }
+# ---- preflight: fail here, in one screen, not halfway through a copy -------
+# Every check below is a failure someone actually hit. See BUILDING.md.
+preflight_fail=0
+pf() { echo "   $1"; preflight_fail=1; }
+
+# The compiler, from the RIGHT tree. bazel-bin points wherever the last bazel
+# invocation put it; a hand-typed `./bazelw build //KGEN:mojo` leaves it on
+# the dbg tree, whose LLVM is built with hidden visibility and whose dylibs
+# cannot link. mojo-build.sh always uses --config=release, which is the opt
+# tree, and that is the only tree a distribution may be cut from.
+case "$B" in
+  *darwin_arm64-opt*) ;;
+  *) pf "bazel-bin points at '$B' -- not the release (opt) tree. Build with
+      ./tools/mojo-build.sh   (never ./bazelw build by hand; see BUILDING.md)" ;;
+esac
+[ -x "$B/KGEN/tools/mojo/mojo" ] || pf "no compiler at $B/KGEN/tools/mojo/mojo -- run: ./tools/mojo-build.sh"
+
+# The runtime dylibs this script copies. They were missing from mojo-build's
+# `all` group until 2026-09-06, and the symptom was a bare
+# `cp: ... No such file` two minutes into the run.
+for l in KGEN/libKGENCompilerRTShared.dylib \
+         AsyncRT/libAsyncRTRuntimeGlobals.dylib \
+         Support/libMSupportGlobals.dylib; do
+  [ -f "$B/$l" ] || pf "missing $l -- run: ./tools/mojo-build.sh runtime"
+done
+
+# The SDK database, and whether it can be trusted. It is REGENERATED below
+# from the CocoaBaseMCP checkout, and the compiler's query table and that
+# checkout's schema move together across two repositories: a checkout older
+# than the compiler yields a database missing tables the compiler queries,
+# and the failure surfaces later as six unfolded-type errors in the spikes,
+# never as anything mentioning a database. So: say it here.
+KBSRC_PRE="${COCOAKB_SRC:-$ROOT/../CocoaBaseMCP}"
+if [ -d "$KBSRC_PRE/.git" ]; then
+  if git -C "$KBSRC_PRE" fetch -q origin 2>/dev/null; then
+    behind=$(git -C "$KBSRC_PRE" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+    [ "${behind:-0}" -gt 0 ] && pf "CocoaBaseMCP is $behind commit(s) behind origin -- the database it generates may predate this compiler. Run: git -C $KBSRC_PRE pull && python3 $KBSRC_PRE/build.py"
+  fi
+else
+  pf "no CocoaBaseMCP checkout at $KBSRC_PRE (clone it BESIDE this repo, or set COCOAKB_SRC)"
+fi
+
+if [ "$preflight_fail" -ne 0 ]; then
+  echo; echo "make-dist: not starting. Fix the above, or see BUILDING.md."; exit 1
+fi
 
 mkdir -p "$D"/{bin,lib,share}
 

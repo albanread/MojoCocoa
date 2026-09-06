@@ -2,7 +2,7 @@
 
 > [!WARNING]
 > **This is an experimental, incomplete port.** Cocoa support is verified at
-> 9 of 9 spikes. The source-built Apple GPU path now compiles and runs a
+> 40 of 40 spikes. The source-built Apple GPU path now compiles and runs a
 > validated end-to-end smoke test and the exercised Apple MMA tests, but broad
 > MAX coverage still contains compiler, runtime ABI, and numerical failures.
 > Read [`STATUS.md`](STATUS.md) before relying on anything here.
@@ -231,7 +231,7 @@ diagnostic and not a corrupted frame —
 
 ### Where it actually is
 
-Sixteen checks green ([`spikes/run-cocoa-checks.sh`](spikes/run-cocoa-checks.sh)),
+Forty checks green ([`spikes/run-cocoa-checks.sh`](spikes/run-cocoa-checks.sh)),
 covering both keywords, weak references, error bridging, GCD with real blocks,
 and — deliberately — the failures: a misspelled selector, a wrong argument
 count, an `fn` that raises, a reassigned `let`. **A check that cannot fail
@@ -284,7 +284,7 @@ it says so.
 | [**maxdragon**](https://github.com/albanread/maxdragon) | Windows 11 ARM64<br/>`aarch64-pc-windows-msvc` | Qualcomm Oryon (Snapdragon X)<br/>Adreno X1-45 · Hexagon NPU | Mojo → SPIR-V → OpenCL,<br/>via `dragonrt`; the NPU through QNN at graph level, outside Mojo | `mojo build` works; the JIT is not enabled on this branch; the Adreno acceptance test passes and Mandelbrot runs at 16 ms/frame against 250 ms on one CPU core; the Hexagon reaches 4.1× the CPU on gigabyte-scale graphs; 258 of 369 stdlib test targets pass |
 | [**WINMOJOX64Blackwell**](https://github.com/albanread/WINMOJOX64Blackwell) | Windows 11 x64<br/>`x86_64-pc-windows-msvc` | Intel Core Ultra 9 285H<br/>NVIDIA RTX PRO 2000 Blackwell (`sm_120a`) | Mojo → PTX → `nvcuda.dll`,<br/>via `nvptxrt` | `mojo build` and `mojo run` both work; TMA, CUDA graphs, completion flags and host callbacks all tested on hardware; REPL and LLDB packaged; no systematic SM120a kernel census yet |
 | [**MojoMacX64**](https://github.com/albanread/MojoMacX64) | macOS x86-64<br/>Mac Pro 2019 | Intel x86-64<br/>AMD Radeon Pro Vega II 32 GB (gfx906) | Mojo → AIR → Metal,<br/>via `MetalRT` | Cocoa apps build and run; `msg_send` materialised to C speed (3660 ns → 3 ns); a Mandelbrot at 60fps whose escape iteration *and* colour are Mojo kernels on the Vega II; wave64 matmul lands 3.4× on prefill; a Mojo editor written in Mojo |
-| [**MojoCocoa**](https://github.com/albanread/MojoCocoa) ← *you are here* | macOS ARM64<br/>Apple Silicon | Apple M4<br/>Apple GPU, 10 cores | Mojo → AIR → Metal,<br/>via `AppleGPURT` | Cocoa and `std.objc` pass 9 of 9 spikes; the source-built GPU stack passes a validated numerical smoke test and exercised Apple MMA tests; the broader MAX GPU surface remains in triage |
+| [**MojoCocoa**](https://github.com/albanread/MojoCocoa) ← *you are here* | macOS ARM64<br/>Apple Silicon | Apple M4<br/>Apple GPU, 10 cores | Mojo → AIR → Metal,<br/>via `AppleGPURT` | Cocoa and `std.objc` pass 40 of 40 spikes; the source-built GPU stack passes a validated numerical smoke test and exercised Apple MMA tests; the broader MAX GPU surface remains in triage |
 
 None of these is finished, and none of them is trying to become the official port of anything.
 
@@ -439,17 +439,29 @@ LLVM and MLIR also build with CMake and no bazel at all —
 [`tools/build-llvm-cmake.sh`](tools/build-llvm-cmake.sh). Doing the same for
 the compiler itself is scoped in [`CMAKE-PORT-SCOPE.md`](CMAKE-PORT-SCOPE.md).
 
-### Changing the compiler
+### Building it yourself
+
+**Read [`BUILDING.md`](BUILDING.md).** It is the one place the whole
+sequence is written down, with what each step produces, how long it takes,
+and what every known failure looks like. The short form:
 
 ```bash
+git clone https://github.com/albanread/CocoaBaseMCP.git ../CocoaBaseMCP   # beside this repo
 python3 ../CocoaBaseMCP/build.py        # the SDK database, ~12s
-./bazelw build //spikes:life
-./spikes/run-cocoa-checks.sh            # the verification spikes
+./tools/mojo-build.sh                   # the compiler -- NEVER ./bazelw build by hand
+NO_IDE=1 ./tools/make-dist.sh           # -> dist/CocoaMojo, no bazel needed after this
+COCOAMOJO=dist/CocoaMojo/bin/cocoamojo ./spikes/run-cocoa-checks.sh
 ```
 
-`local.bazelrc` selects `--config=build-mojo` and points the compiler at
-`cocoa.sqlite`. Rebuild the database after a macOS update;
-`cocoakb_query<"db_hash">` makes drift visible.
+The previous version of this section said `./bazelw build //spikes:life`.
+That command builds a debug tree whose LLVM cannot be linked into a
+distribution, and it cost a whole evening to discover why. `mojo-build.sh`
+exists so that nobody types bazel by hand again.
+
+`cocoa.sqlite` is regenerated from the CocoaBaseMCP checkout by `make-dist`,
+and the compiler's queries and that checkout's schema move together: **pull
+CocoaBaseMCP before building**, and rebuild the database after a macOS
+update. `cocoakb_query<"db_hash">` makes drift visible.
 
 LLVM is configured for one backend, AArch64, in
 `bazel/public-patches/llvm_project.bzl` — X86 and RISCV were 57 MB of objects

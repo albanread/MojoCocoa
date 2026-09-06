@@ -75,6 +75,39 @@ void objcRelease(id obj) {
     msg<void>(obj, "release");
 }
 
+// Declared rather than included: this file drives the Objective-C runtime
+// through objc_msgSend casts (the metal-cpp technique) and is compiled as
+// plain C++, so it does not get the ObjC compiler's @autoreleasepool.
+extern "C" void *objc_autoreleasePoolPush(void);
+extern "C" void objc_autoreleasePoolPop(void *);
+
+/// A scope that owns the autoreleased objects created inside it.
+///
+/// Metal hands back autoreleased objects from `commandBuffer`,
+/// `computeCommandEncoder` and `blitCommandEncoder`, and there was no pool
+/// anywhere in this runtime. On a thread that has one -- AppKit's main thread
+/// does -- they drain at the end of the event loop iteration and nobody
+/// notices. On a worker thread that does not, they are never released at all:
+/// the objects accumulate for the life of the process, and the runtime logs
+/// "autoreleased with no pool in place - just leaking".
+///
+/// Costs nothing where a pool already exists (a nested pool is a pointer bump)
+/// and bounds a per-frame leak where one does not, which is what a 60 Hz
+/// gamepane and the IDE actually run into. Tests never noticed because they
+/// launch a handful of dispatches and exit.
+///
+/// Safe here specifically because every command buffer that outlives its
+/// creating call is explicitly retained first -- `openBatch` at its creation,
+/// and the async buffer before `pending.push_back`. Draining the pool releases
+/// only the transients.
+struct AutoreleasePool {
+  void *token;
+  AutoreleasePool() : token(objc_autoreleasePoolPush()) {}
+  ~AutoreleasePool() { objc_autoreleasePoolPop(token); }
+  AutoreleasePool(const AutoreleasePool &) = delete;
+  AutoreleasePool &operator=(const AutoreleasePool &) = delete;
+};
+
 bool environmentFlag(const char *name, bool defaultValue) {
   const char *v = ::getenv(name);
   if (!v)
@@ -562,6 +595,7 @@ struct BlitOp {
 };
 
 const char *runBlitOp(AGMetalCtx *ctx, const BlitOp &op) {
+  AutoreleasePool pool;
   id cb = msg<id>(ctx->queue, "commandBuffer");
   if (!cb)
     return agmErrorf("AppleGPURT[metal]: commandBuffer creation failed");
@@ -832,6 +866,7 @@ const char *AppleGPUMetal_mtlBuffer(AGMetalBuf *buf, void **out,
 }
 
 const char *AppleGPUMetal_synchronize(AGMetalCtx *ctx) {
+  AutoreleasePool pool;
   // Drain whatever asynchronous launch left in flight. This is where a failed
   // dispatch is reported when launches no longer wait individually.
   if (const char *e = drainPending(ctx))
@@ -1235,6 +1270,7 @@ const char *AppleGPUMetal_loadFunction(AGMetalFunc **out, AGMetalCtx *ctx,
                                      const char *functionName,
                                      const char *data, size_t dataLen,
                                      int32_t maxDynamicSharedBytes) {
+  AutoreleasePool pool;
   id library = nullptr;
   id nserr = nullptr;
   const bool generated = dataLen >= 4 && memcmp(data, "MTLB", 4) == 0;
@@ -1353,6 +1389,11 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
                                uint32_t sharedMemBytes, void *const *argAddrs,
                                const uint64_t *argSizes,
                                const bool *argIsDevicePtr, uint32_t argc) {
+  // First declaration in the function, so it is destroyed last -- after the
+  // batch lock below has been released. The command buffers that outlive this
+  // call (openBatch, and the async buffer in `pending`) are explicitly
+  // retained, so draining here frees only the encoder and the temporaries.
+  AutoreleasePool pool;
   const bool async = asyncLaunchEnabled();
   const bool batching = async && batchedLaunchEnabled();
 

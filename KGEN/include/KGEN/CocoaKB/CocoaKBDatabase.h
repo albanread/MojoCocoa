@@ -25,6 +25,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Error.h"
 
+#include <map>
 #include <mutex>
 #include <string>
 
@@ -74,6 +75,35 @@ private:
   llvm::Expected<std::string>
   queryStringLocked(llvm::StringRef query,
                     llvm::ArrayRef<llvm::StringRef> args);
+  /// `queryStringLocked`'s body without the cache -- the SQL itself.
+  llvm::Expected<std::string>
+  queryStringUncached(llvm::StringRef query,
+                      llvm::ArrayRef<llvm::StringRef> args);
+  /// `queryInt`'s body without the lock or the cache, for the same reason.
+  llvm::Expected<int64_t> queryIntLocked(llvm::StringRef query,
+                                         llvm::ArrayRef<llvm::StringRef> args);
+
+  /// One memoised answer, success or failure.
+  ///
+  /// Failures are cached too, deliberately. "This class has no such selector"
+  /// is an ordinary, frequently repeated question -- `objcMethodEncoding`
+  /// asks it once per candidate up a superclass chain -- and re-running a
+  /// recursive CTE to be told "no" again costs exactly as much as being told
+  /// "yes".
+  struct CachedAnswer {
+    bool ok = false;
+    int64_t intValue = 0;
+    std::string stringValue;
+    std::string error;
+  };
+  /// Sound because the database is opened SQLITE_OPEN_READONLY and never
+  /// written for the life of the process: the same question has the same
+  /// answer every time it is asked. If a writable mode is ever added, these
+  /// have to go or be invalidated on write.
+  static std::string cacheKey(llvm::StringRef query,
+                              llvm::ArrayRef<llvm::StringRef> args);
+  std::map<std::string, CachedAnswer> intCache;
+  std::map<std::string, CachedAnswer> stringCache;
 
   std::mutex mutex;
   sqlite3 *db = nullptr;

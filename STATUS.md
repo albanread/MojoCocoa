@@ -30,11 +30,36 @@ The high-level design, systemic findings, and prioritized adjustments are in
 [`AIR_APPLE_SILICON.md`](AIR_APPLE_SILICON.md) records the original porting
 plan and should now be read as history rather than current status.
 
+## There is no CI. Every figure below was run by hand.
+
+Read this before trusting any number in this file.
+
+There is no continuous integration, on any machine. Nothing re-runs when a
+commit lands, nothing gates a push, and no figure here is refreshed
+automatically. Every count, timing and pass rate below was produced by someone
+running a script on **one Apple M4 Max**, on the date given beside it, and
+pasted in. A number with no date beside it is older than one that has one.
+
+The repository inherited two GitHub workflows from upstream and they have been
+deleted rather than left to imply otherwise: `build_and_test.yml` targeted the
+`large-oss-linux` self-hosted runner label, which does not exist for this fork,
+and both triggered on `pull_request`, which `9cb77b1` ("this fork accepts no
+contributions") guarantees will never arrive. `test_pre_commit.yml` would have
+run upstream's prebuilt Mojo against a tree it cannot parse. Neither had ever
+run; keeping them was worse than having nothing, because a green-looking
+`.github/workflows/` implies a safety net that was never there.
+
+The verification that does exist is real, and it is the scripts in
+[`## Verification commands`](#verification-commands) below — `check-dist.sh`,
+`check-ide.sh`, `check-gamepane.sh` and `run-cocoa-checks.sh`. They are worth
+more than the absent CI, because they assert observable behaviour rather than
+exit codes. They just have to be run deliberately.
+
 ## Current summary
 
 | Area | Status | Evidence / limitation |
 | --- | --- | --- |
-| Cocoa compiler hook and `std.objc` | Working | `./spikes/run-cocoa-checks.sh`: 9 passed, 0 failed. |
+| Cocoa compiler hook and `std.objc` | Working | `./spikes/run-cocoa-checks.sh`: 40 passed, 0 failed (6 Sep 2026, dist built from CocoaBaseMCP 30116fe). |
 | Mojo/MAX → AIR → metallib | Working vertical slice | The source-built compiler emits metallibs accepted by the current Xcode toolchain. |
 | AppleGPURT pipeline and launch | Working vertical slice | Pipeline reflection, argument binding, coarse residency, and dispatch pass with Metal debug and shader validation enabled. Launch is asynchronous and command-buffer-batched by default; `APPLEGPU_SYNC_LAUNCH=1` restores the bring-up mode, while `APPLEGPU_BATCH_DISPATCHES=0` isolates batching. Each dispatch retains a separate compute encoder; batches flush on errors and drain at synchronization, host observation, teardown, or the 64-dispatch bound. Rejected post-command-buffer launches commit an empty buffer so later queue entries cannot stall behind an abandoned predecessor. On the M4 Max, batching reduces the 35-dispatch fluid median from about 1.06 to 0.93 ms/step with identical diagnostics, on top of the earlier 3.5x-3.7x asynchronous-over-synchronous gain. |
 | Numerical smoke | Passing | Rebuilt Mandelbrot: CPU 95.214 ms, GPU 0.849 ms, 100% exact on the latest verification run. Timing is a smoke observation, not a stable benchmark. |

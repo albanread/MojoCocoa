@@ -5,6 +5,7 @@
 #   ./tools/mojo-build.sh compiler     just //KGEN/tools/mojo:mojo
 #   ./tools/mojo-build.sh debugger     lldb, lldb-dap, the MojoLLDB plugin
 #   ./tools/mojo-build.sh libs         libLLVM, libMLIR, libMojoCompiler
+#   ./tools/mojo-build.sh runtime      the three dylibs make-dist ships beside the compiler
 #   ./tools/mojo-build.sh //some:target   any target, with the right configs
 #
 # Why this exists, in one sentence: `./bazelw build //KGEN:mojo` -- the obvious
@@ -33,15 +34,23 @@ CONFIGS=(--config=build-mojo --config=release)
 # ask for one part without knowing the label.
 GROUP_compiler=(//KGEN/tools/mojo:mojo)
 GROUP_libs=(//bazel/llvm-shared:LLVM //bazel/mlir-shared:MLIR //KGEN:MojoCompilerShared)
+# The runtime dylibs make-dist copies into lib/. These were missing from `all`,
+# so the documented two-step -- mojo-build.sh, then make-dist.sh -- died at
+# `cp: .../libKGENCompilerRTShared.dylib: No such file`. Note the bazel rule
+# names differ from the dylib basenames, which come from output_name:
+#   //KGEN:CompilerRT       -> libKGENCompilerRTShared.dylib
+#   //AsyncRT:RuntimeGlobals -> libAsyncRTRuntimeGlobals.dylib
+#   //Support:Globals       -> libMSupportGlobals.dylib
+GROUP_runtime=(//KGEN:CompilerRT //AsyncRT:RuntimeGlobals //Support:Globals)
 GROUP_lsp=(//KGEN/tools/mojo-lsp-server:mojo-lsp-server)
 GROUP_debugger=(//KGEN:MojoLLDB
   @llvm-project//lldb:lldb @llvm-project//lldb:lldb-dap @llvm-project//lldb:lldb-argdumper)
-GROUP_all=("${GROUP_compiler[@]}" "${GROUP_libs[@]}" "${GROUP_lsp[@]}" "${GROUP_debugger[@]}")
+GROUP_all=("${GROUP_compiler[@]}" "${GROUP_libs[@]}" "${GROUP_runtime[@]}" "${GROUP_lsp[@]}" "${GROUP_debugger[@]}")
 
 arg="${1:-all}"
 case "$arg" in
   -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-  compiler|libs|lsp|debugger|all)
+  compiler|libs|runtime|lsp|debugger|all)
     var="GROUP_$arg[@]"
     targets=("${!var}")
     shift
@@ -50,7 +59,7 @@ case "$arg" in
     targets=("$@")
     set --
     ;;
-  *) echo "mojo-build: unknown group '$arg' (try: compiler libs lsp debugger all, or a //target)" >&2
+  *) echo "mojo-build: unknown group '$arg' (try: compiler libs runtime lsp debugger all, or a //target)" >&2
      exit 64 ;;
 esac
 

@@ -483,6 +483,23 @@ const CocoaKBQueryDef kCocoaQueries[] = {
 /// character. Recursive, so it is a function rather than a lambda -- an
 /// `auto` lambda cannot name itself.
 static bool scanEncodingType(StringRef encoding, size_t &i, char &first) {
+  // Method encodings may prefix a type with qualifiers: r const, n in,
+  // N inout, o out, O bycopy, R byref, V oneway. They are not the type, and
+  // reading one as the type is silent AND it shifts everything after it,
+  // because each scan is one argument. `-[NSString initWithUTF8String:]`
+  // encodes as `@24@0:8r*16` -- one argument -- and this scanner reported two
+  // kinds, 'r' then '*'. So the String-bridging guard for argument 0 tested
+  // the qualifier, and in a longer selector every later argument's kind sat
+  // in the wrong 7-bit slot of the packed integer.
+  //
+  // 1,150 methods in the current database carry such a qualifier, and they
+  // are exactly the C-string entry points: initWithUTF8String:,
+  // createStringWithCString:, getCString:maxLength:encoding:.
+  //
+  // splitObjCEncoding in DeclResolution.cpp has always skipped these; this
+  // scanner did not, and the two disagreed on the same grammar. See D19.
+  while (i < encoding.size() && StringRef("rnNoORV").contains(encoding[i]))
+    ++i;
   if (i >= encoding.size())
     return false;
   first = encoding[i];
@@ -503,6 +520,10 @@ static bool scanEncodingType(StringRef encoding, size_t &i, char &first) {
     return scanMatching('{', '}');
   if (first == '[')
     return scanMatching('[', ']');
+  // Unions nest exactly as structs do; omitting them walked into the middle
+  // of a "(name=...)" and read its members as separate arguments.
+  if (first == '(')
+    return scanMatching('(', ')');
   ++i;
   if (first == '^') {
     char pointee = 0;
@@ -687,6 +708,61 @@ llvm::Error CocoaKBDatabase::openLocked() {
     }
     return llvm::createStringError(llvm::inconvertibleErrorCode(), openError);
   }
+
+  // A file that opens is not yet the right file. sqlite3_open_v2 succeeds on
+  // any readable SQLite database, so a stale one, a half-built one, or an
+  // unrelated .sqlite pointed at by MODULAR_MOJO_MAX_COCOAKB_PATH all get
+  // this far -- and then every lookup fails one at a time with "the Cocoa
+  // metadata has no struct_size for CGRect", which reads like a compiler bug
+  // rather than a configuration one.
+  //
+  // Check the shape once, here, and say the real thing instead. This is not a
+  // schema VERSION check: CocoaBaseMCP sets no `user_version` and carries no
+  // metadata table, so there is no version to compare against yet -- see D18.
+  // Table presence is what can be verified today, and it separates "wrong
+  // file" from "right file, missing row", which is the distinction that
+  // actually costs time to diagnose by hand.
+  {
+    // This list must track every FROM/JOIN target in kCocoaQueries, not the
+    // tables some database on disk happens to have. The first version of it
+    // was derived from the latter, and it omitted method_ret_kind and
+    // method_ret_class because the checkout it was derived from predated
+    // them -- so a stale database sailed through this check and then failed
+    // six ret_kind queries downstream, each surfacing as an unfolded
+    // conditional type ("does not implement '__add__'") rather than as the
+    // one-line answer this check exists to give.
+    static constexpr StringRef kRequiredTables[] = {
+        "rt_classes",      "rt_methods",       "structs",
+        "struct_fields",   "bs_enums",         "bs_constants",
+        "bs_classes",      "method_abi",       "method_ret_kind",
+        "method_ret_class", "posix_functions", "posix_function_abi",
+    };
+    std::string missing;
+    for (StringRef table : kRequiredTables) {
+      sqlite3_stmt *stmt = nullptr;
+      if (sqlite3_prepare_v2(
+              db, "SELECT 1 FROM sqlite_master WHERE type IN ('table','view')"
+                  " AND name = ?1",
+              -1, &stmt, nullptr) != SQLITE_OK)
+        break; // cannot check; the per-query errors remain the fallback
+      sqlite3_bind_text(stmt, 1, table.data(), static_cast<int>(table.size()),
+                        SQLITE_TRANSIENT);
+      bool present = sqlite3_step(stmt) == SQLITE_ROW;
+      sqlite3_finalize(stmt);
+      if (!present)
+        missing += (missing.empty() ? "" : ", ") + table.str();
+    }
+    if (!missing.empty()) {
+      openError = "the Cocoa metadata database at '" + path +
+                  "' is missing: " + missing +
+                  ". It predates this compiler, or is not a cocoa.sqlite at "
+                  "all. Pull CocoaBaseMCP and rebuild it with build.py, or "
+                  "point MODULAR_MOJO_MAX_COCOAKB_PATH at a current one.";
+      sqlite3_close(db);
+      db = nullptr;
+      return llvm::createStringError(llvm::inconvertibleErrorCode(), openError);
+    }
+  }
   return llvm::Error::success();
 }
 
@@ -729,11 +805,8 @@ CocoaKBDatabase::prepare(StringRef query, ArrayRef<StringRef> args) {
   return stmt;
 }
 
-llvm::Expected<int64_t> CocoaKBDatabase::queryInt(StringRef query,
-                                                  ArrayRef<StringRef> args) {
-  std::lock_guard<std::mutex> lock(mutex);
-  // Times the SQL, not the mutex wait: the clock starts with the lock held.
-  ScopedQueryTimer timer(query);
+llvm::Expected<int64_t>
+CocoaKBDatabase::queryIntLocked(StringRef query, ArrayRef<StringRef> args) {
 
   // Sprint P4: per-argument KIND characters for the keyword tiers, packed
   // into one integer because an integer is what a comptime branch can
@@ -830,8 +903,83 @@ llvm::Expected<int64_t> CocoaKBDatabase::queryInt(StringRef query,
   return sqlite3_column_int64(*stmt, 0);
 }
 
+/// query + NUL + each argument. NUL cannot occur in a query name or in an
+/// Objective-C identifier, so no two distinct calls collide -- joining on a
+/// printable separator would let ("a b", "c") and ("a", "b c") share a key.
+std::string CocoaKBDatabase::cacheKey(StringRef query,
+                                      ArrayRef<StringRef> args) {
+  std::string key = query.str();
+  for (StringRef arg : args) {
+    key.push_back('\0');
+    key.append(arg.data(), arg.size());
+  }
+  return key;
+}
+
+llvm::Expected<int64_t> CocoaKBDatabase::queryInt(StringRef query,
+                                                  ArrayRef<StringRef> args) {
+  std::lock_guard<std::mutex> lock(mutex);
+  // Times the SQL, not the mutex wait: the clock starts with the lock held.
+  ScopedQueryTimer timer(query);
+
+  // Memoised. Elaboration is concurrent (ParametricElaborator's
+  // parallelForEach), every worker funnels through this one mutex, and
+  // `prepare` re-compiles the SQL on every call before running it -- so a
+  // repeated question used to cost a full sqlite3_prepare_v2 plus a recursive
+  // CTE while holding the lock every other worker is waiting on. The same
+  // (class, selector) is asked from many call sites, so the repeat rate is
+  // high and this is most of the contention.
+  std::string key = cacheKey(query, args);
+  if (auto it = intCache.find(key); it != intCache.end()) {
+    if (it->second.ok)
+      return it->second.intValue;
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   it->second.error);
+  }
+
+  CachedAnswer answer;
+  llvm::Expected<int64_t> result = queryIntLocked(query, args);
+  if (result) {
+    answer.ok = true;
+    answer.intValue = *result;
+  } else {
+    answer.error = llvm::toString(result.takeError());
+  }
+  intCache.emplace(std::move(key), answer);
+
+  if (answer.ok)
+    return answer.intValue;
+  return llvm::createStringError(llvm::inconvertibleErrorCode(), answer.error);
+}
+
 llvm::Expected<std::string>
 CocoaKBDatabase::queryStringLocked(StringRef query, ArrayRef<StringRef> args) {
+  // Memoised on the same terms as queryInt, and here rather than in
+  // queryString so that composed queries -- the ones that answer by asking
+  // other queries -- are cached too.
+  std::string key = cacheKey(query, args);
+  if (auto it = stringCache.find(key); it != stringCache.end()) {
+    if (it->second.ok)
+      return it->second.stringValue;
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   it->second.error);
+  }
+  llvm::Expected<std::string> computed = queryStringUncached(query, args);
+  CachedAnswer answer;
+  if (computed) {
+    answer.ok = true;
+    answer.stringValue = *computed;
+  } else {
+    answer.error = llvm::toString(computed.takeError());
+  }
+  stringCache.emplace(std::move(key), answer);
+  if (answer.ok)
+    return answer.stringValue;
+  return llvm::createStringError(llvm::inconvertibleErrorCode(), answer.error);
+}
+
+llvm::Expected<std::string>
+CocoaKBDatabase::queryStringUncached(StringRef query, ArrayRef<StringRef> args) {
   // The reproducibility pin: a compiler whose semantics depend on a database
   // must be able to say WHICH database. Hashed lazily and cached, so tooling
   // can record the exact metadata revision a binary was built against.

@@ -136,6 +136,11 @@ struct VRFunction : RefCounted {
 
 struct VREvent : RefCounted {
   std::atomic<uint64_t> recordedNs{0};
+  // Retained, like VRStream::ctx, so synchronizing an event outliving the
+  // scope that made it cannot dangle. Null only for an event nobody recorded.
+  VRContext *ctx = nullptr;
+
+  ~VREvent();
 };
 
 struct VRTimer : RefCounted {
@@ -159,9 +164,23 @@ using DeviceFunction = VRFunction;
 
 // Out-of-line so the extern "C" release helpers below exist first.
 extern "C" void AsyncRT_DeviceContext_release(const DeviceContext *ctx);
+extern "C" void AsyncRT_DeviceContext_retain(const DeviceContext *ctx);
 
 namespace {
 VRStream::~VRStream() { AsyncRT_DeviceContext_release(ctx); }
+
+VREvent::~VREvent() {
+  if (ctx)
+    AsyncRT_DeviceContext_release(ctx);
+}
+
+// Adopt a context on an event, retaining it once.
+void vrEventAdoptContext(VREvent *ev, const VRContext *ctx) {
+  if (!ctx || ev->ctx)
+    return;
+  AsyncRT_DeviceContext_retain(ctx);
+  ev->ctx = const_cast<VRContext *>(ctx);
+}
 
 VRBuffer::~VRBuffer() {
   if (mtl)
@@ -350,7 +369,11 @@ extern "C" const char *AsyncRT_DeviceContext_synchronize(const DeviceContext *ct
 
 extern "C" const char *
 AsyncRT_DeviceContext_enqueue_wait_for_context(const DeviceContext *,
-                                               const DeviceContext *) {
+                                               const DeviceContext *other) {
+  // Same class of hole as waitForEvent: a no-op was right when nothing was
+  // ever in flight. Draining `other` on the host is coarse but honest.
+  if (other)
+    return AsyncRT_DeviceContext_synchronize(other);
   return VR_OK;
 }
 
@@ -734,8 +757,19 @@ extern "C" void AsyncRT_DeviceStream_release(const DeviceStream *stream) {
   vrRelease(const_cast<VRStream *>(stream));
 }
 
-extern "C" const char *AsyncRT_DeviceStream_synchronize(const DeviceStream *) {
-  return VR_OK;
+extern "C" const char *
+AsyncRT_DeviceStream_synchronize(const DeviceStream *stream) {
+  // Was `return VR_OK`, which was vacuously right while every launch ran to
+  // completion inside the enqueue call. Launches are queued and batched now,
+  // so returning without draining is a silent ordering hole: the caller
+  // believes the stream is idle and reads a buffer the GPU has not written.
+  //
+  // There is one queue per context (numStreams == 1), so draining the context
+  // drains this stream. Conservative if streams ever multiply -- it would then
+  // wait for more than asked, never less.
+  if (!stream || !stream->ctx)
+    return VR_OK;
+  return AsyncRT_DeviceContext_synchronize(stream->ctx);
 }
 
 // ABI-STATUS: sync-fallback -- runs the callback in place; there is no queue to defer to yet
@@ -748,8 +782,10 @@ AsyncRT_DeviceStream_enqueueHostFunc(const DeviceStream *, void (*fn)(void *),
 
 extern "C" const char *
 AsyncRT_DeviceContext_eventCreate(const DeviceEvent **result,
-                                  const DeviceContext *, unsigned int) {
-  *result = new VREvent();
+                                  const DeviceContext *ctx, unsigned int) {
+  auto *ev = new VREvent();
+  vrEventAdoptContext(ev, ctx);
+  *result = ev;
   return VR_OK;
 }
 
@@ -758,23 +794,45 @@ AsyncRT_DeviceContext_enqueue_event(const DeviceEvent **result,
                                     const DeviceContext *ctx) {
   auto *ev = new VREvent();
   ev->recordedNs = nowNs();
+  vrEventAdoptContext(ev, ctx);
   *result = ev;
   return VR_OK;
 }
 
 extern "C" const char *
-AsyncRT_DeviceStream_eventRecord(const DeviceStream *, const DeviceEvent *event) {
-  const_cast<VREvent *>(event)->recordedNs = nowNs();
+AsyncRT_DeviceStream_eventRecord(const DeviceStream *stream,
+                                 const DeviceEvent *event) {
+  auto *ev = const_cast<VREvent *>(event);
+  ev->recordedNs = nowNs();
+  // Remember which queue the event marks a point in, so synchronizing it can
+  // drain that queue rather than assuming completion.
+  if (stream)
+    vrEventAdoptContext(ev, stream->ctx);
   return VR_OK;
 }
 
 extern "C" const char *
-AsyncRT_DeviceStream_waitForEvent(const DeviceStream *, const DeviceEvent *) {
-  return VR_OK; // already complete
+AsyncRT_DeviceStream_waitForEvent(const DeviceStream *stream,
+                                  const DeviceEvent *event) {
+  // "already complete" held only while launches were synchronous. With one
+  // queue per context, draining it puts this stream after anything the event
+  // marks -- coarser than a GPU-side wait, but correct, and the ordering the
+  // caller asked for actually happens.
+  //
+  // TODO: a real MTLSharedEvent wait would let the GPU order this without a
+  // host stall. Worth doing when a second queue exists; pointless before.
+  if (stream && stream->ctx)
+    return AsyncRT_DeviceContext_synchronize(stream->ctx);
+  if (event && event->ctx)
+    return AsyncRT_DeviceContext_synchronize(event->ctx);
+  return VR_OK;
 }
 
-extern "C" const char *AsyncRT_DeviceEvent_synchronize(const DeviceEvent *) {
-  return VR_OK;
+extern "C" const char *
+AsyncRT_DeviceEvent_synchronize(const DeviceEvent *event) {
+  if (event && event->ctx)
+    return AsyncRT_DeviceContext_synchronize(event->ctx);
+  return VR_OK; // never recorded against a queue: nothing to wait for
 }
 
 extern "C" void AsyncRT_DeviceEvent_release(const DeviceEvent *event) {

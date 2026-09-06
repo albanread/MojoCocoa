@@ -1664,8 +1664,28 @@ void deviceizeCapturedPointers(llvm::Module &m) {
                 [&](llvm::Value *v, unsigned depth) -> bool {
               if (depth > 16)
                 return false; // give up rather than chase a cycle
-              if (llvm::isa<llvm::Argument>(v))
-                return true;
+              if (auto *arg = llvm::dyn_cast<llvm::Argument>(v)) {
+                // Only a DEVICE or CONSTANT pointer argument roots a device
+                // address. This used to accept any argument at all, which
+                // reads the invariant above backwards: a threadgroup (AS3) or
+                // private (AS0) pointer carried inside an aggregate parameter
+                // was retyped to addrspace(1) and the kernel then addressed
+                // the wrong memory entirely -- exactly the failure class this
+                // pass exists to prevent, and worse than the zeroes it fixes,
+                // because it can scribble rather than merely read nothing.
+                //
+                // A non-pointer (by-value aggregate) argument returns false:
+                // its provenance lives in the caller and is not visible here.
+                // legalizeKernel has already turned by-value kernel params
+                // into AS2 `constant T&` pointers loaded at entry, so this
+                // costs nothing on kernels; a helper function taking a struct
+                // by value is the only case it declines, and declining is what
+                // "one non-buffer root and this is not necessarily a device
+                // address" requires.
+                auto *pt = llvm::dyn_cast<llvm::PointerType>(arg->getType());
+                return pt && (pt->getAddressSpace() == 1 ||
+                              pt->getAddressSpace() == 2);
+              }
               if (auto *ld = llvm::dyn_cast<llvm::LoadInst>(v)) {
                 auto *srcTy = llvm::dyn_cast<llvm::PointerType>(
                     ld->getPointerOperand()->getType());

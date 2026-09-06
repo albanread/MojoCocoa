@@ -92,6 +92,203 @@ from the known wrong-numbers rowwise failures (which is what the
 unflipped differential test actually shows). Not yet reduced to a kernel;
 the retained-AIR artifacts from the repro run are the starting point.
 
+### D14 — Device atomics have no model, no rule and no test — OPEN, no design yet
+There is no `air.atomic*` family in `AirBuiltinRegistry.h`, no legality rule
+covering atomics, and no test anywhere under `max/kernels/test/gpu/`. Native
+`atomicrmw` on `addrspace(1)` has never been put in front of Apple's reader,
+and nothing in the tree would notice if it were quietly wrong.
+
+This is recorded as a *gap*, not a defect with a repro, because that is the
+honest description: no kernel we run today uses one. It is listed because the
+rest of the AIR work refuses what it has not sampled (`goldenVerified`,
+`AirTargetProfile.h`), and an unmodelled builtin is the one place that
+discipline is silently absent rather than deliberately deferred. A kernel using
+`atomicrmw` would not be rejected; it would be lowered on the assumption that
+LLVM's default expansion is what AIR wants.
+
+Two acceptable resolutions, in order of preference:
+
+1. Sample it. Write the MSL (`atomic_fetch_add_explicit` on a
+   `device atomic_uint*`), run it through `xcrun metal -S -emit-llvm`, and
+   model what comes back — the same route every other AIR fact in this port
+   took.
+2. Refuse it. Add a legality rule that rejects `atomicrmw`/`cmpxchg` on any
+   address space with a diagnostic naming this entry, so the failure is loud
+   at compile time rather than silent at run time.
+
+What is NOT acceptable is the present state, where it neither works by
+construction nor fails by construction.
+
+### D15 — The audio deck's ring counters are non-atomic across threads — FIXED
+`gamepane/metal/audio.mojo`. `D_WRITE` (slot 2, written by the game thread)
+and `D_READ` (slot 3, written by the CoreAudio render thread) are read and
+written through `dget`/`dput`, which are plain non-atomic
+`unsafe_bitcast[Int]()` accesses (`:87-93`). They are synchronised with
+standalone `fence[Ordering.RELEASE]` before publishing the write counter
+(`:209`) and `fence[Ordering.ACQUIRE]` after reading it in the drain
+(`:265`).
+
+Standalone fences order *atomic* accesses. Plain accesses racing across
+threads are undefined behaviour regardless of the fences around them, and
+nothing stops the compiler hoisting the `dget(d, D_WRITE)` in `drain_triggers`
+out of its loop — the loop's exit condition then never changes.
+
+It works on arm64 today, which is exactly why it needs writing down: the
+hardware is doing what the language does not promise, and the failure when it
+arrives will look like an audio glitch, not a memory-model bug.
+
+**Fixed.** `dget_acquire` / `dput_release` now carry the ordering on the two
+counter accesses themselves, and both standalone fences are gone. The producer
+release-stores `D_WRITE` (publishing the slot written before it) and the
+consumer acquire-loads it; `pending_triggers`, callable from either side,
+acquire-loads both.
+
+It turned out to need no new machinery: `comptime Int = Scalar[DType.int]`
+(`simd.mojo:120`), so `Int` already satisfies `Atomic`'s static load/store
+constraint `Self.T == Scalar[dtype]`, and `Pointer.__add__[I: Indexer]` gives
+the slot address. So the whole fix is
+`Atomic[Int].load[ordering=Ordering.ACQUIRE](d.unsafe_bitcast[Int]() + slot)`.
+
+Verified by building `gamepane/tests/test_audio.mojo` against a copy of the
+2026.09.05 toolchain with these sources overlaid, and running it: 15 checks
+pass including "1000 triggers through a 256 slot ring: none lost, none twice"
+and "a full ring refuses, and says how many it refused".
+
+Related and already fixed in the same pass: `sfx_start`/`sfx_stop`/`sfx_frame`
+were declared `raises` while being unable to raise, which forced `try/except`
+around every call on the CoreAudio thread — raise machinery inside a callback
+whose contract is that it never allocates. All three are now non-raising and
+the four wrappers are gone.
+
+### D16 — Two ABC parsers, and they have already diverged — OPEN
+`examples/chip/abc.mojo` (536 lines) and `gamepane/abc/` are independent
+implementations of the same format. The package move left chip's copy behind,
+and the obvious repair — repoint chip's `from abc import parse_abc,
+install_abc` at `gamepane.abc` — does not apply, because the two APIs are no
+longer the same shape:
+
+| | `examples/chip/abc.mojo` | `gamepane/abc/parse.mojo` |
+| --- | --- | --- |
+| parse | `parse_abc(source: String) -> AbcTune` | `parse_abc(source: String, mut tune: Tune)` |
+| install | `install_abc(st: P, tune: AbcTune) -> Int` | no equivalent |
+
+So this is a port of chip onto the `Tune` model plus wherever `install_abc`
+should live, not a one-line import change. Worth doing — a bug fixed in one
+parser is currently not fixed in the other, and `abcplayer` is the largest
+example in the tree — but it needs a toolchain to test against and it is not
+urgent. Recorded so the next person does not mistake it for a repoint and
+start by deleting the wrong file.
+
+### D17 — A misspelled protocol compiles clean and does nothing — OPEN, needs DB work
+`class V(NSView, NSTextInputCleint)` compiles without complaint and the
+conformance is silently absent at run time: `add_protocol` calls
+`objc_getProtocol`, gets nil, and returns False, and the compiler-generated
+call at `DeclResolution.cpp:2693` discards the result.
+
+**The obvious fix is wrong, so it is written down here before someone tries
+it.** It looks like the bug is the bare `continue` in `attributeObjCBases`
+when `class_framework` finds nothing for a base. It is not. Protocols are not
+in the class tables at all — checked against the live database:
+
+    rt_classes NSTextInputClient: 0      <- correctly spelled, still absent
+    rt_classes NSView:            1
+
+So that lookup fails for *every* protocol, spelled right or wrong, and the
+`continue` is doing exactly its job: skipping a base that is not a class while
+collecting frameworks. Turning it into a diagnostic would reject every correct
+protocol in the tree.
+
+Nothing the compiler can currently reach distinguishes `NSTextInputClient`
+from `NSTextInputCleint`. The fix is therefore in CocoaBaseMCP first, not in
+the compiler:
+
+1. Ingest protocols. `objc_copyProtocolList` gives the registered set; store it
+   as `rt_protocols(name, framework)` alongside `rt_classes`.
+2. Add a `protocol_exists` named query beside the others.
+3. Then `attributeObjCBases` can diagnose a base that is neither a class, nor a
+   protocol, nor a Mojo `class` in scope — which is the check the superclass
+   already gets at `:2998` and which the remaining bases have never had.
+
+Until then the failure is at least *findable* rather than invisible: it is a
+`conformsToProtocol:` returning false, and AppKit refusing a delegate. Worth
+saying in the guide, which currently documents `class_addProtocol` as "real
+conformance" without noting that a typo is silent.
+
+**Update, 2026-09-06 — a partial lever now exists.** CocoaBaseMCP at `30116fe`
+adds a `protocols TEXT` column (`schema.sql:47`, "comma-separated, from
+`@"NSObject<NSCopying>"`"): the protocol names that appear as *type
+annotations* in method encodings, e.g. an `id<NSTextInputClient>` parameter.
+That is not `objc_copyProtocolList` and not a conformance registry — a
+protocol that is only ever *adopted* and never passed in a signature will not
+appear — so it cannot back a hard error without false negatives. It can back
+a **warning**: "no SDK signature mentions a protocol named
+`NSTextInputCleint`; did you mean `NSTextInputClient`?" via the same
+`likePrefix` machinery the completion reader uses. That would have caught the
+motivating typo. Step 1 above (ingest the runtime's protocol list) remains the
+correct fix; this is the cheap 80% available today.
+
+### D18 — `db_hash` exists but is not a build input — OPEN
+Compilation semantics depend on `cocoa.sqlite`: struct layouts, selector
+existence and ABI classification all come out of it, and it is a mutable file
+at a path supplied by an environment variable. `cocoakb_query<"db_hash">` was
+built to make that auditable and it works -- but nothing consumes it. The only
+caller in the tree is `spikes/s5-cocoakb/check.mojo:79`, which *prints* it.
+
+So the reproducibility argument in the README is currently unbacked by the
+mechanism that would back it. Nothing records which database a binary was
+built against, nothing invalidates a cache when the database changes, and
+rebuilding the database mid-session silently changes what the next compile
+means.
+
+Two pieces, neither done:
+
+1. **A version gate.** CocoaBaseMCP sets no `PRAGMA user_version` (it reads 0)
+   and carries no metadata table, so there is nothing to check a schema
+   against. It needs to stamp one; then `openLocked` can refuse a database
+   built by an incompatible generation rather than failing per-query later.
+   *Partially mitigated:* `openLocked` now verifies the ten tables the query
+   table depends on are present, which separates "wrong file entirely" from
+   "right file, missing row". That is shape, not version -- a database with the
+   right tables and a changed column meaning still passes.
+2. **A fingerprint.** `db_hash` should reach the build: recorded in the emitted
+   module (alongside the AIR producer metadata), and folded into whatever key
+   decides a rebuild is unnecessary.
+
+### D19 — Two @encode parsers disagreed; one shifted argument positions — FIXED (scanner), OPEN (unification)
+The tree hand-rolls the Objective-C method-encoding grammar twice:
+`scanEncodingType` (`CocoaKBDatabase.cpp`, feeding `parseArgKinds`) and
+`splitObjCEncoding` (`DeclResolution.cpp:3079`). They disagreed.
+
+`splitObjCEncoding` skips the type qualifiers `r n N o O R V` and nests
+unions. `scanEncodingType` did neither, and because each scan consumes one
+argument, a qualifier was counted as **an extra argument** rather than merely
+misread:
+
+    -[NSString initWithUTF8String:]   @24@0:8r*16     (ONE argument)
+      before   ['r', '*']    <- two kinds; guard for arg 0 tested 'r'
+      after    ['*']
+
+Every argument after a qualified one therefore sat in the wrong 7-bit slot of
+the packed `kinds` integer, so `_guard_str_arg` was checking the wrong
+argument. 1,150 methods in the current database carry such a qualifier and
+1,070 contain a union — and they are precisely the C-string entry points that
+String bridging exists for.
+
+**Fixed** in `scanEncodingType`: qualifiers skipped before the type character
+is read, `(` nested like `{` and `[`.
+
+**Still open: the two parsers are still two.** That is the actual hazard —
+this bug was a divergence, not a typo, and nothing stops them diverging again.
+They should be one function in one place, with unit tests over qualifiers,
+nested structs, unions and arrays. Which leads to the wider gap:
+
+### D20 — No C++ unit tests for the pure string functions — OPEN
+`parseArgKinds`, `scanEncodingType`, `splitObjCEncoding`, `deriveObjCSelector`
+and `likePrefix` are pure, total functions over strings. They are the cheapest
+things in the tree to test and have no tests at all. D19 would have been caught
+by three lines of table-driven test the day it was written, instead of by
+reading the two implementations side by side months later.
+
 ## Carried from the review (see improvement_plan.md for detail)
 
 ### D7 — Unrolled register matmul ~9% behind upstream — OPEN

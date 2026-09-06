@@ -613,7 +613,7 @@ struct Bound[cls: StringLiteral, name: StringLiteral](Copyable, Movable):
         comptime sel = cocoakb_p_selector_for_parts_5[
             Self.cls, Self.name, "0", p1, p2, p3, p4, p5
         ]
-        comptime kinds = cocoakb_p_arg_kinds_for_parts_5[Self.cls, Self.name, "1", p1, p2, p3, p4, p5]
+        comptime kinds = cocoakb_p_arg_kinds_for_parts_5[Self.cls, Self.name, "0", p1, p2, p3, p4, p5]
         _guard_str_arg[T0, kinds & 127]()
         _guard_str_arg[T1, (kinds >> 7) & 127]()
         _guard_str_arg[T2, (kinds >> 14) & 127]()

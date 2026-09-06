@@ -19,12 +19,23 @@ cd "$(dirname "$0")/.."
 # sitting on -- alone:
 #   COCOAMOJO=/tmp/mine/CocoaMojo/bin/cocoamojo ./spikes/run-cocoa-checks.sh
 COCOAMOJO="${COCOAMOJO:-dist/CocoaMojo/bin/cocoamojo}"
-if [ -z "${MOJO_RUN:-}" ] && [ -x "$COCOAMOJO" ]; then
+if [ -n "${MOJO_RUN:-}" ]; then
+  : # an explicit override: the caller knows what they are pointing at
+  MOJO=${MOJO:-./bazel-bin/KGEN/tools/mojo/mojo-full}
+elif [ -x "$COCOAMOJO" ]; then
   MOJO_RUN="$COCOAMOJO --run"
   MOJO="${COCOAMOJO}-compiler"
 else
-  MOJO_RUN=${MOJO_RUN:-"./bazelw run --ui_event_filters=-info,-stdout --noshow_progress //KGEN:mojo -- run"}
-  MOJO=${MOJO:-./bazel-bin/KGEN/tools/mojo/mojo-full}
+  # This used to fall back to `./bazelw run //KGEN:mojo`. That runs the DBG
+  # tree, which is the configuration mojo-build.sh exists to stop anyone
+  # building -- its libMLIR does not link -- so the fallback could only ever
+  # fail, and it failed in a way that looked like a compiler bug. Refuse
+  # instead, and say what to do.
+  echo "run-cocoa-checks: no distribution at $COCOAMOJO" >&2
+  echo "  build one:   ./tools/mojo-build.sh && NO_IDE=1 ./tools/make-dist.sh" >&2
+  echo "  or point at: COCOAMOJO=/path/to/CocoaMojo/bin/cocoamojo $0" >&2
+  echo "  (see BUILDING.md)" >&2
+  exit 2
 fi
 # Default assumes CocoaBaseMCP is checked out beside this repo. Override with
 # MODULAR_MOJO_MAX_COCOAKB_PATH if it lives elsewhere.
@@ -54,9 +65,19 @@ run_mustfail() {   # must FAIL TO COMPILE, and say why
   printf '  %-24s ' "$1"
   if out=$($MOJO_RUN "$PWD/spikes/s5-cocoakb/$1" 2>&1); then
     echo "FAIL (compiled, but must not)"; fail=$((fail+1))
-  else
+    return
+  fi
+  # A non-zero exit is not the claim. The claim is that the COMPILER rejected
+  # it with a Cocoa diagnostic -- and a segfault, a missing framework, or a
+  # spike that `raise`s at run time all exit non-zero too. Scoring those as
+  # PASS is how a must-fail suite stops testing anything. So the diagnostic
+  # is the assertion, not decoration.
+  if grep -qiE "cocoa|metadata|unknown|no such|no '" <<<"$out"; then
     echo "PASS (rejected at comptime)"; pass=$((pass+1))
-    sed 's/^/      /' <<<"$out" | grep -iE "cocoa|metadata|unknown|no " | head -2
+    sed 's/^/      /' <<<"$out" | grep -iE "cocoa|metadata|unknown|no such|no '" | head -2
+  else
+    echo "FAIL (died, but not with a Cocoa diagnostic)"; fail=$((fail+1))
+    sed 's/^/      /' <<<"$out" | grep -m3 -iE "error|fault|abort|raise" 
   fi
 }
 
