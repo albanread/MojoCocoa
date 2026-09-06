@@ -77,11 +77,11 @@ spare slots, nothing allocated, nothing raised:
 | key | meaning | the classic it buys |
 |---|---|---|
 | `arp=0473` | semitone offsets cycled per tick (hex digits, 1–8 of them) | the chord-in-one-voice shimmer; MOD effect `0xy` |
-| `vib=d,r` | pitch wobble, depth in 16ths of a semitone, rate in ticks | the singing lead; MOD `4xy` |
+| `vib=d/r` | pitch wobble, depth in 16ths of a semitone, rate in ticks | the singing lead; MOD `4xy` |
 | `slide=n` | glide toward each new note at n units/tick; 0 snaps | portamento bass; MOD `3xy` |
-| `pwm=d,r` | pulse-width triangle sweep, depth and rate | the fat pad that breathes |
+| `pwm=d/r` | pulse-width triangle sweep, depth and rate | the fat pad that breathes |
 | `sweep=n` | filter cutoff slew per tick, signed | the opening filter ramp |
-| `trem=d,r` | volume wobble | MOD `7xy` |
+| `trem=d/r` | volume wobble | MOD `7xy` |
 
 Two rules keep it honest. **Macros are per voice and survive notes** — they
 are how a voice *plays*, not how one note sounds — and every macro is
@@ -213,7 +213,7 @@ Sizes as elsewhere: **S** a sitting, **M** a day or two, **L** a week.
   identically to the single-chip render (mono channel compared); a 9-voice
   scale exercises all three chips; games' audio unchanged by ear and by
   hash.
-- **CT1 — the grammar (S).** `v=1..9`, `pan=`, `echo=`, `etime=`, `efb=`,
+- **CT1 — the grammar (DONE, was S).** `v=1..9`, `pan=`, `echo=`, `etime=`, `efb=`,
   macro keys parsed to triples; old builds still play new tunes' notes.
   *Checks:* parse-triple tests; unknown-key tolerance test.
 - **CT2 — the macros (M).** Arp, vib, slide, pwm, sweep, trem in the trio

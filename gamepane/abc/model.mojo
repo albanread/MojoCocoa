@@ -45,6 +45,25 @@ comptime CP_RES = 21
 comptime CP_FMODE = 22
 comptime CP_VOL = 23
 
+# ChipDeluxe (CT1). Trio-level parameters -- a bare chip ignores them, the
+# trio walker intercepts them before apply_chip ever sees one. Signed
+# values ride a bias so the parser's `number >= 0` filter stays the single
+# gate it is: pan carries pos+128, sweep carries rate+1024.
+comptime CP_PAN = 30
+comptime CP_ECHO = 31
+comptime CP_ETIME = 32
+comptime CP_EFB = 33
+
+# The 50 Hz performance macros (stored by CT1, played by CT2's tick).
+# Pairs pack as depth<<8 | rate; an arpeggio packs its digit count above
+# bit 32 with the digits as nibbles below, first digit lowest.
+comptime CP_ARP = 40
+comptime CP_VIB = 41
+comptime CP_SLIDE = 42
+comptime CP_PWM = 43
+comptime CP_SWEEP = 44
+comptime CP_TREM = 45
+
 # Flags on an event.
 comptime F_CHORD = 1        # sounds together with the event before it
 comptime F_TIE = 2          # tied into the next note of the same pitch

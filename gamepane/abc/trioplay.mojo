@@ -24,6 +24,7 @@ from gamepane.api.audio import (
     P, get, put, chip_new, chip_free, chip_render, gate_off, PLAYER_BASE,
 )
 from gamepane.abc.schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
+from gamepane.abc.model import CP_PAN, CP_ECHO, CP_ETIME, CP_EFB
 from gamepane.abc.chipplay import (
     apply_chip, apply_note_on, apply_note_off, silent_tick,
     STEP_SLOTS, SC_VOICE_NOTE,
@@ -48,7 +49,10 @@ comptime T_END = 17
 comptime T_LOOP = 18
 comptime T_DONE = 19
 comptime T_SCRATCH = 20      # one mono span buffer, reused chip by chip
-comptime TRIO_SLOTS = 24
+comptime T_ECHO_SEND = 21    # three slots: per-chip send into the echo, 0..15
+comptime T_ETIME = 24        # echo time in 50 Hz ticks (CT3 consumes)
+comptime T_EFB = 25          # echo feedback, 0..15
+comptime TRIO_SLOTS = 32
 
 comptime TRIO_SPAN = 4096
 """The most one chip_render is asked for in one go. A longer quiet span is
@@ -241,10 +245,20 @@ fn render_trio(
                     if c > 2:
                         c = 2
                     sub = voice - c * 3
-                apply_chip(
-                    trio_chip(t, c), sub,
-                    sched[unsafe_offset=at + 3], sched[unsafe_offset=at + 4],
-                )
+                let param = sched[unsafe_offset=at + 3]
+                let value = sched[unsafe_offset=at + 4]
+                # Trio-level parameters stop here: a chip has no pan and no
+                # echo, and apply_chip would rightly ignore them.
+                if param == CP_PAN:
+                    set_trio_pan(t, c, value - 128)
+                elif param == CP_ECHO:
+                    put(t, T_ECHO_SEND + c, value & 15)
+                elif param == CP_ETIME:
+                    put(t, T_ETIME, value)
+                elif param == CP_EFB:
+                    put(t, T_EFB, value & 15)
+                else:
+                    apply_chip(trio_chip(t, c), sub, param, value)
             elif kind == SE_NOTE_ON:
                 apply_note_on(
                     trio_chip(t, _chip_for_abc_voice(voice)),

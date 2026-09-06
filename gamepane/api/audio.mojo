@@ -101,7 +101,7 @@ comptime Tick = fn(P, /) -> None
 
 # The player routine keeps its own state after the chip's.
 comptime PLAYER_BASE = STATE_SLOTS
-comptime PLAYER_SLOTS = 96
+comptime PLAYER_SLOTS = 160   # grew for the CT1/CT2 macro region at +64
 comptime TOTAL_SLOTS = PLAYER_BASE + PLAYER_SLOTS
 
 

@@ -21,13 +21,15 @@ from std.ffi import external_call
 from gamepane.api.audio import (
     P, get, put, vget, vput, chip_render, set_freq_hz, set_wave, set_adsr,
     set_filter, set_volume, set_pulse_width, gate_on, gate_off, route_filter,
-    PLAYER_BASE, S_CUTOFF, S_RES, S_FMODE, V_ENV, V_PHASE, ENV_IDLE,
+    PLAYER_BASE, S_CUTOFF, S_RES, S_FMODE, V_ENV, V_PHASE, V_PW, ENV_IDLE,
     ENV_RELEASE, WAVE_PULSE, WAVE_SAW, WAVE_TRI, Tick,
 )
 from gamepane.abc.schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
 from gamepane.abc.model import (
     CP_WAVE, CP_PW, CP_A, CP_D, CP_S, CP_R, CP_FILT,
     CP_CUTOFF, CP_RES, CP_FMODE, CP_VOL,
+    CP_PAN, CP_ECHO, CP_ETIME, CP_EFB,
+    CP_ARP, CP_VIB, CP_SLIDE, CP_PWM, CP_SWEEP, CP_TREM,
 )
 
 # Slots in the chip's player region. The chip example's own player does not
@@ -177,8 +179,38 @@ fn apply_chip(st: P, voice: Int, param: Int, value: Int):
     if param == CP_VOL:
         set_volume(st, value)
         return
+    if param == CP_PAN or param == CP_ECHO or param == CP_ETIME \
+            or param == CP_EFB:
+        # Trio-level. The trio walker intercepts these before delegating;
+        # a bare chip hearing one has nowhere to put it, and says nothing.
+        return
+    if param == CP_SWEEP:
+        # Stored unbiased: the wire carries rate+1024 past the parser's
+        # non-negative gate, the register holds the truth.
+        put(st, PLAYER_BASE + MACRO_BASE + M_SWEEP, value - 1024)
+        return
 
     if voice < 0 or voice > 2:
+        return
+    if param == CP_ARP:
+        put(st, macro_slot(voice, M_ARP), value)
+        put(st, macro_slot(voice, M_ARP_POS), 0)
+        return
+    if param == CP_VIB:
+        put(st, macro_slot(voice, M_VIB), value)
+        put(st, macro_slot(voice, M_VIB_PHASE), 0)
+        return
+    if param == CP_SLIDE:
+        put(st, macro_slot(voice, M_SLIDE), value)
+        return
+    if param == CP_PWM:
+        put(st, macro_slot(voice, M_PWM), value)
+        put(st, macro_slot(voice, M_PWM_PHASE), 0)
+        put(st, macro_slot(voice, M_PWM_BASE), vget(st, voice, V_PW))
+        return
+    if param == CP_TREM:
+        put(st, macro_slot(voice, M_TREM), value)
+        put(st, macro_slot(voice, M_TREM_PHASE), 0)
         return
     if param == CP_WAVE:
         set_wave(st, voice, value)
@@ -205,6 +237,34 @@ fn apply_chip(st: P, voice: Int, param: Int, value: Int):
 
 
 comptime CHIP_ADSR = 40      # 12 slots: voice * 4 + {a, d, s, r}
+
+# ── the macro region (CT1 stores, CT2 plays) ────────────────────────────
+#
+# Per voice, MACRO_STRIDE slots from MACRO_BASE. A packed value of zero is
+# off in every case, which is what lets calloc'd chips be macro-silent.
+# Slide keeps the CURRENT pitch as a float across notes -- that carry-over
+# from the previous note IS portamento, not an accident of state.
+
+comptime MACRO_BASE = 64      # PLAYER_BASE-relative, after CHIP_ADSR
+comptime MACRO_STRIDE = 12
+comptime M_ARP = 0            # count<<32 | nibbles, first digit lowest
+comptime M_ARP_POS = 1
+comptime M_VIB = 2            # depth<<8 | rate; rate 0 is off
+comptime M_VIB_PHASE = 3
+comptime M_SLIDE = 4          # 16ths of a semitone per tick; 0 snaps
+comptime M_SLIDE_CUR = 5      # float: current fractional MIDI pitch
+comptime M_PWM = 6            # depth<<8 | rate
+comptime M_PWM_PHASE = 7
+comptime M_PWM_BASE = 8       # the pulse width the sweep breathes around
+comptime M_TREM = 9           # depth<<8 | rate
+comptime M_TREM_PHASE = 10
+comptime M_SWEEP = 44         # chip-level, one slot past the three voices:
+                              # signed cutoff slew per tick (stored unbiased)
+
+
+@always_inline
+fn macro_slot(voice: Int, m: Int) -> Int:
+    return PLAYER_BASE + MACRO_BASE + voice * MACRO_STRIDE + m
 
 
 @always_inline

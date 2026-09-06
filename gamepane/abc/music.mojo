@@ -22,6 +22,8 @@ from .model import (
     EV_NOTE, EV_REST, EV_BAR, EV_TEMPO, EV_KEY, EV_METER, EV_VOICE, EV_CHIP,
     CP_WAVE, CP_PW, CP_A, CP_D, CP_S, CP_R, CP_FILT,
     CP_CUTOFF, CP_RES, CP_FMODE, CP_VOL,
+    CP_PAN, CP_ECHO, CP_ETIME, CP_EFB,
+    CP_ARP, CP_VIB, CP_SLIDE, CP_PWM, CP_SWEEP, CP_TREM,
     F_CHORD, F_TIE, F_GRACE, F_GCHORD,
     BAR_SINGLE, BAR_DOUBLE, BAR_REPEAT_START, BAR_REPEAT_END,
     BAR_ENDING_1, BAR_ENDING_2, BAR_THIN_THICK,
@@ -800,6 +802,77 @@ def chip_settings(value: String, cur_voice: Int) -> List[Int]:
         elif key == "filt":
             param = CP_FILT
             number = 1 if (val == "on" or val == "1") else 0
+        elif key == "arp":
+            # Hex digits, first heard first: arp=047 is root, +4, +7.
+            # Packed as count<<32 | nibbles (first digit lowest), so one
+            # Int carries the table and 0 means off.
+            param = CP_ARP
+            var packed = 0
+            var cnt = 0
+            let ab = val.as_bytes()
+            for k in range(len(ab)):
+                let ch = Int(ab[k])
+                var digit = -1
+                if ch >= 48 and ch <= 57:
+                    digit = ch - 48
+                elif ch >= 97 and ch <= 102:
+                    digit = ch - 87
+                elif ch >= 65 and ch <= 70:
+                    digit = ch - 55
+                if digit >= 0 and cnt < 8:
+                    packed = packed | (digit << (4 * cnt))
+                    cnt += 1
+            number = (cnt << 32) | packed if cnt > 0 else 0
+        elif key == "vib" or key == "pwm" or key == "trem":
+            # A pair, depth/rate: vib=8/3. Packed depth<<8 | rate; a rate
+            # of zero is off, whatever the depth says.
+            param = CP_VIB if key == "vib" else (
+                CP_PWM if key == "pwm" else CP_TREM)
+            var depth = 0
+            var rate = 0
+            var after = -1
+            let pb = val.as_bytes()
+            for k in range(len(pb)):
+                if Int(pb[k]) == 47:                 # '/'
+                    after = k + 1
+                    break
+                if is_digit(Int(pb[k])):
+                    depth = depth * 10 + Int(pb[k]) - 48
+            if after > 0:
+                for k in range(after, len(pb)):
+                    if is_digit(Int(pb[k])):
+                        rate = rate * 10 + Int(pb[k]) - 48
+            if depth > 255:
+                depth = 255
+            if rate > 255:
+                rate = 255
+            number = (depth << 8) | rate
+        elif key == "pan" or key == "sweep":
+            # Signed. The bias keeps `number >= 0` the one gate: pan
+            # carries pos+128 (-128..127), sweep carries rate+1024.
+            var neg = False
+            var mag = 0
+            let sb2 = val.as_bytes()
+            for k in range(len(sb2)):
+                if k == 0 and Int(sb2[k]) == 45:     # '-'
+                    neg = True
+                elif is_digit(Int(sb2[k])):
+                    mag = mag * 10 + Int(sb2[k]) - 48
+            var signed = -mag if neg else mag
+            if key == "pan":
+                param = CP_PAN
+                if signed < -128:
+                    signed = -128
+                elif signed > 127:
+                    signed = 127
+                number = signed + 128
+            else:
+                param = CP_SWEEP
+                if signed < -1023:
+                    signed = -1023
+                elif signed > 1023:
+                    signed = 1023
+                number = signed + 1024
         else:
             if key == "pw":
                 param = CP_PW
@@ -817,6 +890,14 @@ def chip_settings(value: String, cur_voice: Int) -> List[Int]:
                 param = CP_RES
             elif key == "vol":
                 param = CP_VOL
+            elif key == "echo":
+                param = CP_ECHO
+            elif key == "etime":
+                param = CP_ETIME
+            elif key == "efb":
+                param = CP_EFB
+            elif key == "slide":
+                param = CP_SLIDE
             if param >= 0:
                 let r2 = read_int(val, 0)
                 number = r2[0] if r2[2] != 0 else 0
