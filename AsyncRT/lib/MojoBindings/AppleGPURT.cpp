@@ -37,6 +37,9 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <unordered_map>
+#include <cstring>
+#include <cstdio>
 #include <time.h>
 #include <vector>
 
@@ -102,6 +105,8 @@ struct VRStream : RefCounted {
   ~VRStream();
 };
 
+struct VRFunction;
+
 struct VRContext : RefCounted {
   int id = 0;
   std::string api;       // "cpu" or "metal"
@@ -110,11 +115,19 @@ struct VRContext : RefCounted {
   VRStream *defaultStream = nullptr;
   AGMetalCtx *metal = nullptr; // set when api == "metal"
 
+  // Compiled-function cache, keyed by the function name plus a hash of the
+  // module bytes it was loaded from. `compile_function` -- and so the
+  // `enqueue_function[kernel]` template form every example uses -- builds a
+  // DeviceFunction per call, and without this every one of those calls was a
+  // fresh MTLLibrary, MTLFunction and pipeline state: 17.8 us on an M4, four
+  // times the dispatch itself. The cache holds one reference per entry and
+  // hands callers their own through vrRetain; it is released with the
+  // context. Upstream's runtime caches the same way, which is why the Mojo
+  // layer never tried to.
+  mutable std::mutex fnMu;
+  mutable std::unordered_map<std::string, VRFunction *> fnCache;
   VRContext() { defaultStream = new VRStream{{}, this}; }
-  ~VRContext() {
-    vrRelease(defaultStream);
-    AppleGPUMetal_destroyContext(metal);
-  }
+  ~VRContext();  // out of line: it releases VRFunctions, declared below
 };
 
 struct VRBuffer : RefCounted {
@@ -133,6 +146,50 @@ struct VRFunction : RefCounted {
   AGMetalFunc *mtl = nullptr;
   ~VRFunction() { AppleGPUMetal_destroyFunction(mtl); }
 };
+
+VRContext::~VRContext() {
+  for (auto &entry : fnCache)
+    vrRelease(entry.second);
+  fnCache.clear();
+  vrRelease(defaultStream);
+  AppleGPUMetal_destroyContext(metal);
+}
+
+/// A 64-bit hash of the module bytes for the function-cache key. A
+/// multiply-xorshift mix over 8-byte words: not cryptographic and not
+/// needing to be, since the name and the length are in the key as well. A
+/// typical metallib is tens of kilobytes, which is a few hundred nanoseconds
+/// here against the 17.8 us it replaces. The bytes arrive in a fresh String
+/// on every call, so their address is no identity and cannot be the key.
+static uint64_t hashModuleBytes(const char *data, size_t len) {
+  uint64_t h = 0x9E3779B97F4A7C15ull ^ (uint64_t)len;
+  size_t i = 0;
+  for (; i + 8 <= len; i += 8) {
+    uint64_t w;
+    memcpy(&w, data + i, 8);
+    h ^= w;
+    h *= 0xBF58476D1CE4E5B9ull;
+    h ^= h >> 31;
+  }
+  uint64_t tail = 0;
+  for (size_t k = 0; i + k < len; ++k)
+    tail |= (uint64_t)(unsigned char)data[i + k] << (8 * k);
+  h ^= tail;
+  h *= 0x94D049BB133111EBull;
+  h ^= h >> 29;
+  return h;
+}
+
+static std::string functionCacheKey(const char *name, const char *data,
+                                    size_t len, int32_t maxDynamicShared) {
+  std::string key(name ? name : "");
+  char suffix[80];
+  snprintf(suffix, sizeof suffix, "|%zu|%016llx|%d", len,
+           (unsigned long long)hashModuleBytes(data, len),
+           (int)maxDynamicShared);
+  key += suffix;
+  return key;
+}
 
 struct VREvent : RefCounted {
   std::atomic<uint64_t> recordedNs{0};
@@ -892,12 +949,33 @@ extern "C" const char *AsyncRT_DeviceContext_loadFunction(
     return vrErrorf("AppleGPURT: loadFunction requires a metal context (api is "
                     "'%s')",
                     ctx->api.c_str());
+  const std::string key =
+      functionCacheKey(functionName, data, dataLen, maxDynamicSharedBytes);
+  {
+    std::lock_guard<std::mutex> lock(ctx->fnMu);
+    auto it = ctx->fnCache.find(key);
+    if (it != ctx->fnCache.end()) {
+      vrRetain(it->second);
+      *result = it->second;
+      return VR_OK;
+    }
+  }
   AGMetalFunc *mfn = nullptr;
   if (const char *err = AppleGPUMetal_loadFunction(
           &mfn, ctx->metal, functionName, data, dataLen, maxDynamicSharedBytes))
     return err;
   auto *fn = new VRFunction();
   fn->mtl = mfn;
+  {
+    std::lock_guard<std::mutex> lock(ctx->fnMu);
+    auto inserted = ctx->fnCache.emplace(key, fn);
+    if (!inserted.second) {
+      // Another thread loaded the same function meanwhile: keep theirs.
+      vrRelease(fn);
+      fn = inserted.first->second;
+    }
+    vrRetain(fn); // the caller's reference; the cache keeps its own
+  }
   *result = fn;
   return VR_OK;
 }

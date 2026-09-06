@@ -343,9 +343,43 @@ command buffers; `createStream` does not retain its context; GPU-context
 CLOCK_RATE falls through to the host-CPU answer (a Xeon literal on an
 Apple GPU); raw-copy staging allocations unchecked. Sprint 4.
 
-### D9 — Small-shape dispatch overhead — OPEN
+### D9 — Small-shape dispatch overhead — MEASURED, THREE FIXES IN; matmul gap OPEN
 15-17% behind upstream at 512³/ragged-513 matmul, at parity from 1024³ —
 dispatch-shaped, not codegen. Sprint 5 / STATUS item 5 (residency).
+
+**Measured 2026-09-06 (M4, empty kernel, dependent chain of n dispatches then
+one wait; `oracles/bench/launch_bench.mojo` against `metal-launch.m`):**
+
+| per dispatch, µs | chain 1 | chain 8 | chain 64 | chain 1024 |
+|---|---|---|---|---|
+| Metal floor, one encoder per dispatch | 154 | 20.0 | 4.9 | 3.5 |
+| Metal floor, one encoder for the chain | 145 | 21.7 | 3.9 | 1.0 |
+| AppleGPURT before, kernel precompiled | 173 | 23.6 | 4.4 | 4.2 |
+| AppleGPURT before, `enqueue_function[k]` per call | 184 | 29.1 | 8.8 | 8.6 |
+| AppleGPURT after, precompiled | 176 | 23.7 | 4.3 | **0.9** |
+| AppleGPURT after, `enqueue_function[k]` per call | 177 | 25.2 | 5.1 | **1.6** |
+
+`compile_function` per call: 17.8 µs → 0.8 µs.
+
+Three fixes: (1) the runtime caches compiled functions per context, keyed
+by name plus a hash of the module bytes — every `compile_function` (and so
+every `enqueue_function[kernel]`, the form the examples use) was a fresh
+MTLLibrary, MTLFunction and pipeline state; (2) one compute encoder per
+batch instead of per dispatch — an encoder boundary is a GPU-side pipeline
+drain, and Metal's serial dispatch type already orders a chain within one
+encoder (asserted by the bench's ordering probe, not assumed); (3) a ring of
+command buffers instead of commit-and-drain at every 64th dispatch, waiting
+for the oldest batch only when four are outstanding.
+
+What did not move and cannot: the ~150 µs commit-and-wait round trip a
+host-observed result costs, which is Apple's. Short dependent chains are
+bound by it. Residency was already an `MTLResidencySet` on the queue, so
+that half of the original note was already done.
+
+**Still open:** the 512³ matmul gap. A fixed 15% at ~1 ms that vanishes at
+~8 ms is a ~150 µs term per launch — the round trip, not the 4 µs (now
+0.9 µs) enqueue. The bench with a synchronize per launch against one per
+batch would settle whether that harness times our round trip or upstream's.
 
 ### D8 — By-value capture crossing — FIXED FOR COPY-CAPTURES (096a5f52); {var} chain remains
 The MOCO-4045 gate in ClosureEmitter dropped a whole closure's DevicePassable

@@ -146,6 +146,14 @@ constexpr size_t kMaxPending = 64;
 /// Preserve the existing 64-dispatch backpressure bound when those dispatches
 /// are encoded into one command buffer instead of 64 separate buffers.
 constexpr size_t kMaxBatchDispatches = kMaxPending;
+/// How many committed batches may be outstanding before a launch waits --
+/// and it waits for the OLDEST only. The first design committed a full batch
+/// and drained everything, so on every 64th dispatch the host blocked until
+/// the GPU was empty and the GPU then idled while the host encoded the next
+/// batch. A ring keeps both busy; four batches of 64 bounds the outstanding
+/// work at 256 dispatches, and an error surfaces within that many rather
+/// than within 64. APPLEGPU_SYNC_LAUNCH=1 remains the exact-locality mode.
+constexpr size_t kMaxBatchesInFlight = 4;
 
 std::string nsstringToStd(id nsstr) {
   if (!nsstr)
@@ -248,13 +256,28 @@ struct AGMetalCtx {
   /// `pending` when it is committed.
   id openBatch = nullptr;
   size_t openBatchDispatches = 0;
+  /// The compute encoder open on `openBatch`, kept across dispatches
+  /// (retained). Ended by commitOpenBatchLocked, never by a launch.
+  id openEncoder = nullptr;
 };
 
 /// Commit the open batch and transfer its retained ownership to `pending`.
 /// The caller must hold `ctx->mu`.
+/// End the compute encoder kept open across dispatches (see the launch: one
+/// encoder per batch, not per dispatch -- an encoder boundary is a GPU-side
+/// pipeline drain, measured at 3.5 us against 1.0 us without it).
+void endOpenEncoderLocked(AGMetalCtx *ctx) {
+  if (!ctx->openEncoder)
+    return;
+  msg<void>(ctx->openEncoder, "endEncoding");
+  objcRelease(ctx->openEncoder);
+  ctx->openEncoder = nullptr;
+}
+
 void commitOpenBatchLocked(AGMetalCtx *ctx) {
   if (!ctx->openBatch)
     return;
+  endOpenEncoderLocked(ctx);
   if (::getenv("APPLEGPU_TRACE_LAUNCH"))
     fprintf(stderr, "[applegpu] commit batch dispatches=%zu\n",
             ctx->openBatchDispatches);
@@ -295,6 +318,37 @@ const char *drainPending(AGMetalCtx *ctx) {
     return nullptr;
   std::lock_guard<std::mutex> lock(ctx->mu);
   return drainPendingLocked(ctx);
+}
+
+/// Retire the OLDEST committed buffer: wait for it, surface its error,
+/// release it. Buffers on one queue complete in commit order, so the oldest
+/// is always the one to wait for.
+const char *retireOldestLocked(AGMetalCtx *ctx) {
+  if (ctx->pending.empty())
+    return nullptr;
+  id cb = ctx->pending.front();
+  msg<void>(cb, "waitUntilCompleted");
+  const char *err = nullptr;
+  if (id e = msg<id>(cb, "error"))
+    err = errorFromNSError("kernel launch failed", e);
+  objcRelease(cb);
+  ctx->pending.erase(ctx->pending.begin());
+  return err;
+}
+
+/// Keep at most `maxInFlight` committed buffers outstanding. Buffers that
+/// have already finished are retired without waiting (MTLCommandBufferStatus
+/// Completed = 4, Error = 5); beyond that the launch waits for the oldest
+/// only, which is the backpressure a ring provides instead of a drain.
+const char *boundInFlightLocked(AGMetalCtx *ctx, size_t maxInFlight) {
+  while (!ctx->pending.empty() &&
+         msg<unsigned long>(ctx->pending.front(), "status") >= 4ul)
+    if (const char *e = retireOldestLocked(ctx))
+      return e;
+  while (ctx->pending.size() > maxInFlight)
+    if (const char *e = retireOldestLocked(ctx))
+      return e;
+  return nullptr;
 }
 
 /// Park a drain failure that has nowhere to be returned.
@@ -1454,10 +1508,8 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
       // normal dispatch-count limit. Keep those command buffers bounded too:
       // drain before opening another one once the retained-buffer limit is
       // reached, surfacing any earlier GPU failure at this launch boundary.
-      if (ctx->pending.size() >= kMaxPending) {
-        if (const char *err = drainPendingLocked(ctx))
-          return err;
-      }
+      if (const char *err = boundInFlightLocked(ctx, kMaxBatchesInFlight))
+        return err;
       ctx->openBatch = msg<id>(ctx->queue, "commandBuffer");
       if (ctx->openBatch)
         msg<id>(ctx->openBatch, "retain");
@@ -1468,7 +1520,23 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   }
   if (!cb)
     return agmErrorf("AppleGPURT[metal]: commandBuffer creation failed");
-  id enc = msg<id>(cb, "computeCommandEncoder");
+  // One compute encoder per BATCH, not per dispatch. Metal's default
+  // (serial) dispatch type orders dispatches within an encoder, so a
+  // dependent chain needs no encoder boundary between its links -- and each
+  // boundary was a pipeline drain on the GPU side. The encoder is ended by
+  // commitOpenBatchLocked: at the 64-dispatch bound, at synchronize, before
+  // any copy (they drain), and at teardown.
+  id enc = nullptr;
+  if (batching) {
+    if (!ctx->openEncoder) {
+      ctx->openEncoder = msg<id>(cb, "computeCommandEncoder");
+      if (ctx->openEncoder)
+        msg<id>(ctx->openEncoder, "retain");
+    }
+    enc = ctx->openEncoder;
+  } else {
+    enc = msg<id>(cb, "computeCommandEncoder");
+  }
   if (!enc) {
     if (batching) {
       commitOpenBatchLocked(ctx);
@@ -1483,15 +1551,10 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   msg<void>(enc, "setComputePipelineState:", fn->pipeline);
 
   auto endEncodingForError = [&] {
-    msg<void>(enc, "endEncoding");
-    // Preserve any valid dispatches encoded by earlier calls. This call has
-    // not dispatched yet, so committing an encoder containing only its
-    // partial bindings is harmless and makes the earlier work drainable.
     if (batching) {
-      commitOpenBatchLocked(ctx);
+      commitOpenBatchLocked(ctx); // ends the open encoder itself
     } else {
-      // Leaving an ended-but-uncommitted command buffer on a queue can block
-      // later committed buffers because Metal preserves creation order.
+      msg<void>(enc, "endEncoding");
       msg<void>(cb, "commit");
     }
   };
@@ -1709,20 +1772,21 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
   MTLSizeC blockSize{block[0], block[1], block[2]};
   msg<void>(enc, "dispatchThreadgroups:threadsPerThreadgroup:", gridSize,
             blockSize);
-  msg<void>(enc, "endEncoding");
 
   if (batching) {
     ++ctx->openBatchDispatches;
-    // Preserve the old 64-dispatch memory/error-locality bound. A full batch
-    // is committed and drained here; shorter batches commit at synchronize,
-    // host observation, or teardown through drainPendingLocked().
+    // The encoder stays open for the next dispatch. A full batch is committed
+    // here and the ring bounded -- waiting for the OLDEST batch only, and only
+    // when kMaxBatchesInFlight are outstanding; shorter batches commit at
+    // synchronize, host observation, or teardown through drainPendingLocked().
     if (ctx->openBatchDispatches >= kMaxBatchDispatches) {
       commitOpenBatchLocked(ctx);
-      return drainPendingLocked(ctx);
+      return boundInFlightLocked(ctx, kMaxBatchesInFlight);
     }
     return nullptr;
   }
 
+  msg<void>(enc, "endEncoding"); // unbatched: one encoder per buffer
   msg<void>(cb, "commit");
 
   // Synchronous launch waits here, which costs a full CPU-GPU round trip per
@@ -1746,9 +1810,9 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
     // Backpressure: once the queue is deep enough, drain it -- this buffer
     // included, so one launch in kMaxPending pays a full round trip and the
     // rest pay none. Errors from anything in the window surface here.
-    if (ctx->pending.size() >= kMaxPending)
-      return drainPendingLocked(ctx);
-    return nullptr;
+    // Queued, unbatched: one buffer per dispatch, at most 64 outstanding,
+    // waiting for the oldest rather than draining the queue.
+    return boundInFlightLocked(ctx, kMaxPending - 1);
   }
 
   msg<void>(cb, "waitUntilCompleted");

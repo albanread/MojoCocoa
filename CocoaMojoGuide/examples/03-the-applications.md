@@ -208,6 +208,16 @@ against 1.49 batched-and-asynchronous, and on an M4 Max batching alone moves
 faster; the conclusion has not moved at all. Launch overhead, not arithmetic,
 is what a many-kernel step is made of.
 
+> **Re-measured, September 2026.** With the runtime's function cache, one
+> encoder per batch and a command-buffer ring, an empty dependent dispatch
+> costs 0.9 µs on an M4 -- Metal's own floor for a single encoder -- so the
+> host-side launch term of a 35-dispatch step is now about 30 µs of its
+> 1.49 ms. What remains is the GPU's: the kernels' own time and the gap
+> between them, plus one ~150 µs commit-and-wait when the frame is observed.
+> "Launch overhead" as a budget line has become "dispatch count", and the
+> lever is fusing passes, not cheaper dispatches. The table is in
+> `defects.md` under D9.
+
 > **Note.** The header's instruction to set `APPLEGPU_ASYNC_LAUNCH=1` is stale.
 > Asynchronous, command-buffer-batched launch is now the default;
 > `APPLEGPU_SYNC_LAUNCH=1` is what restores the old synchronous behaviour, and
