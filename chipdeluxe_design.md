@@ -207,7 +207,7 @@ someone eventually noticing the waltz limps.
 
 Sizes as elsewhere: **S** a sitting, **M** a day or two, **L** a week.
 
-- **CT0 — the trio (M).** Three chips, one walker, stereo mixer, pan
+- **CT0 — the trio (DONE, was M).** Three chips, one walker, stereo mixer, pan
   table; deck grows a stereo path with games writing mono to both.
   *Checks:* a shipped 3-voice tune renders through a trio and hashes
   identically to the single-chip render (mono channel compared); a 9-voice

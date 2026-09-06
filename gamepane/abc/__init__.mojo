@@ -28,3 +28,8 @@ from .chipplay import (
     SC_ADDR, SC_COUNT, SC_CURSOR, SC_SAMPLE, SC_END, SC_LOOP, SC_PAUSE,
     SC_DONE, STEP_SLOTS,
 )
+from .trioplay import (
+    trio_new, trio_free, trio_chip, set_trio_pan, set_trio_master,
+    set_trio_loop, trio_done, flatten_trio, render_trio,
+    T_GAIN_L, T_GAIN_R, T_SAMPLE,
+)

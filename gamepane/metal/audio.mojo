@@ -84,6 +84,7 @@ comptime D_V_FRAME = 2
 comptime D_V_AGE = 3         # when it started, for stealing the oldest
 comptime D_SERIAL = 20       # monotonic, so "oldest" is unambiguous
 comptime D_SCRATCH = 21      # the chip-B mix buffer, allocated once
+comptime D_SCRATCH2 = 22     # chip A's, since the stereo output is no longer his
 comptime D_RING_BASE = 24
 comptime DECK_SLOTS = D_RING_BASE + RING_SIZE
 
@@ -144,6 +145,10 @@ def deck_new() raises -> P:
     if Int(scratch) == 0:
         raise Error("audio deck: no scratch buffer")
     dput(d, D_SCRATCH, Int(scratch))
+    let scratch2 = external_call["calloc", P](Int(MAX_BUFFER), Int(4))
+    if Int(scratch2) == 0:
+        raise Error("audio deck: no scratch buffer")
+    dput(d, D_SCRATCH2, Int(scratch2))
     return d
 
 
@@ -153,6 +158,7 @@ fn deck_free(d: P):
     chip_free(P(unsafe_from_address=dget(d, D_CHIP_A)))
     chip_free(P(unsafe_from_address=dget(d, D_CHIP_B)))
     _ = external_call["free", NoneType](P(unsafe_from_address=dget(d, D_SCRATCH)))
+    _ = external_call["free", NoneType](P(unsafe_from_address=dget(d, D_SCRATCH2)))
     _ = external_call["free", NoneType](d)
 
 
@@ -364,20 +370,25 @@ fn render(
     let dest = Pointer[Float32, MutUntrackedOrigin](
         unsafe_from_address=data_slot
     )
-    let n = byte_size // 4
+    # The output is interleaved stereo now; the deck's own mix is still
+    # mono, written to both channels. n counts FRAMES, not floats.
+    let n = byte_size // 8
     let d = ref_con
 
     if dget(d, D_MUTED) != 0:
-        for i in range(n):
+        for i in range(n * 2):
             dest[unsafe_offset=i] = Float32(0.0)
         return 0
 
     # Triggers first, so an effect fired this frame is audible in it.
     drain_triggers(d)
 
-    # Chip A into the destination, chip B into scratch, then sum. Two passes
-    # rather than one interleaved render, because the chip's render loop is
-    # the hot path and it should stay a straight line.
+    # Chip A into one scratch, chip B into the other, then fold. Two mono
+    # passes rather than one interleaved render, because the chip's render
+    # loop is the hot path and it should stay a straight line.
+    let sa = Pointer[Float32, MutUntrackedOrigin](
+        unsafe_from_address=dget(d, D_SCRATCH2)
+    )
     let sb = Pointer[Float32, MutUntrackedOrigin](
         unsafe_from_address=dget(d, D_SCRATCH)
     )
@@ -389,44 +400,33 @@ fn render(
         # A scheduled tune drives chip A sample-accurately, applying every
         # event that falls inside this buffer at the sample it falls on --
         # rather than on the 50 Hz grid the player hook runs on.
-        render_scheduled(music_chip(d), dest, m)
-        chip_render(sfx_chip(d), sb, m, _sfx_tick)
-        for i in range(m):
-            var v0 = Float64(dest[unsafe_offset=i]) * 0.5 + Float64(
-                sb[unsafe_offset=i]
-            ) * 0.5
-            if v0 > 1.0:
-                v0 = 1.0
-            elif v0 < -1.0:
-                v0 = -1.0
-            dest[unsafe_offset=i] = Float32(v0)
-        for i in range(m, n):
-            dest[unsafe_offset=i] = Float32(0.0)
-        return 0
-
-    let tick_a = dget(d, D_TICK_A)
-    if tick_a != 0:
-        chip_render(
-            music_chip(d), dest, m,
-            Pointer(to=tick_a).unsafe_bitcast[Tick]()[],
-        )
+        render_scheduled(music_chip(d), sa, m)
     else:
-        chip_render(music_chip(d), dest, m, _silent_tick)
+        let tick_a = dget(d, D_TICK_A)
+        if tick_a != 0:
+            chip_render(
+                music_chip(d), sa, m,
+                Pointer(to=tick_a).unsafe_bitcast[Tick]()[],
+            )
+        else:
+            chip_render(music_chip(d), sa, m, _silent_tick)
     chip_render(sfx_chip(d), sb, m, _sfx_tick)
 
     for i in range(m):
         # Half each: two chips at full tilt would clip, and halving is
         # cheaper and more honest than a limiter nobody can hear working.
-        var v = Float64(dest[unsafe_offset=i]) * 0.5 + Float64(
+        var v = Float64(sa[unsafe_offset=i]) * 0.5 + Float64(
             sb[unsafe_offset=i]
         ) * 0.5
         if v > 1.0:
             v = 1.0
         elif v < -1.0:
             v = -1.0
-        dest[unsafe_offset=i] = Float32(v)
+        dest[unsafe_offset=i * 2] = Float32(v)
+        dest[unsafe_offset=i * 2 + 1] = Float32(v)
     for i in range(m, n):
-        dest[unsafe_offset=i] = Float32(0.0)
+        dest[unsafe_offset=i * 2] = Float32(0.0)
+        dest[unsafe_offset=i * 2 + 1] = Float32(0.0)
     return 0
 
 
@@ -456,7 +456,9 @@ def start_audio(d: P) raises -> Int:
         unsafe_from_address=unit_slot.unsafe_bitcast[Int]()[unsafe_offset=0]
     )
 
-    # Mono Float32 at the chip's own rate, which is what a 6581 had.
+    # Interleaved stereo Float32 at the chip's own rate. The chips are
+    # still mono -- a 6581 was -- but the OUTPUT grew a second channel for
+    # the ChipDeluxe trio, and a mono game simply writes its sum to both.
     var asbd = external_call["calloc", P](Int(40), Int(1))
     asbd.unsafe_bitcast[Float64]()[unsafe_offset=0] = Float64(SAMPLE_RATE)
     let a = asbd.unsafe_bitcast[UInt32]()
@@ -464,10 +466,10 @@ def start_audio(d: P) raises -> Int:
     a[unsafe_offset=3] = UInt32(
         kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
     )
-    a[unsafe_offset=4] = UInt32(4)
+    a[unsafe_offset=4] = UInt32(8)
     a[unsafe_offset=5] = UInt32(1)
-    a[unsafe_offset=6] = UInt32(4)
-    a[unsafe_offset=7] = UInt32(1)
+    a[unsafe_offset=6] = UInt32(8)
+    a[unsafe_offset=7] = UInt32(2)
     a[unsafe_offset=8] = UInt32(32)
     rc = external_call["AudioUnitSetProperty", Int32](
         unit, UInt32(kAudioUnitProperty_StreamFormat),
