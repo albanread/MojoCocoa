@@ -130,7 +130,7 @@ more registers still plays; it just sounds plainer.
 
 ## The demonstration tune
 
-`tunes/galixigans.abc` exists to show the directive doing something a static
+`tunes/galaxigans.abc` exists to show the directive doing something a static
 patch could not:
 
 > *a dive where the pulse width narrows and the filter closes as they come at

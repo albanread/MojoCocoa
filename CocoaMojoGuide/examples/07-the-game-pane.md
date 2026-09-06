@@ -185,7 +185,7 @@ there; it crashes in the next allocation, a long way from the cause.
 `examples/galaxigans` is the first game that shipped with the toolchain -- a
 Galaga ported from 1,447 lines of BASIC, in about the same again of Mojo. It
 uses the sprite layer, the text overlay and the particle field. Its successor
-`examples/galixigans-deluxe` (below) uses the indexed pane as well, for the one
+`examples/galaxigans-deluxe` (below) uses the indexed pane as well, for the one
 thing only an indexed pane can do; the code right here is from the demos that
 exercise that pane on its own.
 
@@ -235,9 +235,9 @@ colour *i* is entry `y * 16 + i`; then the 240 global entries, so index *c*
 There is no CPU mirror of the palette either, which is what stops an upload
 ever copying a stale copy over a guest's direct writes.
 
-## GalixigansDeluxe
+## GalaxigansDeluxe
 
-`examples/galixigans-deluxe` is the complete port of MACVM's Galaxigans
+`examples/galaxigans-deluxe` is the complete port of MACVM's Galaxigans
 (`world/49_galaxigans.mst`, itself a faithful port of the x64 assembler
 original), and it is the fuller use of the package: a ten-species creature
 library with a twelve-level table and the original's twelve cosmos shaders on
@@ -399,7 +399,7 @@ ignored. `play_tune_gm` is the other answer to the same ABC -- write it as a
 Standard MIDI File and hand it to `AVMIDIPlayer` with the system's General
 MIDI soundbank, so program 52 *is* a choir, 9 a glockenspiel, 80 a square
 lead. That is exactly how MACVM's game pane plays its tunes, which is why
-GalixigansDeluxe's four cues are the original's music rather than a chip
+GalaxigansDeluxe's four cues are the original's music rather than a chip
 impression of it. One GM player at a time; starting a tune stops the last.
 
 Because the chip is integer arithmetic with a fixed LFSR seed, every effect
@@ -435,7 +435,7 @@ than it is. Build a binary and run that; it prints every line first.
 ## What to do to it next
 
 - **A third game.** Two exist now -- `galaxigans` from BASIC and
-  `galixigans-deluxe` from MACVM -- and the second started from the first as
+  `galaxigans-deluxe` from MACVM -- and the second started from the first as
   a template, which was the test.
 - **Instanced sprites.** One draw call per sprite is fine at a dozen and wrong
   at hundreds; the transform would move to the vertex shader.

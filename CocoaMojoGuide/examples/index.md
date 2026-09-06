@@ -30,7 +30,7 @@ section ends with a plain verdict, and some of those verdicts are "none".
 | [`bifurcation`](05-python-used-well.md#bifurcation) | 250 lines | What Python is genuinely better at, measured rather than assumed |
 | [`gamepane`](07-the-game-pane.md) | 11,548 lines | A retro game engine as a package: four composited layers, GPU kernels, two chips — [chapter 7](07-the-game-pane.md) |
 | [`galaxigans`](07-the-game-pane.md) | 1,545 lines | A Galaga on that engine, ported from BASIC — the game the package exists for |
-| [`galixigans-deluxe`](07-the-game-pane.md#galixigansdeluxe) | 2,082 lines | The complete port of MACVM's Galaxigans: ten species, a capture boss whose tractor beam is a per-line palette trick, spinning mines, the victory dance, a hall of fame — and its music on the system General MIDI synth |
+| [`galaxigans-deluxe`](07-the-game-pane.md#galaxigansdeluxe) | 2,082 lines | The complete port of MACVM's Galaxigans: ten species, a capture boss whose tractor beam is a per-line palette trick, spinning mines, the victory dance, a hall of fame — and its music on the system General MIDI synth |
 | [`fern`](../gpu/04-three-ferns.md) | 289 lines | Wide work with no deadline — correctly on the CPU |
 | [`ferns`](../gpu/04-three-ferns.md) | 641 lines | A deadline, but work too narrow to move |
 | [`fernwind`](../gpu/04-three-ferns.md) | 760 lines | Wide *and* out of time — the crossing, measured at 104× |

@@ -6,7 +6,7 @@
 # AVMIDIPlayer with the system's General MIDI soundbank, so program 52 IS a
 # choir, 9 a glockenspiel, 80 a square lead and 91 a polysynth pad. It is
 # exactly what MACVM's game pane does with `Tune fromAbc:` (MacGamePane
-# audio/src/playback.rs), which is why GalixigansDeluxe's music is the
+# audio/src/playback.rs), which is why GalaxigansDeluxe's music is the
 # original's music rather than a chip impression of it. The chip stays for
 # the effects, and for tunes that want to be chip music.
 #

@@ -1,4 +1,4 @@
-# GalixigansDeluxe -- the twelve cosmos backdrops as one Metal fragment shader,
+# GalaxigansDeluxe -- the twelve cosmos backdrops as one Metal fragment shader,
 # the scene in shader parameter 0. VERBATIM from MACVM (which translated the
 # original's HLSL: frac->fract, lerp->mix, aspect from the uniform). The pane
 # supplies VOut and Uniforms; `fmain` is its entry point.

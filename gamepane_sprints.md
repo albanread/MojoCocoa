@@ -790,15 +790,15 @@ rather than the aliasing bug it would have been.
 
 ---
 
-## Sprint G11 — the second game: GalixigansDeluxe (DONE, size L, wants G10)
+## Sprint G11 — the second game: GalaxigansDeluxe (DONE, size L, wants G10)
 
 **Goal.** The complete port of MACVM's Galaxigans (`world/49_galaxigans.mst`,
 1,979 lines of Smalltalk over six classes) — the version with the ten-species
 library, the twelve-level table and cosmos shaders, the saucer's spinning
 mine, the capture boss with its tractor beam, the victory dance and the hall
-of fame — called GalixigansDeluxe, and sounding like the original.
+of fame — called GalaxigansDeluxe, and sounding like the original.
 
-**Status.** Done: `examples/galixigans-deluxe`, four modules. The art, the
+**Status.** Done: `examples/galaxigans-deluxe`, four modules. The art, the
 palettes, the shader and the four tunes are GENERATED from the `.mst` by a
 script, so nothing was retyped; the logic is the `.mst`'s method for method,
 constants included, stepping at its 30 Hz on a fixed clock.

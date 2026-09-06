@@ -190,7 +190,7 @@ allocates nothing and cannot raise — the same contract the notes keep, because
 it runs from the same place they do. The panel reads the chip's registers
 rather than its own copy of them, so you can watch a tune move the sliders.
 
-`tunes/galixigans.abc` is the demonstration: a dive where the pulse width
+`tunes/galaxigans.abc` is the demonstration: a dive where the pulse width
 narrows and the filter closes as they come at you, a four-step power-up with
 the cutoff opening on every bar, and a fanfare. It is in A minor throughout the
 defence and ends in A major. The picardy third is the joke — it is a

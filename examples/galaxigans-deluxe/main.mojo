@@ -1,4 +1,4 @@
-# GalixigansDeluxe -- a Galaxian/Galaga-style fixed shooter: the complete port
+# GalaxigansDeluxe -- a Galaxian/Galaga-style fixed shooter: the complete port
 # of MACVM's Galaxigans (world/49_galaxigans.mst, itself a faithful port of the
 # x64 assembler original) onto the Mojo game pane.
 #
@@ -504,7 +504,7 @@ def hall_path() raises -> String:
     let home = getenv("HOME")
     if home.byte_length() == 0:
         return String("")
-    return home + "/.galixigans-deluxe-hall"
+    return home + "/.galaxigans-deluxe-hall"
 
 
 fn parse_int(s: String) -> Int:
@@ -1490,7 +1490,7 @@ struct Game(Movable):
 def main() raises:
     if not load_framework["Metal"]():
         raise Error("could not load Metal")
-    var pane = GamePane(String("GalixigansDeluxe"), FIELD_W, FIELD_H)
+    var pane = GamePane(String("GalaxigansDeluxe"), FIELD_W, FIELD_H)
     var cosmos = ShaderPane(pane.device, COSMOS_SHADER)      # layer 0: the twelve cosmos
     cosmos.set_aspect(pane.aspect())
     var field = IndexedPane(pane.ctx, pane.device, FIELD_W, FIELD_H, FIELD_W, FIELD_H)
@@ -1564,4 +1564,4 @@ def main() raises:
     stop_audio(unit)
     deck_free(deck)
     pane.close()
-    print("GalixigansDeluxe:", game.summary(), "-- presented", pane.frame_count(), "frames")
+    print("GalaxigansDeluxe:", game.summary(), "-- presented", pane.frame_count(), "frames")

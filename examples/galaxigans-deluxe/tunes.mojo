@@ -1,4 +1,4 @@
-# GalixigansDeluxe -- the four melodic cues, transcribed note for note from
+# GalaxigansDeluxe -- the four melodic cues, transcribed note for note from
 # the assembler original's galaxigans_music.was by way of MACVM's port. The
 # %%MIDI program lines are General MIDI numbers: 80 square lead, 52 choir,
 # 9 glockenspiel, 91 polysynth pad -- which is what MACVM plays them on.
