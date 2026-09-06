@@ -27,6 +27,16 @@ which opens itself when a build starts and toggles with ⌘0.
                   tune list, an editor for all three chip voices, and a
                   playable keyboard on Logic's Musical Typing layout. Tunes
                   can change the chip's registers mid-phrase with [I:chip ...]
+    galaxigans/   a Galaga: the sprite layer, the text overlay and 12,000
+                  GPU particles that take their colours from the sprite
+                  that just exploded. Start here of the two
+    galaxigans-deluxe/
+                  the same game rebuilt on the whole package -- an indexed
+                  pane whose per-scanline palette makes the capture boss's
+                  tractor beam flow without redrawing a pixel, fourteen
+                  alien species across twelve waves, and two kinds of
+                  music: the big cues on the system's General MIDI synth,
+                  a chip motif for each species when it dives
     ferns/        a landscape of Barnsley ferns growing live over a
                   procedural lawn, under a cloudy dusk sky (CPU)
     fernwind/     the same meadow swaying in the wind: every fern redrawn
