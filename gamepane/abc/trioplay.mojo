@@ -19,12 +19,13 @@
 from std.memory import Pointer, MutUntrackedOrigin
 from std.ffi import external_call
 from std.math import cos, sin, exp2
+from std.atomic import Atomic, Ordering
 
 from gamepane.api.audio import (
     P, get, put, fget, fput, vget, vput, chip_new, chip_free, chip_render,
     gate_off, set_freq_hz, set_pulse_width, set_filter, PLAYER_BASE,
     SAMPLE_RATE, FRAME_SAMPLES,
-    S_CUTOFF, S_RES, S_FMODE, V_SUS, V_PW,
+    S_CUTOFF, S_RES, S_FMODE, V_SUS, V_PW, V_ENV,
 )
 from gamepane.abc.schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
 from gamepane.abc.model import CP_PAN, CP_ECHO, CP_ETIME, CP_EFB
@@ -63,7 +64,83 @@ comptime T_ESCRATCH = 28     # the span's summed echo sends, TRIO_SPAN floats
 comptime T_ECHO_USED = 29    # set the first time any send goes live; while
                              # zero the echo pass is skipped ENTIRELY, which
                              # is what keeps CT0's equality untouched
-comptime TRIO_SLOTS = 32
+comptime T_PLAYHEAD = 30     # PUBLISHED schedule position -- the sync track's
+                             # needle, release-stored by the renderer, acquire-
+                             # loaded by whoever draws. Loop wraps rewind it,
+                             # which is exactly what a beat lookup wants.
+comptime T_SCOPE = 31        # the oscilloscope ring: SCOPE_FRAMES stereo pairs
+comptime T_SCOPE_POS = 32    # frames ever written, release-stored after the
+                             # samples they cover -- the ring's write head is
+                             # this modulo SCOPE_FRAMES
+comptime TRIO_SLOTS = 40
+
+comptime SCOPE_FRAMES = 2048
+"""About 43 ms of mix in the window -- two full cycles of a bass A, which
+is what an oscilloscope needs to look like an oscilloscope."""
+
+
+# ── the SPSC discipline, the deck's own ─────────────────────────────────────
+#
+# One writer, one reader, no lock: the renderer release-stores a counter
+# AFTER the payload it covers, the reader acquire-loads it BEFORE reading
+# the payload. Same pair as the deck's trigger ring, for the same reason --
+# the ordering rides the two accesses that need it, not the thread.
+
+
+@always_inline
+fn tget_acquire(t: P, slot: Int) -> Int:
+    """Acquire-load a counter the render thread writes."""
+    return Atomic[Int].load[ordering = Ordering.ACQUIRE](
+        t.unsafe_bitcast[Int]() + slot
+    )
+
+
+@always_inline
+fn tput_release(t: P, slot: Int, value: Int):
+    """Release-store a counter the render thread owns."""
+    Atomic[Int].store[ordering = Ordering.RELEASE](
+        t.unsafe_bitcast[Int]() + slot, value
+    )
+
+
+fn trio_playhead(t: P) -> Int:
+    """Where the tune IS, in samples, from any thread. A binary search of
+    the schedule at this position names the note that is sounding, which
+    is the whole sync story: no message, no estimate, no drift."""
+    return tget_acquire(t, T_PLAYHEAD)
+
+
+fn trio_voice_level(t: P, chip: Int, voice: Int) -> Int:
+    """A voice's envelope, 0..255, racily and on purpose: it feeds a VU
+    bar, a torn read is one frame of flicker, and a lock here would be a
+    price with no goods. Only ever read it for display."""
+    var v = voice
+    if v < 0:
+        v = 0
+    elif v > 2:
+        v = 2
+    return vget(trio_chip(t, chip), v, V_ENV) >> 16
+
+
+fn trio_scope_read(
+    t: P, out_buf: Pointer[Float32, MutUntrackedOrigin], frames: Int
+) -> Int:
+    """Copy the newest `frames` stereo pairs of the mix, oldest first.
+    Returns how many were real; the reader's buffer is its own."""
+    var want = frames
+    if want > SCOPE_FRAMES:
+        want = SCOPE_FRAMES
+    let written = tget_acquire(t, T_SCOPE_POS)
+    var have = want
+    if written < have:
+        have = written
+    let ring = Pointer[Float32, MutUntrackedOrigin](
+        unsafe_from_address=get(t, T_SCOPE))
+    for i in range(have):
+        let src = ((written - have + i) % SCOPE_FRAMES) * 2
+        out_buf[unsafe_offset=i * 2] = ring[unsafe_offset=src]
+        out_buf[unsafe_offset=i * 2 + 1] = ring[unsafe_offset=src + 1]
+    return have
 
 comptime TRIO_SPAN = 4096
 """The most one chip_render is asked for in one go. A longer quiet span is
@@ -99,6 +176,10 @@ def trio_new() raises -> P:
     put(t, T_ESCRATCH, Int(ebus))
     put(t, T_ETIME, 15)          # 300 ms and gentle, until a tune says
     put(t, T_EFB, 6)
+    let ring = external_call["calloc", P](Int(SCOPE_FRAMES * 2), Int(4))
+    if Int(ring) == 0:
+        raise Error("trio: no scope ring")
+    put(t, T_SCOPE, Int(ring))
     put(t, T_MASTER, 128)
     # The twin-SID rig: music centre, and the outer chips off to each side.
     set_trio_pan(t, 0, 0)
@@ -120,6 +201,9 @@ fn trio_free(t: P):
     )
     _ = external_call["free", NoneType](
         P(unsafe_from_address=get(t, T_ESCRATCH))
+    )
+    _ = external_call["free", NoneType](
+        P(unsafe_from_address=get(t, T_SCOPE))
     )
     let addr = get(t, T_ADDR)
     if addr != 0:
@@ -521,13 +605,28 @@ fn render_trio(
                     wp = 0
             put(t, T_DELAY_POS, wp)
 
+        # The span's mix is finished: copy it into the scope ring, THEN
+        # publish how far the ring reaches, then where the tune stands.
+        let ring = Pointer[Float32, MutUntrackedOrigin](
+            unsafe_from_address=get(t, T_SCOPE))
+        var wrote = get(t, T_SCOPE_POS)
+        for i in range(span):
+            let dst = (wrote % SCOPE_FRAMES) * 2
+            let o = (filled + i) * 2
+            ring[unsafe_offset=dst] = dest[unsafe_offset=o]
+            ring[unsafe_offset=dst + 1] = dest[unsafe_offset=o + 1]
+            wrote += 1
+        tput_release(t, T_SCOPE_POS, wrote)
+
         filled += span
         put(t, T_SAMPLE, now + span)
+        tput_release(t, T_PLAYHEAD, now + span)
 
         if cursor >= count and get(t, T_SAMPLE) > get(t, T_END):
             if get(t, T_LOOP) != 0:
                 put(t, T_CURSOR, 0)
                 put(t, T_SAMPLE, 0)
+                tput_release(t, T_PLAYHEAD, 0)
                 for c in range(3):
                     let st = trio_chip(t, c)
                     for v in range(3):

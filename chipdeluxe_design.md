@@ -221,7 +221,7 @@ Sizes as elsewhere: **S** a sitting, **M** a day or two, **L** a week.
   renders.
 - **CT3 — echo (DONE, was S).** Preallocated stereo delay, sends, feedback.
   *Checks:* hash fixture; silence-in silence-out; feedback ceiling proof.
-- **CT4 — taps and sync (S).** Published sample cursor, env reads, scope
+- **CT4 — taps and sync (DONE, was S).** Published sample cursor, env reads, scope
   ring. *Checks:* SPSC discipline documented against the deck's; a
   headless reader sees a monotonic cursor.
 - **CT5 — the visuals (M).** Copper VU, scope kernel + fade pass, plasma,
