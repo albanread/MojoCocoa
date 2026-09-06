@@ -71,6 +71,7 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
@@ -2111,6 +2112,25 @@ llvm::Error legalizeModule(llvm::Module &m) {
   };
   for (llvm::Function &fn : m)
     scrub(fn);
+  // Experiment knob: APPLEGPU_AIR_STRIP_LOOP_MD=1 drops every `!llvm.loop`
+  // attachment before emission, so Apple's compiler makes its own unrolling
+  // decisions on loops LLVM's unroller touched (it marks those
+  // `llvm.loop.unroll.disable`, which Apple honours).
+  // Loop metadata does not go to the driver. Before the unroller existed this
+  // module carried none; LLVM's unroller stamps `llvm.loop.unroll.disable`
+  // on what it unrolled, Apple's compiler honours that too, and the measured
+  // difference is Apple unrolling the remainder as it sees fit (FMA-chain
+  // bench at 64 chains: 3,192 with the metadata, 3,373 without).
+  // APPLEGPU_AIR_KEEP_LOOP_MD=1 keeps it for a comparison.
+  if (!airKnobEnabled("APPLEGPU_AIR_KEEP_LOOP_MD", false)) {
+    if (airKnob("APPLEGPU_AIR_KEEP_LOOP_MD"))
+      fprintf(stderr, "[air-knobs] APPLEGPU_AIR_KEEP_LOOP_MD=0\n");
+    for (llvm::Function &fn : m)
+      for (llvm::BasicBlock &bb : fn)
+        for (llvm::Instruction &inst : bb)
+          if (inst.hasMetadata(llvm::LLVMContext::MD_loop))
+            inst.setMetadata(llvm::LLVMContext::MD_loop, nullptr);
+  }
   forgetModuleArchs(m); // read by legalizeModule; not for the artifact
   return llvm::Error::success();
 }
@@ -2223,7 +2243,99 @@ public:
   /// and Apple's own compiler from MSL (951) both produce. Off by default;
   /// APPLEGPU_AIR_VECTORIZE=1 puts it back for a comparison.
   bool wantsVectorization() const override {
+    if (auto v = airKnob("APPLEGPU_AIR_VECTORIZE"))
+      fprintf(stderr, "[air-knobs] APPLEGPU_AIR_VECTORIZE=%s\n", v->c_str());
     return airKnobEnabled("APPLEGPU_AIR_VECTORIZE", false);
+  }
+
+  /// VectorCombine separately from SLP: APPLEGPU_AIR_VECTOR_COMBINE (default
+  /// follows APPLEGPU_AIR_VECTORIZE). The two pull in opposite directions on
+  /// this target -- SLP packing of scalars costs the fully unrolled matmul 9%
+  /// under Apple's compiler, while VectorCombine's folding of insert/extract
+  /// chains around SIMD-typed accumulators is what lets the loop unroller
+  /// see a small body -- so they are measured apart.
+  bool wantsVectorCombine() const override {
+    if (auto v = airKnob("APPLEGPU_AIR_VECTOR_COMBINE")) {
+      fprintf(stderr, "[air-knobs] APPLEGPU_AIR_VECTOR_COMBINE=%s\n", v->c_str());
+      return airKnobEnabled("APPLEGPU_AIR_VECTOR_COMBINE", false);
+    }
+    return wantsVectorization();
+  }
+
+  /// LLVM's partial/runtime loop unroller, at its standard O3 position, on by
+  /// default for AIR since 2026-09-06: the shared pipeline has no unroller of
+  /// its own, and a rolled GPU loop pays its counter, compare and branch per
+  /// useful instruction. Measured (oracles findings/d7-unrolled-matmul.md):
+  /// the FMA-chain bench 411 -> 1,922 GFLOP/s at one chain and the M4's full
+  /// 3.6 TFLOP/s from eight, checksums identical; the register matmuls and
+  /// STREAM unchanged. APPLEGPU_AIR_UNROLL=0 turns it off for a comparison.
+  bool wantsPartialUnrolling() const override {
+    if (auto v = airKnob("APPLEGPU_AIR_UNROLL"))
+      fprintf(stderr, "[air-knobs] APPLEGPU_AIR_UNROLL=%s\n", v->c_str());
+    const bool on = airKnobEnabled("APPLEGPU_AIR_UNROLL", true);
+    if (on)
+      applyUnrollThresholdsOnce();
+    return on;
+  }
+
+  /// LLVM's unroll thresholds are tuned for CPUs and count IR instructions:
+  /// a SIMD[16] accumulator updated lane by lane is 64 instructions to the
+  /// unroller and 16 FMAs to the GPU, so the default partial threshold of
+  /// 150 lets it unroll twice and no more. With the body-size gate above
+  /// keeping large and branching loops out, the threshold can be generous:
+  /// APPLEGPU_AIR_UNROLL_PARTIAL_THRESHOLD (default 1024) and a count cap
+  /// of 32. Set once per process through LLVM's option registry; nothing
+  /// else in this process runs the unroller (the host pipeline has none).
+  static void applyUnrollThresholdsOnce() {
+    static bool done = false;
+    if (done)
+      return;
+    done = true;
+    unsigned partial = 1024;
+    if (auto v = airKnob("APPLEGPU_AIR_UNROLL_PARTIAL_THRESHOLD")) {
+      fprintf(stderr, "[air-knobs] APPLEGPU_AIR_UNROLL_PARTIAL_THRESHOLD=%s\n",
+              v->c_str());
+      partial = (unsigned)atoi(v->c_str());
+    }
+    auto &opts = llvm::cl::getRegisteredOptions();
+    auto set = [&](llvm::StringRef name, unsigned value) {
+      auto it = opts.find(name);
+      if (it == opts.end()) {
+        fprintf(stderr, "[air-knobs] LLVM option '%s' not registered; unroll "
+                        "thresholds left at LLVM's defaults\n",
+                name.str().c_str());
+        return;
+      }
+      // An occurrence, not just a value: LLVM's unrolling preferences take a
+      // command-line override only when the option has one.
+      it->second->addOccurrence(1, name, std::to_string(value));
+    };
+    set("unroll-partial-threshold", partial);
+    set("unroll-max-count", 32);
+  }
+
+  /// The body-size gate for that unroller: APPLEGPU_AIR_UNROLL_LIMIT
+  /// instructions (default 128; 0 = no limit). Chosen against the benches:
+  /// the FMA-chain loop body is 4-70, the rolled matmuls' inner loops under
+  /// 40, and the source-unrolled K-steps that must be left alone 150-700.
+  /// APPLEGPU_AIR_UNROLL_GATE=wide admits multi-block loops that touch only
+  /// threadgroup memory and make no calls; the default is single-block loops
+  /// only (measured: the wide gate with the 1024 partial threshold takes a
+  /// rolled matmul from 957 to 794 GFLOP/s, the narrow one leaves it alone).
+  bool unrollSingleBlockOnly() const override {
+    if (auto v = airKnob("APPLEGPU_AIR_UNROLL_GATE")) {
+      fprintf(stderr, "[air-knobs] APPLEGPU_AIR_UNROLL_GATE=%s\n", v->c_str());
+      return *v != "wide";
+    }
+    return true;
+  }
+
+  unsigned unrollBodyLimit() const override {
+    if (auto v = airKnob("APPLEGPU_AIR_UNROLL_LIMIT")) {
+      fprintf(stderr, "[air-knobs] APPLEGPU_AIR_UNROLL_LIMIT=%s\n", v->c_str());
+      return (unsigned)atoi(v->c_str());
+    }
+    return 128;
   }
 
   /// D7 experiment knob. APPLEGPU_AIR_OPT_LEVEL=0|1|2 replaces the shared O3

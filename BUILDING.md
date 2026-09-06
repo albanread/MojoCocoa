@@ -158,7 +158,13 @@ result** -- and each needing a fresh compile cache (see the table below):
 |---|---|
 | `APPLEGPU_AIR_VECTORIZE=1` | run SLP vectorization + VectorCombine on device modules (off by default since D7: 9% slower on Apple's compiler) |
 | `APPLEGPU_AIR_OPT_LEVEL=0|1|2` | replace the shared O3 device pipeline with PassBuilder's default at that level |
-| `APPLEGPU_AIR_UNROLL_PARTIAL=1` | partial/runtime loop unrolling after the pipeline (experiment; see D7) |
+| `APPLEGPU_AIR_UNROLL=0` | turn off LLVM's partial/runtime loop unroller, which runs at its standard O3 position for AIR on single-block loops within the size limit (on by default) |
+| `APPLEGPU_AIR_UNROLL_LIMIT=N` | the body-size gate for that unroller, in IR instructions (default 128; 0 = no size limit, the single-block rule still holds) |
+| `APPLEGPU_AIR_UNROLL_PARTIAL_THRESHOLD=N` | LLVM's `unroll-partial-threshold` for the gated loops (default 1024; LLVM's own default is 150, tuned for CPUs) |
+| `APPLEGPU_AIR_KEEP_LOOP_MD=1` | keep `!llvm.loop` attachments in the emitted AIR (they are stripped by default: Apple's compiler honours `llvm.loop.unroll.disable`, and the module carried none before the unroller existed) |
+| `APPLEGPU_AIR_UNROLL_GATE=wide` | admit multi-block loops that touch only threadgroup memory and make no calls (default: single-block loops only; the wide gate recovers a rolled matmul's +4% but costs 17% where it over-unrolls a loop nest) |
+| `APPLEGPU_AIR_UNROLL_PARTIAL=1` | the older post-pipeline unroller experiment (superseded by the in-pipeline stage above; kept for comparison) |
+| `APPLEGPU_AIR_VECTOR_COMBINE=1` | VectorCombine on its own, without SLP (default follows `APPLEGPU_AIR_VECTORIZE`) |
 | `APPLEGPU_KEEP_AIR=<dir>` | keep each kernel's `.pre.ll`, `.post.ll`, `.air` and `.metallib` in `<dir>`; the metallib runs unchanged in `oracles/bench/native.m <file>` |
 | `APPLEGPU_AIR_SCALARIZE_WIDE_VECTORS=1` | the older late-scalariser experiment (object path only) |
 

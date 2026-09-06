@@ -239,6 +239,39 @@ public:
   /// slower under Apple's compiler than the scalar form it was made from.
   virtual bool wantsVectorization() const { return true; }
 
+  /// Finer than `wantsVectorization`: whether VectorCombine (folding of
+  /// insert/extract chains around existing vectors, and scalarization of
+  /// single-lane vector ops) should run even when SLP packing should not.
+  /// Default: whatever `wantsVectorization` says.
+  virtual bool wantsVectorCombine() const { return wantsVectorization(); }
+
+  /// Whether the standard pipeline should run LLVM's partial/runtime loop
+  /// unroller on this backend's modules. This pipeline has otherwise no loop
+  /// unroller at all -- Mojo unrolls at the source with `comptime for`, and
+  /// for CPU code that has been enough. Default false; a GPU backend whose
+  /// lanes issue in order returns true (AIR: a 4096-trip FMA loop went from
+  /// 411 to 1,922 GFLOP/s at one chain on an M4, checksums identical).
+  virtual bool wantsPartialUnrolling() const { return false; }
+
+  /// With `wantsPartialUnrolling`: loops that are not a single straight-line
+  /// block, or whose body holds more than this many instructions, are marked
+  /// `llvm.loop.unroll.disable` before the unroller runs, so it amortises
+  /// loop overhead on small simple bodies and never multiplies a large or a
+  /// branching one. 0 means no size limit (the single-block rule still holds). LLVM's own size thresholds are tuned for CPUs; on an Apple GPU
+  /// a source-unrolled K-step of a few hundred instructions unrolled twice
+  /// more ran 17% slower, while the same unroller made a rolled SRAM matmul
+  /// 19% faster.
+  virtual unsigned unrollBodyLimit() const { return 0; }
+
+  /// With `unrollBodyLimit`: restrict the unroller to single-block loops
+  /// only (default), rather than also admitting multi-block loops that touch
+  /// only threadgroup memory and make no calls. The wider gate recovers a
+  /// rolled matmul's inner loops (+4% on an M4) but, with the same partial
+  /// threshold that lets a pure-ALU loop unroll eight times, it expands a
+  /// three-loop nest into a thousand instructions and loses 17%; a per-loop
+  /// count policy would have both, and is the next refinement.
+  virtual bool unrollSingleBlockOnly() const { return true; }
+
   /// Adds backend-specific passes at the start of the standard optimization
   /// pipeline (for backends that augment rather than replace it, e.g. NVPTX).
   virtual void addPipelineStartPasses(llvm::ModulePassManager &mpm,

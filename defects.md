@@ -365,6 +365,30 @@ from the `DevicePassable` types; the external path should go through
 `DevicePassable`. Reproduction: `oracles/bench/native_msl_bench.mojo`; the
 native reference numbers were taken with `oracles/bench/native.m` instead.
 
+### D24 — No loop unroller in the pipeline; promoted for AIR with a gate — DONE (gated), refinement OPEN
+The shared O3 pipeline had no loop unroller of any kind -- not even the
+full unroller -- on any target; Mojo unrolls at the source with `comptime
+for`. A GPU lane cannot hide a loop's counter, compare and branch behind
+anything, so a rolled loop with a small body ran at a fraction of the
+machine: the FMA-chain bench at one chain 411 GFLOP/s against a 3,600
+peak. LLVM's `LoopUnrollPass` now runs at its standard O3 position for
+backends that ask (`wantsPartialUnrolling`), which AIR does.
+
+Three lessons on the way, each measured (`oracles/findings/d7-unrolled-matmul.md`):
+the unroller must be gated (single-block loops within 128 instructions;
+the cooperative-load loops of a tiled matmul lose 17% when unrolled); the
+gate's `llvm.loop.unroll.disable` marks must be stripped before emission
+because Apple's compiler honours them too (a rolled matmul fell to 116
+GFLOP/s with byte-identical instructions); and LLVM's partial threshold
+must be raised (1024, through the option registry with an occurrence, not
+a bare `setValue`) or a SIMD[16] accumulator loop unrolls only twice.
+
+Result on the M4: SRAM matmul 352 → 395, FMA-chain curve 2,815 / 3,544 /
+3,602 / 3,332 from 414 / 1,321 / 2,641 / 3,219, the register matmuls
+unchanged. Open: a per-loop unroll count from body size and what the loop
+touches, which would recover the rolled matmul's +4% (the wide gate shows
+it: 993) without the 17% loss the wide gate brings elsewhere.
+
 ## Carried from the review (see improvement_plan.md for detail)
 
 ### D7 — Unrolled register matmul ~9% behind upstream — RESOLVED: SLP vectorization, off for AIR

@@ -82,6 +82,10 @@
 #include "llvm/Transforms/Utils/SimplifyCFGOptions.h"
 #include "llvm/Transforms/Vectorize/SLPVectorizer.h"
 #include "llvm/Transforms/Vectorize/VectorCombine.h"
+#include "llvm/Transforms/Scalar/LoopUnrollPass.h"
+#include "llvm/Transforms/Utils/LoopUtils.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/IR/Instructions.h"
 #include <cstdlib>
 
 using namespace llvm;
@@ -216,7 +220,7 @@ buildFunctionSimplificationPipeline(PassBuilder passBuilder,
 
   // Try vectorization/scalarization transforms that are both improvements
   // themselves and can allow further folds with GVN and InstCombine.
-  if (!backend || backend->wantsVectorization())
+  if (!backend || backend->wantsVectorCombine())
     fpm.addPass(VectorCombinePass(/*TryEarlyFoldsOnly=*/true));
 
   // Eliminate redundancies.
@@ -318,6 +322,105 @@ static void addInlinerPasses(PassBuilder passBuilder, ModulePassManager &MPM,
   MPM.addPass(std::move(miwp));
 }
 
+namespace {
+/// Marks every loop whose body exceeds `limit` instructions with
+/// `llvm.loop.unroll.disable`, so the unroller that follows amortises loop
+/// overhead on small bodies and never multiplies a large one. See
+/// TargetBackend::unrollBodyLimit for why a backend would want this.
+struct MarkLargeLoopsNoUnrollPass
+    : llvm::PassInfoMixin<MarkLargeLoopsNoUnrollPass> {
+  unsigned limit;
+  bool singleOnly;
+  MarkLargeLoopsNoUnrollPass(unsigned limit, bool singleOnly)
+      : limit(limit), singleOnly(singleOnly) {}
+  llvm::PreservedAnalyses run(llvm::Function &F,
+                              llvm::FunctionAnalysisManager &FAM) {
+    auto &LI = FAM.getResult<llvm::LoopAnalysis>(F);
+    for (llvm::Loop *L : LI.getLoopsInPreorder()) {
+      // Only a straight-line body qualifies: a loop with control flow inside
+      // it (a bounds-checked cooperative load, say) multiplied by four ran
+      // 17% slower on an Apple GPU, while the same unroller made the
+      // single-block inner loops of two matmuls 4% and 19% faster.
+      unsigned n = 0;
+      bool touchesDevice = false, calls = false;
+      for (llvm::BasicBlock *BB : L->blocks()) {
+        n += BB->size();
+        for (llvm::Instruction &I : *BB) {
+          // Device pointers are still generic (address space 0) at this
+          // point -- the target's address-space inference runs in
+          // legalization, after the pipeline -- so "device memory" here means
+          // any access outside the threadgroup space (3), which the frontend
+          // does mark from the start.
+          if (auto *ld = llvm::dyn_cast<llvm::LoadInst>(&I))
+            touchesDevice |= ld->getPointerAddressSpace() != 3;
+          else if (auto *st = llvm::dyn_cast<llvm::StoreInst>(&I))
+            touchesDevice |= st->getPointerAddressSpace() != 3;
+          else if (llvm::isa<llvm::CallBase>(I))
+            calls = true;
+        }
+      }
+      // Qualifies: within the size limit, and a single straight-line block
+      // -- or, when the backend admits it, a multi-block body that touches
+      // only threadgroup memory and makes no calls (a barrier is a call).
+      // The cooperative-load loops that lost 17% when unrolled fail both
+      // tests; the inner loops of a rolled matmul pass the second.
+      const bool simple =
+          L->getNumBlocks() == 1 || (!touchesDevice && !calls && !singleOnly);
+      if (!simple || n > limit) {
+        llvm::addStringMetadataToLoop(L, "llvm.loop.unroll.disable", 1);
+        llvm::addStringMetadataToLoop(L, "kgen.unroll.gated", 1);
+      }
+    }
+    return llvm::PreservedAnalyses::all(); // metadata only
+  }
+};
+
+/// Removes what MarkLargeLoopsNoUnrollPass added, once the unroller has run.
+/// The metadata must not outlive the pass it was meant for: loop metadata is
+/// emitted with the module, and the consumer's own compiler honours
+/// `llvm.loop.unroll.disable` as well. Left in place on an Apple GPU module
+/// it forbade Apple's unroller the very loops it had been unrolling well --
+/// a rolled matmul fell from 956 to 116 GFLOP/s with byte-identical
+/// instructions, metadata the only difference.
+struct StripGatedUnrollMetadataPass
+    : llvm::PassInfoMixin<StripGatedUnrollMetadataPass> {
+  static llvm::StringRef nodeName(llvm::Metadata *op) {
+    auto *node = llvm::dyn_cast_or_null<llvm::MDNode>(op);
+    if (!node || node->getNumOperands() == 0)
+      return "";
+    auto *str = llvm::dyn_cast_or_null<llvm::MDString>(node->getOperand(0));
+    return str ? str->getString() : "";
+  }
+  llvm::PreservedAnalyses run(llvm::Function &F,
+                              llvm::FunctionAnalysisManager &FAM) {
+    auto &LI = FAM.getResult<llvm::LoopAnalysis>(F);
+    for (llvm::Loop *L : LI.getLoopsInPreorder()) {
+      llvm::MDNode *ID = L->getLoopID();
+      if (!ID)
+        continue;
+      bool gated = false;
+      for (unsigned i = 1; i < ID->getNumOperands(); ++i)
+        if (nodeName(ID->getOperand(i)) == "kgen.unroll.gated")
+          gated = true;
+      if (!gated)
+        continue;
+      llvm::SmallVector<llvm::Metadata *, 4> keep;
+      keep.push_back(nullptr); // the self-reference, patched below
+      for (unsigned i = 1; i < ID->getNumOperands(); ++i) {
+        llvm::StringRef name = nodeName(ID->getOperand(i));
+        if (name == "kgen.unroll.gated" || name == "llvm.loop.unroll.disable")
+          continue;
+        keep.push_back(ID->getOperand(i));
+      }
+      llvm::MDNode *fresh = llvm::MDNode::getDistinct(F.getContext(), keep);
+      fresh->replaceOperandWith(0, fresh);
+      L->setLoopID(fresh);
+    }
+    return llvm::PreservedAnalyses::all();
+  }
+};
+} // namespace
+
 static void addVectorPasses(FunctionPassManager &FPM,
                             const CompilationOptions &options,
                              const TargetBackend *backend) {
@@ -347,13 +450,29 @@ static void addVectorPasses(FunctionPassManager &FPM,
                                    .sinkCommonInsts(true),
                                options)));
 
-  if (!backend || backend->wantsVectorization()) {
+  if (!backend || backend->wantsVectorization())
     FPM.addPass(SLPVectorizerPass());
-    // Enhance/cleanup vector code.
+  // Enhance/cleanup vector code.
+  if (!backend || backend->wantsVectorCombine())
     FPM.addPass(VectorCombinePass());
-  }
 
   FPM.addPass(InstCombinePass());
+  // The partial/runtime loop unroller that LLVM's own O3 runs at this point
+  // and this pipeline never had: Mojo unrolls at the source with `comptime
+  // for`, which has served CPU code. A GPU kernel is different -- a rolled
+  // loop with a tiny body issues a counter, a compare and a branch per useful
+  // instruction, and an in-order lane cannot hide that behind anything.
+  // Backends opt in (AIR does; oracles findings/d7-unrolled-matmul.md).
+  if (backend && backend->wantsPartialUnrolling()) {
+    if (unsigned limit = backend->unrollBodyLimit())
+      FPM.addPass(MarkLargeLoopsNoUnrollPass(limit, backend->unrollSingleBlockOnly()));
+    LoopUnrollOptions unrollOpts(/*OptLevel=*/3, /*OnlyWhenForced=*/false,
+                                 /*ForgetSCEV=*/false);
+    unrollOpts.setPartial(true).setRuntime(true).setUpperBound(true);
+    FPM.addPass(LoopUnrollPass(unrollOpts));
+    if (backend->unrollBodyLimit())
+      FPM.addPass(StripGatedUnrollMetadataPass());
+  }
   // Now that we are done with loop unrolling, be it either by LoopVectorizer,
   // or LoopUnroll passes, some variable-offset GEP's into alloca's could have
   // become constant-offset, thus enabling SROA and alloca promotion. Do so.
