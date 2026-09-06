@@ -256,7 +256,19 @@ __extension DeviceExternalFunction:
 
         # External functions carry no argument-size metadata, so no per-arg
         # sizes are passed to the enqueuer (matching the previous direct call).
-        var no_arg_sizes = OptionalPointer[UInt64, MutAnyOrigin](None)
+        # The sizes are not optional on Metal (D23): the runtime reads a null
+        # sizes pointer as "the first entry is the Apple argument view" -- the
+        # protocol the compiled-function path uses -- and a bare pointer array
+        # read that way is garbage. With sizes it takes the value-classified
+        # path, which binds a DeviceBuffer by its leading device address and a
+        # scalar by its bytes. The compiled path passes sizes on every backend,
+        # so this does too.
+        var dense_args_sizes = Array[UInt64, num_args](uninitialized=True)
+        comptime for i in range(num_args):
+            dense_args_sizes[i] = UInt64(size_of[Ts[i]]())
+        var arg_sizes = OptionalPointer[UInt64, MutAnyOrigin](
+            dense_args_sizes.unsafe_ptr().as_unsafe_any_origin()
+        )
         _checked(
             ctx.enqueue(
                 self._handle,
@@ -267,7 +279,7 @@ __extension DeviceExternalFunction:
                 len(attributes),
                 dense_args_addrs.unsafe_ptr().as_unsafe_any_origin(),
                 UInt32(num_args),
-                no_arg_sizes,
+                arg_sizes,
             ),
             location=location.or_else(call_location()),
         )
