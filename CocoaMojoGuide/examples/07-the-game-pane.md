@@ -182,10 +182,12 @@ there; it crashes in the next allocation, a long way from the cause.
 
 ## A worked example: the indexed pane
 
-`examples/galaxigans` is the game that ships with the toolchain -- a Galaga
-ported from 1,447 lines of BASIC, in about the same again of Mojo. It uses
-the sprite layer, the text overlay and the particle field, and the code
-below is from the demos that exercise the indexed pane instead.
+`examples/galaxigans` is the first game that shipped with the toolchain -- a
+Galaga ported from 1,447 lines of BASIC, in about the same again of Mojo. It
+uses the sprite layer, the text overlay and the particle field. Its successor
+`examples/galixigans-deluxe` (below) uses the indexed pane as well, for the one
+thing only an indexed pane can do; the code right here is from the demos that
+exercise that pane on its own.
 
 That demo draws a world twice the size of the screen, once, and never
 redraws it.
@@ -232,6 +234,33 @@ colour *i* is entry `y * 16 + i`; then the 240 global entries, so index *c*
 (16–255) is entry `viewport_height * 16 + (c - 16)`. Four bytes each, RGBA.
 There is no CPU mirror of the palette either, which is what stops an upload
 ever copying a stale copy over a guest's direct writes.
+
+## GalixigansDeluxe
+
+`examples/galixigans-deluxe` is the complete port of MACVM's Galaxigans
+(`world/49_galaxigans.mst`, itself a faithful port of the x64 assembler
+original), and it is the fuller use of the package: a ten-species creature
+library with a twelve-level table and the original's twelve cosmos shaders on
+layer 0; a dive AI whose random seed *is* the flight plan; the bonus saucer, its
+beating warble and its rare spinning mine; the survivors' victory dance; a hall
+of fame in a file; and the CAPTURE BOSS, whose tractor beam is why the indexed
+pane is in the stack.
+
+The beam is drawn once a frame as a cone in palette index 1, and it *flows*
+without a pixel being redrawn: index 1 means a different colour on every
+scanline, and stepping that ramp by one line a frame sends the bands down the
+cone. That is `set_line_rgb` -- the per-line palette from the demo above, the
+copper-bar trick -- doing what it was kept for. Everything else the game plots
+on that layer (bullets, bombs, sparks) sits in the global indices 16 and up,
+over a layer cleared to 0 so the cosmos shows through.
+
+Every sprite and palette is generated from the `.mst` by a script rather than
+retyped, and every constant is the original's; it steps at the 30 Hz it was
+tuned for on a fixed clock. With `GAMEPANE_FRAMES` set an autopilot plays, so
+the headless run in `check-examples.sh` exercises a game and not a title
+screen; `GDX_WAVE=n` starts at wave *n* (the boss first appears on wave 3),
+`GDX_TRACE=1` logs every event, and `GDX_PACIFIST=1` holds the autopilot's fire
+so the saucer and the boss play out. An autopilot run never writes the hall.
 
 ## The blitter
 
@@ -364,6 +393,15 @@ frame — so a sweep is a staircase at 50 Hz and audibly so. `saucer` and
 `boss_hum` take two voices each, because the warble *is* the beat between them:
 600 against 606 Hz, and 110 against 114.
 
+**Tunes have two ways out.** `play_tune` schedules the ABC onto chip A, and a
+chip has no choir: the `%%MIDI program` a tune names is parsed and then
+ignored. `play_tune_gm` is the other answer to the same ABC -- write it as a
+Standard MIDI File and hand it to `AVMIDIPlayer` with the system's General
+MIDI soundbank, so program 52 *is* a choir, 9 a glockenspiel, 80 a square
+lead. That is exactly how MACVM's game pane plays its tunes, which is why
+GalixigansDeluxe's four cues are the original's music rather than a chip
+impression of it. One GM player at a time; starting a tune stops the last.
+
 Because the chip is integer arithmetic with a fixed LFSR seed, every effect
 renders byte for byte the same on every run. The twelve hashes are committed,
 so a change to the oscillator, the envelope, the filter or a recipe shows up as
@@ -396,8 +434,9 @@ than it is. Build a binary and run that; it prints every line first.
 
 ## What to do to it next
 
-- **A game.** The package is an engine with no game in it. Galaxigans is the
-  planned first one.
+- **A third game.** Two exist now -- `galaxigans` from BASIC and
+  `galixigans-deluxe` from MACVM -- and the second started from the first as
+  a template, which was the test.
 - **Instanced sprites.** One draw call per sprite is fine at a dozen and wrong
   at hundreds; the transform would move to the vertex shader.
 - **A software backend.** The neutral tier imports no Metal, so a second

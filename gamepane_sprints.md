@@ -647,9 +647,9 @@ closed; SMF export kept.
    `Voice`, `Step`, `build_schedule`, `sort_steps` unchanged.
 2. `%%MIDI program / channel / transpose / drum` — the one construct the
    Rust parser has and this one lacks. `program` sets the voice instrument
-   (used by the DLS backend; the chip maps GM programs onto its three
-   recipes), `channel` and `drum` as the Rust does, `transpose` onto the
-   existing `Voice.transpose`.
+   -- honoured by the SMF writer and by `play_tune_gm` (below); the chip
+   player ignores it, a chip having no piano -- `channel` and `drum` as the
+   Rust does, `transpose` onto the existing `Voice.transpose`.
 3. `play_tune(tune)` schedules onto chip A through the existing callback
    path; `stop_tune`; `[I:chip …]` directives already switch voices
    mid-tune. The DLS `MusicDevice` backend remains selectable for a General
@@ -789,6 +789,48 @@ to the same call is an *"use of invalidated interior reference"* error
 rather than the aliasing bug it would have been.
 
 ---
+
+## Sprint G11 — the second game: GalixigansDeluxe (DONE, size L, wants G10)
+
+**Goal.** The complete port of MACVM's Galaxigans (`world/49_galaxigans.mst`,
+1,979 lines of Smalltalk over six classes) — the version with the ten-species
+library, the twelve-level table and cosmos shaders, the saucer's spinning
+mine, the capture boss with its tractor beam, the victory dance and the hall
+of fame — called GalixigansDeluxe, and sounding like the original.
+
+**Status.** Done: `examples/galixigans-deluxe`, four modules. The art, the
+palettes, the shader and the four tunes are GENERATED from the `.mst` by a
+script, so nothing was retyped; the logic is the `.mst`'s method for method,
+constants included, stepping at its 30 Hz on a fixed clock.
+
+**What the package needed.** One thing: the music. MACVM plays a tune by
+writing it as a Standard MIDI File and handing it to `AVMIDIPlayer` with the
+system General MIDI soundbank (MacGamePane `audio/src/playback.rs`), so its
+`%%MIDI program 52` is a real choir. Our chip player parsed the program and
+ignored it. `play_tune_gm` (`gamepane/metal/midiplay.mojo`) does what MACVM
+does — the SMF writer already existed — and the four cues now sound
+identical to the original's. The chip keeps the effects: MACVM's twelve
+presets and ours are the same twelve in the same order, different synths
+(theirs offline-rendered additive, ours real-time chip), same intent.
+
+**What mapped.** Every pane primitive the `.mst` uses has a counterpart:
+`defineSprite:`/`addFrame:` → `define_sprite`/`add_frame`, `colorAt:` →
+`sprite_rgb`, `linePaletteAt:` → `set_line_rgb` (the beam cascade),
+`shader:`/`shaderParam:` → `ShaderPane`/`set_param` with the identical
+`VOut`/`Uniforms`/`fmain` contract so the shader ported verbatim, and the
+5x7 text font at the same advance so every HUD coordinate carried over. Two
+differences: sprites are centre-anchored here (the `.mst` places by
+top-left), and a palette belongs to a DEFINITION, so the fleet is forty
+instances over ten species definitions rather than forty definitions each
+carrying every species.
+
+**Verification.** `GAMEPANE_FRAMES` runs an autopilot (it must not write the
+hall, and does not); `GDX_TRACE=1` logs events and `GDX_WAVE`/`GDX_PACIFIST`
+reach the boss and let the saucer drop, so a headless run shows the whole
+lifecycle — boss wake/charge/beam, a pilot grabbed and freed by a hit for
+500, a pilot taken, mines dropped and shot, waves cleared, the dance, the hall
+row. Frames dumped with `GAMEPANE_DUMP` were inspected by eye against the
+`.mst`'s layout.
 
 ## Deferred, explicitly
 
