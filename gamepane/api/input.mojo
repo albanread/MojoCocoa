@@ -62,3 +62,25 @@ struct GamepadState(Copyable, Movable):
     """-1..1, left to right."""
     var stick_y: Float64
     """-1..1, down to up (the controller's own sign)."""
+
+
+# ── letters ─────────────────────────────────────────────────────────────────
+#
+# Apple's key codes are laid out by POSITION on the original keyboard, not
+# alphabetically -- A is 0, S is 1, D is 2, and Q is 12 because it sits where
+# it does. So a letter needs a table, and this is it: the only thing standing
+# between a game and an arcade initials screen.
+
+comptime LETTER_KEY_COUNT = 26
+
+
+def letter_key(index: Int) -> Int:
+    """The key code for letter `index`, 0 = A .. 25 = Z."""
+    var t: List[Int] = [
+        0,   11,  8,   2,   14,  3,   5,   4,   34,  38,   # A B C D E F G H I J
+        40,  37,  46,  45,  31,  35,  12,  15,  1,   17,   # K L M N O P Q R S T
+        32,  9,   13,  7,   16,  6,                        # U V W X Y Z
+    ]
+    if index < 0 or index >= LETTER_KEY_COUNT:
+        return -1
+    return t[index]

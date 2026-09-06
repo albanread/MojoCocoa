@@ -4,6 +4,7 @@ from .input import (
     KEY_LEFT, KEY_RIGHT, KEY_DOWN, KEY_UP, KEY_SPACE, KEY_ESCAPE,
     KEY_A, KEY_S, KEY_D, KEY_W, KEY_Z, KEY_X, KEY_RETURN,
     KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6,
+    letter_key, LETTER_KEY_COUNT,
     MAX_KEY_CODE, MouseState, GamepadState,
 )
 

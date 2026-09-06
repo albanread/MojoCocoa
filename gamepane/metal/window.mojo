@@ -42,7 +42,9 @@ from std.os import getenv
 
 from max.gpu.host import DeviceContext
 
-from gamepane.api import MAX_KEY_CODE, MouseState, GamepadState
+from gamepane.api import (
+    MAX_KEY_CODE, MouseState, GamepadState, letter_key, LETTER_KEY_COUNT,
+)
 from .device import metal_device
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
@@ -100,6 +102,23 @@ def any_key_held() -> Bool:
         if g_keys()[][i] != 0:
             return True
     return False
+
+
+def letter_held() -> Int:
+    """The first letter key held, as its ASCII code, or 0 for none.
+
+    An initials screen wants "which letter", not "is A down" twenty-six
+    times, and a game should not have to carry Apple's positional key table
+    to ask. Ties go to the alphabet: two letters down at once gives the
+    earlier one, which for typing three initials is as good an answer as
+    any and is at least repeatable.
+    """
+    _ensure_state()
+    for i in range(LETTER_KEY_COUNT):
+        let code = letter_key(i)
+        if code >= 0 and code < MAX_KEY_CODE and g_keys()[][code] != 0:
+            return ord("A") + i
+    return 0
 
 
 def clear_input():
@@ -291,6 +310,7 @@ struct GamePane(Movable):
     var dt_secs: Float64
     var frames: Int
     var frame_limit: Int
+    var zoom: Int
     """GAMEPANE_FRAMES: render this many, then stop. 0 means run until
     closed."""
     var dump_path: String
@@ -306,6 +326,7 @@ struct GamePane(Movable):
         self.width = width
         self.height = height
         self.frames = 0
+        self.zoom = 1
         self.dt_secs = 1.0 / 60.0
         self.last_ns = Int(perf_counter_ns())
 
@@ -515,6 +536,34 @@ struct GamePane(Movable):
             self.clear(frame)
             self.end_frame(frame)
 
+    def set_zoom(mut self, zoom: Int) raises:
+        """Show the same picture at `zoom` times the size.
+
+        Nothing about the GAME changes -- every layer here maps to NDC
+        through the viewport size it is HANDED, not through the drawable, so
+        a bigger drawable carrying the same logical viewport is the same
+        picture at more pixels. The GPU does the scaling, no coordinate
+        moves, and a game does not learn a second set of numbers.
+
+        The window grows about its own origin, so a x4 pane does not walk
+        off the screen from a corner it was opened in.
+        """
+        var z = zoom
+        if z < 1:
+            z = 1
+        elif z > 8:
+            z = 8
+        if z == self.zoom:
+            return
+        self.zoom = z
+        let w = Float64(self.width * z)
+        let h = Float64(self.height * z)
+        with autoreleasepool():
+            _ = Obj["NSWindow"](self.window).setContentSize(CGSize(w, h))
+            _ = Obj["NSView"](self.view).setFrame(rect(0.0, 0.0, w, h))
+            _ = Obj["CAMetalLayer"](self.layer).setDrawableSize(CGSize(w, h))
+            _ = Obj["NSWindow"](self.window).center()
+
     def aspect(self) -> Float32:
         """Width over height, which is what a shader wants for `u.aspect`."""
         if self.height == 0:
@@ -535,12 +584,17 @@ struct GamePane(Movable):
         if not frame.valid:
             return List[UInt8]()
         _ = send[ObjCObject, "waitUntilCompleted"](ObjCObject(frame.cb))
-        var px = List[UInt8](length=self.width * self.height * 4, fill=0)
+        # The DRAWABLE's size, not the logical one: at zoom 2 the texture is
+        # twice as wide, and reading the logical region would return the
+        # top-left quarter of the frame and call it the frame.
+        let dw = self.width * self.zoom
+        let dh = self.height * self.zoom
+        var px = List[UInt8](length=dw * dh * 4, fill=0)
         _ = send[ObjCObject, "getBytes:bytesPerRow:fromRegion:mipmapLevel:"](
             ObjCObject(frame.target),
             px.unsafe_ptr().unsafe_bitcast[NoneType](),
-            Int(self.width * 4),
-            MTLRegion(MTLOrigin(0, 0, 0), MTLSize(self.width, self.height, 1)),
+            Int(dw * 4),
+            MTLRegion(MTLOrigin(0, 0, 0), MTLSize(dw, dh, 1)),
             Int(0),
         )
         return px^
@@ -548,12 +602,14 @@ struct GamePane(Movable):
     def _dump(self, target: ObjCObject) raises:
         """Write the presented frame as raw BGRA, so a harness (or a
         reviewer) can see the composite with no screen involved."""
-        var px = List[UInt8](length=self.width * self.height * 4, fill=0)
+        let dw = self.width * self.zoom
+        let dh = self.height * self.zoom
+        var px = List[UInt8](length=dw * dh * 4, fill=0)
         _ = send[ObjCObject, "getBytes:bytesPerRow:fromRegion:mipmapLevel:"](
             target,
             px.unsafe_ptr().unsafe_bitcast[NoneType](),
-            Int(self.width * 4),
-            MTLRegion(MTLOrigin(0, 0, 0), MTLSize(self.width, self.height, 1)),
+            Int(dw * 4),
+            MTLRegion(MTLOrigin(0, 0, 0), MTLSize(dw, dh, 1)),
             Int(0),
         )
         # write_bytes, not write: a frame is arbitrary bytes and putting them
