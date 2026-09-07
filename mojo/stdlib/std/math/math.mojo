@@ -1687,6 +1687,8 @@ def atan[
         The `atan` of the input.
     """
 
+    comptime if is_apple_gpu():
+        return _llvm_unary_fn["llvm.air.atan"](x)
     return _call_libm["atan"](x)
 
 
@@ -1716,6 +1718,26 @@ def atan2[
     Returns:
         The `atan2` of the inputs.
     """
+
+    comptime if is_apple_gpu():
+        # No air.atan2 exists to call -- only the single-argument air.atan
+        # is a registered AIR builtin family, and adding a new one is a
+        # compiler change, not a stdlib one. atan2 is a classic
+        # combination of atan with quadrant correction from the signs of
+        # x and y, so it needs nothing past the atan this file now already
+        # gives the GPU. y/x at x == 0 divides to +-inf (or NaN if y is
+        # also 0) under ordinary IEEE-754 rules, not a trap, and atan of
+        # an infinite argument saturates to +-pi/2 -- exactly the
+        # quadrant-boundary value the explicit x==0 cases below also
+        # produce, so the formula stays correct there without a
+        # special-cased branch for it.
+        var r = atan(y / x)
+        r = (x.lt(0) & y.ge(0)).select(r + pi, r)
+        r = (x.lt(0) & y.lt(0)).select(r - pi, r)
+        r = (x.eq(0) & y.gt(0)).select(type_of(x)(pi * 0.5), r)
+        r = (x.eq(0) & y.lt(0)).select(type_of(x)(-pi * 0.5), r)
+        r = (x.eq(0) & y.eq(0)).select(type_of(x)(0.0), r)
+        return r
 
     @always_inline("nodebug")
     def _float32_dispatch[
@@ -1845,6 +1867,8 @@ def tan[
         The `tan` of the input.
     """
 
+    comptime if is_apple_gpu():
+        return _llvm_unary_fn["llvm.air.tan"](x)
     return _call_libm["tan"](x)
 
 
