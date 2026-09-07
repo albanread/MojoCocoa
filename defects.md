@@ -389,6 +389,18 @@ unchanged. Open: a per-loop unroll count from body size and what the loop
 touches, which would recover the rolled matmul's +4% (the wide gate shows
 it: 993) without the 17% loss the wide gate brings elsewhere.
 
+**Corpus sweep, 7 Sep 2026** (`tools/corpus/run-unroll.md`, 506 targets
+selected, the dbg tree's compiler rebuilt from today's sources during the
+run): against the 25 Aug baseline's 91 targets, zero regressions and one
+improvement (`test_random` unverified → pass); the 13 fails and 3 PSO
+failures are the same ones. Three newly executed targets fail, each
+reproduced with the unroller off: `positive_control_poison_uninit` (asserts
+uninitialised memory reads as NaN; this hardware reads 0),
+`test_mamba2_ssd_scan` (9 of 11 subtests pass either way), and
+`fuzz_sparse_indexer` (rebuilt under `APPLEGPU_AIR_UNROLL=0` through the
+knob file: identical failure). The 26 build failures are all "no binary
+produced" from bazel's graph, none a compiler error.
+
 ## Carried from the review (see improvement_plan.md for detail)
 
 ### D7 — Unrolled register matmul ~9% behind upstream — RESOLVED: SLP vectorization, off for AIR
