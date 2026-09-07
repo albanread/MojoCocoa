@@ -29,7 +29,7 @@
 # ===----------------------------------------------------------------------=== #
 
 from std.gpu import global_idx
-from std.math import cos, sin, sqrt
+from std.math import cos, sin, sqrt, atan2
 from max.gpu.host import DeviceContext
 from std.time import perf_counter_ns
 from std.os import getenv
@@ -333,27 +333,30 @@ def splat_kernel(
     every other kernel in this file, because there are 4,000 boids and
     589,824 cells, and a boid painting the few pixels around itself is far
     cheaper than every pixel asking 4,000 boids whether it is the nearest
-    one. The colour is the boid's own heading, through the same
-    normalised velocity itself -- so two boids painted the same colour
-    are, right now, flying the same way, and a flock turning together
-    turns the SAME colour together. Aligned is not just a rule here; it
-    is what you see. (Not a hue wheel through atan2: this fork's AIR
-    backend has no atan2f, discovered as a metallib link failure rather
-    than a Mojo-level error -- the direction vector's own components
-    make just as good a colour key and need nothing but sqrt.)
+    one. The colour is a hue wheel through the boid's own heading angle,
+    through the same three-cosine palette `mandelbrot` uses for iteration
+    count -- so two boids painted the same colour are, right now, flying
+    the same way, and a flock turning together turns the SAME colour
+    together. Aligned is not just a rule here; it is what you see.
+
+    This is `atan2(vy, vx)`, which this fork's AIR backend could not run
+    at all when this file was first written -- caught as an `xcrun
+    metallib` link failure (`Undefined symbol: atan2f`) rather than a
+    Mojo-level error, since atan2 had no GPU dispatch of its own and fell
+    through to a bare external call. Fixed at the source (`std.math`
+    reimplements atan2 as atan of the ratio plus the standard quadrant
+    correction on Apple GPU, since the single-argument atan already had
+    -- and, in the same pass, now has a working -- one), not worked
+    around here.
     """
     var i = Int(global_idx.x)
     if i < BOIDS:
         var x = px[unsafe_offset=i]
         var y = py[unsafe_offset=i]
-        var bvx = vx[unsafe_offset=i]
-        var bvy = vy[unsafe_offset=i]
-        var speed = sqrt(bvx * bvx + bvy * bvy) + Float32(1e-6)
-        var nx = bvx / speed
-        var ny = bvy / speed
-        var r = Float32(0.55) + Float32(0.45) * nx
-        var g = Float32(0.55) + Float32(0.45) * ny
-        var b = Float32(0.55) - Float32(0.45) * nx
+        var hue = atan2(vy[unsafe_offset=i], vx[unsafe_offset=i]) / TAU
+        var r = Float32(0.5) + Float32(0.5) * cos(TAU * (hue + Float32(0.00)))
+        var g = Float32(0.5) + Float32(0.5) * cos(TAU * (hue + Float32(0.33)))
+        var b = Float32(0.5) + Float32(0.5) * cos(TAU * (hue + Float32(0.67)))
         var cx = Int(x)
         var cy = Int(y)
         for oy in range(-2, 3):
