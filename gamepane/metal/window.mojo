@@ -35,8 +35,8 @@ from std.objc import (
     MTLRegion,
     MTLClearColor,
 )
-from std.ffi import external_call
-from std.memory import OpaquePointer, Pointer
+from std.ffi import external_call, c_char
+from std.memory import OpaquePointer, Pointer, MutUntrackedOrigin
 from std.time import perf_counter_ns
 from std.os import getenv
 
@@ -58,6 +58,7 @@ comptime P = OpaquePointer[MutUntrackedOrigin]
 comptime g_keys = named_global["gamepane.keys", List[Int]]
 comptime g_mouse = named_global["gamepane.mouse", List[Float64]]
 comptime g_view = named_global["gamepane.view", Int]
+comptime g_dropped = named_global["gamepane.dropped", String]
 
 comptime M_X = 0
 comptime M_Y = 1
@@ -73,6 +74,15 @@ def _ensure_state():
     if len(g_mouse()[]) == 0:
         for _ in range(4):
             g_mouse()[].append(0.0)
+
+
+def dropped_file() -> String:
+    """The most recent file dropped on the pane, once: reading it clears
+    it, so a drop is an event and not a state."""
+    _ensure_state()
+    let path = g_dropped()[]
+    g_dropped()[] = String("")
+    return path
 
 
 def key_held(code: Int) -> Bool:
@@ -183,6 +193,29 @@ class GameView(NSView):
         the window forward -- fine for a document, wrong for a game whose
         window sits beside an editor: the click the player aimed at a cell
         would silently do nothing."""
+        return True
+
+    def draggingEntered_(self, sender: ObjCObject) -> Int:
+        return 1                         # NSDragOperationCopy
+
+    def performDragOperation_(self, sender: ObjCObject) -> Bool:
+        """A file landed on the window. Remember its path; the game reads
+        it with dropped_file() at its own frame boundary -- input, like the
+        keys, is a fact recorded here and a decision taken there."""
+        let pb = send[ObjCObject, "draggingPasteboard"](sender)
+        let files = send[ObjCObject, "propertyListForType:"](
+            pb, nsstring(String("NSFilenamesPboardType")).ptr()
+        )
+        if files.addr() == 0:
+            return False
+        let n = Int(send[Int, "count"](files))
+        if n < 1:
+            return False
+        let first = send[ObjCObject, "objectAtIndexedSubscript:"](
+            files, Int(0)
+        )
+        let cp = send[OpaquePointer[MutUntrackedOrigin], "UTF8String"](first)
+        g_dropped()[] = String(unsafe_from_utf8_ptr=cp.unsafe_bitcast[c_char]())
         return True
 
     def keyDown_(self, event: ObjCObject):
@@ -413,6 +446,14 @@ struct GamePane(Movable):
             _ = vt.setWantsLayer(True)
             _ = vt.setLayer(layer)
             _ = win.setContentView(view)
+            # Files may be dragged onto the pane; the legacy filenames type
+            # still carries plain paths, which is all a game wants.
+            let dt = Cls["NSArray"]().arrayWithObject(
+                nsstring(String("NSFilenamesPboardType")).ptr()
+            )
+            _ = send[ObjCObject, "registerForDraggedTypes:"](
+                view, ObjCObject(dt.id).ptr()
+            )
             _ = win.makeFirstResponder(view)
             _ = win.makeKeyAndOrderFront(ObjCObject(app.id))
             if limit == 0:

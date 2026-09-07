@@ -29,7 +29,7 @@ from gamepane.api import (
 )
 from gamepane.metal import (
     GamePane, ShaderPane, IndexedPane, Sprites, TextOverlay, ScopeField,
-    key_held, letter_held, start_trio_audio, stop_audio,
+    key_held, letter_held, dropped_file, start_trio_audio, stop_audio,
 )
 from gamepane.abc import (
     Tune, parse_abc, resolve_ties, build_schedule, sort_steps, Step,
@@ -89,7 +89,8 @@ def glyph_rows(ch: Int) raises -> String:
     return rows
 
 
-def load_tune(mut trio: P, k: Int, headless: Bool, old_unit: Int) raises -> Int:
+def load_tune(mut trio: P, k: Int, headless: Bool, old_unit: Int,
+              path: String = String("")) raises -> Int:
     """Put tune k on the trio and return the (re)started unit.
 
     The audio unit is STOPPED for the swap, always: flatten_trio frees the
@@ -106,7 +107,6 @@ def load_tune(mut trio: P, k: Int, headless: Bool, old_unit: Int) raises -> Int:
     var steps = List[Step]()
     var pinned = False
     if k == 5:
-        let path = getenv("CHIPDELUXE_MOD")
         var raw = List[UInt8]()
         with open(path, "r") as f:
             raw = f.read_bytes()
@@ -183,7 +183,8 @@ def main() raises:
 
     # ── the music ────────────────────────────────────────────────────────
     let headless = getenv("GAMEPANE_FRAMES").byte_length() > 0
-    let has_mod = getenv("CHIPDELUXE_MOD").byte_length() > 0
+    var mod_path = getenv("CHIPDELUXE_MOD")
+    var has_mod = mod_path.byte_length() > 0
     var trio = trio_new()
     var tune_k = 0
     var unit = load_tune(trio, tune_k, headless, 0)
@@ -213,8 +214,15 @@ def main() raises:
             if pick != 0 and pick != pick_was \
                     and pick <= TUNE_COUNT + (1 if has_mod else 0):
                 tune_k = pick - 1
-                unit = load_tune(trio, tune_k, headless, unit)
+                unit = load_tune(trio, tune_k, headless, unit, mod_path)
             pick_was = pick
+            # A file dropped on the window IS the request to play it.
+            let dropped = dropped_file()
+            if dropped.byte_length() > 0 and dropped.endswith(".mod"):
+                mod_path = dropped
+                has_mod = True
+                tune_k = 5
+                unit = load_tune(trio, 5, headless, unit, mod_path)
             # Z cycles the window x1 -> x2 -> x4, since the digits are
             # spoken for by the tune list now.
             let z = letter_held() == ord("Z")
