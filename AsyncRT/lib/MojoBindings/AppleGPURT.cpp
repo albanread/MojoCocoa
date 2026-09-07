@@ -829,11 +829,23 @@ AsyncRT_DeviceStream_synchronize(const DeviceStream *stream) {
   return AsyncRT_DeviceContext_synchronize(stream->ctx);
 }
 
-// ABI-STATUS: sync-fallback -- runs the callback in place; there is no queue to defer to yet
+// Host callbacks are queue-ordered on CUDA: the function runs after every
+// launch enqueued before it and before anything enqueued after. Launches on
+// this backend are queued and batched, so running the callback in place let
+// it observe device memory before the preceding kernels had executed (a
+// probe read 0 where the kernel had written 1). Drain first: the callback
+// then runs after all prior work, and since nothing later has been enqueued
+// yet, it also runs before everything after. Coarser than a completion
+// handler, but exactly ordered, and the callback runs on the caller's thread
+// as before.
+// ABI-STATUS: sync-fallback -- drains the queue, then runs the callback in place
 extern "C" const char *
-AsyncRT_DeviceStream_enqueueHostFunc(const DeviceStream *, void (*fn)(void *),
-                                     void *userData) {
-  fn(userData); // synchronous backend: run it now
+AsyncRT_DeviceStream_enqueueHostFunc(const DeviceStream *stream,
+                                     void (*fn)(void *), void *userData) {
+  if (stream && stream->ctx)
+    if (const char *e = AsyncRT_DeviceContext_synchronize(stream->ctx))
+      return e;
+  fn(userData);
   return VR_OK;
 }
 
@@ -900,9 +912,20 @@ extern "C" void AsyncRT_DeviceEvent_release(const DeviceEvent *event) {
 // Timers
 //===----------------------------------------------------------------------===//
 
+// Timers bracket GPU work: the stdlib's execution_time() (and Bencher on top
+// of it) calls startTimer, enqueues the body, and calls stopTimer with no
+// synchronize in between. On CUDA the timer is a pair of stream events, so
+// the interval covers execution. Here the launches are queued and batched,
+// and bare CPU timestamps measured only the encoding -- a probe reported
+// ~9 us for a kernel whose output had not yet been written. Drain on both
+// sides: start excludes work queued before the timer, stop includes
+// everything queued inside it. A deferred kernel error surfaces through the
+// timer call, which is the same place CUDA would report it.
 extern "C" const char *
 AsyncRT_DeviceContext_startTimer(const DeviceTimer **result,
-                                 const DeviceContext *) {
+                                 const DeviceContext *ctx) {
+  if (const char *e = AsyncRT_DeviceContext_synchronize(ctx))
+    return e;
   auto *t = new VRTimer();
   t->startNs = nowNs();
   *result = t;
@@ -910,8 +933,10 @@ AsyncRT_DeviceContext_startTimer(const DeviceTimer **result,
 }
 
 extern "C" const char *
-AsyncRT_DeviceContext_stopTimer(int64_t *elapsed_nanos, const DeviceContext *,
+AsyncRT_DeviceContext_stopTimer(int64_t *elapsed_nanos, const DeviceContext *ctx,
                                 const DeviceTimer *timer) {
+  if (const char *e = AsyncRT_DeviceContext_synchronize(ctx))
+    return e;
   *elapsed_nanos = static_cast<int64_t>(nowNs() - timer->startNs);
   return VR_OK;
 }

@@ -932,11 +932,13 @@ const char *AppleGPUMetal_synchronize(AGMetalCtx *ctx) {
       return e;
     }
   }
-  // An empty command-buffer round trip still serialises against anything the
-  // queue holds that we did not submit ourselves.
-  id cb = msg<id>(ctx->queue, "commandBuffer");
-  msg<void>(cb, "commit");
-  msg<void>(cb, "waitUntilCompleted");
+  // No trailing empty command buffer. One used to be committed and waited
+  // here "to serialise against anything the queue holds that we did not
+  // submit ourselves", but nothing outside this file can reach ctx->queue:
+  // the internal header hands out MTLBuffer and MTLDevice borrows only, and
+  // an empty buffer on this queue would not order against another queue
+  // anyway. It was a full CPU-GPU round trip paid by every synchronize for
+  // no ordering. If a queue accessor is ever added, gate the fence on it.
   return nullptr;
 }
 
