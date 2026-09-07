@@ -25,6 +25,13 @@ which opens itself when a build starts and toggles with ⌘0.
                   branching vein network that no agent and no pixel was
                   ever told to build. Drag to attract it, 1-4 for four
                   turning regimes
+    boids/        a flock: separation, alignment and cohesion, three
+                  local rules and nothing else, coloured by each bird's
+                  own heading so a flock turning together turns the same
+                  colour together. Unlike physarum's agents (which never
+                  sense each other, only a shared trail) these look
+                  directly at their neighbours -- hold the mouse to draw
+                  the flock toward the cursor, 1-4 for four characters
     othello/      the board game, and an honest answer to where a GPU helps
                   a computer player -- and where it does not
     chip/         a chip-tune synthesiser: three voices, a resonant filter,
