@@ -55,6 +55,7 @@ headless() {  # frame-limited: env var, clean exit required
 
 echo "== headless examples =="
 headless mandelbrot MANDEL_FRAMES
+headless grayscott GRAYSCOTT_FRAMES
 headless ferns FERNS_FRAMES
 headless fernwind FERNWIND_FRAMES
 headless fluid FLUID_AUTOSHOT

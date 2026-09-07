@@ -16,6 +16,10 @@ which opens itself when a build starts and toggles with ⌘0.
     fluid/        Stable Fluids on the GPU, every kernel written in Mojo
     mandelbrot/   a live-zooming fractal at 60fps, every pixel computed
                   and coloured by one Mojo kernel on the Apple GPU
+    grayscott/    reaction-diffusion: two chemicals and one four-line
+                  kernel, six named regions of its parameter plane
+                  producing spots, worms, spirals or a maze that never
+                  stops growing. Drag to seed it, 1-6 to jump regions live
     othello/      the board game, and an honest answer to where a GPU helps
                   a computer player -- and where it does not
     chip/         a chip-tune synthesiser: three voices, a resonant filter,
