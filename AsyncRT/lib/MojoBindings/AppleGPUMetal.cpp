@@ -43,6 +43,8 @@
 #include <strings.h>
 
 #include <IOKit/IOKitLib.h>
+#include <atomic>
+#include <memory>
 #include <vector>
 
 #include <CoreFoundation/CoreFoundation.h>
@@ -140,6 +142,26 @@ bool batchedLaunchEnabled() {
   return on;
 }
 
+/// Whether a batched dispatch commits at once when the GPU is idle.
+///
+/// A fixed 64-dispatch batch held short workloads hostage: three kernels
+/// enqueued before a stretch of CPU work sat unsubmitted, and the GPU sat
+/// idle, until the CPU came back and either enqueued a 64th dispatch or
+/// synchronized. Batching only buys anything while the GPU is busy -- it
+/// amortises commits and keeps one encoder open behind work that is still
+/// running. When nothing is running there is nothing to hide behind, so the
+/// batch is committed at the dispatch that finds the GPU idle, and a
+/// completion handler on every committed batch commits whatever is open when
+/// the GPU runs dry with the host away (see addIdleCommitHandlerLocked). The
+/// dispatches issued while a batch runs accumulate behind it and go out the
+/// moment it completes: batch size follows kernel duration instead of a
+/// constant. `APPLEGPU_IDLE_COMMIT=0` restores the fixed batch for A/B
+/// measurement.
+bool idleCommitEnabled() {
+  static const bool on = environmentFlag("APPLEGPU_IDLE_COMMIT", true);
+  return on;
+}
+
 /// Number of command buffers allowed in flight before a launch blocks.
 /// Bounds memory and keeps error reporting close to the failing dispatch.
 constexpr size_t kMaxPending = 64;
@@ -223,6 +245,21 @@ struct AGMetalCaps {
   int generation = 0;
 };
 
+struct AGMetalCtx;
+
+/// What a completion handler holds instead of the context it was made for.
+///
+/// Metal may run a batch's completion handler after the context that
+/// committed it has been destroyed. The handler therefore captures this
+/// gate, shared with the context, and destroyContext nulls `ctx` under the
+/// gate's mutex before deleting; a handler that arrives later finds nothing
+/// to do. Lock order is gate, then AGMetalCtx::mu; nothing takes them the
+/// other way round.
+struct AGMetalGate {
+  std::mutex mu;
+  AGMetalCtx *ctx = nullptr;
+};
+
 struct AGMetalCtx {
   id device = nullptr; // id<MTLDevice>, retained by MTLCopyAllDevices
   id queue = nullptr;  // id<MTLCommandQueue>
@@ -259,7 +296,50 @@ struct AGMetalCtx {
   /// The compute encoder open on `openBatch`, kept across dispatches
   /// (retained). Ended by commitOpenBatchLocked, never by a launch.
   id openEncoder = nullptr;
+  /// Shared with every batch's completion handler; see AGMetalGate.
+  std::shared_ptr<AGMetalGate> gate;
+  /// Set by a completion handler that found the GPU idle but could not take
+  /// `mu` (the host was mid-launch or mid-drain). The next launch consumes it
+  /// and commits its batch, so the idle moment is never lost to the race.
+  std::atomic<bool> idleSignal{false};
 };
+
+void commitOpenBatchLocked(AGMetalCtx *ctx);
+
+/// Arrange for the open batch to be committed when `cb` completes and the
+/// GPU is otherwise idle. The caller holds `ctx->mu`; `cb` is not yet
+/// committed (Metal requires handlers to be added before commit).
+///
+/// The handler runs on a Metal thread. It only TRIES the context lock:
+/// waitUntilCompleted in a drain can invoke this buffer's handler before it
+/// returns to the thread that holds `mu`, and a blocking lock there would
+/// deadlock. When the lock is busy the host is inside the runtime and will
+/// commit on its own -- a drain commits everything, and a launch checks
+/// idleSignal -- so the handler only leaves that flag behind.
+///
+/// "Idle" is decided without a status query: if this buffer is still the
+/// newest committed one when it completes, nothing is queued behind it. If
+/// something is, that buffer's own handler takes over.
+void addIdleCommitHandlerLocked(AGMetalCtx *ctx, id cb) {
+  std::shared_ptr<AGMetalGate> gate = ctx->gate;
+  void (^handler)(id) = ^(id done) {
+    std::lock_guard<std::mutex> gateLock(gate->mu);
+    AGMetalCtx *c = gate->ctx;
+    if (!c)
+      return; // context destroyed; nothing to commit
+    std::unique_lock<std::mutex> lock(c->mu, std::try_to_lock);
+    if (!lock.owns_lock()) {
+      c->idleSignal.store(true);
+      return;
+    }
+    if (c->openBatch && (c->pending.empty() || c->pending.back() == done)) {
+      if (::getenv("APPLEGPU_TRACE_LAUNCH"))
+        fprintf(stderr, "[applegpu] idle handler: ");
+      commitOpenBatchLocked(c);
+    }
+  };
+  msg<void>(cb, "addCompletedHandler:", handler);
+}
 
 /// Commit the open batch and transfer its retained ownership to `pending`.
 /// The caller must hold `ctx->mu`.
@@ -281,6 +361,8 @@ void commitOpenBatchLocked(AGMetalCtx *ctx) {
   if (::getenv("APPLEGPU_TRACE_LAUNCH"))
     fprintf(stderr, "[applegpu] commit batch dispatches=%zu\n",
             ctx->openBatchDispatches);
+  if (idleCommitEnabled())
+    addIdleCommitHandlerLocked(ctx, ctx->openBatch);
   msg<void>(ctx->openBatch, "commit");
   ctx->pending.push_back(ctx->openBatch);
   ctx->openBatch = nullptr;
@@ -349,6 +431,16 @@ const char *boundInFlightLocked(AGMetalCtx *ctx, size_t maxInFlight) {
     if (const char *e = retireOldestLocked(ctx))
       return e;
   return nullptr;
+}
+
+/// Whether nothing committed is still executing. The caller holds `ctx->mu`.
+/// Completed = 4, Error = 5 (MTLCommandBufferStatus); an errored buffer is
+/// idle too, and its failure surfaces when it is retired.
+bool gpuIdleLocked(AGMetalCtx *ctx) {
+  if (ctx->idleSignal.exchange(false))
+    return true; // a handler saw the GPU run dry while we held the lock
+  return ctx->pending.empty() ||
+         msg<unsigned long>(ctx->pending.back(), "status") >= 4ul;
 }
 
 /// Park a drain failure that has nowhere to be returned.
@@ -833,6 +925,8 @@ const char *AppleGPUMetal_createContext(AGMetalCtx **out, int id_,
                      "devices present)",
                      id_, devices.size());
   auto *ctx = new AGMetalCtx();
+  ctx->gate = std::make_shared<AGMetalGate>();
+  ctx->gate->ctx = ctx;
   ctx->device = devices[static_cast<size_t>(id_)];
   ctx->queue = msg<id>(ctx->device, "newCommandQueue");
   if (!ctx->queue) {
@@ -874,6 +968,11 @@ void AppleGPUMetal_destroyContext(AGMetalCtx *ctx) {
   // return from a destructor, so say it out loud instead of losing it.
   if (const char *e = drainPending(ctx))
     fprintf(stderr, "[applegpu] %s (during context teardown)\n", e);
+  // Detach from any completion handler still to run; see AGMetalGate.
+  if (ctx->gate) {
+    std::lock_guard<std::mutex> gateLock(ctx->gate->mu);
+    ctx->gate->ctx = nullptr;
+  }
   objcRelease(ctx->queue);
   delete ctx;
 }
@@ -1780,11 +1879,21 @@ const char *AppleGPUMetal_launch(AGMetalCtx *ctx, AGMetalFunc *fn,
 
   if (batching) {
     ++ctx->openBatchDispatches;
-    // The encoder stays open for the next dispatch. A full batch is committed
-    // here and the ring bounded -- waiting for the OLDEST batch only, and only
-    // when kMaxBatchesInFlight are outstanding; shorter batches commit at
-    // synchronize, host observation, or teardown through drainPendingLocked().
-    if (ctx->openBatchDispatches >= kMaxBatchDispatches) {
+    // The encoder stays open for the next dispatch. A batch is committed here
+    // when it is full, or when the GPU is idle (see idleCommitEnabled: work
+    // held back from an idle GPU is pure latency). Either way the ring is
+    // then bounded -- waiting for the OLDEST batch only, and only when
+    // kMaxBatchesInFlight are outstanding. Shorter batches behind a busy GPU
+    // commit at the next dispatch that finds it idle, or at synchronize, host
+    // observation, or teardown through drainPendingLocked().
+    //
+    // Idle means the newest committed buffer has completed; buffers on one
+    // queue complete in commit order, so the rest have too. One status query
+    // per dispatch. A batch opened behind a busy GPU and then left for CPU
+    // work is not stranded: the running buffer's completion handler commits
+    // it (addIdleCommitHandlerLocked).
+    if (ctx->openBatchDispatches >= kMaxBatchDispatches ||
+        (idleCommitEnabled() && gpuIdleLocked(ctx))) {
       commitOpenBatchLocked(ctx);
       return boundInFlightLocked(ctx, kMaxBatchesInFlight);
     }
