@@ -28,7 +28,9 @@
 
 from std.memory import Pointer, MutUntrackedOrigin
 
-from gamepane.api.audio import SAMPLE_RATE, WAVE_PCM
+from gamepane.api.audio import (
+    SAMPLE_RATE, WAVE_PCM, WAVE_TRI, WAVE_SAW, WAVE_PULSE, WAVE_NOISE,
+)
 from gamepane.abc.schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
 from gamepane.abc.model import (
     CP_WAVE, CP_PW, CP_A, CP_D, CP_S, CP_R, CP_VOL, CP_ARP, CP_VIB,
@@ -118,6 +120,9 @@ struct ModInstrument(Copyable, Movable):
     var loop_start: Int      # samples, from the instrument's own start
     var loop_len: Int        # samples; 0 means one-shot
     var blob_offset: Int     # byte offset into the trio's PCM blob
+    var bright: Int          # zero crossings per 128 PCM bytes -- CT7's
+                              # cover-mode wave guess, kept for the P
+                              # toggle's off position, unused when PCM is on
 
     def __init__(out self):
         self.length = 0
@@ -126,16 +131,19 @@ struct ModInstrument(Copyable, Movable):
         self.loop_start = 0
         self.loop_len = 0
         self.blob_offset = 0
+        self.bright = 0
 
 
 def _recipe(inst: ModInstrument, voice: Int, at: Int,
-            mut steps: List[Step]) raises:
-    """One instrument as REAL PCM playback (CT8), addressed to a pinned
-    voice: this is the whole point of importing a tracker file rather
-    than covering it.
+            mut steps: List[Step], use_pcm: Bool) raises:
+    """One instrument, addressed to a pinned voice -- as REAL PCM playback
+    (CT8, the default: this is the whole point of importing a tracker
+    file rather than covering it) or, for the player's P toggle, CT7's
+    original synthesised cover, so the two can be compared directly
+    rather than only remembered.
 
     Amiga hardware has no ADSR at all -- Paula's DMA simply starts and
-    stops -- so the envelope here is set to pass the sample through
+    stops -- so the PCM envelope is set to pass the sample through
     essentially unshaped: instant attack, straight to full sustain, a
     short release only so a cut or the song's end does not click.
     Amplitude past that is tracker VOLUME (Cxx, via CP_S) scaling the
@@ -145,24 +153,61 @@ def _recipe(inst: ModInstrument, voice: Int, at: Int,
     what it cannot do is point at different PCM, since a human sidecar
     has no way to know a blob offset.
     """
+    if use_pcm:
+        steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
+                          midi=CP_WAVE, velocity=WAVE_PCM))
+        steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
+                          midi=CP_PCM_OFFSET, velocity=inst.blob_offset))
+        steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
+                          midi=CP_PCM_LEN, velocity=inst.length))
+        steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
+                          midi=CP_PCM_LOOP_START, velocity=inst.loop_start))
+        steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
+                          midi=CP_PCM_LOOP_LEN, velocity=inst.loop_len))
+        steps.append(Step(sample=at, kind=SE_CHIP, voice=voice, midi=CP_A,
+                          velocity=0))
+        steps.append(Step(sample=at, kind=SE_CHIP, voice=voice, midi=CP_D,
+                          velocity=0))
+        steps.append(Step(sample=at, kind=SE_CHIP, voice=voice, midi=CP_S,
+                          velocity=15))
+        steps.append(Step(sample=at, kind=SE_CHIP, voice=voice, midi=CP_R,
+                          velocity=3))
+        return
+
+    # The CT7 cover: crude on purpose. A looped sample holds a note, so
+    # it becomes a sustained recipe; a one-shot decays by its own length;
+    # the zero crossings of its first page pick the waveform -- busy is
+    # noise, rough is saw, smooth is pulse.
+    var wave = WAVE_PULSE
+    if inst.bright > 40:
+        wave = WAVE_NOISE
+    elif inst.bright > 12:
+        wave = WAVE_SAW
+    elif inst.length > 0 and inst.length < 2000 and not inst.looped:
+        wave = WAVE_TRI
+    var a = 0
+    var d = 6
+    var sus = 0
+    var r = 4
+    if inst.looped:
+        sus = 9 + inst.volume * 4 // 64          # 9..13
+        d = 3
+        r = 5
+    elif inst.length > 8000:
+        d = 9
+        r = 6
     steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
-                      midi=CP_WAVE, velocity=WAVE_PCM))
+                      midi=CP_WAVE, velocity=wave))
     steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
-                      midi=CP_PCM_OFFSET, velocity=inst.blob_offset))
-    steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
-                      midi=CP_PCM_LEN, velocity=inst.length))
-    steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
-                      midi=CP_PCM_LOOP_START, velocity=inst.loop_start))
-    steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
-                      midi=CP_PCM_LOOP_LEN, velocity=inst.loop_len))
+                      midi=CP_PW, velocity=900))
     steps.append(Step(sample=at, kind=SE_CHIP, voice=voice, midi=CP_A,
-                      velocity=0))
+                      velocity=a))
     steps.append(Step(sample=at, kind=SE_CHIP, voice=voice, midi=CP_D,
-                      velocity=0))
+                      velocity=d))
     steps.append(Step(sample=at, kind=SE_CHIP, voice=voice, midi=CP_S,
-                      velocity=15))
+                      velocity=sus))
     steps.append(Step(sample=at, kind=SE_CHIP, voice=voice, midi=CP_R,
-                      velocity=3))
+                      velocity=r))
 
 
 def mod_to_steps(
@@ -170,6 +215,7 @@ def mod_to_steps(
     mut steps: List[Step],
     mut pcm_out: List[UInt8],
     sidecar: String = String(""),
+    use_pcm: Bool = True,
 ) raises -> Int:
     """The whole song as sample-stamped steps, and `pcm_out` filled with
     the PCM blob those steps' CP_PCM_OFFSET values are relative to. Pass
@@ -226,6 +272,21 @@ def mod_to_steps(
         if n > 0 and pcm_pos + n <= len(b):
             for k in range(n):
                 pcm_out.append(b[pcm_pos + k])
+            # Brightness rides the same walk, over the same bytes: the
+            # CT7 cover's only use of the raw PCM, kept for the P toggle.
+            var crossings = 0
+            var prev = Int(b[pcm_pos])
+            if prev > 127:
+                prev -= 256
+            let page = 128 if n >= 128 else n
+            for k in range(1, page):
+                var v = Int(b[pcm_pos + k])
+                if v > 127:
+                    v -= 256
+                if (v >= 0) != (prev >= 0):
+                    crossings += 1
+                prev = v
+            inst[i].bright = crossings
         else:
             inst[i].length = 0   # a truncated or absent sample plays nothing
         pcm_pos += n
@@ -308,7 +369,7 @@ def mod_to_steps(
                                           voice=g, midi=o[k + 1],
                                           velocity=o[k + 2]))
                 else:
-                    _recipe(inst[sample_n - 1], g, now, steps)
+                    _recipe(inst[sample_n - 1], g, now, steps, use_pcm)
 
             # the macros this row asks for, addressed to the pinned voice
             if fx == 0 and param != 0:

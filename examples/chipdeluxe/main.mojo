@@ -90,13 +90,20 @@ def glyph_rows(ch: Int) raises -> String:
 
 
 def load_tune(mut trio: P, k: Int, headless: Bool, old_unit: Int,
-              path: String = String("")) raises -> Int:
+              path: String = String(""), use_pcm: Bool = True) raises -> Int:
     """Put tune k on the trio and return the (re)started unit.
 
     The audio unit is STOPPED for the swap, always: flatten_trio frees the
     schedule the callback is walking, and there is no safe order of those
     two except "the callback is not running". The gap is the gap between
-    two tunes, which is silence anyway.
+    two tunes, which is silence anyway -- and it is also what lets a live
+    A/B toggle (the player's P key) be a straight reload rather than a
+    second, riskier code path: PCM and the synthesised cover use different
+    step formulas on the SAME register (V_STEP means "PCM samples/sec" or
+    "wave cycles/sec" depending on V_WAVE), so switching mid-note would
+    need every sounding voice's pitch recomputed from state nothing
+    currently keeps. Restarting the mod is simpler, safer, and -- for an
+    A/B comparison -- arguably better: both passes start from the same bar.
 
     Slot 5 (key 6) is the imported module, when CHIPDELUXE_MOD names one:
     the importer's schedule runs the trio PINNED, tracker style, and its
@@ -117,7 +124,7 @@ def load_tune(mut trio: P, k: Int, headless: Bool, old_unit: Int,
                 sidecar = f2.read()
         except:
             pass
-        _ = mod_to_steps(Span(raw), steps, pcm, sidecar)
+        _ = mod_to_steps(Span(raw), steps, pcm, sidecar, use_pcm)
         pinned = True
     else:
         var t = Tune()
@@ -191,13 +198,15 @@ def main() raises:
     var has_mod = mod_path.byte_length() > 0
     var trio = trio_new()
     var tune_k = 0
-    var unit = load_tune(trio, tune_k, headless, 0)
+    var use_pcm = True                   # the mod's own PCM, until P says otherwise
+    var unit = load_tune(trio, tune_k, headless, 0, String(""), use_pcm)
     var silent = List[Float32](length=1600 * 2, fill=0.0)
 
     var frame_n = 0
     var pick_was = 0                     # edge-trigger: a held key is ONE pick
     var zoom_was = False
     var zoom_now = 1
+    var p_was = False
     while pane.pump():
         if not headless:
             if key_held(KEY_ESCAPE):
@@ -218,7 +227,8 @@ def main() raises:
             if pick != 0 and pick != pick_was \
                     and pick <= TUNE_COUNT + (1 if has_mod else 0):
                 tune_k = pick - 1
-                unit = load_tune(trio, tune_k, headless, unit, mod_path)
+                unit = load_tune(trio, tune_k, headless, unit, mod_path,
+                                 use_pcm)
             pick_was = pick
             # A file dropped on the window IS the request to play it.
             let dropped = dropped_file()
@@ -226,7 +236,20 @@ def main() raises:
                 mod_path = dropped
                 has_mod = True
                 tune_k = 5
-                unit = load_tune(trio, 5, headless, unit, mod_path)
+                unit = load_tune(trio, 5, headless, unit, mod_path, use_pcm)
+            # P: real PCM vs. the synthesised cover, for a direct A/B.
+            # letter_held(), not a dedicated key constant -- the same way
+            # Z is read below, and one table already covers every letter.
+            # Only reloads when the mod is the ACTIVE tune -- pressing it
+            # while something else plays just changes what slot 6 will be
+            # next time, rather than interrupting the current tune.
+            let p_down = letter_held() == ord("P")
+            if p_down and not p_was and has_mod:
+                use_pcm = not use_pcm
+                if tune_k == 5:
+                    unit = load_tune(trio, 5, headless, unit, mod_path,
+                                     use_pcm)
+            p_was = p_down
             # Z cycles the window x1 -> x2 -> x4, since the digits are
             # spoken for by the tune list now.
             let z = letter_held() == ord("Z")
@@ -273,12 +296,14 @@ def main() raises:
 
         let ph = trio_playhead(trio)
         hud.clear()
-        let title = String("IMPORTED MODULE") if tune_k == 5 \
-            else tune_name(tune_k)
+        var title = tune_name(tune_k)
+        if tune_k == 5:
+            title = String("MODULE: PCM") if use_pcm else String("MODULE: COVER")
         hud.draw_text(10, 8, String("CHIPDELUXE  ") + title,
                       140, 255, 200, 2)
-        hud.draw_text(438, 8, String("1-5 TUNES  Z ZOOM  ESC"),
-                      120, 190, 160, 1)
+        let keys = String("1-5  P COVER  Z ZOOM  ESC") if has_mod \
+            else String("1-5 TUNES  Z ZOOM  ESC")
+        hud.draw_text(438, 8, keys, 120, 190, 160, 1)
         _ = ph
 
         with autoreleasepool():
