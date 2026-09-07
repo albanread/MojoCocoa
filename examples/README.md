@@ -20,6 +20,11 @@ which opens itself when a build starts and toggles with ⌘0.
                   kernel, six named regions of its parameter plane
                   producing spots, worms, spirals or a maze that never
                   stops growing. Drag to seed it, 1-6 to jump regions live
+    physarum/     300,000 slime-mould agents, each sensing three points
+                  and turning toward the strongest, converge into a
+                  branching vein network that no agent and no pixel was
+                  ever told to build. Drag to attract it, 1-4 for four
+                  turning regimes
     othello/      the board game, and an honest answer to where a GPU helps
                   a computer player -- and where it does not
     chip/         a chip-tune synthesiser: three voices, a resonant filter,
