@@ -21,7 +21,9 @@ from std.ffi import external_call
 from gamepane.api.audio import (
     P, get, put, vget, vput, chip_render, set_freq_hz, set_wave, set_adsr,
     set_filter, set_volume, set_pulse_width, gate_on, gate_off, route_filter,
-    PLAYER_BASE, S_CUTOFF, S_RES, S_FMODE, V_ENV, V_PHASE, V_PW, ENV_IDLE,
+    PLAYER_BASE, S_CUTOFF, S_RES, S_FMODE, V_ENV, V_PHASE, V_PW, V_WAVE,
+    WAVE_PCM, V_ACC, V_PCM_PTR, V_PCM_LEN, V_PCM_LOOP_START, V_PCM_LOOP_LEN,
+    ENV_IDLE,
     ENV_RELEASE, WAVE_PULSE, WAVE_SAW, WAVE_TRI, Tick,
 )
 from gamepane.abc.schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
@@ -30,6 +32,7 @@ from gamepane.abc.model import (
     CP_CUTOFF, CP_RES, CP_FMODE, CP_VOL,
     CP_PAN, CP_ECHO, CP_ETIME, CP_EFB,
     CP_ARP, CP_VIB, CP_SLIDE, CP_PWM, CP_SWEEP, CP_TREM,
+    CP_PCM_OFFSET, CP_PCM_PTR, CP_PCM_LEN, CP_PCM_LOOP_START, CP_PCM_LOOP_LEN,
 )
 
 # Slots in the chip's player region. The chip example's own player does not
@@ -146,6 +149,11 @@ fn apply_note_on(st: P, midi: Int, velocity: Int):
     put(st, PLAYER_BASE + SC_VOICE_AGE + chosen,
         get(st, PLAYER_BASE + SC_SAMPLE))
     set_freq_hz(st, chosen, midi_to_hz(midi))
+    if vget(st, chosen, V_WAVE) == WAVE_PCM:
+        # Phase continuity is right for a periodic wave -- restarting a
+        # saw's cycle on every note would click. It is wrong for a
+        # sample: a new note means the beginning of the recording.
+        vput(st, chosen, V_ACC, 0)
     gate_on(st, chosen)
 
 
@@ -189,8 +197,25 @@ fn apply_chip(st: P, voice: Int, param: Int, value: Int):
         # non-negative gate, the register holds the truth.
         put(st, PLAYER_BASE + MACRO_BASE + M_SWEEP, value - 1024)
         return
+    if param == CP_PCM_OFFSET:
+        # Only reaches here if something calls apply_chip directly,
+        # bypassing the trio -- meaningless without T_PCM_ADDR, so a bare
+        # chip says nothing, exactly like CP_PAN and the echo family.
+        return
 
     if voice < 0 or voice > 2:
+        return
+    if param == CP_PCM_PTR:
+        vput(st, voice, V_PCM_PTR, value)
+        return
+    if param == CP_PCM_LEN:
+        vput(st, voice, V_PCM_LEN, value)
+        return
+    if param == CP_PCM_LOOP_START:
+        vput(st, voice, V_PCM_LOOP_START, value)
+        return
+    if param == CP_PCM_LOOP_LEN:
+        vput(st, voice, V_PCM_LOOP_LEN, value)
         return
     if param == CP_ARP:
         put(st, macro_slot(voice, M_ARP), value)

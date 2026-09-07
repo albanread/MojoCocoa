@@ -65,6 +65,17 @@ comptime CP_PWM = 43
 comptime CP_SWEEP = 44
 comptime CP_TREM = 45
 
+# CT8: a real sample instead of the synthesised cover. CP_PCM_OFFSET
+# carries an offset into the trio's own PCM blob -- meaningless without
+# T_PCM_ADDR, which only the trio walker has -- so it is intercepted and
+# translated to an absolute CP_PCM_PTR before apply_chip ever sees it,
+# the same way CP_PAN and the echo family never reach a bare chip either.
+comptime CP_PCM_OFFSET = 50
+comptime CP_PCM_PTR = 51
+comptime CP_PCM_LEN = 52
+comptime CP_PCM_LOOP_START = 53
+comptime CP_PCM_LOOP_LEN = 54
+
 # Flags on an event.
 comptime F_CHORD = 1        # sounds together with the event before it
 comptime F_TIE = 2          # tied into the next note of the same pitch

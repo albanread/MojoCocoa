@@ -1,13 +1,17 @@
 # ===----------------------------------------------------------------------=== #
-# CT7 — the MOD importer: a synthetic module, written byte by byte here,
-# read back as a schedule.
+# CT7/CT8 — the MOD importer and its real PCM: a synthetic module, written
+# byte by byte here, read back as a schedule and then as sound.
 #
 # The module is its own oracle: every cell below was placed knowing what
 # step it must become. Period 428 is middle C; six ticks a row at tempo
 # 125 is 5760 samples; 0x37 after effect 0 is an arpeggio of 0,3,7; C20
-# is sustain 7 of 15; ECx is a cut x ticks in. What is NOT covered is the
-# contract too: 9xx, Axy, 5xy/6xy wait for the Paula wave (CT8), and the
-# 15-sample SoundTracker layout is refused by name.
+# is sustain 7 of 15; ECx is a cut x ticks in. The instruments carry REAL
+# PCM now -- a tiny looped square for instrument 1, a short decaying
+# one-shot for instrument 2 -- so CT8's playback can be checked against
+# ACTUAL bytes, not just against the registers describing them. What is
+# NOT covered is the contract too: 9xx (sample-offset trigger), Axy
+# (volume slides) and 5xy/6xy (the combo commands) are not implemented,
+# and the 15-sample SoundTracker layout is refused by name.
 #
 # Run: ./tools/gp.sh gamepane/tests/test_mod.mojo
 # ===----------------------------------------------------------------------=== #
@@ -15,30 +19,38 @@
 from std.memory import Pointer, MutUntrackedOrigin
 
 from gamepane.api import P, SAMPLE_RATE
-from gamepane.api.audio import get, WAVE_NOISE
+from gamepane.api.audio import (
+    get, vget, WAVE_NOISE, ENV_IDLE, ENV_RELEASE, PLAYER_BASE,
+    V_PCM_LEN, V_PCM_LOOP_START, V_PCM_LOOP_LEN, V_PHASE, V_ACC,
+)
 from gamepane.abc import (
     Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP, sort_steps,
     mod_to_steps, mod_channels, period_to_midi, channel_voice,
     trio_new, trio_free, trio_chip, flatten_trio, render_trio,
-    set_trio_pinned,
+    set_trio_pinned, set_trio_pcm,
 )
 from gamepane.abc.model import CP_ARP, CP_VIB, CP_SLIDE, CP_S, CP_WAVE
 from gamepane.abc.chipplay import SC_VOICE_NOTE
-from gamepane.api.audio import PLAYER_BASE
 
 
 comptime ROW = 5760                      # 6 ticks x 960 samples at tempo 125
+comptime INST1_LEN = 16                  # bytes -- a full loop, no tail
+comptime INST2_LEN = 8                   # bytes -- one-shot
 
 
 def synth_mod() raises -> List[UInt8]:
-    """One pattern, four channels, every mapped feature on a known row."""
-    var b = List[UInt8](length=1084 + 1024, fill=0)
-    # sample 1: looped, quiet-ish -- a sustained recipe
-    b[20 + 22] = 0; b[20 + 23] = 100                 # length 100 words
-    b[20 + 25] = 48                                  # volume
-    b[20 + 28] = 0; b[20 + 29] = 8                   # loop: sustained
-    # sample 2: one-shot
-    b[50 + 22] = 0; b[50 + 23] = 50
+    """One pattern, four channels, every mapped feature on a known row,
+    and two REAL instruments: a looped 8-sample square (period 8, so its
+    fundamental is unmistakable) and a short one-shot ramp down to zero."""
+    let pattern_bytes = 1024              # 64 rows * 4 channels * 4 bytes
+    let pcm_at = 1084 + pattern_bytes     # highest order entry is 0
+    var b = List[UInt8](length=pcm_at + INST1_LEN + INST2_LEN, fill=0)
+    # sample 1: looped across its WHOLE length -- one clean cycle repeating
+    b[20 + 22] = 0; b[20 + 23] = UInt8(INST1_LEN // 2)   # length, in words
+    b[20 + 25] = 48                                      # volume
+    b[20 + 28] = 0; b[20 + 29] = UInt8(INST1_LEN // 2)   # repeat length, words
+    # sample 2: one-shot, no loop fields set
+    b[50 + 22] = 0; b[50 + 23] = UInt8(INST2_LEN // 2)
     b[50 + 25] = 64
     b[950] = 1                                       # one position
     b[951] = 127
@@ -61,6 +73,16 @@ def synth_mod() raises -> List[UInt8]:
     cell(b, 5, 3, 428, 1, 3, 8)          # row 5 ch3: portamento target
     cell(b, 6, 0, 0, 0, 13, 0)           # row 6: pattern break -> song ends
     cell(b, 63, 0, 428, 0, 0, 0)         # never reached
+
+    # instrument 1's PCM: a period-8 square, (+100)*4 (-100)*4, so the
+    # native-rate fundamental is exactly 8 samples -- unmistakable.
+    for k in range(INST1_LEN):
+        b[pcm_at + k] = UInt8(100 if (k // 4) % 2 == 0 else 156)  # 156 = -100
+    # instrument 2's PCM: a one-shot ramp down to nothing, so silence
+    # after it ends is a real change in the DATA, not just in the gate.
+    var ramp: List[Int] = [100, 80, 60, 40, 20, 10, 5, 0]
+    for k in range(INST2_LEN):
+        b[pcm_at + INST1_LEN + k] = UInt8(ramp[k])
     return b^
 
 
@@ -84,8 +106,16 @@ def main() raises:
         failures += 1
 
     var steps = List[Step]()
-    let channels = mod_to_steps(Span(raw), steps)
+    var pcm = List[UInt8]()
+    let channels = mod_to_steps(Span(raw), steps, pcm)
     sort_steps(steps)
+    if len(pcm) == INST1_LEN + INST2_LEN and pcm[0] == 100 \
+            and pcm[INST1_LEN] == 100 and pcm[INST1_LEN + INST2_LEN - 1] == 0:
+        print("ok    the PCM blob holds both instruments' real bytes,",
+              len(pcm), "total")
+    else:
+        print("FAIL  pcm blob:", len(pcm), "bytes")
+        failures += 1
     print("ok    imported", len(steps), "steps from", channels, "channels")
 
     # ── pitch and time ───────────────────────────────────────────────────
@@ -175,6 +205,7 @@ def main() raises:
     # ── pinned render: the channels hold THEIR voices ────────────────────
     var trio = trio_new()
     _ = flatten_trio(steps, trio)
+    set_trio_pcm(trio, Span(pcm))
     set_trio_pinned(trio, True)
     let n = 3 * ROW + ROW // 2
     var out = List[Float32](length=n * 2, fill=0.0)
@@ -191,13 +222,53 @@ def main() raises:
         print("FAIL  pinned slots:", get(c1, PLAYER_BASE + SC_VOICE_NOTE),
               get(c2, PLAYER_BASE + SC_VOICE_NOTE))
         failures += 1
+
+    # ── CT8: the registers describe the REAL instruments ─────────────────
+    # Channel 0 (instrument 1, looped) is chip1 slot0; channel 1
+    # (instrument 2, one-shot) is chip2 slot0.
+    if vget(c1, 0, V_PCM_LEN) == INST1_LEN and vget(c1, 0, V_PCM_LOOP_LEN) == INST1_LEN \
+            and vget(c1, 0, V_PCM_LOOP_START) == 0:
+        print("ok    instrument 1's voice: len/loop registers match the file")
+    else:
+        print("FAIL  inst1 registers: len", vget(c1, 0, V_PCM_LEN),
+              "loop_start", vget(c1, 0, V_PCM_LOOP_START),
+              "loop_len", vget(c1, 0, V_PCM_LOOP_LEN))
+        failures += 1
+    if vget(c2, 0, V_PCM_LEN) == INST2_LEN and vget(c2, 0, V_PCM_LOOP_LEN) == 0:
+        print("ok    instrument 2's voice: one-shot, no loop")
+    else:
+        print("FAIL  inst2 registers: len", vget(c2, 0, V_PCM_LEN),
+              "loop_len", vget(c2, 0, V_PCM_LOOP_LEN))
+        failures += 1
+
+    # ── the loop actually loops: the position stays IN BOUNDS ────────────
+    # 0.42s at a fraction of a PCM sample per output sample would long
+    # since have run off the end of a 16-byte one-shot; a looped voice
+    # instead stays confined to [0, 16<<16) forever.
+    let pos1 = vget(c1, 0, V_ACC)
+    if pos1 >= 0 and pos1 < (INST1_LEN << 16):
+        print("ok    the loop kept the position in bounds:", pos1 >> 16,
+              "/ 16 bytes")
+    else:
+        print("FAIL  loop position escaped its bounds:", pos1)
+        failures += 1
+
+    # ── the one-shot actually ends: gate moves past ATTACK/DECAY/SUSTAIN ─
+    let phase2 = vget(c2, 0, V_PHASE)
+    if phase2 == ENV_RELEASE or phase2 == ENV_IDLE:
+        print("ok    the one-shot finished: envelope phase", phase2,
+              "(3=release, 0=idle)")
+    else:
+        print("FAIL  one-shot still sounding, phase", phase2)
+        failures += 1
+
     var peak = 0.0
     for i in range(n * 2):
         let v = abs(Float64(out[i]))
         if v > peak:
             peak = v
     if peak > 0.02:
-        print("ok    the cover is audible, peak", peak)
+        print("ok    real PCM playback is audible, peak", peak)
     else:
         print("FAIL  silent render, peak", peak)
         failures += 1
@@ -217,8 +288,9 @@ def main() raises:
         print("FAIL  15-sample layout accepted")
         failures += 1
     print("ok    coverage: 0 arp / 3 slide / 4 vib / 7 trem / B D jumps /")
-    print("ok      C volume / EC cut / ED delay / F timing. Waiting on")
-    print("ok      CT8's PCM: 9xx offset, Axy slides, 5xy 6xy combos.")
+    print("ok      C volume / EC cut / ED delay / F timing / real PCM")
+    print("ok      playback and looping. Not yet: 9xx sample-offset")
+    print("ok      trigger, Axy volume slides, 5xy/6xy combo commands.")
 
     if failures == 0:
         print("PASS  test_mod")

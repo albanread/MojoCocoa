@@ -32,7 +32,7 @@ from .trioplay import (
     trio_new, trio_free, trio_chip, set_trio_pan, set_trio_master,
     set_trio_loop, trio_done, flatten_trio, render_trio,
     trio_playhead, trio_voice_level, trio_scope_read, SCOPE_FRAMES,
-    set_trio_pinned,
+    set_trio_pinned, set_trio_pcm,
     T_GAIN_L, T_GAIN_R, T_SAMPLE,
 )
 from .mod import mod_to_steps, mod_channels, period_to_midi, channel_voice

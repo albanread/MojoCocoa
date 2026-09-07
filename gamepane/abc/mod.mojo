@@ -1,14 +1,17 @@
-# The period trackers — a .MOD as a score (CT7).
+# The period trackers — a .MOD as a score (CT7), played on real PCM (CT8).
 #
-# An Amiga MOD is four (or six, or eight) channels of sampled PCM. We have
-# synthesis, so this importer takes the half that transfers: the NOTES.
-# Periods become pitches through the PAL table, rows become sample times
-# through speed and tempo, the effect column becomes the 50 Hz macros it
-# always secretly was -- 0xy IS an arpeggio, 4xy IS vibrato, 3xx IS the
-# slide -- and each of the 31 instruments becomes a chip recipe, inferred
-# crudely from its sample header and overridable line by line from a
-# sidecar. The result is not the MOD; it is a CHIP COVER of the MOD,
-# which is itself a fine scene tradition.
+# An Amiga MOD is four (or six, or eight) channels of sampled PCM, and now
+# that CT8 has landed, we play the samples themselves rather than covering
+# them: periods become pitches through the PAL table, rows become sample
+# times through speed and tempo, the effect column becomes the 50 Hz
+# macros it always secretly was -- 0xy IS an arpeggio, 4xy IS vibrato, 3xx
+# IS the slide -- and each of the 31 instruments becomes a WAVE_PCM voice
+# pointed at its own real recording, sitting in one blob this importer
+# copies out of the file and the trio owns for the schedule's lifetime. A
+# sidecar can still override any instrument back to a synthesised wave
+# (through the same [I:chip] grammar `_recipe` itself uses) -- what it
+# cannot do is choose different PCM, since a human sidecar has no way to
+# know a blob offset.
 #
 # One engine truth had to be faced rather than fudged: a tracker channel
 # IS a voice. Note four's vibrato must wobble note four, not whichever
@@ -19,19 +22,19 @@
 # written against; the flag is per-schedule and reset by flatten_trio.
 #
 # What is skipped is skipped in the open -- the coverage table in
-# test_mod.mojo is the contract: 9xx (sample offset) means nothing
-# without PCM and waits for CT8; Axy (volume slides) and 5xy/6xy (the
-# combo commands) are out of the cover's reach until then too.
+# test_mod.mojo is the contract: 9xx (sample offset) is not implemented,
+# and Axy (volume slides) and 5xy/6xy (the combo commands) are out of
+# reach for now too.
 
 from std.memory import Pointer, MutUntrackedOrigin
 
-from gamepane.api.audio import SAMPLE_RATE
+from gamepane.api.audio import SAMPLE_RATE, WAVE_PCM
 from gamepane.abc.schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
 from gamepane.abc.model import (
     CP_WAVE, CP_PW, CP_A, CP_D, CP_S, CP_R, CP_VOL, CP_ARP, CP_VIB,
     CP_SLIDE, CP_TREM,
+    CP_PCM_OFFSET, CP_PCM_LEN, CP_PCM_LOOP_START, CP_PCM_LOOP_LEN,
 )
-from gamepane.api.audio import WAVE_TRI, WAVE_SAW, WAVE_PULSE, WAVE_NOISE
 from gamepane.abc.music import chip_settings
 
 
@@ -109,65 +112,69 @@ def mod_channels(b: Span[UInt8, _]) raises -> Int:
 
 
 struct ModInstrument(Copyable, Movable):
-    var length: Int          # bytes of PCM
+    var length: Int          # bytes of PCM == samples, 8-bit
     var volume: Int          # 0..64
     var looped: Bool
-    var bright: Int          # zero crossings per 128 PCM bytes, 0 if unread
+    var loop_start: Int      # samples, from the instrument's own start
+    var loop_len: Int        # samples; 0 means one-shot
+    var blob_offset: Int     # byte offset into the trio's PCM blob
 
     def __init__(out self):
         self.length = 0
         self.volume = 64
         self.looped = False
-        self.bright = 0
+        self.loop_start = 0
+        self.loop_len = 0
+        self.blob_offset = 0
 
 
 def _recipe(inst: ModInstrument, voice: Int, at: Int,
             mut steps: List[Step]) raises:
-    """One instrument as chip registers, addressed to a pinned voice.
+    """One instrument as REAL PCM playback (CT8), addressed to a pinned
+    voice: this is the whole point of importing a tracker file rather
+    than covering it.
 
-    Crude on purpose: a looped sample holds a note, so it becomes a
-    sustained recipe; a one-shot decays by its own length; the zero
-    crossings of its first page pick the waveform -- busy is noise, rough
-    is saw, smooth is pulse. The sidecar overrides all of this per
-    instrument, through the very same [I:chip] grammar."""
-    var wave = WAVE_PULSE
-    if inst.bright > 40:
-        wave = WAVE_NOISE
-    elif inst.bright > 12:
-        wave = WAVE_SAW
-    elif inst.length > 0 and inst.length < 2000 and not inst.looped:
-        wave = WAVE_TRI
-    var a = 0
-    var d = 6
-    var sus = 0
-    var r = 4
-    if inst.looped:
-        sus = 9 + inst.volume * 4 // 64          # 9..13
-        d = 3
-        r = 5
-    elif inst.length > 8000:
-        d = 9
-        r = 6
+    Amiga hardware has no ADSR at all -- Paula's DMA simply starts and
+    stops -- so the envelope here is set to pass the sample through
+    essentially unshaped: instant attack, straight to full sustain, a
+    short release only so a cut or the song's end does not click.
+    Amplitude past that is tracker VOLUME (Cxx, via CP_S) scaling the
+    recording's own level, not a synthesiser's envelope shaping a
+    waveform. The sidecar can still override any of this per instrument
+    -- forcing wave=saw, say -- through the very same [I:chip] grammar;
+    what it cannot do is point at different PCM, since a human sidecar
+    has no way to know a blob offset.
+    """
     steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
-                      midi=CP_WAVE, velocity=wave))
+                      midi=CP_WAVE, velocity=WAVE_PCM))
     steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
-                      midi=CP_PW, velocity=900))
+                      midi=CP_PCM_OFFSET, velocity=inst.blob_offset))
+    steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
+                      midi=CP_PCM_LEN, velocity=inst.length))
+    steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
+                      midi=CP_PCM_LOOP_START, velocity=inst.loop_start))
+    steps.append(Step(sample=at, kind=SE_CHIP, voice=voice,
+                      midi=CP_PCM_LOOP_LEN, velocity=inst.loop_len))
     steps.append(Step(sample=at, kind=SE_CHIP, voice=voice, midi=CP_A,
-                      velocity=a))
+                      velocity=0))
     steps.append(Step(sample=at, kind=SE_CHIP, voice=voice, midi=CP_D,
-                      velocity=d))
+                      velocity=0))
     steps.append(Step(sample=at, kind=SE_CHIP, voice=voice, midi=CP_S,
-                      velocity=sus))
+                      velocity=15))
     steps.append(Step(sample=at, kind=SE_CHIP, voice=voice, midi=CP_R,
-                      velocity=r))
+                      velocity=3))
 
 
 def mod_to_steps(
     b: Span[UInt8, _],
     mut steps: List[Step],
+    mut pcm_out: List[UInt8],
     sidecar: String = String(""),
 ) raises -> Int:
-    """The whole song as sample-stamped steps. Returns the channel count.
+    """The whole song as sample-stamped steps, and `pcm_out` filled with
+    the PCM blob those steps' CP_PCM_OFFSET values are relative to. Pass
+    `pcm_out` to `set_trio_pcm` before playing the schedule. Returns the
+    channel count.
 
     Voice numbers in the steps are 1-based ABC style for note events and
     0-based for SE_CHIP, exactly as build_schedule emits them, so the trio
@@ -183,8 +190,18 @@ def mod_to_steps(
         let at = 20 + i * 30
         m.length = _u16be(b, at + 22) * 2
         m.volume = Int(b[at + 25])
-        m.looped = _u16be(b, at + 28) > 1
+        let repeat_offset = _u16be(b, at + 26) * 2
+        let repeat_len = _u16be(b, at + 28) * 2
+        # A repeat length of 0 or 2 bytes (one word) is ProTracker's own
+        # convention for "no loop" -- not a one-word loop nobody would
+        # hear as looping anyway.
+        m.looped = repeat_len > 2
+        m.loop_start = repeat_offset if m.looped else 0
+        m.loop_len = repeat_len if m.looped else 0
         inst.append(m^)
+        # Recomputed rather than read back off `m`: `m^` above already
+        # moved it, and reading a field of a moved-from struct is exactly
+        # what the original code here avoided by recomputing too.
         total_pcm += _u16be(b, at + 22) * 2
 
     let song_len = Int(b[950])
@@ -195,24 +212,23 @@ def mod_to_steps(
     let pattern_bytes = 64 * channels * 4
     let pcm_at = 1084 + (highest + 1) * pattern_bytes
 
-    # brightness: zero crossings across each sample's first page
+    # Each instrument's byte offset into the PCM blob this function
+    # returns, and the blob itself: a straight copy of the file's own
+    # sample area, in instrument order, exactly as ProTracker laid it
+    # out. Copying rather than pointing into `b` is what lets the blob
+    # outlive `b` -- the caller's file bytes are typically a local that
+    # dies when the loading function returns, long before the trio is
+    # done playing.
     var pcm_pos = pcm_at
     for i in range(31):
-        if inst[i].length >= 32 and pcm_pos + 128 <= len(b):
-            var crossings = 0
-            var prev = Int(b[pcm_pos])
-            if prev > 127:
-                prev -= 256
-            let page = 128 if inst[i].length >= 128 else inst[i].length
-            for k in range(1, page):
-                var v = Int(b[pcm_pos + k])
-                if v > 127:
-                    v -= 256
-                if (v >= 0) != (prev >= 0):
-                    crossings += 1
-                prev = v
-            inst[i].bright = crossings
-        pcm_pos += inst[i].length
+        inst[i].blob_offset = pcm_pos - pcm_at
+        let n = inst[i].length
+        if n > 0 and pcm_pos + n <= len(b):
+            for k in range(n):
+                pcm_out.append(b[pcm_pos + k])
+        else:
+            inst[i].length = 0   # a truncated or absent sample plays nothing
+        pcm_pos += n
 
     # ── the sidecar: "<n> key=value ..." through the [I:chip] grammar ───
     var override = List[List[Int]](length=32, fill=List[Int]())

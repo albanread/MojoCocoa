@@ -25,10 +25,12 @@ from gamepane.api.audio import (
     P, get, put, fget, fput, vget, vput, chip_new, chip_free, chip_render,
     gate_on, gate_off, set_freq_hz, set_pulse_width, set_filter, PLAYER_BASE,
     SAMPLE_RATE, FRAME_SAMPLES,
-    S_CUTOFF, S_RES, S_FMODE, V_SUS, V_PW, V_ENV,
+    S_CUTOFF, S_RES, S_FMODE, V_SUS, V_PW, V_ENV, V_WAVE, WAVE_PCM, V_ACC,
 )
 from gamepane.abc.schedule import Step, SE_NOTE_ON, SE_NOTE_OFF, SE_CHIP
-from gamepane.abc.model import CP_PAN, CP_ECHO, CP_ETIME, CP_EFB, CP_TONE
+from gamepane.abc.model import (
+    CP_PAN, CP_ECHO, CP_ETIME, CP_EFB, CP_TONE, CP_PCM_OFFSET, CP_PCM_PTR,
+)
 from gamepane.abc.chipplay import (
     apply_chip, apply_note_on, apply_note_off, silent_tick,
     STEP_SLOTS, SC_VOICE_NOTE, CHIP_ADSR, MACRO_BASE, MACRO_STRIDE,
@@ -72,13 +74,14 @@ comptime T_SCOPE = 31        # the oscilloscope ring: SCOPE_FRAMES stereo pairs
 comptime T_SCOPE_POS = 32    # frames ever written, release-stored after the
                              # samples they cover -- the ring's write head is
                              # this modulo SCOPE_FRAMES
+comptime T_PCM_ADDR = 36     # CT8: this schedule's PCM blob, or 0
 comptime T_PINNED = 32       # 1: tracker mode -- a schedule voice OWNS its
                              # chip voice, no allocator. MOD imports set it;
                              # flatten_trio clears it, so ABC stays dynamic.
 comptime T_TONE = 33         # 0..15; 15 is an EXACT bypass, the default
 comptime T_TONE_LS = 34      # float: the tone filter's left state
 comptime T_TONE_RS = 35      # float: and right
-comptime TRIO_SLOTS = 40
+comptime TRIO_SLOTS = 40  # T_PCM_ADDR at 36 fits inside the existing 40
 
 
 @always_inline
@@ -254,6 +257,9 @@ fn trio_free(t: P):
     _ = external_call["free", NoneType](
         P(unsafe_from_address=get(t, T_SCOPE))
     )
+    let pcm_addr = get(t, T_PCM_ADDR)
+    if pcm_addr != 0:
+        _ = external_call["free", NoneType](P(unsafe_from_address=pcm_addr))
     let addr = get(t, T_ADDR)
     if addr != 0:
         _ = external_call["free", NoneType](P(unsafe_from_address=addr))
@@ -297,6 +303,35 @@ fn set_trio_pan(t: P, chip: Int, pos: Int):
     put(t, T_GAIN_R + chip, gr)
 
 
+def set_trio_pcm(mut t: P, pcm: Span[UInt8, _]):
+    """Copy `pcm` into a blob the trio owns for the life of this schedule.
+
+    A MOD's sample data outlives the caller's own buffer -- `load_tune`'s
+    `raw` is a local that would be freed the moment the function returns,
+    and the audio thread plays for minutes after that. So the bytes are
+    copied ONCE, here, into memory the trio itself owns and frees, the
+    same discipline flatten_trio already applies to the schedule. Call
+    this AFTER flatten_trio, which clears T_PCM_ADDR as part of a fresh
+    tune stating its own sound -- calling it before would have the reset
+    undo this.
+    """
+    let old = get(t, T_PCM_ADDR)
+    if old != 0:
+        _ = external_call["free", NoneType](P(unsafe_from_address=old))
+        put(t, T_PCM_ADDR, 0)
+    let n = len(pcm)
+    if n == 0:
+        return
+    let addr = external_call["calloc", P](Int(n), Int(1))
+    if Int(addr) == 0:
+        return
+    let dst = Pointer[UInt8, MutUntrackedOrigin](
+        unsafe_from_address=Int(addr))
+    for i in range(n):
+        dst[unsafe_offset=i] = pcm[i]
+    put(t, T_PCM_ADDR, Int(addr))
+
+
 fn set_trio_pinned(t: P, pinned: Bool):
     """Tracker mode. A MOD channel IS a voice -- its vibrato must wobble
     ITS note -- so a pinned schedule maps voice n to chip (n-1)/3, slot
@@ -324,6 +359,8 @@ fn _pinned_note_on(t: P, voice: Int, midi: Int, velocity: Int):
         set_freq_hz(st, sub, _hz(cur))
     else:
         set_freq_hz(st, sub, _hz(Float64(midi)))
+    if vget(st, sub, V_WAVE) == WAVE_PCM:
+        vput(st, sub, V_ACC, 0)
     gate_on(st, sub)
 
 
@@ -388,6 +425,10 @@ def flatten_trio(steps: List[Step], mut t: P) -> Int:
     fput(t, T_TONE_LS, 0.0)
     fput(t, T_TONE_RS, 0.0)
     put(t, T_PINNED, 0)
+    let old_pcm = get(t, T_PCM_ADDR)
+    if old_pcm != 0:
+        _ = external_call["free", NoneType](P(unsafe_from_address=old_pcm))
+        put(t, T_PCM_ADDR, 0)
     put(t, T_DELAY_POS, 0)
     let dl = Pointer[Float32, MutUntrackedOrigin](
         unsafe_from_address=get(t, T_DELAY))
@@ -596,6 +637,14 @@ fn render_trio(
                     put(t, T_EFB, value & 15)
                 elif param == CP_TONE:
                     put(t, T_TONE, value & 15)
+                elif param == CP_PCM_OFFSET:
+                    # Meaningless without T_PCM_ADDR, which only the trio
+                    # holds -- translate to an absolute pointer here, the
+                    # one place that can, then hand the bare chip a
+                    # param it actually understands.
+                    let base = get(t, T_PCM_ADDR)
+                    let abs_ptr = (base + value) if base != 0 else 0
+                    apply_chip(trio_chip(t, c), sub, CP_PCM_PTR, abs_ptr)
                 else:
                     apply_chip(trio_chip(t, c), sub, param, value)
             elif kind == SE_NOTE_ON and get(t, T_PINNED) != 0:

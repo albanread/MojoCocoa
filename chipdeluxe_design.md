@@ -234,9 +234,15 @@ Sizes as elsewhere: **S** a sitting, **M** a day or two, **L** a week.
 - **CT7 — the MOD importer (DONE, was M).** Container, periods, tempo, effect→macro
   map, recipe inference + sidecar. *Checks:* a synthetic test MOD written
   by our own tool round-trips; effect coverage table in the tests.
-- **CT8 — the Paula wave (M, gated).** `WAVE_PCM` behind a listening
-  decision after CT7. *Checks:* hash fixtures with a generated sample;
-  the chip suite unchanged when the mode is unused.
+- **CT8 — the Paula wave (DONE, was M, gated).** `WAVE_PCM`: a fifth
+  waveform bit, per-voice PCM pointer/length/loop registers, a trio-owned
+  PCM blob, and `set_freq_hz`'s pitch pipeline (arp/vibrato/slide, all of
+  it) working unchanged for a sampled voice because it only ever deals
+  in MIDI and Hz. *Checks:* a synthetic module with real hand-written PCM
+  bytes proves loop bounds, one-shot ending, and audible output;
+  chunked-vs-monolithic render is byte-identical, extending CT0's
+  equality guarantee to PCM voices; the full G0-G8 regression suite
+  passes unchanged.
 
 ## The rules that keep it honest
 

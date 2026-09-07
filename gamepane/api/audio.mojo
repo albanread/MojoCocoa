@@ -44,6 +44,11 @@ comptime WAVE_TRI = 1
 comptime WAVE_SAW = 2
 comptime WAVE_PULSE = 4
 comptime WAVE_NOISE = 8
+comptime WAVE_PCM = 16
+"""CT8: a real sample instead of a synthesised wave. Exclusive with the
+other four in practice (our own importer never combines it), and if it
+ever WERE OR'd in, waveform() simply ignores the unrecognised bit -- the
+degenerate case is silent-fallback-to-synth, not a crash."""
 
 comptime FILT_LP = 1
 comptime FILT_BP = 2
@@ -74,8 +79,11 @@ comptime S_F = 10          # float: filter frequency coefficient
 comptime S_Q = 11          # float: filter damping
 
 comptime V_BASE = 16
-comptime V_STRIDE = 16
-comptime V_ACC = 0         # phase accumulator, 24 bits with 8 fractional
+comptime V_STRIDE = 20
+comptime V_ACC = 0         # phase accumulator, 24 bits with 8 fractional --
+                           # or, for WAVE_PCM, a PCM_FRAC_BITS-fixed sample
+                           # position; the two waveform families never share
+                           # a voice, so the reinterpretation is unambiguous
 comptime V_STEP = 1        # per-sample increment, same fixed point
 comptime V_PW = 2          # 12-bit pulse width
 comptime V_WAVE = 3        # waveform bits
@@ -91,6 +99,11 @@ comptime V_RING = 12       # ring-modulate voice n by voice n-1
 comptime V_SYNC = 13       # hard-sync voice n to voice n-1
 comptime V_FILT = 14       # route this voice through the filter
 comptime V_PREV = 15       # last accumulator, for edge detection
+comptime V_PCM_PTR = 16        # absolute address of this voice's PCM data
+                                # (0 is silence -- never dereferenced)
+comptime V_PCM_LEN = 17        # length in samples (== bytes: 8-bit PCM)
+comptime V_PCM_LOOP_START = 18 # loop start, in samples
+comptime V_PCM_LOOP_LEN = 19   # loop length, in samples; 0 is one-shot
 
 comptime STATE_SLOTS = V_BASE + 3 * V_STRIDE
 
@@ -185,9 +198,35 @@ fn set_freq_reg(st: P, voice: Int, freq: Int):
     vput(st, voice, V_STEP, (freq * CLOCK_PAL * 256) // SAMPLE_RATE)
 
 
+comptime PCM_FRAC_BITS = 16
+comptime PCM_FRAC_SCALE = 65536.0
+
+comptime PCM_RATE_SCALE = 31.675566
+"""(3546895 / 428) / (440 * 2**((60-69)/12)): the ratio between a real
+Amiga's Paula output rate at ProTracker's universal reference period 428
+(which period_to_midi already calls MIDI 60) and equal temperament's Hz
+at that same MIDI note. `hz` from `_hz(midi)` already encodes "how many
+times faster or slower than the reference" through the exponential
+relationship -- multiplying by this one constant carries that same ratio
+over into PCM-samples-per-second, with no per-call log2 needed."""
+
+
 @always_inline
 fn set_freq_hz(st: P, voice: Int, hz: Float64):
-    """The same thing in Hz, for tunes that were never chip data."""
+    """The same thing in Hz, for tunes that were never chip data.
+
+    A WAVE_PCM voice does not cycle a wavetable -- it walks a sample
+    buffer -- so its accumulator means something else, and the step is
+    computed from a completely different formula: PCM-samples-per-second,
+    not wave-cycles-per-second. Checking V_WAVE here, once, is what lets
+    every existing caller (apply_note_on, the macro tick's arp/vibrato/
+    slide) drive a PCM voice's pitch with zero changes of their own.
+    """
+    if vget(st, voice, V_WAVE) == WAVE_PCM:
+        let pcm_rate = hz * PCM_RATE_SCALE
+        vput(st, voice, V_STEP,
+             Int(pcm_rate * PCM_FRAC_SCALE / Float64(SAMPLE_RATE)))
+        return
     set_freq_reg(st, voice, Int(hz * 16777216.0 / Float64(CLOCK_PAL)))
 
 
@@ -198,11 +237,12 @@ fn set_pulse_width(st: P, voice: Int, pw: Int):
 
 @always_inline
 fn set_wave(st: P, voice: Int, wave: Int):
-    # Masked, like every other register setter here. Four waveform bits
-    # exist; storing anything else meant a stray bit rode along in the
-    # register and read back out of `vget`, which is the sort of thing that
-    # is invisible until something compares registers.
-    vput(st, voice, V_WAVE, wave & 15)
+    # Masked, like every other register setter here. Five waveform bits
+    # exist now (CT8 added WAVE_PCM=16); storing anything else meant a
+    # stray bit rode along in the register and read back out of `vget`,
+    # which is the sort of thing that is invisible until something
+    # compares registers.
+    vput(st, voice, V_WAVE, wave & 31)
 
 
 # The chip's attack times in milliseconds, 0..15. Decay and release run three
@@ -426,6 +466,57 @@ fn advance_envelope(st: P, voice: Int) -> Int:
     return env >> 16
 
 
+@always_inline
+fn pcm_sample(st: P, voice: Int) -> Int:
+    """Advance this voice's sample position by one output sample and
+    return the result, ALREADY CENTRED to roughly the range waveform()
+    reaches after ITS `-2048` -- so the shared envelope formula's PCM
+    counterpart is just `centred * env / 255`, no further centring.
+
+    Advance-then-read, matching the DDS voices' own convention (they use
+    the POST-increment accumulator for this sample's value too). A
+    one-shot sample reaching its end gates the voice off -- there is
+    nothing else Amiga hardware would have done differently either, since
+    Paula's DMA simply stops. PTR==0 or LEN<=0 is silence, never a
+    dereference: a WAVE_PCM voice that was never actually given a sample
+    must not crash, only say nothing.
+    """
+    let ptr_addr = vget(st, voice, V_PCM_PTR)
+    let length = vget(st, voice, V_PCM_LEN)
+    if ptr_addr == 0 or length <= 0:
+        return 0
+    let loop_start = vget(st, voice, V_PCM_LOOP_START)
+    let loop_len = vget(st, voice, V_PCM_LOOP_LEN)
+
+    var pos = vget(st, voice, V_ACC) + vget(st, voice, V_STEP)
+    if loop_len > 0:
+        let loop_end = (loop_start + loop_len) << PCM_FRAC_BITS
+        while pos >= loop_end:
+            pos -= loop_len << PCM_FRAC_BITS
+    else:
+        if (pos >> PCM_FRAC_BITS) >= length:
+            vput(st, voice, V_ACC, pos)
+            gate_off(st, voice)
+            return 0
+    vput(st, voice, V_ACC, pos)
+
+    let idx = pos >> PCM_FRAC_BITS
+    let frac = Float64(pos & 0xFFFF) / PCM_FRAC_SCALE
+    let bytes = Pointer[Int8, MutUntrackedOrigin](
+        unsafe_from_address=ptr_addr
+    )
+    let s0 = Int(bytes[unsafe_offset=idx])
+    var idx1 = idx + 1
+    if loop_len > 0 and idx1 >= loop_start + loop_len:
+        idx1 = loop_start
+    elif idx1 >= length:
+        idx1 = idx           # the final sample before a one-shot's end:
+                              # repeat rather than read past the buffer
+    let s1 = Int(bytes[unsafe_offset=idx1])
+    let interp = Float64(s0) + (Float64(s1) - Float64(s0)) * frac
+    return Int(interp * 16.0)    # signed 8-bit (-128..127) -> ~(-2048..2032)
+
+
 fn chip_render(
     st: P,
     dest: Pointer[Float32, MutUntrackedOrigin],
@@ -469,14 +560,45 @@ fn chip_render(
         var prev0 = vget(st, voice=0, field=V_ACC)
         var prev1 = vget(st, voice=1, field=V_ACC)
         var prev2 = vget(st, voice=2, field=V_ACC)
-        var raw0 = (prev0 + vget(st, voice=0, field=V_STEP)) & 0xFFFFFFFF
-        var raw1 = (prev1 + vget(st, voice=1, field=V_STEP)) & 0xFFFFFFFF
-        var raw2 = (prev2 + vget(st, voice=2, field=V_STEP)) & 0xFFFFFFFF
-        var wrapped0 = ((raw0 >> 8) & 0xFFFFFF) < ((prev0 >> 8) & 0xFFFFFF)
-        var wrapped1 = ((raw1 >> 8) & 0xFFFFFF) < ((prev1 >> 8) & 0xFFFFFF)
-        var wrapped2 = ((raw2 >> 8) & 0xFFFFFF) < ((prev2 >> 8) & 0xFFFFFF)
+        # A PCM voice's V_ACC is a sample position, not a wave-cycle phase
+        # -- the 2^32 wrap below would be meaningless for it, and reading
+        # one back out through `raw` would corrupt the position the PCM
+        # branch further down is about to manage itself. Left untouched
+        # (raw==prev, wrapped=False) a PCM voice simply never triggers
+        # another voice's hard sync, which no schedule this engine builds
+        # ever asks it to.
+        var raw0 = prev0
+        var raw1 = prev1
+        var raw2 = prev2
+        var wrapped0 = False
+        var wrapped1 = False
+        var wrapped2 = False
+        if vget(st, voice=0, field=V_WAVE) != WAVE_PCM:
+            raw0 = (prev0 + vget(st, voice=0, field=V_STEP)) & 0xFFFFFFFF
+            wrapped0 = ((raw0 >> 8) & 0xFFFFFF) < ((prev0 >> 8) & 0xFFFFFF)
+        if vget(st, voice=1, field=V_WAVE) != WAVE_PCM:
+            raw1 = (prev1 + vget(st, voice=1, field=V_STEP)) & 0xFFFFFFFF
+            wrapped1 = ((raw1 >> 8) & 0xFFFFFF) < ((prev1 >> 8) & 0xFFFFFF)
+        if vget(st, voice=2, field=V_WAVE) != WAVE_PCM:
+            raw2 = (prev2 + vget(st, voice=2, field=V_STEP)) & 0xFFFFFFFF
+            wrapped2 = ((raw2 >> 8) & 0xFFFFFF) < ((prev2 >> 8) & 0xFFFFFF)
 
         for v in range(3):
+            if vget(st, voice=v, field=V_WAVE) == WAVE_PCM:
+                # A PCM voice takes no part in sync, ring, the noise LFSR
+                # or waveform() -- none of that means anything for a
+                # sample -- but it DOES still run the shared envelope and
+                # the shared wet/dry routing, so a PCM voice fades and
+                # filters exactly like any other.
+                let centred = pcm_sample(st, v)
+                let env = advance_envelope(st, v)
+                let sample = Float64(centred * env) / 255.0
+                if vget(st, voice=v, field=V_FILT) != 0:
+                    wet += sample
+                else:
+                    dry += sample
+                continue
+
             var prev = prev0
             var acc = raw0
             var src_wrapped = wrapped2      # voice 0 syncs to voice 2

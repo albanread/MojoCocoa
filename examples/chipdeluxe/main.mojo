@@ -35,7 +35,7 @@ from gamepane.abc import (
     Tune, parse_abc, resolve_ties, build_schedule, sort_steps, Step,
     trio_new, trio_free, flatten_trio, set_trio_loop, render_trio,
     trio_playhead, trio_voice_level,
-    mod_to_steps, set_trio_pinned,
+    mod_to_steps, set_trio_pinned, set_trio_pcm,
 )
 from gamepane.api.text import glyph_for, GLYPH_W, GLYPH_H
 from tunes import tune_source, tune_name, TUNE_COUNT
@@ -105,6 +105,7 @@ def load_tune(mut trio: P, k: Int, headless: Bool, old_unit: Int,
     if old_unit != 0:
         stop_audio(old_unit)
     var steps = List[Step]()
+    var pcm = List[UInt8]()
     var pinned = False
     if k == 5:
         var raw = List[UInt8]()
@@ -116,7 +117,7 @@ def load_tune(mut trio: P, k: Int, headless: Bool, old_unit: Int,
                 sidecar = f2.read()
         except:
             pass
-        _ = mod_to_steps(Span(raw), steps, sidecar)
+        _ = mod_to_steps(Span(raw), steps, pcm, sidecar)
         pinned = True
     else:
         var t = Tune()
@@ -125,6 +126,9 @@ def load_tune(mut trio: P, k: Int, headless: Bool, old_unit: Int,
         build_schedule(t, SAMPLE_RATE, steps)
     sort_steps(steps)
     _ = flatten_trio(steps, trio)
+    # An empty pcm is a no-op inside set_trio_pcm, so this is safe to call
+    # unconditionally rather than branching on `pinned` a second time.
+    set_trio_pcm(trio, Span(pcm))
     set_trio_pinned(trio, pinned)
     set_trio_loop(trio, True)
     if headless:

@@ -94,14 +94,17 @@ def main() raises:
     chip_free(st)
 
     # ── 2. set_wave masks like every other register setter ───────────────
+    # 0x60 (bits 5-6) is stray under EITHER mask width: CT8 widened the
+    # valid range to five bits (WAVE_PCM=16 is bit 4), so the garbage
+    # value has to sit above that now, not just above the old four.
     st = chip_new()
-    set_wave(st, 0, WAVE_TRI | 0x70)
+    set_wave(st, 0, WAVE_TRI | 0x60)
     if vget(st, voice=0, field=V_WAVE) != WAVE_TRI:
         print("FAIL  set_wave stored", vget(st, voice=0, field=V_WAVE),
               "want", WAVE_TRI)
         failures += 1
     else:
-        print("ok    set_wave keeps only the four waveform bits")
+        print("ok    set_wave keeps only the five waveform bits")
     chip_free(st)
 
     # ── 3. the high-pass tap is finite after the state resets ────────────
