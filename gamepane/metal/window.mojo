@@ -78,9 +78,15 @@ def _ensure_state():
 
 def dropped_file() -> String:
     """The most recent file dropped on the pane, once: reading it clears
-    it, so a drop is an event and not a state."""
+    it, so a drop is an event and not a state.
+
+    `var`, not `let`: `let path = g_dropped()[]` NAMES the global's storage
+    rather than copying it, so the reset on the next line would clear
+    `path` too and this would return "" on every call -- the exact trap
+    this project's own CLAUDE.md documents, hit here a fourth time.
+    """
     _ensure_state()
-    let path = g_dropped()[]
+    var path = g_dropped()[]
     g_dropped()[] = String("")
     return path
 
@@ -198,24 +204,56 @@ class GameView(NSView):
     def draggingEntered_(self, sender: ObjCObject) -> Int:
         return 1                         # NSDragOperationCopy
 
+    def draggingUpdated_(self, sender: ObjCObject) -> Int:
+        return 1
+
+    def prepareForDragOperation_(self, sender: ObjCObject) -> Bool:
+        # The classic recipe implements all three: a destination that
+        # stays silent here can have its drop abandoned before
+        # performDragOperation: is ever sent.
+        return True
+
     def performDragOperation_(self, sender: ObjCObject) -> Bool:
         """A file landed on the window. Remember its path; the game reads
         it with dropped_file() at its own frame boundary -- input, like the
-        keys, is a fact recorded here and a decision taken there."""
+        keys, is a fact recorded here and a decision taken there.
+
+        Two shapes on the pasteboard, tried in order: the legacy filenames
+        list, and the modern public.file-url -- which arrives as a file://
+        URL and goes through NSURL for its path, because a URL with %20 in
+        it is not a filename."""
         let pb = send[ObjCObject, "draggingPasteboard"](sender)
+        var path = String("")
         let files = send[ObjCObject, "propertyListForType:"](
             pb, nsstring(String("NSFilenamesPboardType")).ptr()
         )
-        if files.addr() == 0:
+        if files.addr() != 0 and Int(send[Int, "count"](files)) > 0:
+            let first = send[ObjCObject, "objectAtIndexedSubscript:"](
+                files, Int(0)
+            )
+            let cp = send[
+                OpaquePointer[MutUntrackedOrigin], "UTF8String"
+            ](first)
+            path = String(unsafe_from_utf8_ptr=cp.unsafe_bitcast[c_char]())
+        else:
+            let ustr = send[ObjCObject, "stringForType:"](
+                pb, nsstring(String("public.file-url")).ptr()
+            )
+            if ustr.addr() != 0:
+                let url = Cls["NSURL"]().URLWithString(ustr.ptr())
+                if url.id != 0:
+                    let ns = send[ObjCObject, "path"](ObjCObject(url.id))
+                    if ns.addr() != 0:
+                        let cp2 = send[
+                            OpaquePointer[MutUntrackedOrigin], "UTF8String"
+                        ](ns)
+                        path = String(
+                            unsafe_from_utf8_ptr=cp2.unsafe_bitcast[c_char]()
+                        )
+        print("gamepane: dropped '" + path + "'")
+        if path.byte_length() == 0:
             return False
-        let n = Int(send[Int, "count"](files))
-        if n < 1:
-            return False
-        let first = send[ObjCObject, "objectAtIndexedSubscript:"](
-            files, Int(0)
-        )
-        let cp = send[OpaquePointer[MutUntrackedOrigin], "UTF8String"](first)
-        g_dropped()[] = String(unsafe_from_utf8_ptr=cp.unsafe_bitcast[c_char]())
+        g_dropped()[] = path
         return True
 
     def keyDown_(self, event: ObjCObject):

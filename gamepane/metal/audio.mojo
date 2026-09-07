@@ -541,11 +541,22 @@ def start_audio(d: P) raises -> Int:
 
 
 fn stop_audio(unit_addr: Int):
-    """Always, before main returns. An audio unit outliving the state its
-    callback reads is a crash on the way out."""
+    """Always, before main returns -- and also before opening a NEW unit
+    on the same process, which switching tunes now does.
+
+    Stop and Uninitialize alone were enough as long as a unit lived until
+    the process exited: the OS reclaims everything at exit regardless. The
+    missing step is AudioComponentInstanceDispose, and it was invisible
+    until something in this codebase actually reused a unit's slot within
+    one run -- tune switching and a dropped .mod both do. Without it, a
+    second AudioComponentInstanceNew for the same default-output component
+    can succeed at every call (every rc checked, none of them fail) while
+    the HAL never actually hands the new instance the hardware -- silence
+    with no error anywhere to catch it."""
     if unit_addr == 0:
         return
     let unit = P(unsafe_from_address=unit_addr)
     _ = external_call["AudioOutputUnitStop", Int32](unit)
     _ = external_call["AudioUnitUninitialize", Int32](unit)
+    _ = external_call["AudioComponentInstanceDispose", Int32](unit)
     g_deck()[] = 0
