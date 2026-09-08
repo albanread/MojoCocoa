@@ -212,9 +212,10 @@ xcrun metal -S -emit-llvm k.metal -o k.ll
 xcrun metal -x ir -c k.ll -o k.air
 ```
 
-Write the smallest MSL kernel that exercises the construct in question, read
-the textual AIR the front end emits, and copy the shape exactly: the metadata
-tuple order, the builtin suffix, the address space on each parameter. Then
+Write the smallest MSL kernel that exercises the construct in question — our
+kernel, Apple's shipped compiler — read the textual AIR its front end emits,
+and match that shape exactly: the metadata tuple order, the builtin suffix,
+the address space on each parameter. Then
 inspect the result with the shipped `air-objdump`, `air-readobj`, `air-nm`,
 `air-opt` and `air-link` tools.
 
@@ -224,8 +225,8 @@ native `sitofp` / `uitofp` / `fptosi` / `fptoui` casts. Every one of those
 was a real defect when this backend emitted it, and, as the diagnostics
 finding puts it, *each cost a separate day to find individually*.
 
-The second oracle is the `oracles` repository beside this one: the AIR that
-Modular's released compiler emits for a corpus of probe kernels, on the
+The second oracle is the `oracles` repository beside this one: the AIR a
+released Mojo compiler emits for a corpus of probe kernels we wrote, on the
 `apple-m4` and `apple-m4-metal4` targets. Where Apple's compiler shows what
 the reader was designed for, the released compiler shows what a *Mojo*
 kernel looks like when it arrives correctly — the same generic-pointer,

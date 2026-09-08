@@ -5,17 +5,22 @@ dispatch, and it has its own failure surface — one the oracle findings call
 *a second, unshared failure surface*, because everything else in the port is
 about what the compiler emits and this is about the boundary underneath it.
 
-## What Modular does not publish
+## Implementing the other half of a declared interface
 
 Mojo's `DeviceContext` is a thin Mojo wrapper over a C ABI of `AsyncRT_*`
 functions: `AsyncRT_DeviceContext_create`, `_createBuffer_async`,
 `_HtoD_async`, `_DtoH_async`, `_compileFunction`, the launch entry points, the
-`AsyncValue` retain and release family, streams, sub-buffers, and so on. The
-bindings in `device_context.mojo` declare every symbol, so the *interface* is
-fully specified. What is not published is an implementation for anything but
-CUDA, HIP and Apple's own path, nor the semantics of several calls — and, as
-the finding says, *that is where the cost is*. `AppleGPURT.cpp` and
-`AppleGPUMetal.cpp` are that implementation for Metal on Apple silicon.
+`AsyncValue` retain and release family, streams, sub-buffers, and so on.
+
+The bindings in `device_context.mojo` declare every symbol, so the
+*interface* is fully specified in ordinary open source — the names, the
+argument types and the return conventions are all simply there to read. What
+that file does not carry is a Metal implementation behind those declarations,
+nor prose describing the intended semantics of several of the calls, and, as
+the finding says, *that is where the cost is*: the shape of each function is
+given, and what it is supposed to *do* had to be settled by writing it and
+testing the result. `AppleGPURT.cpp` and `AppleGPUMetal.cpp` are that
+implementation for Metal on Apple silicon.
 
 It is written in plain C++ over the Objective-C runtime — `objc_msgSend`
 casts, the metal-cpp technique — so no Objective-C++ toolchain support is

@@ -42,6 +42,55 @@ exists is what Apple's own compiler emits.
 
 <!-- doccrate:keep-together:end -->
 
+## Where the knowledge comes from
+
+Worth stating plainly, because a backend for an undocumented target invites
+the wrong assumption. Nothing here was reverse engineered.
+
+There are exactly three sources, and all three are things you can simply run
+or read:
+
+- **The tree itself.** This is a fork of an Apache-2.0 codebase, so the
+  frontend, the MLIR layer and the optimisation pipeline are ordinary source
+  in this repository. The AIR backend and the Apple GPU runtime are this
+  fork's own code, written into it.
+- **A published interface.** `DeviceContext` is a Mojo wrapper over a C ABI
+  whose every symbol is declared in `device_context.mojo`. The *interface* is
+  fully specified in open source; what did not exist was an implementation for
+  Metal, and `AppleGPURT.cpp` is that implementation written against those
+  declarations.
+- **Compilers, run on our own kernels.** `xcrun metal -S -emit-llvm` on our
+  probe kernels shows what Apple's compiler emits; a released Mojo compiler on
+  the same probes shows what its AIR looks like. Comparing our output with
+  theirs on inputs we wrote is differential testing, and it is the only
+  specification an undocumented reader has.
+
+That last one is why "golden sample" and "oracle" appear throughout. They mean
+a reference *output* for a kernel we wrote, not an artefact taken apart.
+
+<!-- doccrate:keep-together:start -->
+
+## One of four
+
+This walkthrough covers the Apple Silicon AIR target. It is one of four
+concurrent ports, each in its own fork, each aimed at a different reader:
+
+| port | target |
+|:---|:---|
+| **this one** | **Apple Silicon — AIR, Metal 4, M1–M5** |
+| NVIDIA | PTX |
+| Qualcomm | Snapdragon |
+| Mac Pro 2019 | AMD Vega II |
+
+<!-- doccrate:keep-together:end -->
+
+The NVIDIA, AMD and Snapdragon paths visible in *this* tree are reference
+material only — each has a fork of its own where its work actually happens, so
+what is described here is the Apple path and changes to shared lowering are
+not made on their behalf. Where this document compares AIR with NVPTX or
+AMDGPU it is describing what those backends do in the shared source, not the
+state of the sibling ports.
+
 <!-- doccrate:keep-together:start -->
 
 ## These documents
