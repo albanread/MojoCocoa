@@ -47,6 +47,10 @@ comptime EV_PDI = 6
 comptime EV_SPS_CHECK = 7
 comptime EV_PC2 = 8
 
+comptime DEC_NONE = 0
+comptime DEC_MCC = 1
+"""A decision the trench owes the crew: the mission holds until it comes."""
+
 comptime SUBSTEP = 300.0
 """Seconds of GET between looks at the sky: contact, events, the track.
 Between looks the integrator takes its own steps, as the plan did; near
@@ -171,6 +175,12 @@ struct Mission(Movable):
     var target_pole: Vec3
     var apo_alt: Float64
     var mcc_threshold: Float64
+    var manual_mcc: Bool  # the trench calls each correction itself
+    var pending_kind: Int
+    var pending_name: String
+    var pending_dv: Vec3  # the correction on the board
+    var pending_need: Float64
+    var pending_ok: Bool
     var loi1_seconds: Float64
     var mcc_total: Float64  # km/s spent on corrections
     var truth_perilune_alt: Float64  # km, known once LOI-1 is lit
@@ -261,6 +271,12 @@ struct Mission(Movable):
         self.target_pole = sheet.target_pole
         self.apo_alt = sheet.apo_alt
         self.mcc_threshold = 0.001
+        self.manual_mcc = False
+        self.pending_kind = DEC_NONE
+        self.pending_name = String("")
+        self.pending_dv = Vec3(0.0, 0.0, 0.0)
+        self.pending_need = 0.0
+        self.pending_ok = False
         self.loi1_seconds = sheet.loi1_seconds
         self.mcc_total = 0.0
         self.truth_perilune_alt = 0.0
@@ -448,26 +464,58 @@ struct Mission(Movable):
             self.est_v = self.v
 
     def midcourse(mut self, name: String):
-        """A correction opportunity: from the ESTIMATE, the burn that would
-        put the perilune back on target; burn it if the policy says so,
-        with the SPS's own errors; at the last one, retime LOI-1 from what
-        tracking now says the perilune will be."""
+        """A correction opportunity. The corrector says, from the ESTIMATE,
+        what burn would put the perilune back on target; who decides
+        whether to make it depends on the policy. Under a rule the number
+        decides. Set to call each one, the mission HOLDS here -- the
+        decision is the trench's, and `resolve_mcc` is the answer."""
         self.update_estimate()
         var t_now = self.get - self.tab0
         var stamp = get_string(self.jd(), self.jd_launch) + "  "
         var corr = correct(self.bodies, self.eph, self.est_r, self.est_v, Target(self.target_r_p, self.target_t_p, self.target_pole), t_now, self.target_t_p + 6.0 * 3600.0)
-        var dv = corr.v - self.est_v
-        var need = dv.norm()
-        var est_after = self.est_v
+        self.pending_name = name
+        self.pending_dv = corr.v - self.est_v
+        self.pending_need = self.pending_dv.norm()
+        self.pending_ok = corr.converged
         if not corr.converged:
             self.log.append(stamp + name + ": no convergence")
-        elif need >= self.mcc_threshold:
-            var flown = dv if self.perfect else perturb_burn(self.rng, dv, MCC_MAG_SIGMA, MCC_POINT_SIGMA)
+            self.apply_mcc(False)
+            return
+        if self.manual_mcc:
+            self.pending_kind = DEC_MCC
+            self.paused = True
+            self.log.append(stamp + name + ": " + fmt(self.pending_need * 1000.0, 1) + " m/s on the board")
+            return
+        self.apply_mcc(self.pending_need >= self.mcc_threshold)
+
+    def resolve_mcc(mut self, burn: Bool):
+        """Burn it or hold: the answer to a correction the trench was
+        asked about. Ignored when nothing is on the board."""
+        if self.pending_kind != DEC_MCC:
+            return
+        self.pending_kind = DEC_NONE
+        self.paused = False
+        self.apply_mcc(burn)
+
+    def apply_mcc(mut self, burn: Bool):
+        """Make the pending correction, or let it stand; then, at the last
+        opportunity, the LOI-1 solution from what tracking now says."""
+        var name = self.pending_name
+        var need = self.pending_need
+        var t_now = self.get - self.tab0
+        var stamp = get_string(self.jd(), self.jd_launch) + "  "
+        var est_after = self.est_v
+        if not self.pending_ok:
+            pass
+        elif burn:
+            var flown = self.pending_dv if self.perfect else perturb_burn(self.rng, self.pending_dv, MCC_MAG_SIGMA, MCC_POINT_SIGMA)
             self.v = self.v + flown
-            est_after = self.est_v + dv
+            est_after = self.est_v + self.pending_dv
             self.mcc_total += need
             self.sps_kg -= burn_prop(CSM_MASS + LM_MASS, need, SPS_ISP)
             self.log.append(stamp + name + " " + fmt(need * 1000.0, 1) + " m/s burned")
+        elif self.manual_mcc:
+            self.log.append(stamp + name + " " + fmt(need * 1000.0, 1) + " m/s: held, our call")
         elif self.mcc_threshold > 1.0:
             self.log.append(stamp + name + " " + fmt(need * 1000.0, 1) + " m/s: no correction policy")
         else:

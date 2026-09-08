@@ -239,7 +239,7 @@ arrival day whose lighting may have moved.
 | lunar orbit | LOI-1 apolune × perilune; LOI-2 altitude | LOI cost (C15), the DOI geometry (C18), the ground-track spacing over the site (C16) |
 | descent perilune | 10–20 km | PDI Δv and the braking-phase length (C18, C19); lower is cheaper and less forgiving of terrain |
 | hover reserve policy | 30/60/90 s at low-gate throttle | how long the crew may look before the abort call is forced (§7) |
-| midcourse policy | correct above 0.3 / 1 / 3 m/s | how much SPS is spent keeping the corridor probability up (C20) |
+| midcourse policy | correct above 0.3 / 1 / 3 m/s, never, or **call each one** | how much SPS is spent keeping the corridor probability up (C20). Set to call each one, the mission HOLDS at each of MCC-1..4 and the trench answers: the panel shows the burn on the board, its cost in kilograms, and the mean perilune and corridor probability both with it and without, from two clouds of 2 048 flown on the GPU in ~60 ms. The two numbers are the case for spending the propellant, and they are graded -- MCC-1 is 345 km against 114, P 0.00 against 1.00, and obvious; MCC-2 onward are 1.00 either way, so the question becomes whether ten or twenty kilometres of arrival accuracy is worth four to twenty-three kilograms of SPS that the ride home may want |
 | GO/NO-GO calls | TLI, MCC-1..4, LOI, DOI, PDI, and the 1202-style call during descent | the crew do what we say |
 
 The results panel, updated the moment a choice changes, is §8's plan
@@ -250,6 +250,14 @@ violated -- azimuth out of corridor, dark site, negative margin, TLI past
 the S-IVB's life -- and the GO button stays grey until there are none.
 Amber is a margin thinner than the flight rules like; the button lights,
 and the crew fly it.
+
+**Who decides, and when.** Everything above is chosen before launch, which
+is what makes this a planner's game rather than a pilot's -- but two
+decisions are deliberately left live, because they are the ones the trench
+actually made in the moment and the ones whose cost is visible only when
+the number is in front of you: each midcourse correction (§5, above), and
+the GO/NO-GO on a program alarm during the descent (§7). The rest is
+policy, set in advance and executed, as flight rules are.
 
 ## 6. Consequences -- how a plan becomes an outcome
 

@@ -175,6 +175,14 @@ struct Console(Movable):
     var cloud_tli: CloudStats
     var cloud_mcc: CloudStats
     var cloud_ms: Float64
+    var mcc_ready: Bool
+    var mcc_p_hold: Float64
+    var mcc_p_burn: Float64
+    var mcc_sigma_hold: Float64
+    var mcc_sigma_burn: Float64
+    var mcc_alt_hold: Float64
+    var mcc_alt_burn: Float64
+    var mcc_ms: Float64
 
     def __init__(out self, var eph: Ephemeris, ch: Choices):
         self.eph = eph^
@@ -213,6 +221,14 @@ struct Console(Movable):
         self.cloud_tli = CloudStats()
         self.cloud_mcc = CloudStats()
         self.cloud_ms = 0.0
+        self.mcc_ready = False
+        self.mcc_p_hold = 0.0
+        self.mcc_p_burn = 0.0
+        self.mcc_sigma_hold = 0.0
+        self.mcc_sigma_burn = 0.0
+        self.mcc_alt_hold = 0.0
+        self.mcc_alt_burn = 0.0
+        self.mcc_ms = 0.0
 
     def clouds(mut self, ctx: DeviceContext) raises:
         """Two clouds of 4 096: the S-IVB's errors flown to the Moon, and
@@ -389,7 +405,7 @@ struct Console(Movable):
                 self.ch.hover_s = 300.0
             return 1
         if r == ROW_MCC:
-            self.ch.mcc_policy = (self.ch.mcc_policy + delta + 4) % 4
+            self.ch.mcc_policy = (self.ch.mcc_policy + delta + 5) % 5
             return 1
         if r == ROW_SEED:
             self.ch.seed += delta
@@ -400,8 +416,56 @@ struct Console(Movable):
         """Commit the plan: the mission starts on the pad at GET 0."""
         self.mission = Mission(self.eph, self.sheet, self.ch.seed)
         self.mission.mcc_threshold = mcc_threshold(self.ch.mcc_policy)
+        self.mission.manual_mcc = self.ch.mcc_policy == 4
         self.mission.warp = 60.0
+        self.mcc_ready = False
         self.mode = MODE_TRACK
+
+    def assess_mcc(mut self, ctx: DeviceContext) raises:
+        """What the correction on the board is worth. Two clouds of the
+        tracking uncertainty, flown to their own perilunes: one that lets
+        the state stand, one that burns -- with the SPS's own execution
+        error on each sample, which is why burning does not reach
+        certainty either. The difference between the two numbers is the
+        whole case for spending the propellant."""
+        comptime N = 2048
+        var t0 = perf_counter_ns()
+        var t_now = self.mission.get - self.mission.tab0
+        var t_end = self.mission.target_t_p + 6.0 * 3600.0
+        var hours = (self.mission.get - self.mission.tli_offset) / 3600.0
+        var f = 1.0 / sqrt(1.0 + (hours if hours > 0.0 else 0.0) / 12.0)
+        var pos_s = TRACK_POS_SIGMA * f
+        var vel_s = TRACK_VEL_SIGMA * f
+        var tp = self.mission.target_t_p
+        var mv = self.mission.bodies.moon_at(tp + 30.0) - self.mission.bodies.moon_at(tp - 30.0)
+        var pole = self.mission.bodies.moon_at(tp).cross(mv).unit()
+        var r0 = self.mission.est_r
+        var v0 = self.mission.est_v
+        var dv = self.mission.pending_dv
+        var rng = Rng(UInt64(self.ch.seed) * 31 + 5)
+        var hold = Cloud(N, t_now)
+        hold.add(r0, v0)
+        for _ in range(N - 1):
+            var s = perturb_state(rng, r0, v0, pos_s, vel_s)
+            hold.add(s.r, s.v)
+        fly_cloud(hold, ctx, self.mission.bodies, t_end)
+        var sh = cloud_stats(hold, pole)
+        self.mcc_p_hold = sh.p_corridor
+        self.mcc_sigma_hold = sh.sigma_alt
+        self.mcc_alt_hold = sh.mean_alt
+        var burn = Cloud(N, t_now)
+        burn.add(r0, v0 + dv)
+        for _ in range(N - 1):
+            var s = perturb_state(rng, r0, v0, pos_s, vel_s)
+            var flown = perturb_burn(rng, dv, MCC_MAG_SIGMA, MCC_POINT_SIGMA)
+            burn.add(s.r, s.v + flown)
+        fly_cloud(burn, ctx, self.mission.bodies, t_end)
+        var sb = cloud_stats(burn, pole)
+        self.mcc_p_burn = sb.p_corridor
+        self.mcc_sigma_burn = sb.sigma_alt
+        self.mcc_alt_burn = sb.mean_alt
+        self.mcc_ms = Float64(perf_counter_ns() - t0) / 1e6
+        self.mcc_ready = True
 
     def rot(self, p: Vec3, get: Float64) -> Vec3:
         """A position at that GET, in the rotating frame."""
@@ -692,6 +756,8 @@ def main() raises:
             con.ch.mcc_policy = atol(pol)
             con.replan(pane.ctx)
         con.go()
+        var want_decide = atol(getenv("MOONSHOT_DECIDE")) if getenv("MOONSHOT_DECIDE") != "" else 0
+        var decisions = 0
         var hours = getenv("MOONSHOT_GET")
         var minutes = getenv("MOONSHOT_GETM")
         if hours != "" or minutes != "":
@@ -702,6 +768,14 @@ def main() raises:
                 if chunk > 3600.0:
                     chunk = 3600.0
                 con.mission.advance(chunk / con.mission.warp)
+                # A headless run has nobody to ask, so it answers the way
+                # the 1 m/s rule would and keeps going -- unless it was
+                # started to look at the decision itself.
+                if con.mission.pending_kind == DEC_MCC:
+                    decisions += 1
+                    if want_decide > 0 and decisions >= want_decide:
+                        break
+                    con.mission.resolve_mcc(con.mission.pending_need >= 0.001)
         con.mission.warp = 600.0
     var keys = Keys()
     var stride = screen.stride_bytes()
@@ -712,7 +786,7 @@ def main() raises:
     orient_names.append(String("as launched"))
     orient_names.append(String("over the site, retro"))
     var mcc_names = List[String]()
-    for nm in ["correct > 0.3 m/s", "correct > 1 m/s", "correct > 3 m/s", "never correct"]:
+    for nm in ["correct > 0.3 m/s", "correct > 1 m/s", "correct > 3 m/s", "never correct", "call each one"]:
         mcc_names.append(String(nm))
     var month_names = List[String]()
     for nm in ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]:
@@ -753,8 +827,17 @@ def main() raises:
                 con.mission.warp = 600.0
             if keys.pressed(KEY_4):
                 con.mission.warp = 3600.0
-            if keys.pressed(KEY_SPACE):
+            if keys.pressed(KEY_SPACE) and con.mission.pending_kind == DEC_NONE:
                 con.mission.paused = not con.mission.paused
+            if con.mission.pending_kind == DEC_MCC:
+                if not con.mcc_ready:
+                    con.assess_mcc(pane.ctx)
+                if keys.pressed(letter_key(1)):
+                    con.mission.resolve_mcc(True)
+                    con.mcc_ready = False
+                if keys.pressed(letter_key(7)):
+                    con.mission.resolve_mcc(False)
+                    con.mcc_ready = False
             if keys.pressed(letter_key(15)):
                 con.mode = MODE_PLAN
             if keys.pressed(letter_key(6)):
@@ -834,6 +917,20 @@ def main() raises:
             r += 1
             write_line(text, r, String("  warp ") + fmt(ms.warp, 0) + "x  seed " + String(ms.seed) + "  " + (String("PAUSED") if ms.paused else phase_name(ms.phase)), T_TEXT)
             r += 1
+            if ms.pending_kind == DEC_MCC:
+                write_line(text, r, String(" DECISION  ") + ms.pending_name, T_RED)
+                r += 1
+                write_line(text, r, String("  on the board ") + fmt(ms.pending_need * 1000.0, 1) + " m/s, " + fmt(burn_prop(CSM_MASS + LM_MASS, ms.pending_need, SPS_ISP), 0) + " kg of SPS", T_TEXT)
+                r += 1
+                if con.mcc_ready:
+                    write_line(text, r, String("  perilune  hold ") + fmt(con.mcc_alt_hold, 0) + " +-" + fmt(con.mcc_sigma_hold, 0) + "   burn " + fmt(con.mcc_alt_burn, 0) + " +-" + fmt(con.mcc_sigma_burn, 0) + " km", T_TEXT)
+                    r += 1
+                    write_line(text, r, String("  corridor ") + fmt(CORRIDOR_LO, 0) + "-" + fmt(CORRIDOR_HI, 0) + " km:  hold " + fmt(con.mcc_p_hold, 2) + "   burn " + fmt(con.mcc_p_burn, 2), T_HI)
+                    r += 1
+                    write_line(text, r, String("  B burn    H hold      (" + fmt(con.mcc_ms, 0) + " ms, 2x2048)"), T_GREEN)
+                else:
+                    write_line(text, r, String("  flying the cloud..."), T_DIM)
+                r += 2
             var ni = ms.next_event()
             if ni >= 0:
                 var togo = ms.events[ni].get - ms.get
@@ -957,7 +1054,10 @@ def main() raises:
             while r < 48:
                 write_line(text, r, String(""), T_TEXT)
                 r += 1
-            write_line(text, r, String(" 1-4 warp  space pause  P back to plan"), T_DIM)
+            if ms.pending_kind == DEC_MCC:
+                write_line(text, r, String(" B burn   H hold   the mission is holding"), T_RED)
+            else:
+                write_line(text, r, String(" 1-4 warp  space pause  P back to plan"), T_DIM)
             r += 1
             write_line(text, r, String(""), T_TEXT)
         else:

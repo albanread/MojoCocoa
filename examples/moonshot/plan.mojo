@@ -470,4 +470,6 @@ def mcc_threshold(policy: Int) -> Float64:
         return 0.001
     if policy == 2:
         return 0.003
-    return 1.0e9  # never: the plan as the S-IVB left it
+    if policy == 3:
+        return 1.0e9  # never: the plan as the S-IVB left it
+    return 0.001  # call each one: the threshold is not consulted
