@@ -111,29 +111,61 @@ of the three dispatch fixes in chapter 6.
 
 ```mermaid
 sequenceDiagram
+%% @id air-compile
+%% @name compile_function: bytes to a pipeline state
+    participant M as Mojo DeviceContext
+    participant R as AppleGPURT
+    participant Mt as Metal
+    M->>R: compile_function(metallib bytes, name)
+    R->>R: fnCache lookup: name + hash(bytes)
+    R-->>Mt: newLibraryWithData, newFunctionWithName,<br/>newComputePipelineState + reflection (miss only)
+```
+
+<!-- doccrate:keep-together:end -->
+
+The launch path is where the argument contract is actually resolved, and it
+is the half that runs on every dispatch rather than once:
+
+<!-- doccrate:keep-together:start -->
+
+```mermaid
+sequenceDiagram
 %% @id air-launch
 %% @name One enqueue_function call, from Mojo to the GPU
     participant M as Mojo DeviceContext
     participant R as AppleGPURT
     participant Reg as address registry
     participant Mt as Metal
-    M->>R: compile_function(metallib bytes, name)
-    R->>R: fnCache lookup: name + hash(bytes)
-    R-->>Mt: newLibraryWithData, newFunctionWithName,<br/>newComputePipelineState + reflection (miss only)
     M->>R: launch(fn, grid, block, args, sizes, isDevicePtr)
     R->>R: validate block against maxTotalThreadsPerThreadgroup
     loop each argument
-        R->>R: classify by reflection (generated kernels)<br/>or flags, or registry fallback
+        R->>R: classify by reflection, or flags, or registry fallback
         R->>Reg: resolve device address
         Reg-->>R: (MTLBuffer, offset) or "not a device address"
         R->>Mt: setBuffer:offset:atIndex: or setBytes:length:atIndex:
     end
+```
+
+Once every argument is bound, the dispatch itself is three calls — and the
+encoder deliberately stays open behind them:
+
+<!-- doccrate:keep-together:start -->
+
+```mermaid
+sequenceDiagram
+%% @id air-dispatch
+%% @name The dispatch, and when the command buffer actually commits
+    participant M as Mojo DeviceContext
+    participant R as AppleGPURT
+    participant Mt as Metal
     R->>Mt: setThreadgroupMemoryLength (dynamic shared)
-    R->>Mt: dispatchThreadgroups:threadsPerThreadgroup: (open encoder)
-    Note over R,Mt: encoder stays open, command buffer commits at the batch boundary
+    R->>Mt: dispatchThreadgroups: (open encoder)
+    Note over R,Mt: encoder stays open; the command buffer<br/>commits at the batch boundary
     M->>R: DtoH / synchronize
     R->>Mt: endEncoding, commit, wait (ring of 4)
 ```
+
+<!-- doccrate:keep-together:end -->
 
 <!-- doccrate:keep-together:end -->
 

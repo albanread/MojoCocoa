@@ -73,7 +73,6 @@ signature classes, payload domains, convergence, and type suffixes* — lists
 every family the backend will construct a declaration for. A family absent
 from the table is not accepted merely because its name starts with `air.`.
 
-<!-- doccrate:keep-together:start -->
 
 | Signature class | Families |
 |:---|:---|
@@ -84,7 +83,6 @@ from the table is not accepted merely because its name starts with `air.`.
 | Shuffle | `air.simd_shuffle`, `air.simd_shuffle_up`, `air.simd_shuffle_down`, `air.simd_shuffle_xor` |
 | Ballot | `air.simd_ballot.i32` |
 
-<!-- doccrate:keep-together:end -->
 
 Each family says whether it carries a type suffix, what payload domain it
 accepts, and whether it is *convergent* — the barrier, shuffle, reduction
@@ -136,7 +134,7 @@ NVPTX's way. AIR has different numbers and no generic space at all.
 <!-- doccrate:keep-together:start -->
 
 ```mermaid
-flowchart LR
+flowchart TD
 %% @id air-address-spaces
 %% @name What remapAddressSpaces does to each pointer
 %% @node g shape=stadium stroke=#7C3A06 stroke_width=2
@@ -148,8 +146,8 @@ flowchart LR
 %% @node t3 shape=rounded stroke=#2C440D stroke_width=2
 %% @node p0 shape=rounded stroke=#2C440D stroke_width=2
 %% @node prop shape=hexagon stroke=#14375A stroke_width=2
-    g["generic 0<br/>(Mojo's device pointers)"] -->|kernel params, loads from AS1/AS2,<br/>pointers pulled from capture blobs| d["device 1"]
-    c4["CONSTANT 4<br/>(NVPTX numbering)"] --> c2["constant 2"]
+    g["generic 0<br/>Mojo's device pointers"] --> d["device 1"]
+    c4["CONSTANT 4<br/>NVPTX numbering"] --> c2["constant 2"]
     s3["SHARED 3"] --> t3["threadgroup 3"]
     l5["LOCAL 5"] --> p0["private 0"]
     d --> prop["propagatePointerAS<br/>GEPs, phis, selects, bitcasts,<br/>defined callees, memcpy/memset names"]
@@ -157,6 +155,7 @@ flowchart LR
     t3 --> prop
     p0 --> prop
 ```
+
 
 
 <!-- doccrate:keep-together:end -->

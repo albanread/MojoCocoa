@@ -10,48 +10,46 @@ of them were drawn after a defect showed where the old boundary was wrong.
 <!-- doccrate:keep-together:start -->
 
 ```mermaid
-flowchart TD
-%% @id air-pipeline
-%% @name Every stage from fn to metallib
-%% @node a1 shape=rounded stroke=#14375A stroke_width=2
-%% @node a2 shape=rounded stroke=#14375A stroke_width=2
-%% @node b1 shape=rounded stroke=#14375A stroke_width=2
-%% @node b2 shape=rounded stroke=#14375A stroke_width=2
-%% @node b3 shape=rounded stroke=#14375A stroke_width=2
+flowchart LR
+%% @id air-pipeline-front
+%% @name Front half: Mojo source to a legalised module
+%% @node a1 shape=stadium stroke=#14375A stroke_width=2
+%% @node a2 shape=stadium stroke=#14375A stroke_width=2
+%% @node b shape=rounded stroke=#14375A stroke_width=2
 %% @node c1 shape=rounded stroke=#14375A stroke_width=2
 %% @node c2 shape=rounded stroke=#3F4650 stroke_width=2
 %% @node c3 shape=rounded stroke=#14375A stroke_width=2
-%% @node c4 shape=rounded stroke=#14375A stroke_width=2
+    a1["std/gpu primitives<br/>emit llvm.air.* calls"] --> b["KGENToLLVM / AirLowering<br/>strip $types, unpack structs,<br/>add the type suffix,<br/>key declarations by signature,<br/>mark exported kernels"]
+    a2["std/gpu/host/info.mojo<br/>#kgen.target triple,<br/>arch apple-m1..m5"] -.-> c1
+    b --> c1["finalizeModuleForTarget<br/>record air.apple_arch,<br/>strip target-cpu/features"]
+    c1 --> c2["O3 on an arm64 TargetMachine<br/>SLP off, VectorCombine off,<br/>partial unroll gated"]
+    c2 --> c3["legalizeModule"]
+```
+
+The back half turns that module into bytes Apple's reader accepts, and hands
+them to the runtime:
+
+<!-- doccrate:keep-together:start -->
+
+```mermaid
+flowchart LR
+%% @id air-pipeline-back
+%% @name Back half: verify, downgrade, package, dispatch
+%% @node c4 shape=hexagon stroke=#14375A stroke_width=2
 %% @node c5 shape=rounded stroke=#14375A stroke_width=2
 %% @node c6 shape=rounded stroke=#14375A stroke_width=2
-%% @node c7 shape=rounded stroke=#403364 stroke_width=2
-%% @node c8 shape=rounded stroke=#3F4650 stroke_width=2
+%% @node c7 shape=cylinder stroke=#403364 stroke_width=2
+%% @node c8 shape=subroutine stroke=#3F4650 stroke_width=2
 %% @node d1 shape=rounded stroke=#0A544E stroke_width=2
-    subgraph FE["Mojo standard library"]
-        a1["std/gpu/primitives/id.mojo, warp.mojo, sync.mojo<br/>emit calls named llvm.air.thread_position_in_threadgroup.x,<br/>llvm.air.simd_shuffle_xor, llvm.air.wg.barrier ..."]
-        a2["std/gpu/host/info.mojo<br/>#kgen.target triple air64-apple-macosx, arch apple-m1..m5"]
-    end
-    subgraph ML["KGENToLLVM (MLIR)"]
-        b1["LowerGlobalPOPToLLVM, module-scoped<br/>AirLowering claims every llvm.air.* op"]
-        b2["strip the $types tag, unpack struct operands,<br/>add the type suffix, key the declaration by signature"]
-        b3["mark exported kernels"]
-    end
-    subgraph OC["ObjectCompiler (LLVM)"]
-        c1["finalizeModuleForTarget<br/>record air.apple_arch, strip target-cpu/features"]
-        c2["O3 pipeline on an arm64 TargetMachine<br/>SLP off, VectorCombine off, partial unroll gated"]
-        c3["legalizeModule"]
-        c4["Gate 1: llvm::verifyModule on canonical IR"]
-        c5["post-legalisation: AlwaysInliner,<br/>re-legalise address spaces, three-way compares, deviceize"]
-        c6["LLVMIRDowngradePass + PointerRewriter<br/>typed pointers, LLVM-17-style bitcode"]
-        c7["WriteBitcode17ToFile, wrapper header"]
-        c8["xcrun metallib"]
-    end
-    subgraph RT["AppleGPURT"]
-        d1["newLibraryWithData, newFunctionWithName,<br/>newComputePipelineState with reflection"]
-    end
-    a1 --> b1 --> b2 --> b3 --> c1 --> c2 --> c3 --> c4 --> c5 --> c6 --> c7 --> c8 --> d1
-    a2 -.-> c1
+    c4["Gate 1<br/>verifyModule on<br/>canonical IR"] --> c5["AlwaysInliner, re-legalise<br/>address spaces, three-way<br/>compares, deviceize"]
+    c5 --> c6["LLVMIRDowngradePass<br/>+ PointerRewriter<br/>typed pointers"]
+    c6 --> c7["WriteBitcode17ToFile<br/>+ wrapper header"]
+    c7 --> c8["xcrun metallib"]
+    c8 --> d1["AppleGPURT<br/>newLibraryWithData,<br/>pipeline state + reflection"]
 ```
+
+<!-- doccrate:keep-together:end -->
+
 
 <!-- doccrate:keep-together:end -->
 
@@ -204,7 +202,6 @@ for reasons that are the substance of chapter 6. Each is an environment knob
 as well, and each prints an `[air-knobs]` line to stderr when it is set,
 for a reason chapter 4 explains under the compile cache.
 
-<!-- doccrate:keep-together:start -->
 
 | Knob | Default | What it controls |
 |:---|:---|:---|
@@ -220,7 +217,6 @@ for a reason chapter 4 explains under the compile cache.
 | `APPLEGPU_KEEP_AIR=<dir>` | unset | retain `.pre.ll`, `.post.ll`, `.air` and `.metallib` per kernel |
 | `APPLEGPU_AIR_XFORMS` | all off | the table-driven legality transforms |
 
-<!-- doccrate:keep-together:end -->
 
 Knobs are read from the environment first, then from the first readable of
 `APPLEGPU_XFORMS_FILE`, `~/.applegpu-xforms`, or `/tmp/applegpu-xforms.conf`

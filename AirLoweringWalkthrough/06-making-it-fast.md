@@ -7,7 +7,6 @@ halves were measured before they were true, and neither came from adding an
 optimisation. This chapter is the four things that mattered, with the numbers
 that decided each.
 
-<!-- doccrate:keep-together:start -->
 
 | Where the port stands | This port | Release 1.0.0 | Apple, from MSL | Bench |
 |:---|---:|---:|---:|:---|
@@ -18,7 +17,6 @@ that decided each.
 | dispatch, chain of 1,024, precompiled | **0.9–1.0** µs | — | Metal floor 1.0 | `launch_bench` |
 | register-blocked matmul 2048³, M4 Max 32-core | **3,056** GFLOP/s (naive kernel: 1,187) | — | — | `bench/README` scoreboard |
 
-<!-- doccrate:keep-together:end -->
 
 ## 1. Dispatch cost is an encoder boundary
 
@@ -33,7 +31,6 @@ chain's wall time over *n*. Both benches live in the oracles repository's
 `bench/` directory, alongside the findings every number in this chapter is
 quoted from.
 
-<!-- doccrate:keep-together:start -->
 
 | Per dispatch, µs | chain 1 | chain 8 | chain 64 | chain 1024 |
 |:---|---:|---:|---:|---:|
@@ -46,7 +43,6 @@ quoted from.
 | **AppleGPURT after, precompiled** | 176 | 23.7 | 4.3 | **0.9–1.0** |
 | **AppleGPURT after, `enqueue_function[k]` per call** | 177 | 25.2 | 5.1 | **1.6** |
 
-<!-- doccrate:keep-together:end -->
 
 Three things the columns say. **Chain 1 is the round trip**: about 150 µs for
 a commit and a wait, whoever wrote the runtime, and a host-observed result
@@ -158,7 +154,7 @@ behind a gate, and the gate is the design:
 <!-- doccrate:keep-together:start -->
 
 ```mermaid
-flowchart TD
+flowchart LR
 %% @id air-unroll-gate
 %% @name MarkLargeLoopsNoUnrollPass: which loops the unroller may touch
 %% @node L shape=stadium stroke=#14375A stroke_width=2
@@ -169,18 +165,19 @@ flowchart TD
 %% @node ok shape=rounded stroke=#2C440D stroke_width=2
 %% @node no shape=rounded stroke=#7C3A06 stroke_width=2
 %% @node strip shape=rounded stroke=#14375A stroke_width=2
-    L["a loop in a device function"] --> B{"body larger than<br/>APPLEGPU_AIR_UNROLL_LIMIT (128)?"}
-    B -->|yes| no["mark llvm.loop.unroll.disable + kgen.unroll.gated"]
-    B -->|no| S{"single basic block?"}
-    S -->|yes| ok["leave it for LoopUnrollPass<br/>partial, runtime, upper-bound"]
-    S -->|no| W{"gate = wide?"}
+    L["a loop in a<br/>device function"] --> B{"body over<br/>UNROLL_LIMIT<br/>(128)?"}
+    B -->|no| S{"single basic<br/>block?"}
+    S -->|no| W{"gate =<br/>wide?"}
+    W -->|yes| T{"all accesses in<br/>addrspace(3),<br/>no calls?"}
+    B -->|yes| no["mark unroll.disable<br/>+ kgen.unroll.gated"]
     W -->|no| no
-    W -->|yes| T{"every memory access in addrspace(3)<br/>and no calls?"}
-    T -->|yes| ok
     T -->|no| no
-    ok --> strip["StripGatedUnrollMetadataPass<br/>then scrub drops every !llvm.loop"]
+    S -->|yes| ok["left for LoopUnrollPass:<br/>partial, runtime,<br/>upper-bound"]
+    T -->|yes| ok
+    ok --> strip["StripGatedUnrollMetadataPass;<br/>the scrub drops every !llvm.loop"]
     no --> strip
 ```
+
 
 
 <!-- doccrate:keep-together:end -->

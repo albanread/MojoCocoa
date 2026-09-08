@@ -10,7 +10,6 @@ cost hours each into defects that cost one cycle each*.
 
 ## Three causes, one message
 
-<!-- doccrate:keep-together:start -->
 
 | What the reader says | What it can mean |
 |:---|:---|
@@ -18,7 +17,6 @@ cost hours each into defects that cost one cycle each*.
 | `Unexpected bitcode file!` | `metallib`'s answer to everything, including a `poison` constant and a call whose explicit type disagrees with its callee |
 | `XPC_ERROR_CONNECTION_INTERRUPTED` | the compiler *service* died at pipeline creation: a misspelled symbol, a dead declaration, a native cast, an `i4`, a vector `llvm.fma` — none named |
 
-<!-- doccrate:keep-together:end -->
 
 > *No function. No instruction. No hint that a type might be involved. Three
 > different defects produced this identical message, and nothing
@@ -85,7 +83,6 @@ quietly because the reader tolerated them. *Fix the IR, not the gate.*
 The largest family Gate 1 exposed was the one chapter 3 described from the
 mechanism side: a retyped pointer whose consumer was left behind.
 
-<!-- doccrate:keep-together:start -->
 
 | Consumer | Symptom | Fix |
 |:---|:---|:---|
@@ -97,7 +94,6 @@ mechanism side: a retyped pointer whose consumer was left behind.
 | nested aggregates | a device pointer stays generic, silently | extract the inner struct first |
 | code arriving after the pass | the same, for one callee's pointers | re-run after inlining |
 
-<!-- doccrate:keep-together:end -->
 
 And the one the verifier cannot see, because the IR is well-formed: a device
 pointer left generic. Its signature is an output buffer of zeroes with no
@@ -125,7 +121,6 @@ and if the module has no `alloca` at all, there is no unless.*
 
 The version-skew table, every row measured:
 
-<!-- doccrate:keep-together:start -->
 
 | Construct | Since | Symptom |
 |:---|:---|:---|
@@ -138,7 +133,6 @@ The version-skew table, every row measured:
 | fast-math flags on FP *casts* | modern | one flagged cast kills the module |
 | `memory(none)` | LLVM 16 | **not** a rejection cause here — see below |
 
-<!-- doccrate:keep-together:end -->
 
 The last row is a correction, and the story behind it is the most expensive
 tooling lesson in the port. Disassembling a rejected `.air` with `llvm-dis`
@@ -236,7 +230,6 @@ the defect and the fix was verified on an M4; `air-poc` means it comes from
 the out-of-tree LLVM AIR backend and stays at Log until confirmed here;
 `semantic` means it is a property of the machine, not of a reader.
 
-<!-- doccrate:keep-together:start -->
 
 | Rule | Action | Evidence | What it catches |
 |:---|:---|:---|:---|
@@ -256,7 +249,6 @@ the out-of-tree LLVM AIR backend and stays at Log until confirmed here;
 | `i64-simd-shuffle`, `f64`, `int-to-bf16`, `nonvolatile-loop-load`, `unguarded-scalar-store` | Log | air-poc | inherited from the proof-of-concept backend, unconfirmed here |
 | `nan-minmax-unwrapped` | Permit | air-poc | kept only as documentation; it cannot work as a detection rule |
 
-<!-- doccrate:keep-together:end -->
 
 Two rules are worth reading for the reasoning alone. `unmapped-llvm-intrinsic`
 says of itself that *the evidence is weaker than it looks*: `llvm.fma.v4f32`
@@ -287,18 +279,16 @@ luck.
 
 ## The defects that were not about IR at all
 
-<!-- doccrate:keep-together:start -->
 
 | Ledger | What happened | What it taught |
 |:---|:---|:---|
-| D21 | the feature-warning fix stripped `target-cpu` before legalisation read the arch from it; every GPU program failed with `no Apple AIR target profile for arch ''`, and the change was pushed as verified | the verification had run a binary the *previous* build left behind and counted lines; a counter that cannot tell "zero" from "never ran" is not a check |
+| D21 | the feature-warning fix stripped `target-cpu` before legalisation read the arch from it; every GPU program failed with `no Apple AIR target profile for arch ''`, and the change was pushed as verified | the check had run a binary the *previous* build left behind; a counter that cannot tell "zero" from "never ran" is not a check |
 | D22 | six knob experiments in a row measured the same number and emitted identical AIR — none had run; `~/.cache/modular/.mojo_cache` keys on source and compiler version string, not environment, not a local rebuild | a null experiment is a cache hit until proven otherwise; every knob prints `[air-knobs]`, and the suites run with a fresh `MODULAR_CACHE_DIR` |
 | the Bazel `PATH` | `xcrun` was not found because the compile action has no `PATH` at all | the bitcode is generated first; a packaging failure reads like a codegen failure |
 | the gate marks | `llvm.loop.unroll.disable` on loops the gate declined leaked to Apple's compiler, which honoured it; rolled matmul fell to 116 GFLOP/s | nothing the device pipeline says to itself may reach the artefact |
 | D6 | one rowwise subkernel variant kills the compiler service; reduction from retained artefacts still open | keep `.air` before packaging, name artefacts per kernel, include the profile |
 | D23 | `DeviceExternalFunction` launches segfaulted because the sizes never crossed the ABI; now a clean contract error | a null sizes pointer is the Apple argument-view discriminator, not "no sizes" — the runtime must be told which protocol the caller speaks |
 
-<!-- doccrate:keep-together:end -->
 
 D21 has a memory attached to it in this project's notes, and the rule it left
 is short: a compiler change is verified by `check-examples.sh` and

@@ -27,7 +27,6 @@ the whole character of the target in miniature. Almost nothing about AIR is
 documented, most of what goes wrong is silent, and the only specification that
 exists is what Apple's own compiler emits.
 
-<!-- doccrate:keep-together:start -->
 
 | | |
 |:---|:---|
@@ -40,7 +39,6 @@ exists is what Apple's own compiler emits.
 | **Reader** | Apple's Metal compiler service, reached through `xcrun metallib` and `newComputePipelineState` |
 | **Ground truth** | `xcrun metal -S -emit-llvm` golden samples, and the `oracles` corpus of released-Mojo output |
 
-<!-- doccrate:keep-together:end -->
 
 ## Where the knowledge comes from
 
@@ -91,7 +89,6 @@ not made on their behalf. Where this document compares AIR with NVPTX or
 AMDGPU it is describing what those backends do in the shared source, not the
 state of the sibling ports.
 
-<!-- doccrate:keep-together:start -->
 
 ## These documents
 
@@ -105,7 +102,6 @@ state of the sibling ports.
 | [6. Making it fast](06-making-it-fast.md) | Dispatch at Metal's floor, the optimisation that had to be turned off, the gated unroller, and honest measurement |
 | [7. What to understand](07-key-points.md) | The ten things about this backend that are not obvious from watching it work |
 
-<!-- doccrate:keep-together:end -->
 
 ## The shortest possible summary
 
