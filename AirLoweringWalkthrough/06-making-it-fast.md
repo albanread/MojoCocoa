@@ -66,12 +66,22 @@ D7 was "unrolled register matmul about 9% behind upstream", and it stayed
 open for a while because the first six experiments against it were null (the
 cache trap, below). When they were real, the pattern was immediate.
 
+
 <!-- doccrate:keep-together:start -->
 
 | K-step, 2048³ on the M4, GFLOP/s | This port | Release 1.0.0 | Apple, from MSL |
 |:---|---:|---:|---:|
 | rolled (a runtime loop) | **942** | 899 | — |
 | unrolled ×4, loop of 4 | **980** | 985 | — |
+
+<!-- doccrate:keep-together:end -->
+
+*The same comparison, continued:*
+
+<!-- doccrate:keep-together:start -->
+
+| K-step, 2048³ on the M4, GFLOP/s | This port | Release 1.0.0 | Apple, from MSL |
+|:---|---:|---:|---:|
 | unrolled ×8, loop of 2 | 961 | 962 | — |
 | unrolled ×16, straight-line | **870** | 956 | 951 |
 

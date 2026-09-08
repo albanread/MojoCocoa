@@ -90,17 +90,30 @@ AMDGPU it is describing what those backends do in the shared source, not the
 state of the sibling ports.
 
 
+<!-- doccrate:keep-together:start -->
 ## These documents
+
 
 | Chapter | What it covers |
 |:---|:---|
-| [1. What AIR is](01-what-air-is.md) | A frozen reader reached by serialisation, the five-part target identity, and why golden samples are the only specification |
-| [2. The pipeline](02-the-pipeline.md) | Every stage from a Mojo `fn` to a `.metallib`, who owns what, and why each pass is where it is |
-| [3. Legalisation](03-legalisation.md) | `legalizeModule` step by step: inlining, builtins, converts, address spaces, kernel signatures, metadata, versions |
-| [4. What went wrong](04-issues.md) | The defects met on the way, the four gates that separate three causes, and the legality firewall |
+| [1. What AIR is](01-what-air-is.md) | A frozen reader reached by serialisation, the target identity, and why golden samples are the only specification |
+| [2. The pipeline](02-the-pipeline.md) | Every stage from a Mojo `fn` to a `.metallib`, and who owns each one |
+| [3. Legalisation](03-legalisation.md) | `legalizeModule` step by step: builtins, address spaces, signatures, metadata |
+| [4. What went wrong](04-issues.md) | The defects met on the way, the four gates, and the legality firewall |
+
+<!-- doccrate:keep-together:end -->
+
+*The chapters, continued:*
+
+<!-- doccrate:keep-together:start -->
+
+| Chapter | What it covers |
+|:---|:---|
 | [5. The runtime](05-the-runtime.md) | AppleGPURT: unified memory, the address registry, reflection as the argument contract, residency, batching |
 | [6. Making it fast](06-making-it-fast.md) | Dispatch at Metal's floor, the optimisation that had to be turned off, the gated unroller, and honest measurement |
 | [7. What to understand](07-key-points.md) | The ten things about this backend that are not obvious from watching it work |
+
+<!-- doccrate:keep-together:end -->
 
 
 ## The shortest possible summary

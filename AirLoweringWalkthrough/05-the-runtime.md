@@ -105,9 +105,9 @@ identity. A per-context cache keyed by function name, the module length, a
 brought that from 17.8 µs per call to 0.8–1.2 µs. It is the first
 of the three dispatch fixes in chapter 6.
 
+<!-- doccrate:keep-together:start -->
 ## A launch, step by step
 
-<!-- doccrate:keep-together:start -->
 
 ```mermaid
 sequenceDiagram

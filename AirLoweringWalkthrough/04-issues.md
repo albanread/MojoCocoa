@@ -277,7 +277,9 @@ workgroup scope and do not taint a branch. It found three latent divergent
 barriers in the basics kernels (D8b) that had been passing on hardware by
 luck.
 
+<!-- doccrate:keep-together:start -->
 ## The defects that were not about IR at all
+
 
 
 | Ledger | What happened | What it taught |
@@ -285,9 +287,20 @@ luck.
 | D21 | the feature-warning fix stripped `target-cpu` before legalisation read the arch from it; every GPU program failed with `no Apple AIR target profile for arch ''`, and the change was pushed as verified | the check had run a binary the *previous* build left behind; a counter that cannot tell "zero" from "never ran" is not a check |
 | D22 | six knob experiments in a row measured the same number and emitted identical AIR — none had run; `~/.cache/modular/.mojo_cache` keys on source and compiler version string, not environment, not a local rebuild | a null experiment is a cache hit until proven otherwise; every knob prints `[air-knobs]`, and the suites run with a fresh `MODULAR_CACHE_DIR` |
 | the Bazel `PATH` | `xcrun` was not found because the compile action has no `PATH` at all | the bitcode is generated first; a packaging failure reads like a codegen failure |
+
+<!-- doccrate:keep-together:end -->
+
+*The ledger, continued:*
+
+<!-- doccrate:keep-together:start -->
+
+| Ledger | What happened | What it taught |
+|:---|:---|:---|
 | the gate marks | `llvm.loop.unroll.disable` on loops the gate declined leaked to Apple's compiler, which honoured it; rolled matmul fell to 116 GFLOP/s | nothing the device pipeline says to itself may reach the artefact |
 | D6 | one rowwise subkernel variant kills the compiler service; reduction from retained artefacts still open | keep `.air` before packaging, name artefacts per kernel, include the profile |
 | D23 | `DeviceExternalFunction` launches segfaulted because the sizes never crossed the ABI; now a clean contract error | a null sizes pointer is the Apple argument-view discriminator, not "no sizes" — the runtime must be told which protocol the caller speaks |
+
+<!-- doccrate:keep-together:end -->
 
 
 D21 has a memory attached to it in this project's notes, and the rule it left

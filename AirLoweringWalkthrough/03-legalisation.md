@@ -74,14 +74,27 @@ every family the backend will construct a declaration for. A family absent
 from the table is not accepted merely because its name starts with `air.`.
 
 
+<!-- doccrate:keep-together:start -->
+
 | Signature class | Families |
 |:---|:---|
 | Barrier | `air.wg.barrier`, `air.simdgroup.barrier` |
 | Unary | `air.sin`, `air.cos`, `air.tan`, `air.exp`, `air.exp2`, `air.exp10`, `air.log`, `air.log2`, `air.log10`, `air.sqrt`, `air.rsqrt`, `air.recip`, `air.fabs`, `air.floor`, `air.ceil`, `air.rint`, `air.round`, `air.trunc`, `air.frac`, the inverse trig and hyperbolic functions, and `air.simd_sum`, `air.simd_product`, `air.simd_min`, `air.simd_max`, the two `air.simd_prefix_*_sum` scans |
+
+<!-- doccrate:keep-together:end -->
+
+*The signature classes, continued:*
+
+<!-- doccrate:keep-together:start -->
+
+| Signature class | Families |
+|:---|:---|
 | Binary | `air.fmin`, `air.fmax`, `air.fmod`, `air.pow`, `air.powr`, `air.divide`, `air.copysign` |
 | Ternary | `air.fma` |
 | Shuffle | `air.simd_shuffle`, `air.simd_shuffle_up`, `air.simd_shuffle_down`, `air.simd_shuffle_xor` |
 | Ballot | `air.simd_ballot.i32` |
+
+<!-- doccrate:keep-together:end -->
 
 
 Each family says whether it carries a type suffix, what payload domain it
