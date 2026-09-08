@@ -470,8 +470,12 @@ struct Console(Movable):
         if top < 250.0:
             top = 250.0
         var sx = Float64(cv.w) / (x1 - x0)
-        var sy = Float64(cv.h - 20) / top
-        var base = Float64(cv.h - 20)
+        # The surface sits clear of the legend band at the foot of the
+        # pane: the text plane's rows are 8 px, and the two legend lines
+        # start at row 46, so nothing may be drawn below 46 * 8.
+        var legend_y = (cv.h // 8 - 4) * 8
+        var base = Float64(legend_y - 12)
+        var sy = base / top
         # The ground along the approach line, at the LM's cross-range.
         var prev_py = base
         for i in range(cv.w):
@@ -481,7 +485,7 @@ struct Console(Movable):
             if i > 0:
                 cv.line(Float64(i - 1), prev_py, Float64(i), py, C_MOON0 + 20)
             var yy = Int(py) + 1
-            while yy < cv.h:
+            while yy < legend_y - 2:
                 cv.plot(i, yy, C_MOON0 + 5)
                 yy += 1
             prev_py = py
