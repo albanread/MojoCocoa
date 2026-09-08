@@ -161,6 +161,14 @@ behind a gate, and the gate is the design:
 flowchart TD
 %% @id air-unroll-gate
 %% @name MarkLargeLoopsNoUnrollPass: which loops the unroller may touch
+%% @node L shape=stadium stroke=#14375A stroke_width=2
+%% @node B shape=diamond stroke=#714505 stroke_width=2
+%% @node S shape=diamond stroke=#714505 stroke_width=2
+%% @node W shape=diamond stroke=#714505 stroke_width=2
+%% @node T shape=diamond stroke=#714505 stroke_width=2
+%% @node ok shape=rounded stroke=#2C440D stroke_width=2
+%% @node no shape=rounded stroke=#7C3A06 stroke_width=2
+%% @node strip shape=rounded stroke=#14375A stroke_width=2
     L["a loop in a device function"] --> B{"body larger than<br/>APPLEGPU_AIR_UNROLL_LIMIT (128)?"}
     B -->|yes| no["mark llvm.loop.unroll.disable + kgen.unroll.gated"]
     B -->|no| S{"single basic block?"}
@@ -173,6 +181,7 @@ flowchart TD
     ok --> strip["StripGatedUnrollMetadataPass<br/>then scrub drops every !llvm.loop"]
     no --> strip
 ```
+
 
 <!-- doccrate:keep-together:end -->
 

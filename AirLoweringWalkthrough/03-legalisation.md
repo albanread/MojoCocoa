@@ -139,6 +139,15 @@ NVPTX's way. AIR has different numbers and no generic space at all.
 flowchart LR
 %% @id air-address-spaces
 %% @name What remapAddressSpaces does to each pointer
+%% @node g shape=stadium stroke=#7C3A06 stroke_width=2
+%% @node c4 shape=stadium stroke=#7C3A06 stroke_width=2
+%% @node s3 shape=stadium stroke=#7C3A06 stroke_width=2
+%% @node l5 shape=stadium stroke=#7C3A06 stroke_width=2
+%% @node d shape=rounded stroke=#2C440D stroke_width=2
+%% @node c2 shape=rounded stroke=#2C440D stroke_width=2
+%% @node t3 shape=rounded stroke=#2C440D stroke_width=2
+%% @node p0 shape=rounded stroke=#2C440D stroke_width=2
+%% @node prop shape=hexagon stroke=#14375A stroke_width=2
     g["generic 0<br/>(Mojo's device pointers)"] -->|kernel params, loads from AS1/AS2,<br/>pointers pulled from capture blobs| d["device 1"]
     c4["CONSTANT 4<br/>(NVPTX numbering)"] --> c2["constant 2"]
     s3["SHARED 3"] --> t3["threadgroup 3"]
@@ -148,6 +157,7 @@ flowchart LR
     t3 --> prop
     p0 --> prop
 ```
+
 
 <!-- doccrate:keep-together:end -->
 

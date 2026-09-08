@@ -36,6 +36,20 @@ one.
 flowchart TD
 %% @id air-gates
 %% @name Four gates, three causes, one deployable module
+%% @node m shape=cylinder stroke=#403364 stroke_width=2
+%% @node g1 shape=hexagon stroke=#14375A stroke_width=2
+%% @node g2 shape=hexagon stroke=#14375A stroke_width=2
+%% @node g3 shape=hexagon stroke=#14375A stroke_width=2
+%% @node g4 shape=hexagon stroke=#14375A stroke_width=2
+%% @node c1 shape=rounded stroke=#7C3A06 stroke_width=2
+%% @node c2 shape=rounded stroke=#7C3A06 stroke_width=2
+%% @node c3 shape=rounded stroke=#7C3A06 stroke_width=2
+%% @node c4 shape=rounded stroke=#7C3A06 stroke_width=2
+%% @node ok shape=stadium stroke=#2C440D stroke_width=2
+%% @edge g1->g2 stroke=#1F4E79 line_w=2
+%% @edge g2->g3 stroke=#1F4E79 line_w=2
+%% @edge g3->g4 stroke=#1F4E79 line_w=2
+%% @edge g4->ok stroke=#3F6212 line_w=2
     m["legalised module"] --> g1["Gate 1: llvm::verifyModule<br/>on canonical IR, in-process"]
     g1 -->|"both values to select must have same type<br/>AddrSpaceCast must be between different address spaces"| c1["invalid IR: our own bug"]
     g1 --> g2["Gate 2: bitstream record inventory<br/>diffed against a working compiler"]
@@ -46,6 +60,7 @@ flowchart TD
     g4 -->|"XPC_ERROR_CONNECTION_INTERRUPTED"| c4["form was fine, the device compiler still died"]
     g4 --> ok["deployable"]
 ```
+
 
 <!-- doccrate:keep-together:end -->
 

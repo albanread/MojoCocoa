@@ -13,6 +13,20 @@ of them were drawn after a defect showed where the old boundary was wrong.
 flowchart TD
 %% @id air-pipeline
 %% @name Every stage from fn to metallib
+%% @node a1 shape=rounded stroke=#14375A stroke_width=2
+%% @node a2 shape=rounded stroke=#14375A stroke_width=2
+%% @node b1 shape=rounded stroke=#14375A stroke_width=2
+%% @node b2 shape=rounded stroke=#14375A stroke_width=2
+%% @node b3 shape=rounded stroke=#14375A stroke_width=2
+%% @node c1 shape=rounded stroke=#14375A stroke_width=2
+%% @node c2 shape=rounded stroke=#3F4650 stroke_width=2
+%% @node c3 shape=rounded stroke=#14375A stroke_width=2
+%% @node c4 shape=rounded stroke=#14375A stroke_width=2
+%% @node c5 shape=rounded stroke=#14375A stroke_width=2
+%% @node c6 shape=rounded stroke=#14375A stroke_width=2
+%% @node c7 shape=rounded stroke=#403364 stroke_width=2
+%% @node c8 shape=rounded stroke=#3F4650 stroke_width=2
+%% @node d1 shape=rounded stroke=#0A544E stroke_width=2
     subgraph FE["Mojo standard library"]
         a1["std/gpu/primitives/id.mojo, warp.mojo, sync.mojo<br/>emit calls named llvm.air.thread_position_in_threadgroup.x,<br/>llvm.air.simd_shuffle_xor, llvm.air.wg.barrier ..."]
         a2["std/gpu/host/info.mojo<br/>#kgen.target triple air64-apple-macosx, arch apple-m1..m5"]

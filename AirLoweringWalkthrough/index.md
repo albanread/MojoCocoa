@@ -133,6 +133,14 @@ source left rolled, and never opening an encoder that a dispatch did not need.
 flowchart LR
 %% @id air-overview
 %% @name From a Mojo kernel to the GPU
+%% @node src shape=stadium stroke=#14375A stroke_width=2
+%% @node mlir shape=rounded stroke=#14375A stroke_width=2
+%% @node opt shape=rounded stroke=#3F4650 stroke_width=2
+%% @node leg shape=rounded stroke=#14375A stroke_width=2
+%% @node bc shape=cylinder stroke=#403364 stroke_width=2
+%% @node lib shape=subroutine stroke=#3F4650 stroke_width=2
+%% @node rt shape=rounded stroke=#0A544E stroke_width=2
+%% @node gpu shape=stadium stroke=#0A544E stroke_width=2
     src["Mojo kernel<br/>thread_idx, barrier(),<br/>simd ops, pointers"] --> mlir["KGEN / MLIR<br/>llvm.air.* shims become<br/>signature-keyed air.* calls"]
     mlir --> opt["LLVM O3<br/>arm64 TargetMachine borrowed,<br/>vectorisers off, unroller gated"]
     opt --> leg["AIR legalisation<br/>inline, address spaces,<br/>kernel signature + !air.kernel"]
@@ -141,6 +149,7 @@ flowchart LR
     lib --> rt["AppleGPURT<br/>pipeline state + reflection,<br/>one encoder per batch"]
     rt --> gpu["Apple GPU"]
 ```
+
 
 <!-- doccrate:keep-together:end -->
 
