@@ -53,6 +53,60 @@ which opens itself when a build starts and toggles with ⌘0.
                   alien species across twelve waves, and two kinds of
                   music: the big cues on the system's General MIDI synth,
                   a chip motif for each species when it dives
+    moonshot/     the Moon, the Sun and the sky for any date -- Meeus's
+                  ephemeris, checked against his worked examples to the
+                  digit -- and Apollo 11's week printed as its flight
+                  dynamics team had it, the Sun 10.7° over Tranquility
+                  at touchdown (the record says 10.8°). Then one
+                  Runge–Kutta integrator over Earth, Moon and Sun,
+                  proved against Kepler on the CPU in Float64 and run as
+                  a 16,384-thread GPU kernel in Float32 on int64 fixed
+                  point -- the Apollo computer's trick -- to within 350 m
+                  of the truth at the Moon. Then Apollo 11's translunar
+                  injection re-planned from its parking orbit and its
+                  clock: Lambert, then differential correction with the
+                  n-body integrator in the loop, to a far-side perilune
+                  at LOI-1's minute for 3 181 m/s (the S-IVB burned
+                  3 182). Then the month: every launch minute of July
+                  1969 at every flight time, 714 240 candidates on the
+                  GPU, and the Sun over three landing sites picking the
+                  16th, the 18th and the 21st -- the days NASA picked.
+                  And the console itself: the PLAN screen, where the
+                  choices are yours -- pad, site, day, hour, flight time,
+                  the lunar orbit -- and the sheet (timeline, burns, the
+                  mass at every event, margins, the red lines) and the
+                  3D course in three frames are computed from them; and
+                  the TRACK screen, where the plan is flown -- the burns
+                  at their seconds, the three tracking stations and the
+                  Moon's occultation (LOS 48 s from Apollo 11's record,
+                  AOS 96 s), the flown course against the planned one;
+                  and the dispersions: 16,384 copies of the plan with
+                  the S-IVB's cutoff errors flown to their perilunes on
+                  the GPU (5.6% reach the LOI corridor uncorrected; 100%
+                  after a correction), and a mission whose S-IVB misses
+                  by half a metre a second, whose tracking is noisy, and
+                  whose trench corrects it -- or, left uncorrected, hits
+                  the Moon. Then the arrival: the flyby plane chosen to
+                  hold the landing site at the landing time, LOI-1
+                  solved as the finite burn it is (877 m/s for 111 x
+                  314 km), LOI-2 at the measured second perilune, and
+                  the pass over Tranquility found at 102:42 with the
+                  site 0.2 km off the plane -- Apollo 11 touched down at
+                  102:45. Then the descent itself: Klumpp's guidance
+                  through its gates, the DPS between 10% and full, a
+                  seeded terrain with West Crater where it was, a crew
+                  who see craters from the approach and rocks only in
+                  the final, and the rules -- a nominal landing in 13
+                  minutes for 2.2 km/s with 60 s of hover left; over a
+                  boulder field a 60 s reserve aborts with 12 m to go
+                  and a 30 s reserve lands with 35. And the consequences:
+                  seeded cards (an SPS fault, a program alarm, a dead
+                  landing radar), the rules that answer them, a flyby
+                  that comes home on a free return or a DPS burn when
+                  LOI is called off, a debrief that names the plan line
+                  responsible, and the chip for the calls, the alarm and
+                  the touchdown. `checks.mojo` prints the sums; see
+                  moonshot_design.md
     ferns/        a landscape of Barnsley ferns growing live over a
                   procedural lawn, under a cloudy dusk sky (CPU)
     fernwind/     the same meadow swaying in the wind: every fern redrawn

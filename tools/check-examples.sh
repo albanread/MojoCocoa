@@ -66,6 +66,7 @@ headless gamepane-plasma GAMEPANE_FRAMES
 headless gamepane-platforms GAMEPANE_FRAMES
 headless galaxigans GAMEPANE_FRAMES
 headless galaxigans-deluxe GAMEPANE_FRAMES
+headless moonshot GAMEPANE_FRAMES
 
 echo "== gui examples (build + launch) =="
 for ex in window othello chip life abcplayer; do build_run "$ex"; done
@@ -106,6 +107,45 @@ build_run_expect grayscale    "Resulting grayscale image:"
 build_run_expect tiled-matmul "Tiled Matrix Multiplication GPU Example" "No GPU detected"
 build_run_expect process      "== Test:"
 build_run_expect operators    "c1 ="
+
+# A report that is not the project's main: build the named file and look
+# for the line that proves it ran to the end.
+run_file_expect() {  # ex, file, required-substring
+  local ex="$1" f="$2" want="$3" log="/tmp/ex-$1-${2%.mojo}"
+  if ! "$RUN" --build "examples/$ex/$f" -o "/tmp/exb-$ex-${2%.mojo}" 2>"$log.err"; then
+    echo "  FAIL $ex/$f (build)"; sed 's/^/      /' "$log.err" | grep -m3 error; fail=$((fail+1)); return
+  fi
+  if timeout 120 "/tmp/exb-$ex-${2%.mojo}" >"$log.out" 2>&1 && grep -qF "$want" "$log.out"; then
+    echo "  OK   $ex/$f (built, ran, printed its result)"; pass=$((pass+1))
+  else
+    echo "  FAIL $ex/$f"; grep -m2 -E "error|FAIL" "$log.out" | sed 's/^/      /'; fail=$((fail+1))
+  fi
+}
+run_file_expect moonshot checks.mojo "Moonshot checks done"
+
+# Oracles. A test file here is a program with a main (std.testing's
+# TestSuite), and exit 0 is the pass: moonshot's astronomy is asserted
+# against Meeus's worked examples and Apollo 11's landing lighting, and
+# a wrong digit in a 120-row ephemeris table fails the suite, not the eye.
+run_test() {  # ex, file
+  local ex="$1" f="$2" log="/tmp/ex-test-$1"
+  if "$RUN" run "examples/$ex/$f" >"$log.out" 2>&1; then
+    echo "  OK   $ex/$f ($(grep -c 'PASS' "$log.out") tests)"; pass=$((pass+1))
+  else
+    echo "  FAIL $ex/$f"; grep -m3 -E 'FAIL|error' "$log.out" | sed 's/^/      /'; fail=$((fail+1))
+  fi
+}
+run_test moonshot test_astro.mojo
+run_test moonshot test_orbit.mojo
+run_test moonshot test_transfer.mojo
+run_test moonshot test_window.mojo
+run_test moonshot test_plan.mojo
+run_test moonshot test_scene.mojo
+run_test moonshot test_track.mojo
+run_test moonshot test_cloud.mojo
+run_test moonshot test_arrival.mojo
+run_test moonshot test_descent.mojo
+run_test moonshot test_mission.mojo
 
 echo "== python-interop example =="
 # life-python needs pygame-ce at runtime. A missing dep is reported as a SKIP
