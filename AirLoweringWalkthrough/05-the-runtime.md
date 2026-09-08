@@ -24,8 +24,9 @@ back *autoreleased* objects from `commandBuffer`, `computeCommandEncoder` and
 the blit encoder, and a plain C++ file gets no `@autoreleasepool`. On a thread
 that has one — AppKit's main thread — they drain at the end of each event-loop
 turn and nobody notices. On a worker thread that does not, *they are never
-released at all*. The runtime now scopes its own pool around every call that
-allocates one.
+released at all*. The runtime now scopes its own pool around every hot-path
+call that allocates one; a few cold paths, like context creation, still leak
+their strings.
 
 ## Unified memory changes the shape of everything
 
@@ -94,8 +95,9 @@ Compiling a function used to happen on every call: a fresh `MTLLibrary`,
 `MTLFunction` and pipeline state, every time `compile_function` ran — and the
 `enqueue_function[kernel]` template form every example uses runs it per
 launch. The bytes arrive in a fresh `String` each time, so their address is no
-identity. A per-context cache keyed by function name plus a 64-bit hash of the
-module bytes brought that from 17.8 µs per call to 0.8–1.2 µs. It is the first
+identity. A per-context cache keyed by function name, the module length, a
+64-bit hash of the bytes, and the kernel's maximum dynamic threadgroup bytes
+brought that from 17.8 µs per call to 0.8–1.2 µs. It is the first
 of the three dispatch fixes in chapter 6.
 
 ## A launch, step by step
@@ -116,7 +118,8 @@ sequenceDiagram
     M->>R: launch(fn, grid, block, args, sizes, isDevicePtr)
     R->>R: validate block against maxTotalThreadsPerThreadgroup
     loop each argument
-        R->>Reg: resolve pointer-sized value
+        R->>R: classify by reflection (generated kernels)<br/>or flags, or registry fallback
+        R->>Reg: resolve device address
         Reg-->>R: (MTLBuffer, offset) or "not a device address"
         R->>Mt: setBuffer:offset:atIndex: or setBytes:length:atIndex:
     end
@@ -136,7 +139,7 @@ The argument model is stated at the top of the launch function:
 > offset) and bind with setBuffer — which also makes the resource resident.
 > Scalar args are bound with setBytes. Argument index == buffer slot index.*
 
-### The flags are wrong for captures, so the registry decides
+### The flags are wrong for captures, so the contract decides
 
 The Mojo side marks every capture slot as "not a device pointer" — *captures
 are raw values, never device buffers* — which holds on CUDA, where a captured
@@ -146,9 +149,20 @@ capture that the backend has typed as a device buffer parameter expects a
 value where the kernel expected the buffer base, and the kernel wrote 1.0
 through it into nothing; the test that caught it,
 `test_static_layout_capture_argcount`, failed with its output buffer still
-holding the −1.0 fill. So the runtime resolves every pointer-sized argument
-against the registry regardless of the caller's flag, and *this runs even
-when the caller supplied explicit flags, and must*.
+holding the −1.0 fill.
+
+The first fix resolved every pointer-sized argument against the registry
+regardless of the caller's flag — *this runs even when the caller supplied
+explicit flags, and must* — and that heuristic is what caught the bug. It is
+also a guess that can in principle misfire on a scalar whose value happens
+to land inside a live allocation, so it did not stay the answer. The
+principled fix is the one the comment names: *ask the pipeline what each
+argument is*. For a compiler-generated kernel, reflection **is** the
+contract — every slot must be described, a caller flag that disagrees with
+it prints a line and loses, and the registry heuristic survives only as the
+fallback when there is no reflection at all. Resolving a device address to
+`(MTLBuffer, offset)` through the registry is still how every such argument
+is *bound*.
 
 ### Metal can silently no-op a dispatch
 
@@ -184,8 +198,11 @@ defect. The residency set inverts that cost:
 > set resident for all command buffers on that queue, which is exactly the
 > guarantee useResource was providing, minus the per-dispatch walk.*
 
-`APPLEGPU_COARSE_RESIDENCY=1` restores the walk as a diagnostic escape hatch.
-What the set still cannot do is shrink below *all of them*: narrowing
+`APPLEGPU_COARSE_RESIDENCY=1` restores the walk as a diagnostic escape hatch
+(presence-parsed: any value at all, `=0` included, turns it on — the same is
+true of the `APPLEGPU_TRACE_*` switches, unlike the value-parsed launch-mode
+switches below). What the set still cannot do is shrink below *all of them*:
+narrowing
 residency to the pointees a kernel can actually reach is what the
 `air.indirect_buffer` metadata in chapter 3 would buy, and that half is still
 open.
@@ -229,10 +246,14 @@ stateDiagram-v2
 
 <!-- doccrate:keep-together:end -->
 
-Every read path drains before it copies, state is locked, and two switches
+Every read path drains before it copies, state is locked, and three switches
 exist for isolating a problem: `APPLEGPU_SYNC_LAUNCH=1` restores the
 synchronous bring-up mode, a round trip per dispatch; `APPLEGPU_BATCH_DISPATCHES=0`
-keeps the queue but gives each dispatch its own command buffer.
+keeps the queue but gives each dispatch its own command buffer; and the older
+`APPLEGPU_ASYNC_LAUNCH=0` disables asynchronous launch without claiming the
+synchronous mode — `SYNC_LAUNCH` wins when both are set. Failures a read path
+cannot report (a host pointer copy, a buffer destroy) are parked and surface
+at the next `synchronize`.
 
 ## The ABI has its own defect class
 
@@ -255,8 +276,11 @@ and convert at the edge.*
 
 That is also the shape of D23. `DeviceExternalFunction` — the path that
 launches a kernel supplied as bytes rather than compiled from a Mojo `fn` —
-never passed argument sizes, and the runtime's contract is that a null size
-means "the argument is a *view*: bind by address", so the launch segfaulted.
-The sizes now cross as an integer address, and what remains is routing that
+never passed argument sizes, and a null sizes *pointer* on this runtime is
+not "no sizes": it is the protocol discriminator meaning *the first entry is
+the Apple argument view*, so the runtime reinterpreted the bare pointer
+array as that struct and segfaulted. The enqueuer now always builds and
+passes a real sizes array, and what remains is routing that
 path through the same checked argument view the compiled-kernel path uses; a
-mismatch is now a clean contract error rather than a crash.
+size that disagrees with the kernel's declared constant bytes is now a clean
+contract error rather than a crash.

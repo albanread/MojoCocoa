@@ -11,9 +11,9 @@ that decided each.
 
 | Where the port stands | This port | Release 1.0.0 | Apple, from MSL | Bench |
 |:---|---:|---:|---:|:---|
-| register matmul, `comptime for` ×16, 1280³, M4 | **970** GFLOP/s | 956 | 951 | `matmul_reg_unrolled_bench` |
+| register matmul, `comptime for` ×16, 2048³, M4 | **970** GFLOP/s | 956 | 951 | `matmul_reg_unrolled_bench` |
 | register matmul, rolled K-step, M4 | 958 | — | — | `matmul_reg_bench` |
-| FMA chains 1 / 4 / 16 / 64, M4 | 2,815 / 3,544 / **3,602** / 3,332 GFLOP/s | 363 / 1,587 / 2,876 / — | 677 / 2,157 / 2,957 / — | `fma_peak_bench` |
+| FMA chains 1 / 4 / 16 / 64, M4 | 2,815 / 3,544 / **3,602** / 3,332 GFLOP/s | 363 / 1,587 / 2,876 / 3,101 | 677 / 2,157 / 2,957 / 3,220 | `fma_peak_bench` |
 | STREAM triad, M4 | **96.9** GB/s of ~120 | — | — | `stream_bench` |
 | dispatch, chain of 1,024, precompiled | **0.9–1.0** µs | — | Metal floor 1.0 | `launch_bench` |
 | register-blocked matmul 2048³, M4 Max 32-core | **3,056** GFLOP/s (naive kernel: 1,187) | — | — | `bench/README` scoreboard |
@@ -29,7 +29,9 @@ measurement was taken two ways on the same day: `metal-launch.m`, Metal with
 no runtime in the way, and `launch_bench.mojo`, AppleGPURT through
 `DeviceContext`. Both run an empty kernel in a dependent chain of *n*
 dispatches into one buffer, then one commit-and-wait; per-dispatch cost is the
-chain's wall time over *n*.
+chain's wall time over *n*. Both benches live in the oracles repository's
+`bench/` directory, alongside the findings every number in this chapter is
+quoted from.
 
 <!-- doccrate:keep-together:start -->
 
@@ -70,7 +72,7 @@ cache trap, below). When they were real, the pattern was immediate.
 
 <!-- doccrate:keep-together:start -->
 
-| K-step, 1280³ on the M4, GFLOP/s | This port | Release 1.0.0 | Apple, from MSL |
+| K-step, 2048³ on the M4, GFLOP/s | This port | Release 1.0.0 | Apple, from MSL |
 |:---|---:|---:|---:|
 | rolled (a runtime loop) | **942** | 899 | — |
 | unrolled ×4, loop of 4 | **980** | 985 | — |
@@ -78,6 +80,10 @@ cache trap, below). When they were real, the pattern was immediate.
 | unrolled ×16, straight-line | **870** | 956 | 951 |
 
 <!-- doccrate:keep-together:end -->
+
+(The straight-line kernel reads 870–871 GFLOP/s run to run; the table and
+the device-pipeline table below quote different runs of the same
+configuration.)
 
 Only the fully unrolled kernel was slow, and only here. What the port handed
 Apple for it: 530 instructions where the release hands 2,607; 32 vector
@@ -116,8 +122,8 @@ environment; not, evidently, a local rebuild of the compiler. Six experiments
 — vectorisers off, threadgroup alignment, three optimisation levels, partial
 unrolling — measured the same number and emitted byte-identical AIR because
 none of them ran. Moving the cache aside made all of them real at once. Every
-knob now prints an `[air-knobs]` line, the check scripts export a fresh
-`MODULAR_CACHE_DIR`, and the rule is: *no line, no result*.
+experiment knob now prints an `[air-knobs]` line, the check scripts export a
+fresh `MODULAR_CACHE_DIR`, and the rule is: *no line, no result*.
 
 ## 3. Unroll the loops the source left rolled, and nothing else
 
@@ -125,7 +131,8 @@ With SLP off, the FMA-chain bench told the next story. A chain is a
 dependent sequence of FMAs; more independent chains in flight hide latency.
 The port's curve from 1 to 32 chains ran 412 → 2,985 GFLOP/s against Apple's
 677 → 3,203 from MSL — behind at every count, and the gap was largest where
-the source had one loop and the release had unrolled it. There was no loop
+the source had one loop and Apple's compiler unrolled it; neither Mojo
+pipeline unrolled anything. There was no loop
 unroller in the device pipeline at all (D24).
 
 Adding LLVM's partial unroller unconditionally was a mixed result:
@@ -172,12 +179,12 @@ flowchart TD
 Single-block loops are the FMA chain and the rolled K-step: a body of
 arithmetic with no branches. Multi-block loops that touch only threadgroup
 memory are the SRAM tile loops, admitted only under the `wide` gate, because
-the first wide rule — "no loads or stores outside threadgroup space" — was
-defeated by device pointers that are still `addrspace(0)` at the point the
-unroller runs, before legalisation; the rule became *any access outside
-addrspace(3)*. The thresholds are set through LLVM's option registry with
-`addOccurrence`, because `cl::opt::setValue` is ignored by the unroll
-preferences.
+the first wide rule — "does the loop touch device memory?" — never fired at
+all: device pointers are still `addrspace(0)` at the point the unroller
+runs, before legalisation, so the tile loops slipped back in. The rule
+became *any access outside addrspace(3)*. The thresholds are set through
+LLVM's option registry with `addOccurrence`, because `cl::opt::setValue` is
+ignored by the unroll preferences.
 
 <!-- doccrate:keep-together:start -->
 
@@ -192,13 +199,15 @@ preferences.
 <!-- doccrate:keep-together:end -->
 
 The single-block gate at threshold 1024 is what ships. No bench regresses,
-SRAM gains 12%, and the FMA-chain curve reaches the machine's peak — about
-3.6 TFLOP/s on the 10-core M4 — from four chains up, where it had needed
-thirty-two. The rolled matmul's +4% in the last column is real and *open*: it
+SRAM gains 12%, and the FMA-chain curve reaches 3,544 GFLOP/s at four chains
+and 3,602 at sixteen — the machine's ~3.6 TFLOP/s peak on the 10-core M4 —
+where four chains had bought 1,321 and even sixty-four had topped out at
+3,225. The rolled matmul's +4% in the last column is real and *open*: it
 needs a per-loop unroll count rather than one threshold, and the wide gate
-that reaches it costs the ×16 kernel 17%. The corpus sweep across the oracle's
-probe kernels came back clean, which is the condition for a device-pipeline
-change to land at all.
+that reaches it costs the ×16 kernel 17%. The corpus sweep — this fork's own
+GPU corpus, 506 targets against the 91-target August baseline — came back
+with zero regressions, which is the condition for a device-pipeline change
+to land at all.
 
 And the leak that made one of those columns read 116 for a day: the gate's
 `llvm.loop.unroll.disable` marks, left in the module, reached Apple's

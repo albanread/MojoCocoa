@@ -198,7 +198,9 @@ three defects passed all three and still killed the compiler service:
   i2` and passes. Generalising from the `i4` case was wrong; the reader
   tolerates some odd widths, and the rule narrows only with evidence.
 
-`tools/pso-check.sh` loads a metallib, or packages a `.air` first, compiles
+Only Gate 1 runs in-process. Gates 2 and 3 live in `spikes/air-gates.sh` in
+this repository, and Gate 4 is `tools/pso-check.sh` in the oracles
+repository: it loads a metallib, or packages a `.air` first, compiles
 every function in it to a pipeline state, and exits non-zero if any fails.
 About twenty lines of Objective-C. Verified in both directions on the
 artefact that found it — exit 1 before the fixes, exit 0 after — and meant
@@ -253,6 +255,10 @@ indistinguishable — Apple's own output trips it four times. The correctness
 belongs in the `guard-nan-minmax` transform, which wraps only calls it
 renamed.
 
+Any rule can be downgraded for a comparison — `APPLEGPU_AIR_RULES=rule=log`
+— but the table is the shipping posture, and a Fail that has to be turned
+off is itself a finding waiting to be written.
+
 The `divergent-barrier` rule is the one piece of real analysis in the file.
 It treats the kernel arguments tagged by `!air.kernel` as the authoritative
 thread-identity sources, follows their SSA dependencies into conditional
@@ -275,7 +281,7 @@ luck.
 | the Bazel `PATH` | `xcrun` was not found because the compile action has no `PATH` at all | the bitcode is generated first; a packaging failure reads like a codegen failure |
 | the gate marks | `llvm.loop.unroll.disable` on loops the gate declined leaked to Apple's compiler, which honoured it; rolled matmul fell to 116 GFLOP/s | nothing the device pipeline says to itself may reach the artefact |
 | D6 | one rowwise subkernel variant kills the compiler service; reduction from retained artefacts still open | keep `.air` before packaging, name artefacts per kernel, include the profile |
-| D23 | `DeviceExternalFunction` launches segfaulted because the sizes never crossed the ABI; now a clean contract error | a null argument size means "view", and the runtime must be told which |
+| D23 | `DeviceExternalFunction` launches segfaulted because the sizes never crossed the ABI; now a clean contract error | a null sizes pointer is the Apple argument-view discriminator, not "no sizes" — the runtime must be told which protocol the caller speaks |
 
 <!-- doccrate:keep-together:end -->
 

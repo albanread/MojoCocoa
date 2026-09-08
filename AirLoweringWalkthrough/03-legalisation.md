@@ -59,11 +59,11 @@ Mojo source and that LLVM's InstCombine synthesises from ordinary code:
 
 `Air::applyTransforms` applies a table of optional rewrites, all off by
 default and selectable with `APPLEGPU_AIR_XFORMS=name=on` or `all=on`:
-`rename-llvm-intrinsics`, `split-i64-shuffle`, `guard-nan-minmax`. They come
-from the out-of-tree LLVM AIR backend's experience rather than from a defect
-measured here, so they are kept as *evidence, not specification* — available
-for a comparison, never applied unasked. Chapter 4 has the rule table that
-goes with them.
+`rename-llvm-intrinsics`, `split-i64-shuffle`, `guard-nan-minmax`,
+`volatile-loop-loads`. They come from the out-of-tree LLVM AIR backend's
+experience rather than from a defect measured here, so they are kept as
+*evidence, not specification* — available for a comparison, never applied
+unasked. Chapter 4 has the rule table that goes with them.
 
 ## 4. Builtins become AIR runtime calls
 
@@ -78,7 +78,7 @@ from the table is not accepted merely because its name starts with `air.`.
 | Signature class | Families |
 |:---|:---|
 | Barrier | `air.wg.barrier`, `air.simdgroup.barrier` |
-| Unary | `air.sin`, `air.cos`, `air.tan`, `air.exp`, `air.log`, `air.sqrt`, `air.rsqrt`, `air.recip`, `air.fabs`, `air.floor`, `air.ceil`, `air.rint`, `air.round`, `air.trunc`, `air.frac`, the inverse trig and hyperbolic functions, and `air.simd_sum`, `air.simd_product`, `air.simd_min`, `air.simd_max`, the two `air.simd_prefix_*_sum` scans |
+| Unary | `air.sin`, `air.cos`, `air.tan`, `air.exp`, `air.exp2`, `air.exp10`, `air.log`, `air.log2`, `air.log10`, `air.sqrt`, `air.rsqrt`, `air.recip`, `air.fabs`, `air.floor`, `air.ceil`, `air.rint`, `air.round`, `air.trunc`, `air.frac`, the inverse trig and hyperbolic functions, and `air.simd_sum`, `air.simd_product`, `air.simd_min`, `air.simd_max`, the two `air.simd_prefix_*_sum` scans |
 | Binary | `air.fmin`, `air.fmax`, `air.fmod`, `air.pow`, `air.powr`, `air.divide`, `air.copysign` |
 | Ternary | `air.fma` |
 | Shuffle | `air.simd_shuffle`, `air.simd_shuffle_up`, `air.simd_shuffle_down`, `air.simd_shuffle_xor` |
@@ -87,9 +87,10 @@ from the table is not accepted merely because its name starts with `air.`.
 <!-- doccrate:keep-together:end -->
 
 Each family says whether it carries a type suffix, what payload domain it
-accepts, and whether it is *convergent* — the barrier and shuffle families
-are, and `applyAirCallAttributes` stamps the attribute so no later pass
-duplicates or sinks a rendezvous. Two deliberate irregularities are in the
+accepts, and whether it is *convergent* — the barrier, shuffle, reduction
+and ballot families are, and `applyAirCallAttributes` stamps the attribute
+so no later pass duplicates or sinks a rendezvous. Two deliberate
+irregularities are in the
 experiment log: `air.simd_ballot.i32` is a *pre-mangled* ABI name, because its
 operand is `i1` and its result `i32`, so deriving a suffix from operand zero
 would be wrong; and SIMD payloads are limited to the scalar domains the
@@ -193,6 +194,7 @@ float64/float128 not supported on Metal/AIR (in kernel 'k'): Metal has
 neither a double nor a 128-bit integer type
 ```
 
+— the integer case carries its own wording ("integers wider than 64 bits").
 That is deliberately a located compile error rather than a silent demotion.
 The firewall's `f64` rule, inherited from the proof-of-concept backend and
 left at Log, records the alternative that backend chose.
@@ -219,9 +221,12 @@ three-wide parameter. Each such parameter carries its metadata tag:
 **Pointer parameters move to the device address space**, because Mojo
 elaborated them generic — *this rewrite is the address-space half of the
 closed MetalAIRPass*. By-value aggregate parameters — the capture blob a
-closure kernel carries — become a `constant T&` in `addrspace(2)`, loaded at
-entry, with the original type remembered so the field layout stays
-recoverable.
+closure kernel carries — become a `constant T&` in `addrspace(2)`, used
+where it stands; by-value scalars become an `addrspace(2)` parameter loaded
+at entry. Both remember the original type, so the field layout stays
+recoverable. Dynamically-sized threadgroup globals are rewritten into
+`addrspace(3)` parameters the launch sizes through
+`setThreadgroupMemoryLength`.
 
 **Captured pointers are not hoisted.** The x86-64 fork this descends from
 pulled every device pointer inside a capture struct out into its own kernel
@@ -290,9 +295,10 @@ reconciles any function whose parameters were retyped but whose
 
 ## 9. Module flags and versions
 
-The six `air.max_*` limits from the profile go in as module flags; then the
-identification metadata, *per the golden sample* and, the comment notes,
-*NOT guessed from* the feature string:
+The six `air.max_*` limits from the profile go in as module flags — beside
+two stock clang flags, `wchar_size` and `frame-pointer`, that the golden
+samples also carry — then the identification metadata, *per the golden
+sample* and, the comment notes, *NOT guessed from* the feature string:
 
 ```text
 !air.version           = 2, 8, 0
@@ -308,6 +314,8 @@ The last step removes what must not reach the reader: the host's
 `target-cpu`, `target-features` and `tune-cpu` attributes from every function
 (the module is handed to a clang-17-era `metal -x ir` as *text*, which is
 stricter than the bitcode reader about attributes it does not know); the
+argument attributes that era has no record for (`byval`, `captures`,
+`range` and friends) and `dso_local` on non-local functions; the
 exported-kernel passthrough attribute the MLIR lowering stamped; every
 `!llvm.loop` metadata node, unless `APPLEGPU_AIR_KEEP_LOOP_MD=1` asks for a
 comparison; and finally the `air.apple_arch` node, which was for

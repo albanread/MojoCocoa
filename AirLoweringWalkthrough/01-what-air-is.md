@@ -17,9 +17,11 @@ that the reader will accept.
 
 NVPTX and AMDGPU are in-tree LLVM backends. They consume the optimiser's
 output in-process, with no serialisation and no version boundary. AIR is
-reached by writing bitcode for a reader that is a frozen LLVM fork of roughly
-the clang-17 era, and that boundary is where every difference between "what
-modern LLVM emits" and "what a 2023 reader understands" turns fatal.
+reached by writing bitcode for a frozen LLVM fork — the reader is
+LLVM-18-based and wants the LLVM-17-style typed-pointer bitcode the
+cooperating writer produces — and that boundary is where every difference
+between "what modern LLVM emits" and "what a frozen reader understands"
+turns fatal.
 
 The backend states this in its own words about the optimisation pipeline:
 
@@ -99,14 +101,15 @@ in full because it encodes a mistake the backend has already made once:
 
 `kMetal4` is golden-verified: the toolchain on this machine, *Apple metal
 version 32023.830*, emits triple `air64_v28-apple-macosx26.0.0`, AIR 2.8.0,
-Metal 4.0.0. `kMetal3_2` — the pairing the stdlib's `info.mojo` carries as
-`+metal3_2,+air2_7_0` — is deliberately left *unverified*, with zeroed SDK and
-OS fields, so that selecting it fails loudly instead of stamping invented
-versions. Nobody has sampled a Metal 3.2 toolchain here.
+Metal 4.0.0. `kMetal3_2` — the pairing the stdlib's default Apple family
+carries as `+metal3_2,+air2_7_0` — is deliberately left *unverified*, with
+zeroed SDK and OS fields, so that selecting it fails loudly instead of
+stamping invented versions. Nobody has sampled a Metal 3.2 toolchain here.
 
 ### The disagreement that looks like a bug
 
-The stdlib maps every Apple family to the same feature string:
+The stdlib's default Apple family maps every chip to the same feature
+string:
 
 ```mojo
 `#kgen.target<triple = "air64-apple-macosx", `,
@@ -114,7 +117,10 @@ The stdlib maps every Apple family to the same feature string:
 `features = "+metal3_2,+air2_7_0", `,
 ```
 
-and the backend stamps 2.8/4.0 regardless. That is not an oversight; the
+and the backend stamps 2.8/4.0 regardless. (A parallel `-metal4` family in
+the same file carries `+metal4_0,+air2_8_0`, which *agrees* with the stamp —
+and changes nothing, because the stamp never came from the feature string.)
+That is not an oversight; the
 profile header explains that the backend *has always been right to*: the
 installed toolchain emits 2.8/4.0, and the conservative-looking 2.7/3.2 was
 tried, produced a module the reader rejected, and *taught nothing because the

@@ -25,10 +25,10 @@ flowchart TD
     subgraph OC["ObjectCompiler (LLVM)"]
         c1["finalizeModuleForTarget<br/>record air.apple_arch, strip target-cpu/features"]
         c2["O3 pipeline on an arm64 TargetMachine<br/>SLP off, VectorCombine off, partial unroll gated"]
-        c3["emitObject: AlwaysInliner, re-legalise address spaces,<br/>three-way compares, deviceize"]
-        c4["legalizeModule"]
-        c5["Gate 1: llvm::verifyModule on canonical IR"]
-        c6["LLVMIRDowngradePass + PointerRewriter<br/>typed pointers for an LLVM-17 reader"]
+        c3["legalizeModule"]
+        c4["Gate 1: llvm::verifyModule on canonical IR"]
+        c5["post-legalisation: AlwaysInliner,<br/>re-legalise address spaces, three-way compares, deviceize"]
+        c6["LLVMIRDowngradePass + PointerRewriter<br/>typed pointers, LLVM-17-style bitcode"]
         c7["WriteBitcode17ToFile, wrapper header"]
         c8["xcrun metallib"]
     end
@@ -76,18 +76,23 @@ at the declaration site rather than enumerated at each Mojo call site.
 `llvm.air.*` call into a correctly typed declaration of a real `air.*`
 symbol. Four things happen to every such call:
 
-1. **The signature tag comes off.** The generic POP lowering makes each
-   overload unique by appending `$<types>` to the name; the real AIR name is
-   derived from the operand types here, so *the tag only ever had to be
-   unique, never correct*.
+1. **The declaration is created under a tag keyed to its signature.** The
+   symbol the lowering mints is `air.<stem>$<hash of the exact FunctionType>`.
+   The real AIR name is derived from the operand types here, and the tag
+   *only ever has to be unique, never correct* — the object backend's
+   `airStem` drops everything from `$` before the final `air.*` name is
+   assembled, and `stripAirSignatureTags` sweeps what survives.
 2. **Struct operands are unpacked.** KGEN packs multi-operand intrinsic
    arguments into a struct; AIR runtime functions take flat scalars. A Mojo
    `Bool` arrives as `{i1, [15 x i8]}`, and the trailing byte-array padding
    has to be skipped rather than flattened into a spurious parameter.
 3. **The type suffix is added**, from the builtin registry: `air.simd_shuffle_xor.u.i32`,
    `.f32`, `.f16`, each read off a golden MSL probe.
-4. **The declaration is keyed by signature**, so two kernels using the same
-   builtin at different payload types get two declarations and no collision.
+4. **The function type is the identity, not the name.** Any symbol found is
+   checked against the calling FunctionType, so two kernels using the same
+   builtin at different payload types get two declarations and no collision —
+   a hash collision surfaces as a located diagnostic rather than a
+   miscompile.
 
 One decision in that file deserves its own paragraph because it is a guess
 made carefully. AIR carries *separate* signed and unsigned integer symbols —
@@ -182,8 +187,8 @@ virtuals on `TargetBackend` exist for that: `wantsVectorization`,
 `wantsVectorCombine`, `wantsPartialUnrolling`, `unrollBodyLimit` and
 `unrollSingleBlockOnly`. On AIR the first two answer no and the third yes,
 for reasons that are the substance of chapter 6. Each is an environment knob
-as well, and every knob prints an `[air-knobs]` line to stderr when it is
-read, for a reason chapter 4 explains under the compile cache.
+as well, and each prints an `[air-knobs]` line to stderr when it is set,
+for a reason chapter 4 explains under the compile cache.
 
 <!-- doccrate:keep-together:start -->
 
@@ -195,6 +200,7 @@ read, for a reason chapter 4 explains under the compile cache.
 | `APPLEGPU_AIR_UNROLL_LIMIT` | 128 | loop body size the gate admits |
 | `APPLEGPU_AIR_UNROLL_PARTIAL_THRESHOLD` | 1024 | LLVM's partial-unroll threshold |
 | `APPLEGPU_AIR_UNROLL_GATE` | single-block | `wide` also admits threadgroup-only multi-block loops |
+| `APPLEGPU_AIR_UNROLL_PARTIAL` | off | the ungated unroller inside `emitObject`, after legalisation |
 | `APPLEGPU_AIR_KEEP_LOOP_MD` | off | keep `!llvm.loop` metadata in the artefact |
 | `APPLEGPU_AIR_OPT_LEVEL` | 3 | the device pipeline's optimisation level |
 | `APPLEGPU_KEEP_AIR=<dir>` | unset | retain `.pre.ll`, `.post.ll`, `.air` and `.metallib` per kernel |
@@ -202,33 +208,38 @@ read, for a reason chapter 4 explains under the compile cache.
 
 <!-- doccrate:keep-together:end -->
 
-Knobs are read from the environment first, then from `/tmp/applegpu-xforms.conf`,
-`~/.applegpu-xforms`, or a file named by `APPLEGPU_XFORMS_FILE`, so an
-experiment can be pinned for a whole suite run without editing every command.
+Knobs are read from the environment first, then from the first readable of
+`APPLEGPU_XFORMS_FILE`, `~/.applegpu-xforms`, or `/tmp/applegpu-xforms.conf`
+(the last only if the current user owns it — world-writable `/tmp` is not a
+place to take instructions from), so an experiment can be pinned for a whole
+suite run without editing every command.
 
-### After optimisation: the mini pipeline inside `emitObject`
+### Inside `emitObject`: legalise, verify, then the downgrade
 
-`emitObject` runs a second, short pass sequence before legalisation, and the
-order is the point:
+`emitObject` is the whole second half, in this order: `legalizeModule`
+itself first — chapter 3 walks it, and its own first act is to inline every
+internal helper — then Gate 1, and only then a short pass sequence in front
+of the downgrade. The order is the point:
 
-1. **`AlwaysInlinerPass` first.** Force every internal helper into its caller
-   before anything AIR-specific looks at the module. The next chapter quotes
-   the three defects that put it here.
-2. **Break wide vector arithmetic**, behind `APPLEGPU_AIR_SCALARIZE_WIDE_VECTORS`:
+1. **`AlwaysInlinerPass` first.** Whatever is still un-inlined is forced
+   into its caller now, because the passes below re-legalise, and code this
+   pass pulls in from a callee has never been through them.
+2. **The ungated partial unroller**, behind `APPLEGPU_AIR_UNROLL_PARTIAL` —
+   for a comparison run at this position rather than through the gated one
+   in the main pipeline.
+3. **Break wide vector arithmetic**, behind `APPLEGPU_AIR_SCALARIZE_WIDE_VECTORS`:
    a scalariser with `ScalarizeMinBits=128` fragments anything wider than
    `float4` while leaving loads and stores alone — *vector memory access is
    genuinely wide on this hardware, and splitting it would cost*.
-3. **The partial unroller**, when the knob asks for it here rather than in the
-   main pipeline.
 4. **Re-legalise address spaces** now that inlining has run, because code the
    inliner pulled in from a callee has never been through the pass:
 
    > *On AIR that is not a missed optimisation, it is a wrong answer.*
 
-5. **Lower three-way compares and deviceize captured pointers again**, for
-   the same reason.
+5. **Lower three-way compares and deviceize captured pointers again**, for the
+   same reason.
 
-Then `legalizeModule` itself, which chapter 3 walks through; then Gate 1.
+Then the downgrade itself.
 
 ### Gate 1 sits on canonical IR
 
@@ -253,17 +264,18 @@ The emission machinery is Apple's published Metal skeleton, filled in:
 > *LLVMIRDowngradePass is the published MetalAIRPass skeleton today; our
 > legalizeModule above supplies the body that upstream leaves out.*
 
-`LLVMIRDowngradePass` folds modern constructs into what an LLVM-17 reader
+`LLVMIRDowngradePass` folds modern constructs into what the frozen reader
 knows. `PointerRewriter` turns every opaque pointer into a `TypedPointerType`,
 recording the retyped function signatures in its own side table — the source
 of a subtle rule chapter 4 covers. `WriteBitcode17ToFile` is the cooperating
 writer, described in its own header as *"for writing Metal bitcode"*; it emits
 typed POINTER records and the bitcode wrapper header itself. Between the
-downgrade and the write the backend takes a last look at the module and
-prints its declared external symbols, because an unresolved external is *not*
-rejected by `metallib` — it survives packaging and kills the compiler service
-at pipeline creation with `XPC_ERROR_CONNECTION_INTERRUPTED`, naming nothing
-at all.
+downgrade and the write the backend takes a last look at the module's
+declared external symbols — a check, not a listing: any symbol the AIR
+contract does not know, or any declaration nothing defines, fails the build
+there — because an unresolved external is *not* rejected by `metallib`; it
+survives packaging and kills the compiler service at pipeline creation with
+`XPC_ERROR_CONNECTION_INTERRUPTED`, naming nothing at all.
 
 The `.air` is copied to the retained-artefact directory *before* packaging.
 The comment records why that ordering is not cosmetic:
@@ -272,15 +284,16 @@ The comment records why that ordering is not cosmetic:
 > file is exactly what you need, and copying it only on success meant it was
 > deleted at the one moment it mattered.*
 
-Packaging is `xcrun metallib`, found at `/usr/bin/xcrun` rather than on
-`PATH` — under Bazel there *is* no `PATH`: `rules_mojo` pins the compile
-action's environment to `PATH=/dev/null` for hermeticity, confirmed with
-`bazel aquery`, and `--action_env=PATH` cannot override a rule's own
-environment. The system stub resolves the active toolchain itself through
-`DEVELOPER_DIR`, which the rule does pass through. The failure that produced
-is worth keeping in mind whenever the build stops with what looks like a
-compiler error: *the AIR bitcode is generated FIRST and only packaging fails,
-so the whole codegen path can be working and the build still stops*.
+Packaging is `xcrun metallib`, looked up on `PATH` first and falling back to
+`/usr/bin/xcrun` — under Bazel the fallback is what fires, because there *is*
+no `PATH`: `rules_mojo` pins the compile action's environment to
+`PATH=/dev/null` for hermeticity, confirmed with `bazel aquery`, and
+`--action_env=PATH` cannot override a rule's own environment. The system stub
+resolves the active toolchain itself through `DEVELOPER_DIR`, which the rule
+does pass through. The failure that produced is worth keeping in mind
+whenever the build stops with what looks like a compiler error: *the AIR
+bitcode is generated FIRST and only packaging fails, so the whole codegen
+path can be working and the build still stops*.
 
 ### Which view is which
 
