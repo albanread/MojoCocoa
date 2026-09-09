@@ -141,8 +141,8 @@ trench_check() {
   fi
   rm -rf /tmp/trench-shots && mkdir -p /tmp/trench-shots
   if TRENCH_FRAMES=6 TRENCH_SHOTS=/tmp/trench-shots timeout 300 /tmp/exb-trench >"$log.out" 2>&1 \
-     && [ "$(ls /tmp/trench-shots/*.png 2>/dev/null | wc -l | tr -d ' ')" = 3 ]; then
-    echo "  OK   trench (built, flew headless, 3 views photographed over Apple Events)"; pass=$((pass+1))
+     && [ "$(ls /tmp/trench-shots/*.png 2>/dev/null | wc -l | tr -d ' ')" = 5 ]; then
+    echo "  OK   trench (built, flew headless; views, section filter and export over Apple Events)"; pass=$((pass+1))
   else
     echo "  FAIL trench (run)"; grep -m3 -E "error|Assert" "$log.out" | sed 's/^/      /'; fail=$((fail+1))
   fi

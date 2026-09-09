@@ -117,7 +117,9 @@ which opens itself when a build starts and toggles with ⌘0.
                   dark without a second palette. It is scriptable the way
                   `roast` is -- `tell application "Trench" to do command
                   "mode map"` -- and photographs its own window through
-                  that surface, which is how the suite checks it
+                  that surface, which is how the suite checks it. The
+                  source list filters the sheet to one phase; Export
+                  writes the canvas alone through a save panel
     ferns/        a landscape of Barnsley ferns growing live over a
                   procedural lawn, under a cloudy dusk sky (CPU)
     fernwind/     the same meadow swaying in the wind: every fern redrawn

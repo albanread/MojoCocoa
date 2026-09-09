@@ -108,6 +108,29 @@ comptime g_flying = named_global["trench.flying", Int]
 comptime g_dirty = named_global["trench.dirty", Int]
 comptime g_frames = named_global["trench.frames", Int]
 
+comptime g_group = named_global["trench.group", List[Int]]
+"""The section each inspector row belongs to, so the source list can show
+one of them. Parallel to `g_rows` rather than a fifth string in it: this is
+structure, and the table never renders it."""
+comptime g_visible = named_global["trench.visible", List[Int]]
+"""The rows the current selection admits, as indices into `g_rows`. The
+data source reads THIS and nothing else, so filtering is one rebuild rather
+than a condition in three delegate methods."""
+comptime g_cur_group = named_global["trench.curgroup", Int]
+comptime g_exporting = named_global["trench.exporting", Int]
+"""Set while the canvas is being drawn for a file rather than for the
+screen. The only difference is the interaction hint along the bottom: it
+tells a viewer what to do with the mouse, and an exported chart has no
+mouse. Everything else about the two pictures is deliberately identical."""
+
+comptime G_LAUNCH = 0
+comptime G_TRANSLUNAR = 1
+comptime G_ARRIVAL = 2
+comptime G_DESCENT = 3
+comptime G_MARGINS = 4
+comptime G_RULES = 5
+comptime G_FLIGHT = 6
+
 comptime g_map = named_global["trench.map", List[Float64]]
 """The window map, aggregated to one cell per day and hour: the cheapest
 total Delta-v in that hour, or 0 where nothing closes."""
@@ -178,6 +201,7 @@ def current_choices() -> Choices:
 
 
 fn add_header(title: String):
+    g_group()[].append(g_cur_group()[])
     g_rows()[].append(String("h"))
     g_rows()[].append(title)
     g_rows()[].append(String(""))
@@ -185,6 +209,7 @@ fn add_header(title: String):
 
 
 fn add_row(label: String, value: String, state: String):
+    g_group()[].append(g_cur_group()[])
     g_rows()[].append(String("r"))
     g_rows()[].append(label)
     g_rows()[].append(value)
@@ -192,6 +217,7 @@ fn add_row(label: String, value: String, state: String):
 
 
 fn add_spacer():
+    g_group()[].append(g_cur_group()[])
     g_rows()[].append(String("s"))
     g_rows()[].append(String(""))
     g_rows()[].append(String(""))
@@ -206,11 +232,50 @@ fn row_at(i: Int, field: Int) -> String:
     return g_rows()[][i * 4 + field]
 
 
+fn shown_count() -> Int:
+    return len(g_visible()[])
+
+
+fn shown_at(i: Int, field: Int) -> String:
+    if i < 0 or i >= len(g_visible()[]):
+        return String("")
+    return row_at(g_visible()[][i], field)
+
+
+fn group_admits(sel: Int, g: Int) -> Bool:
+    """Sidebar row 0 is every section; 1..4 are the four phases in order;
+    5 gathers the margins, the flight rules and the live flight, which are
+    read together and are too short to be worth a row each."""
+    if sel <= 0:
+        return True
+    if sel == 5:
+        return g == G_MARGINS or g == G_RULES or g == G_FLIGHT
+    return g == sel - 1
+
+
+fn rebuild_visible():
+    """Which rows the source list's selection admits. A trailing spacer is
+    dropped: a filtered section that ends in blank space reads as a table
+    that failed to finish."""
+    g_visible()[].clear()
+    let sel = g_phase_sel()[]
+    for i in range(row_count()):
+        if i < len(g_group()[]) and group_admits(sel, g_group()[][i]):
+            g_visible()[].append(i)
+    while len(g_visible()[]) > 0:
+        let last = g_visible()[][len(g_visible()[]) - 1]
+        if row_at(last, 0) != "s":
+            break
+        _ = g_visible()[].pop()
+
+
 def build_rows(sheet: PlanSheet, ch: Choices, get: Float64, flying: Bool):
     """The plan sheet, as the inspector shows it. Everything here is a
     number the physics computed; nothing is entered twice."""
     g_rows()[].clear()
+    g_group()[].clear()
 
+    g_cur_group()[] = G_LAUNCH
     add_header(String("Launch"))
     add_row(String("Site"), launch_sites()[ch.pad].name, "n")
     add_row(String("Date"), date_of(sheet.jd_launch), "n")
@@ -223,6 +288,7 @@ def build_rows(sheet: PlanSheet, ch: Choices, get: Float64, flying: Bool):
     add_row(String("Inclination"), ui.f(sheet.inclination, 2) + "°", "n")
     add_spacer()
 
+    g_cur_group()[] = G_TRANSLUNAR
     add_header(String("Translunar"))
     add_row(String("TLI"), clock_of(sheet.jd_tli_ign), "n")
     add_row(String("Δv"), ui.ms(sheet.dv_tli), "b")
@@ -236,6 +302,7 @@ def build_rows(sheet: PlanSheet, ch: Choices, get: Float64, flying: Bool):
     )
     add_spacer()
 
+    g_cur_group()[] = G_ARRIVAL
     add_header(String("Arrival"))
     add_row(String("Perilune"), ui.f(sheet.transfer.correction.arrival.r_p - R_MOON, 1) + " km", "n")
     add_row(String("v∞"), ui.ms(sheet.transfer.correction.arrival.v_inf), "n")
@@ -245,6 +312,7 @@ def build_rows(sheet: PlanSheet, ch: Choices, get: Float64, flying: Bool):
     add_row(String("LOI-2"), ui.ms(sheet.dv_loi2), "n")
     add_spacer()
 
+    g_cur_group()[] = G_DESCENT
     add_header(String("Descent"))
     add_row(String("Site"), landing_sites()[ch.target].name, "n")
     add_row(String("Touchdown"), clock_of(sheet.jd_landing), "n")
@@ -258,6 +326,7 @@ def build_rows(sheet: PlanSheet, ch: Choices, get: Float64, flying: Bool):
     add_row(String("Descent Δv"), ui.ms(sheet.dv_descent), "n")
     add_spacer()
 
+    g_cur_group()[] = G_MARGINS
     add_header(String("Margins"))
     add_row(
         String("S-IVB"),
@@ -277,6 +346,7 @@ def build_rows(sheet: PlanSheet, ch: Choices, get: Float64, flying: Bool):
 
     if len(sheet.red) > 0 or len(sheet.amber) > 0:
         add_spacer()
+        g_cur_group()[] = G_RULES
         add_header(String("Flight rules"))
         for i in range(len(sheet.red)):
             add_row(String("NO-GO"), sheet.red[i], "r")
@@ -284,9 +354,13 @@ def build_rows(sheet: PlanSheet, ch: Choices, get: Float64, flying: Bool):
             add_row(String("Caution"), sheet.amber[i], "a")
 
     if flying:
+        g_cur_group()[] = G_FLIGHT
         add_spacer()
+        g_cur_group()[] = G_FLIGHT
         add_header(String("Flight"))
         add_row(String("GET"), ui.get_hms(get), "b")
+
+    rebuild_visible()
 
 
 def date_of(jd: Float64) -> String:
@@ -432,10 +506,13 @@ fn draw_trajectory(b: CGRect):
                 ui.rect(s.x - 7.0, h - s.y - 7.0, 14.0, 14.0), 1.0, ui.orange()
             )
 
-    ui.text(
-        String("100 000 km rings · drag to turn · scroll to zoom"),
-        14.0, 12.0, 10.0, ui.tertiary(),
-    )
+    if g_exporting()[] == 0:
+        ui.text(
+            String("100 000 km rings · drag to turn · scroll to zoom"),
+            14.0, 12.0, 10.0, ui.tertiary(),
+        )
+    else:
+        ui.text(String("100 000 km rings"), 14.0, 12.0, 10.0, ui.tertiary())
 
 
 fn draw_map(b: CGRect):
@@ -800,7 +877,7 @@ class TrenchActions:
     def numberOfRowsInTableView_(self, table: ObjCObject) -> Int:
         if table.addr() == g_sidebar()[]:
             return len(g_phases()[])
-        return row_count()
+        return shown_count()
 
     def tableView_objectValueForTableColumn_row_(
         self, table: ObjCObject, column: ObjCObject, row: Int
@@ -809,15 +886,15 @@ class TrenchActions:
             if row < 0 or row >= len(g_phases()[]):
                 return nsstring(String(""))
             return nsstring(g_phases()[][row])
-        if row < 0 or row >= row_count():
+        if row < 0 or row >= shown_count():
             return nsstring(String(""))
         let ident = ns_to_string(
             ObjCObject(Obj["NSTableColumn"](column.addr()).identifier().id)
         )
-        let kind = row_at(row, 0)
+        let kind = shown_at(row, 0)
         if ident == "label":
-            return nsstring(row_at(row, 1).upper() if kind == "h" else row_at(row, 1))
-        return nsstring(row_at(row, 2))
+            return nsstring(shown_at(row, 1).upper() if kind == "h" else shown_at(row, 1))
+        return nsstring(shown_at(row, 2))
 
     def tableView_willDisplayCell_forTableColumn_row_(
         self, table: ObjCObject, cell: ObjCObject, column: ObjCObject, row: Int
@@ -831,10 +908,10 @@ class TrenchActions:
                 Cls["NSFont"]().systemFontOfSize_weight(12.0, ui.W_REGULAR).ptr()
             )
             return
-        if row < 0 or row >= row_count():
+        if row < 0 or row >= shown_count():
             return
-        let kind = row_at(row, 0)
-        let state = row_at(row, 3)
+        let kind = shown_at(row, 0)
+        let state = shown_at(row, 3)
         let ident = ns_to_string(
             ObjCObject(Obj["NSTableColumn"](column.addr()).identifier().id)
         )
@@ -872,7 +949,9 @@ class TrenchActions:
         let row = Obj["NSTableView"](table.addr()).selectedRow()
         if row >= 0:
             g_phase_sel()[] = row
-            g_dirty()[] = 1
+            rebuild_visible()
+            if g_table()[] != 0:
+                Obj["NSTableView"](ObjCObject(g_table()[]).addr()).reloadData()
 
     # ── toolbar delegate ──────────────────────────────────────────────
 
@@ -1612,7 +1691,8 @@ def main() raises:
     set_choice(C_TOF, Int(a11.tof_h * 10.0 + 0.5))
     set_choice(C_MCC, a11.mcc_policy)
 
-    for s in ["Launch", "Translunar", "Arrival", "Lunar Orbit", "Descent"]:
+    for s in ["All Sections", "Launch", "Translunar", "Arrival", "Descent",
+              "Margins & Rules"]:
         g_phases()[].append(String(s))
 
     let headless = getenv("TRENCH_FRAMES")
@@ -1700,7 +1780,10 @@ def main() raises:
                 let want_fly = (g_cmd()[] & CMD_FLY) != 0
                 let want_reset = (g_cmd()[] & CMD_RESET) != 0
                 let want_quit = (g_cmd()[] & CMD_QUIT) != 0
+                let want_export = (g_cmd()[] & CMD_EXPORT) != 0
                 g_cmd()[] = 0
+                if want_export:
+                    export_with_panel()
                 if want_quit:
                     running = False
                     continue
@@ -1786,6 +1869,19 @@ def main() raises:
                 print("  ae shot:", send_self(
                     String("screenshot ") + shots + "/trench-" + String(name) + ".png"
                 ))
+            for sec in ["launch", "descent", "margins", "all"]:
+                print("  ae section:", send_self(String("section ") + String(sec)))
+            # One picture of the console with a section selected, so the
+            # filtered inspector is checked and not just counted.
+            _ = send_self(String("mode trajectory"))
+            _ = send_self(String("section descent"))
+            print("  ae shot:", send_self(
+                String("screenshot ") + shots + "/trench-section.png"
+            ))
+            _ = send_self(String("section all"))
+            print("  ae export:", send_self(
+                String("export ") + shots + "/trench-export.png"
+            ))
             print("  ae help:", send_self(String("help")))
 
 
@@ -1812,22 +1908,13 @@ comptime AE_CMD = 0x636D6E64  # 'cmnd'
 comptime AE_DIRECT = 0x2D2D2D2D  # '----', keyDirectObject
 
 
-def capture_window(path: String) -> String:
-    """The window, drawn into a bitmap and written as a PNG.
-
-    `contentView.superview` rather than the content view: that is the frame
-    view, so the titlebar and the toolbar are in the picture. This is the
-    window drawing ITSELF, not the screen being read, so it needs no screen
-    recording permission and captures the window even when it is behind
-    another one."""
-    if g_window()[] == 0:
-        return String("error: no window")
+def capture_view(view_addr: Int, path: String) -> String:
+    """One view, drawn into a bitmap and written as a PNG. This is the view
+    drawing ITSELF, not the screen being read, so it needs no screen
+    recording permission and works while the window is behind another."""
+    if view_addr == 0:
+        return String("error: no view")
     with autoreleasepool():
-        let content = Obj["NSWindow"](ObjCObject(g_window()[]).addr()).contentView()
-        var view_addr = content.addr()
-        let above = Obj["NSView"](content.addr()).superview()
-        if above.addr() != 0:
-            view_addr = above.addr()
         let b = Obj["NSView"](view_addr).bounds()
         if b.size.width < 1.0 or b.size.height < 1.0:
             return String("error: view has no size")
@@ -1853,19 +1940,80 @@ def capture_window(path: String) -> String:
         return path + " (" + String(w) + "x" + String(h) + " px)"
 
 
+def export_plot(path: String) -> String:
+    """Just the canvas: an export is the picture, not a photograph of an
+    application. The window shot is what `screenshot` is for."""
+    g_exporting()[] = 1
+    if g_view()[] != 0:
+        Obj["NSView"](ObjCObject(g_view()[]).addr()).display()
+    let answer = capture_view(g_view()[], path)
+    g_exporting()[] = 0
+    if g_view()[] != 0:
+        Obj["NSView"](ObjCObject(g_view()[]).addr()).display()
+    return answer
+
+
+def suggested_name() -> String:
+    let base = String("Trench ") + mode_name(g_mode()[])
+    return base + ".png"
+
+
+def export_with_panel():
+    """The Mac way to write a file: NSSavePanel, with a name already filled
+    in from the view being exported and the extension it will actually be."""
+    with autoreleasepool():
+        let panel = Cls["NSSavePanel"]().savePanel()
+        Obj["NSSavePanel"](panel.addr()).setNameFieldStringValue(
+            nsstring(suggested_name()).ptr()
+        )
+        Obj["NSSavePanel"](panel.addr()).setTitle(
+            nsstring(String("Export ") + mode_name(g_mode()[])).ptr()
+        )
+        Obj["NSSavePanel"](panel.addr()).setCanCreateDirectories(True)
+        if Obj["NSSavePanel"](panel.addr()).runModal() != 1:
+            set_status(String("Export cancelled"))
+            return
+        let url = Obj["NSSavePanel"](panel.addr()).URL()
+        if url.addr() == 0:
+            set_status(String("Export cancelled"))
+            return
+        let where = ns_to_string(Obj["NSURL"](url.addr()).path())
+        let answer = export_plot(where)
+        if answer.startswith("error"):
+            set_status(String("Export failed: ") + answer)
+        else:
+            set_status(String("Exported ") + answer)
+
+
+def capture_window(path: String) -> String:
+    """The whole window, titlebar and toolbar included: `contentView`'s
+    superview is the frame view, which is what puts the chrome in the
+    picture."""
+    if g_window()[] == 0:
+        return String("error: no window")
+    let content = Obj["NSWindow"](ObjCObject(g_window()[]).addr()).contentView()
+    var view_addr = content.addr()
+    let above = Obj["NSView"](content.addr()).superview()
+    if above.addr() != 0:
+        view_addr = above.addr()
+    return capture_view(view_addr, path)
+
 def run_command(cmd: String) -> String:
     """The whole scripting surface, in one place."""
     let c = String(cmd.strip())
     if c == "help":
         return String(
             "status · replan · fly · hold · reset · mode "
-            "trajectory|map|descent · screenshot [path] · quit"
+            "trajectory|map|descent · section <name> · export [path] · "
+            "screenshot [path] · quit"
         )
     if c == "status":
         return (
             String("mode ") + mode_name(g_mode()[])
             + "; " + (String("flying") if g_flying()[] != 0 else String("held"))
-            + "; " + String(row_count()) + " plan rows; "
+            + "; section " + g_phases()[][g_phase_sel()[]]
+            + "; " + String(shown_count()) + " of " + String(row_count())
+            + " plan rows shown; "
             + String(len(g_arc()[]) // 3) + " course samples"
         )
     if c.startswith("screenshot"):
@@ -1873,6 +2021,25 @@ def run_command(cmd: String) -> String:
         if c.byte_length() > 11:
             where = String(c[byte=11:].strip())
         return capture_window(where)
+    if c.startswith("section"):
+        let which = String(c[byte=7:].strip())
+        var idx = -1
+        for i in range(len(g_phases()[])):
+            if g_phases()[][i].lower().startswith(which.lower()) and which != "":
+                idx = i
+                break
+        if idx < 0:
+            return String("error: section all|launch|translunar|arrival|descent|margins")
+        select_section(idx)
+        return (
+            String("section ") + g_phases()[][idx] + " · "
+            + String(shown_count()) + " of " + String(row_count()) + " rows"
+        )
+    if c.startswith("export"):
+        var where = String("/tmp/trench-plot.png")
+        if c.byte_length() > 7:
+            where = String(c[byte=7:].strip())
+        return export_plot(where)
     if c == "replan":
         g_cmd()[] = g_cmd()[] | CMD_REPLAN
         return String("replanning")
@@ -1906,6 +2073,21 @@ def run_command(cmd: String) -> String:
         g_cmd()[] = g_cmd()[] | CMD_QUIT
         return String("quitting")
     return String("error: unknown command '") + c + "' -- try help"
+
+
+def select_section(idx: Int):
+    """Move the source list and the inspector together, whether the click
+    came from a mouse or from a script: the selection is the model, and the
+    table is shown it rather than being the place it lives."""
+    g_phase_sel()[] = idx
+    rebuild_visible()
+    if g_sidebar()[] != 0:
+        Obj["NSTableView"](ObjCObject(g_sidebar()[]).addr()).selectRowIndexes_byExtendingSelection(
+            Cls["NSIndexSet"]().indexSetWithIndex(idx).ptr(), False
+        )
+    if g_table()[] != 0:
+        Obj["NSTableView"](ObjCObject(g_table()[]).addr()).reloadData()
+        Obj["NSView"](ObjCObject(g_table()[]).addr()).display()
 
 
 fn mode_name(m: Int) -> String:
