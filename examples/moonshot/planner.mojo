@@ -48,14 +48,17 @@ from std.math import sqrt, sin, cos, atan2, floor
 
 from astro import (
     Vec3, Ephemeris, Site, launch_sites, landing_sites, julian_day, civil,
-    R_EARTH, R_MOON, MU_EARTH, MU_MOON, DEG, RAD, fmt,
+    R_EARTH, R_MOON, MU_EARTH, MU_MOON, MOON_SOI, DEG, RAD, fmt,
 )
 from orbit import Bodies, RVd, F_ALL
 from max.gpu.host import DeviceContext
 from window import WindowMap, compute_map, FIELDS, F_DV_TLI, F_DV_LOI, F_FLAGS, FLAG_CORRIDOR, FLAG_LIT, FLAG_OK
 from descent import Terrain, high_gate, low_gate
 from plan import Choices, PlanSheet, make_plan, apollo_11_choices
-from mission import Mission, PHASE_DONE, get_string
+from mission import (
+    Mission, PHASE_PARKING, PHASE_LUNAR_ORBIT, PHASE_DESCENT, PHASE_DONE,
+    get_string,
+)
 from scene import Camera, rotate_about
 import planner_ui as ui
 
@@ -103,6 +106,10 @@ comptime g_flybtn = named_global["planner.flybtn", Int]
 
 comptime g_mode = named_global["planner.mode", Int]
 """0 trajectory, 1 window map, 2 descent."""
+comptime g_seenphase = named_global["planner.seenphase", Int]
+"""The stage the view last reacted to, so the view follows the flight on
+its TRANSITIONS and never fights a viewer who has chosen to look somewhere
+else in between."""
 comptime g_phase_sel = named_global["planner.phasesel", Int]
 comptime g_cmd = named_global["planner.cmd", Int]
 comptime g_flying = named_global["planner.flying", Int]
@@ -146,7 +153,14 @@ comptime N_PITCH = 1
 comptime N_ZOOM = 2
 comptime N_GET = 3
 comptime N_WARP = 4
-comptime N_COUNT = 5
+# Where the course view is looking and how wide, set by `frame_course` from
+# the mission rather than fixed: a camera pinned to the Earth at a span that
+# holds the whole transfer shows the interesting end of it as three pixels.
+comptime N_CX = 5
+comptime N_CY = 6
+comptime N_CZ = 7
+comptime N_SPAN = 8
+comptime N_COUNT = 9
 
 comptime CMD_REPLAN = 1
 comptime CMD_FLY = 2
@@ -417,12 +431,119 @@ def clock_of(jd: Float64) -> String:
 
 
 fn plot_camera(w: Float64, h: Float64) -> Camera:
-    """The course frame: centred between the Earth and the Moon, far
-    enough out to hold both, turned by the user's drag."""
-    var span = 420000.0 / num(N_ZOOM)
+    """The course frame. Where it looks and how far out it stands are the
+    mission's business (`frame_course`); the drag and the scroll are the
+    viewer's, and multiply what the mission asked for."""
+    var span = num(N_SPAN)
+    if span <= 0.0:
+        span = 900000.0
     return Camera(
-        Vec3(0.0, 0.0, 0.0), num(N_YAW), num(N_PITCH), span, 42.0
+        Vec3(num(N_CX), num(N_CY), num(N_CZ)),
+        num(N_YAW), num(N_PITCH), span / num(N_ZOOM), 42.0,
     )
+
+
+def stage_of(m: Mission) -> Int:
+    """Which of the four stages the mission is in. The journey has four
+    subjects, not one, and each wants a different picture: the Earth it
+    leaves, the gulf it crosses, the Moon it arrives at, and the ground it
+    lands on."""
+    if m.phase == PHASE_DESCENT:
+        return 3
+    # The sphere of influence is where the Moon takes over the trajectory,
+    # so it is where the arrival begins -- a real boundary rather than a
+    # number chosen to make the picture change.
+    if (m.r - m.moon()).norm() < MOON_SOI or m.phase >= PHASE_LUNAR_ORBIT:
+        return 2
+    if m.phase <= PHASE_PARKING or m.r.norm() < 60000.0:
+        return 0
+    return 1
+
+
+fn stage_name(k: Int) -> String:
+    if k == 0:
+        return String("Launch")
+    if k == 1:
+        return String("Translunar")
+    if k == 2:
+        return String("Lunar arrival")
+    return String("Descent")
+
+
+def frame_course(m: Mission):
+    """Point the course view at the stage's subject.
+
+    Three framings for the three stages the course view serves, and the
+    camera slides between them rather than cutting, because the distances
+    involved change by four orders of magnitude and a cut at that scale
+    reads as a fault:
+
+      launch      the Earth, close enough that the parking orbit is an
+                  orbit and not a dot on it
+      translunar  the midpoint of the Earth-Moon line, standing back far
+                  enough to hold both ends and the craft between them
+      arrival     the Moon, closing as the craft does, so the hyperbola
+                  bending round it is the thing on screen
+
+    A 42-degree field at distance d shows about 0.77 d across, so each
+    framing names the extent it must hold and divides. The old fixed
+    420 000 km camera on the Earth did neither, which is why the course
+    climbed out of the top of the frame."""
+    let moon = m.moon()
+    let sc = m.r
+    let r_earth = sc.norm()
+    let d_moon = (sc - moon).norm()
+    let reach = moon.norm() if moon.norm() > r_earth else r_earth
+
+    # Leaving: the Earth and whatever orbit is around it.
+    let earth_extent = 44000.0
+    # Crossing: both bodies, and room round them.
+    let cruise_centre = moon * 0.5
+    let cruise_extent = reach * 1.25
+    # Arriving: the Moon, and the craft beside it.
+    let moon_extent = d_moon * 2.4 + 12000.0
+
+    # Launch into the crossing, by how far out the craft has come.
+    var a = (r_earth - 40000.0) / 160000.0
+    if a < 0.0:
+        a = 0.0
+    if a > 1.0:
+        a = 1.0
+    let c1 = cruise_centre * a
+    let e1 = earth_extent + (cruise_extent - earth_extent) * a
+    # The crossing into the arrival, by how near the Moon it has got. The
+    # range is set so the camera is already committed to the Moon as the
+    # craft crosses the sphere of influence, and fully on it well before
+    # perilune -- a label that says "arrival" over a picture of the whole
+    # transfer is the two disagreeing.
+    var b = (d_moon - 20000.0) / 80000.0
+    if b < 0.0:
+        b = 0.0
+    if b > 1.0:
+        b = 1.0
+    let centre = moon + (c1 - moon) * b
+    let extent = moon_extent + (e1 - moon_extent) * b
+
+    set_num(N_CX, centre.x)
+    set_num(N_CY, centre.y)
+    set_num(N_CZ, centre.z)
+    set_num(N_SPAN, extent / 0.77)
+
+
+def follow_mission(m: Mission):
+    """Put the stage's own view in front of the viewer, without taking it
+    from them. The camera is re-aimed every frame; the MODE only changes
+    when the stage does, so someone who has deliberately opened the
+    launch-window map keeps it until the mission moves on."""
+    frame_course(m)
+    let k = stage_of(m)
+    if k != g_seenphase()[]:
+        g_seenphase()[] = k
+        if k == 3:
+            set_mode(MODE_DESCENT)
+        elif g_mode()[] != MODE_TRAJECTORY:
+            set_mode(MODE_TRAJECTORY)
+    g_dirty()[] = 1
 
 
 fn draw_trajectory(b: CGRect):
@@ -1881,6 +2002,8 @@ def main() raises:
                     refresh_map(wm)
                     refresh_arc(m)
                     refresh_flown(m)
+                    g_seenphase()[] = stage_of(m)
+                    frame_course(m)
                     plan_log(sheet, ch)
                     reload()
                     redraw()
@@ -1902,8 +2025,16 @@ def main() raises:
                 last = now
                 if dt > 0.1:
                     dt = 0.1
+                # Headless there is no wall clock worth reading: the loop
+                # runs as fast as it can and a real dt would advance the
+                # mission by microseconds. A fixed tick makes a headless
+                # flight both quick and repeatable, which is what lets the
+                # suite fly one at all.
+                if frame_budget != 0:
+                    dt = 1.0
                 m.warp = num(N_WARP)
                 m.advance(dt)
+                follow_mission(m)
                 refresh_flown(m)
                 refresh_log(m)
                 build_rows(sheet, ch, m.get, True)
@@ -1912,7 +2043,7 @@ def main() raises:
                 set_status(
                     String("Flying · GET ") + ui.get_hms(m.get)
                     + " · " + ui.f(num(N_WARP), 0) + "× · "
-                    + (m.outcome if m.phase == PHASE_DONE else String("in flight"))
+                    + (m.outcome if m.phase == PHASE_DONE else stage_name(stage_of(m)))
                 )
             else:
                 last = perf_counter_ns()
@@ -1956,6 +2087,57 @@ def main() raises:
                 String("export ") + shots + "/planner-export.png"
             ))
             print("  ae help:", send_self(String("help")))
+
+            # The view is supposed to follow the flight: Earth at launch,
+            # the gulf on the way, the Moon on arrival, and the descent
+            # profile when the LM lights. Nothing above proves that,
+            # because nothing above FLIES -- which is exactly how a
+            # console that never changed view shipped. So fly one, and
+            # photograph the stage each time it turns over.
+            _ = send_self(String("mode trajectory"))
+            g_flying()[] = 1
+            set_num(N_WARP, 3600.0)
+            var seen = List[Int]()
+            var in_orbit = False
+            var guard = 0
+            while m.phase != PHASE_DONE and guard < 4000:
+                m.warp = num(N_WARP)
+                m.advance(1.0)
+                follow_mission(m)
+                let k = stage_of(m)
+                var known = False
+                for j in range(len(seen)):
+                    if seen[j] == k:
+                        known = True
+                if not known:
+                    seen.append(k)
+                    refresh_flown(m)
+                    print("  stage:", stage_name(k), "at GET", ui.get_hms(m.get),
+                          "· view", mode_name(g_mode()[]),
+                          "· centre", ui.f(Vec3(num(N_CX), num(N_CY), num(N_CZ)).norm(), 0),
+                          "km · span", ui.f(num(N_SPAN), 0), "km")
+                    _ = send_self(
+                        String("screenshot ") + shots + "/planner-stage-"
+                        + String(k) + ".png"
+                    )
+                # A stage flip is caught the instant it happens, when the
+                # camera has only started moving. One more picture once
+                # the craft is in lunar orbit shows where it ended up,
+                # which is the claim: the Moon, filling the frame.
+                if m.phase == PHASE_LUNAR_ORBIT and not in_orbit:
+                    in_orbit = True
+                    refresh_flown(m)
+                    print("  in lunar orbit at GET", ui.get_hms(m.get),
+                          "· view", mode_name(g_mode()[]),
+                          "· Moon", ui.f((m.r - m.moon()).norm(), 0),
+                          "km away · centre", ui.f(Vec3(num(N_CX), num(N_CY), num(N_CZ)).norm(), 0),
+                          "km · span", ui.f(num(N_SPAN), 0), "km")
+                    _ = send_self(
+                        String("screenshot ") + shots + "/planner-stage-2-orbit.png"
+                    )
+                guard += 1
+            print("  flight:", m.outcome, "at GET", ui.get_hms(m.get),
+                  "· stages seen", len(seen))
 
 
 # ── Apple Events: the console, scriptable ────────────────────────────────

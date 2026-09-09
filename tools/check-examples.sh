@@ -140,11 +140,18 @@ planner_check() {
     echo "  FAIL mission-planner (build)"; grep -m3 error "$log.err" | sed 's/^/      /'; fail=$((fail+1)); return
   fi
   rm -rf /tmp/planner-shots && mkdir -p /tmp/planner-shots
-  if PLANNER_FRAMES=6 PLANNER_SHOTS=/tmp/planner-shots timeout 300 /tmp/exb-planner >"$log.out" 2>&1 \
-     && [ "$(ls /tmp/planner-shots/*.png 2>/dev/null | wc -l | tr -d ' ')" = 5 ]; then
-    echo "  OK   mission-planner (built, flew headless; views, section filter and export over Apple Events)"; pass=$((pass+1))
+  # Ten pictures: the three views, the filtered inspector, the export, and
+  # one at each of the four stages of a flight plus one from lunar orbit.
+  # The stage count is the guard that matters -- a console whose view does
+  # not follow the mission still draws three fine views, which is how that
+  # shipped once already.
+  if PLANNER_FRAMES=6 PLANNER_SHOTS=/tmp/planner-shots timeout 600 /tmp/exb-planner >"$log.out" 2>&1 \
+     && [ "$(ls /tmp/planner-shots/*.png 2>/dev/null | wc -l | tr -d ' ')" = 10 ] \
+     && grep -q "stages seen 4" "$log.out" \
+     && grep -q "flight: LANDED" "$log.out"; then
+    echo "  OK   mission-planner (built, flew to the surface; views follow the mission, section filter and export over Apple Events)"; pass=$((pass+1))
   else
-    echo "  FAIL mission-planner (run)"; grep -m3 -E "error|Assert" "$log.out" | sed 's/^/      /'; fail=$((fail+1))
+    echo "  FAIL mission-planner (run)"; grep -m3 -E "error|Assert|stages seen|flight:" "$log.out" | sed 's/^/      /'; fail=$((fail+1))
   fi
 }
 planner_check
