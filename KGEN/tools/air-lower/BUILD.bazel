@@ -1,0 +1,22 @@
+load("//bazel:api.bzl", "modular_cc_binary")
+
+package(default_visibility = ["//KGEN:consumers"])
+
+# air-lower: LLVM IR text in, Apple .metallib out.
+#
+# Deps mirror kgen-llvm-opt's. //KGEN:ObjectCompiler is the load-bearing one --
+# linking it is what runs RegisterTargetBackend<AirBackend> at static init, and
+# that registration is the tool's entire access to the AIR pipeline.
+modular_cc_binary(
+    name = "air-lower",
+    srcs = glob(["*.cpp"]),
+    deps = [
+        "//Config",
+        "//KGEN:Compiler",
+        "//KGEN:ObjectCompiler",
+        "//KGEN:ToolCommon",
+        "//Support:Base",
+        "//Support:Globals",
+        "@llvm-project//llvm:Support",
+    ],
+)

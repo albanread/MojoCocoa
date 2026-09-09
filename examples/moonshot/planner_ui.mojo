@@ -1,5 +1,5 @@
 # ===----------------------------------------------------------------------=== #
-# Trench — the drawing toolkit.
+# Mission Planner — the drawing toolkit.
 #
 # Everything the console draws by hand goes through here, and every colour
 # in it is a SEMANTIC system colour rather than a value: `labelColor`,

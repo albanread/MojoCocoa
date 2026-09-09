@@ -107,7 +107,7 @@ which opens itself when a build starts and toggles with ⌘0.
                   responsible, and the chip for the calls, the alarm and
                   the touchdown. `checks.mojo` prints the sums; see
                   moonshot_design.md.
-                  And `trench.mojo` beside it: the SAME physics behind a
+                  And `planner.mojo` beside it: the SAME physics behind a
                   Mac interface instead of a 1969 console -- a unified
                   toolbar, a three-pane split, a source list, an inspector
                   of real NSTableView rows, a flight log, a menu bar with
@@ -119,9 +119,9 @@ which opens itself when a build starts and toggles with ⌘0.
                   through a save panel. It is scriptable the way `roast`
                   is -- one verb over a TRNC/cmnd Apple Event -- and
                   photographs its own window through that surface, which
-                  is how the suite checks it. `tell application "Trench"
-                  to do command "mode map"` needs the BUNDLE that
-                  tools/make-trench-app.sh builds: Launch Services is what
+                  is how the suite checks it. `tell application "Mission
+                  Planner" to do command "mode map"` needs the BUNDLE
+                  tools/make-planner-app.sh builds: Launch Services is what
                   resolves an application by name, and it only knows about
                   bundles. Events sent by raw code, and any event the
                   process sends itself, work either way

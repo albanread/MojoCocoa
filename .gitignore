@@ -206,3 +206,4 @@ tools/signing.local.sh
 /examples/bifurcation/bifurcation.png
 /examples/bifurcation/bif
 /examples/abcplayer/abcp
+build/

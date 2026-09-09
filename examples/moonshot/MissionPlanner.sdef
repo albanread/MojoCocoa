@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+<!-- The terminology, not the transport. Events reach the handler by their
+     raw codes with or without this file; what the sdef adds is the words,
+     so Script Editor compiles `do command "status"` rather than
+     «event MPLNcmnd». One verb on purpose: the surface is the command
+     language, and `do command "help"` lists it.
+
+     sdef(1) resolves this only for a BUNDLE, named by OSAScriptingDefinition
+     in Info.plist — the same file in a __TEXT,__sdef section of a bare
+     binary reads back byte-identical and is still not found. -->
+<dictionary title="Mission Planner Terminology">
+  <suite name="Mission Planner Suite" code="MPLN"
+         description="Drive the Mission Planner console. One verb; the
+                      argument is the command language - send &quot;help&quot;
+                      for the list.">
+    <command name="do command" code="MPLNcmnd"
+             description="Run one Mission Planner command and return its reply.">
+      <direct-parameter type="text"
+                        description="the command, e.g. status, replan, fly,
+                                     hold, mode map, section descent,
+                                     export /tmp/plot.png"/>
+      <result type="text" description="one line of reply"/>
+    </command>
+  </suite>
+</dictionary>

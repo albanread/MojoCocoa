@@ -1,5 +1,5 @@
 # ===----------------------------------------------------------------------=== #
-# Trench — the flight-planning console, as a Mac application.
+# Mission Planner — the flight-planning console, as a Mac application.
 #
 # The same mission, the same physics, a different front end. `main.mojo`
 # beside this file draws the trench's console the way 1969 drew it: a
@@ -20,8 +20,8 @@
 # side by side on the same choices and compared line for line. That is the
 # point of keeping both: the interface is not the program.
 #
-#   cocoamojo run examples/moonshot/trench.mojo
-#   TRENCH_FRAMES=120 cocoamojo run examples/moonshot/trench.mojo   (headless)
+#   cocoamojo run examples/moonshot/planner.mojo
+#   PLANNER_FRAMES=120 cocoamojo run examples/moonshot/planner.mojo  (headless)
 # ===----------------------------------------------------------------------=== #
 
 from std.objc import (
@@ -57,7 +57,7 @@ from descent import Terrain, high_gate, low_gate
 from plan import Choices, PlanSheet, make_plan, apollo_11_choices
 from mission import Mission, PHASE_DONE, get_string
 from scene import Camera, rotate_about
-import trench_ui as ui
+import planner_ui as ui
 
 comptime P = OpaquePointer[MutUntrackedOrigin]
 
@@ -71,53 +71,53 @@ comptime P = OpaquePointer[MutUntrackedOrigin]
 # whenever the plan changes -- flat lists of strings and floats, which is
 # all a table view and a plot ever wanted.
 
-comptime g_rows = named_global["trench.rows", List[String]]
+comptime g_rows = named_global["planner.rows", List[String]]
 """The inspector, four strings a row: kind, label, value, state.
 kind: "h" a group header, "r" a row, "s" a spacer.
 state: "n" normal, "r" red, "a" amber, "g" green, "b" bold."""
 
-comptime g_log = named_global["trench.log", List[String]]
-comptime g_phases = named_global["trench.phases", List[String]]
-comptime g_arc = named_global["trench.arc", List[Float64]]
+comptime g_log = named_global["planner.log", List[String]]
+comptime g_phases = named_global["planner.phases", List[String]]
+comptime g_arc = named_global["planner.arc", List[Float64]]
 """The planned course in kilometres, x y z per sample."""
-comptime g_flown = named_global["trench.flown", List[Float64]]
+comptime g_flown = named_global["planner.flown", List[Float64]]
 """What the spacecraft has actually flown, same layout."""
 
-comptime g_moon = named_global["trench.moon", List[Float64]]
+comptime g_moon = named_global["planner.moon", List[Float64]]
 """The Moon's position at each arc sample -- so the plot can draw where it
 was as well as where it is."""
 
 # Scalars. Ints because a named_global slot is a word; the floats that
 # need to survive are kept in `g_num`.
-comptime g_view = named_global["trench.view", Int]
-comptime g_table = named_global["trench.table", Int]
-comptime g_sidebar = named_global["trench.sidebar", Int]
-comptime g_logview = named_global["trench.logview", Int]
-comptime g_window = named_global["trench.window", Int]
-comptime g_actions = named_global["trench.actions", Int]
-comptime g_status = named_global["trench.status", Int]
-comptime g_spinner = named_global["trench.spinner", Int]
-comptime g_seg = named_global["trench.seg", Int]
-comptime g_flybtn = named_global["trench.flybtn", Int]
+comptime g_view = named_global["planner.view", Int]
+comptime g_table = named_global["planner.table", Int]
+comptime g_sidebar = named_global["planner.sidebar", Int]
+comptime g_logview = named_global["planner.logview", Int]
+comptime g_window = named_global["planner.window", Int]
+comptime g_actions = named_global["planner.actions", Int]
+comptime g_status = named_global["planner.status", Int]
+comptime g_spinner = named_global["planner.spinner", Int]
+comptime g_seg = named_global["planner.seg", Int]
+comptime g_flybtn = named_global["planner.flybtn", Int]
 
-comptime g_mode = named_global["trench.mode", Int]
+comptime g_mode = named_global["planner.mode", Int]
 """0 trajectory, 1 window map, 2 descent."""
-comptime g_phase_sel = named_global["trench.phasesel", Int]
-comptime g_cmd = named_global["trench.cmd", Int]
-comptime g_flying = named_global["trench.flying", Int]
-comptime g_dirty = named_global["trench.dirty", Int]
-comptime g_frames = named_global["trench.frames", Int]
+comptime g_phase_sel = named_global["planner.phasesel", Int]
+comptime g_cmd = named_global["planner.cmd", Int]
+comptime g_flying = named_global["planner.flying", Int]
+comptime g_dirty = named_global["planner.dirty", Int]
+comptime g_frames = named_global["planner.frames", Int]
 
-comptime g_group = named_global["trench.group", List[Int]]
+comptime g_group = named_global["planner.group", List[Int]]
 """The section each inspector row belongs to, so the source list can show
 one of them. Parallel to `g_rows` rather than a fifth string in it: this is
 structure, and the table never renders it."""
-comptime g_visible = named_global["trench.visible", List[Int]]
+comptime g_visible = named_global["planner.visible", List[Int]]
 """The rows the current selection admits, as indices into `g_rows`. The
 data source reads THIS and nothing else, so filtering is one rebuild rather
 than a condition in three delegate methods."""
-comptime g_cur_group = named_global["trench.curgroup", Int]
-comptime g_exporting = named_global["trench.exporting", Int]
+comptime g_cur_group = named_global["planner.curgroup", Int]
+comptime g_exporting = named_global["planner.exporting", Int]
 """Set while the canvas is being drawn for a file rather than for the
 screen. The only difference is the interaction hint along the bottom: it
 tells a viewer what to do with the mouse, and an exported chart has no
@@ -131,13 +131,13 @@ comptime G_MARGINS = 4
 comptime G_RULES = 5
 comptime G_FLIGHT = 6
 
-comptime g_map = named_global["trench.map", List[Float64]]
+comptime g_map = named_global["planner.map", List[Float64]]
 """The window map, aggregated to one cell per day and hour: the cheapest
 total Delta-v in that hour, or 0 where nothing closes."""
-comptime g_mapflag = named_global["trench.mapflag", List[Int]]
-comptime g_map_days = named_global["trench.mapdays", Int]
+comptime g_mapflag = named_global["planner.mapflag", List[Int]]
+comptime g_map_days = named_global["planner.mapdays", Int]
 
-comptime g_num = named_global["trench.num", List[Float64]]
+comptime g_num = named_global["planner.num", List[Float64]]
 """Camera and plot scalars, by the N_* indices below."""
 
 comptime N_YAW = 0
@@ -159,7 +159,7 @@ comptime MODE_DESCENT = 2
 
 # The choices, held as numbers so a control's action can move one without
 # owning a Choices struct.
-comptime g_choice = named_global["trench.choice", List[Int]]
+comptime g_choice = named_global["planner.choice", List[Int]]
 comptime C_PAD = 0
 comptime C_TARGET = 1
 comptime C_MONTH = 2
@@ -743,7 +743,7 @@ fn landing_name(i: Int) -> String:
     return sites[i].name
 
 
-class TrenchPlotView(NSView):
+class PlannerPlotView(NSView):
     """The canvas. One view, three pictures, chosen by the toolbar."""
 
     def drawRect_(self, dirty: CGRect):
@@ -789,17 +789,17 @@ class TrenchPlotView(NSView):
 # ── the application's classes ────────────────────────────────────────────
 
 
-class TrenchDelegate:
+class PlannerDelegate:
     def applicationShouldTerminateAfterLastWindowClosed_(
         self, sender: ObjCObject
     ) -> Bool:
         return True
 
 
-comptime TB_REPLAN = "trench.replan"
-comptime TB_FLY = "trench.fly"
-comptime TB_VIEW = "trench.view"
-comptime TB_EXPORT = "trench.export"
+comptime TB_REPLAN = "planner.replan"
+comptime TB_FLY = "planner.fly"
+comptime TB_VIEW = "planner.view"
+comptime TB_EXPORT = "planner.export"
 
 
 def toolbar_ids_object() -> ObjCObject:
@@ -816,7 +816,7 @@ def toolbar_ids_object() -> ObjCObject:
     return ids
 
 
-class TrenchActions:
+class PlannerActions:
     """Toolbar delegate, table data sources, and every control's target.
 
     A callback only ever sets a flag or a number; the pump does the work.
@@ -826,43 +826,43 @@ class TrenchActions:
 
     # ── controls ──────────────────────────────────────────────────────
 
-    def trenchReplan_(self, sender: ObjCObject):
+    def plannerReplan_(self, sender: ObjCObject):
         g_cmd()[] = g_cmd()[] | CMD_REPLAN
 
-    def trenchFly_(self, sender: ObjCObject):
+    def plannerFly_(self, sender: ObjCObject):
         g_cmd()[] = g_cmd()[] | CMD_FLY
 
-    def trenchReset_(self, sender: ObjCObject):
+    def plannerReset_(self, sender: ObjCObject):
         g_cmd()[] = g_cmd()[] | CMD_RESET
 
-    def trenchExport_(self, sender: ObjCObject):
+    def plannerExport_(self, sender: ObjCObject):
         g_cmd()[] = g_cmd()[] | CMD_EXPORT
 
-    def trenchViewChanged_(self, sender: ObjCObject):
+    def plannerViewChanged_(self, sender: ObjCObject):
         g_mode()[] = Obj["NSSegmentedControl"](sender.addr()).selectedSegment()
         g_dirty()[] = 1
 
-    def trenchModeTrajectory_(self, sender: ObjCObject):
+    def plannerModeTrajectory_(self, sender: ObjCObject):
         set_mode(MODE_TRAJECTORY)
 
-    def trenchModeMap_(self, sender: ObjCObject):
+    def plannerModeMap_(self, sender: ObjCObject):
         set_mode(MODE_MAP)
 
-    def trenchModeDescent_(self, sender: ObjCObject):
+    def plannerModeDescent_(self, sender: ObjCObject):
         set_mode(MODE_DESCENT)
 
-    def trenchPadChanged_(self, sender: ObjCObject):
+    def plannerPadChanged_(self, sender: ObjCObject):
         set_choice(C_PAD, Obj["NSPopUpButton"](sender.addr()).indexOfSelectedItem())
         g_cmd()[] = g_cmd()[] | CMD_REPLAN
 
-    def trenchTargetChanged_(self, sender: ObjCObject):
+    def plannerTargetChanged_(self, sender: ObjCObject):
         set_choice(C_TARGET, Obj["NSPopUpButton"](sender.addr()).indexOfSelectedItem())
         g_cmd()[] = g_cmd()[] | CMD_REPLAN
 
-    def trenchMccChanged_(self, sender: ObjCObject):
+    def plannerMccChanged_(self, sender: ObjCObject):
         set_choice(C_MCC, Obj["NSPopUpButton"](sender.addr()).indexOfSelectedItem())
 
-    def trenchTofChanged_(self, sender: ObjCObject):
+    def plannerTofChanged_(self, sender: ObjCObject):
         let v = Obj["NSSlider"](sender.addr()).doubleValue()
         set_choice(C_TOF, Int(v * 10.0 + 0.5))
         # Live while dragging, replanned when the drag ends: a Lambert solve
@@ -998,7 +998,7 @@ class TrenchActions:
                 )
                 Obj["NSControl"](seg.addr()).setTarget(owner.ptr())
                 Obj["NSControl"](seg.addr()).setAction(
-                    sel["trenchViewChanged:"]().ptr()
+                    sel["plannerViewChanged:"]().ptr()
                 )
                 Obj["NSToolbarItem"](item.addr()).setView(seg.ptr())
                 Obj["NSToolbarItem"](item.addr()).setLabel(
@@ -1010,25 +1010,25 @@ class TrenchActions:
 
             var title = String("")
             var symbol = String("")
-            var action = sel["trenchReplan:"]()
+            var action = sel["plannerReplan:"]()
             if Obj["NSString"](ident.addr()).isEqualToString(
                 nsstring(String(TB_REPLAN)).ptr()
             ):
                 title = String("Replan")
                 symbol = String("arrow.triangle.2.circlepath")
-                action = sel["trenchReplan:"]()
+                action = sel["plannerReplan:"]()
             elif Obj["NSString"](ident.addr()).isEqualToString(
                 nsstring(String(TB_FLY)).ptr()
             ):
                 title = String("Fly")
                 symbol = String("play.fill")
-                action = sel["trenchFly:"]()
+                action = sel["plannerFly:"]()
             elif Obj["NSString"](ident.addr()).isEqualToString(
                 nsstring(String(TB_EXPORT)).ptr()
             ):
                 title = String("Export")
                 symbol = String("square.and.arrow.up")
-                action = sel["trenchExport:"]()
+                action = sel["plannerExport:"]()
             else:
                 return item
 
@@ -1097,26 +1097,26 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     var bar = Cls["NSMenu"]().alloc()
     bar = Obj["NSMenu"](bar.addr()).initWithTitle(nsstring(String("MainMenu")).ptr())
 
-    let appmenu = add_submenu(bar, String("Trench"))
-    add_item(appmenu, String("About Trench"), sel["orderFrontStandardAboutPanel:"](), String(""), 0)
+    let appmenu = add_submenu(bar, String("Mission Planner"))
+    add_item(appmenu, String("About Mission Planner"), sel["orderFrontStandardAboutPanel:"](), String(""), 0)
     add_separator(appmenu)
-    add_item(appmenu, String("Hide Trench"), sel["hide:"](), String("h"), 0)
+    add_item(appmenu, String("Hide Mission Planner"), sel["hide:"](), String("h"), 0)
     add_separator(appmenu)
-    add_item(appmenu, String("Quit Trench"), sel["terminate:"](), String("q"), 0)
+    add_item(appmenu, String("Quit Mission Planner"), sel["terminate:"](), String("q"), 0)
 
     let filemenu = add_submenu(bar, String("File"))
-    add_item(filemenu, String("Export Plot…"), sel["trenchExport:"](), String("e"), actions)
+    add_item(filemenu, String("Export Plot…"), sel["plannerExport:"](), String("e"), actions)
 
     let mission = add_submenu(bar, String("Mission"))
-    add_item(mission, String("Replan"), sel["trenchReplan:"](), String("r"), actions)
-    add_item(mission, String("Fly / Hold"), sel["trenchFly:"](), String("\r"), actions)
+    add_item(mission, String("Replan"), sel["plannerReplan:"](), String("r"), actions)
+    add_item(mission, String("Fly / Hold"), sel["plannerFly:"](), String("\r"), actions)
     add_separator(mission)
-    add_item(mission, String("Reset to Launch"), sel["trenchReset:"](), String("R"), actions)
+    add_item(mission, String("Reset to Launch"), sel["plannerReset:"](), String("R"), actions)
 
     let view = add_submenu(bar, String("View"))
-    add_item(view, String("Trajectory"), sel["trenchModeTrajectory:"](), String("1"), actions)
-    add_item(view, String("Launch Window Map"), sel["trenchModeMap:"](), String("2"), actions)
-    add_item(view, String("Powered Descent"), sel["trenchModeDescent:"](), String("3"), actions)
+    add_item(view, String("Trajectory"), sel["plannerModeTrajectory:"](), String("1"), actions)
+    add_item(view, String("Launch Window Map"), sel["plannerModeMap:"](), String("2"), actions)
+    add_item(view, String("Powered Descent"), sel["plannerModeDescent:"](), String("3"), actions)
 
     _ = add_submenu(bar, String("Window"))
 
@@ -1241,7 +1241,7 @@ def build_controls(frame: CGRect, actions: Int) -> ObjCObject:
         pads.append(s.name)
     let pad = make_popup(
         ui.rect(14.0, y, w - 28.0, 22.0), pads, choice(C_PAD),
-        sel["trenchPadChanged:"](), actions,
+        sel["plannerPadChanged:"](), actions,
     )
     Obj["NSView"](box.addr()).addSubview(pad.ptr())
 
@@ -1255,7 +1255,7 @@ def build_controls(frame: CGRect, actions: Int) -> ObjCObject:
         targets.append(s.name)
     let tgt = make_popup(
         ui.rect(14.0, y, w - 28.0, 22.0), targets, choice(C_TARGET),
-        sel["trenchTargetChanged:"](), actions,
+        sel["plannerTargetChanged:"](), actions,
     )
     Obj["NSView"](box.addr()).addSubview(tgt.ptr())
 
@@ -1273,7 +1273,7 @@ def build_controls(frame: CGRect, actions: Int) -> ObjCObject:
     Obj["NSSlider"](sl.addr()).setAllowsTickMarkValuesOnly(False)
     Obj["NSControl"](sl.addr()).setControlSize(Int(1))
     Obj["NSControl"](sl.addr()).setTarget(ObjCObject(actions).ptr())
-    Obj["NSControl"](sl.addr()).setAction(sel["trenchTofChanged:"]().ptr())
+    Obj["NSControl"](sl.addr()).setAction(sel["plannerTofChanged:"]().ptr())
     Obj["NSView"](box.addr()).addSubview(sl.ptr())
 
     _ = external_call["objc_retain", P](box.ptr())
@@ -1305,20 +1305,20 @@ def build_window(actions: Int) -> ObjCObject:
     )
     var win = ObjCObject(wnd.id)
     wnd.setMinSize(CGSize(980.0, 620.0))
-    wnd.setTitle(nsstring(String("Trench")).ptr())
+    wnd.setTitle(nsstring(String("Mission Planner")).ptr())
     # The subtitle is where a Mac window says which document it is: the
     # title stays the application, the subtitle carries the mission.
     wnd.setSubtitle(nsstring(String("Apollo 11 · Tranquility Base")).ptr())
     wnd.setReleasedWhenClosed(False)
-    let restored = wnd.setFrameUsingName(nsstring(String("trench.main")).ptr())
+    let restored = wnd.setFrameUsingName(nsstring(String("planner.main")).ptr())
     if not restored:
         wnd.center()
-    _ = wnd.setFrameAutosaveName(nsstring(String("trench.main")).ptr())
+    _ = wnd.setFrameAutosaveName(nsstring(String("planner.main")).ptr())
     g_window()[] = win.addr()
 
     var toolbar = Cls["NSToolbar"]().alloc()
     toolbar = Obj["NSToolbar"](toolbar.addr()).initWithIdentifier(
-        nsstring(String("trench.toolbar")).ptr()
+        nsstring(String("planner.toolbar")).ptr()
     )
     Obj["NSToolbar"](toolbar.addr()).setDelegate(ObjCObject(actions).ptr())
     Obj["NSToolbar"](toolbar.addr()).setDisplayMode(Int(0))
@@ -1399,7 +1399,7 @@ def build_window(actions: Int) -> ObjCObject:
     Obj["NSSplitView"](vsplit.addr()).setVertical(False)
     Obj["NSSplitView"](vsplit.addr()).setDividerStyle(Int(2))
 
-    let plot = ObjCObject(TrenchPlotView().__objc_id)
+    let plot = ObjCObject(PlannerPlotView().__objc_id)
     Obj["NSView"](plot.addr()).setFrame(ui.rect(0.0, LOG_H + divider, mid_w, body_h - LOG_H - divider))
     Obj["NSView"](plot.addr()).setAutoresizingMask(Int(18))
     _ = external_call["objc_retain", P](plot.ptr())
@@ -1695,7 +1695,7 @@ def main() raises:
               "Margins & Rules"]:
         g_phases()[].append(String(s))
 
-    let headless = getenv("TRENCH_FRAMES")
+    let headless = getenv("PLANNER_FRAMES")
     var frame_budget = 0
     if headless != "":
         frame_budget = atol(headless)
@@ -1706,11 +1706,11 @@ def main() raises:
         _ = app.setActivationPolicy(
             nsenum["NSApplicationActivationPolicyRegular"]()
         )
-        let delegate = ObjCObject(TrenchDelegate().__objc_id)
+        let delegate = ObjCObject(PlannerDelegate().__objc_id)
         _ = app.setDelegate(delegate.ptr())
         _ = external_call["objc_retain", P](delegate.ptr())
 
-        let actions = ObjCObject(TrenchActions().__objc_id)
+        let actions = ObjCObject(PlannerActions().__objc_id)
         _ = external_call["objc_retain", P](actions.ptr())
         g_actions()[] = actions.addr()
 
@@ -1732,7 +1732,7 @@ def main() raises:
     try:
         compute_map(wm, ctx)
     except:
-        print("trench: the window map needs a GPU; the other views are unaffected")
+        print("mission planner: the window map needs a GPU; the other views are unaffected")
     var sheet = make_plan(eph, wm, ch)
     var m = Mission(eph, sheet, ch.seed)
     build_rows(sheet, ch, 0.0, False)
@@ -1857,17 +1857,17 @@ def main() raises:
         # surface and photograph each view. An event a process sends itself
         # needs no Automation grant, so this exercises registration, unpack,
         # dispatch and reply exactly as an external script would.
-        print("Trench: ran", frames, "frames headless;", row_count(), "plan rows,",
+        print("Mission Planner: ran", frames, "frames headless;", row_count(), "plan rows,",
               len(g_arc()[]) // 3, "course samples")
         print("  TLI", ui.ms(sheet.dv_tli), " LOI-1", ui.ms(sheet.dv_loi1),
               " sun", ui.f(sheet.sun_elev, 1) + "°")
-        let shots = getenv("TRENCH_SHOTS")
+        let shots = getenv("PLANNER_SHOTS")
         if shots != "":
             print("  ae status:", send_self(String("status")))
             for name in ["trajectory", "map", "descent"]:
                 print("  ae mode:", send_self(String("mode ") + String(name)))
                 print("  ae shot:", send_self(
-                    String("screenshot ") + shots + "/trench-" + String(name) + ".png"
+                    String("screenshot ") + shots + "/planner-" + String(name) + ".png"
                 ))
             for sec in ["launch", "descent", "margins", "all"]:
                 print("  ae section:", send_self(String("section ") + String(sec)))
@@ -1876,11 +1876,11 @@ def main() raises:
             _ = send_self(String("mode trajectory"))
             _ = send_self(String("section descent"))
             print("  ae shot:", send_self(
-                String("screenshot ") + shots + "/trench-section.png"
+                String("screenshot ") + shots + "/planner-section.png"
             ))
             _ = send_self(String("section all"))
             print("  ae export:", send_self(
-                String("export ") + shots + "/trench-export.png"
+                String("export ") + shots + "/planner-export.png"
             ))
             print("  ae help:", send_self(String("help")))
 
@@ -1892,18 +1892,18 @@ def main() raises:
 # command language rather than a dozen four-character codes, so it can grow
 # a verb without an sdef change and `do command "help"` documents itself.
 #
-#   osascript -e 'tell application "Trench" to do command "status"'
-#   osascript -e 'tell application "Trench" to do command "mode map"'
-#   osascript -e 'tell application "Trench" to do command "screenshot /tmp/t.png"'
+#   osascript -e 'tell application "Mission Planner" to do command "status"'
+#   osascript -e 'tell application "Mission Planner" to do command "mode map"'
+#   osascript -e 'tell application "Mission Planner" to do command "screenshot /tmp/t.png"'
 #
 # The name resolves because the binary carries a __TEXT,__info_plist with a
 # bundle identifier and NSAppleScriptEnabled, exactly as `bin/roast` does;
-# `Trench.sdef` in this directory supplies the words. An event a process
+# `MissionPlanner.sdef` in this directory supplies the words. An event a process
 # sends ITSELF needs no Automation grant, which is what `--selftest` uses
 # to exercise the whole path -- registration, unpack, dispatch, reply --
 # without a TCC dialog in the way.
 
-comptime AE_CLASS = 0x54524E43  # 'TRNC'
+comptime AE_CLASS = 0x4D504C4E  # 'MPLN'
 comptime AE_CMD = 0x636D6E64  # 'cmnd'
 comptime AE_DIRECT = 0x2D2D2D2D  # '----', keyDirectObject
 
@@ -1954,7 +1954,7 @@ def export_plot(path: String) -> String:
 
 
 def suggested_name() -> String:
-    let base = String("Trench ") + mode_name(g_mode()[])
+    let base = String("Mission Planner ") + mode_name(g_mode()[])
     return base + ".png"
 
 
@@ -2017,7 +2017,7 @@ def run_command(cmd: String) -> String:
             + String(len(g_arc()[]) // 3) + " course samples"
         )
     if c.startswith("screenshot"):
-        var where = String("/tmp/trench.png")
+        var where = String("/tmp/mission-planner.png")
         if c.byte_length() > 11:
             where = String(c[byte=11:].strip())
         return capture_window(where)
@@ -2036,7 +2036,7 @@ def run_command(cmd: String) -> String:
             + String(shown_count()) + " of " + String(row_count()) + " rows"
         )
     if c.startswith("export"):
-        var where = String("/tmp/trench-plot.png")
+        var where = String("/tmp/mission-planner-plot.png")
         if c.byte_length() > 7:
             where = String(c[byte=7:].strip())
         return export_plot(where)
@@ -2098,7 +2098,7 @@ fn mode_name(m: Int) -> String:
     return String("descent")
 
 
-class TrenchAEHandler:
+class PlannerAEHandler:
     """The Apple Event target. `handleEvent:withReplyEvent:` is not an SDK
     selector, so its `v@:@@` encoding is derived from the two object
     arguments rather than looked up."""
@@ -2123,7 +2123,7 @@ class TrenchAEHandler:
 
 
 def install_apple_events():
-    let handler = ObjCObject(TrenchAEHandler().__objc_id)
+    let handler = ObjCObject(PlannerAEHandler().__objc_id)
     _ = external_call["objc_retain", P](handler.ptr())
     let mgr = Cls["NSAppleEventManager"]().sharedAppleEventManager()
     Obj["NSAppleEventManager"](mgr.addr()).setEventHandler_andSelector_forEventClass_andEventID(

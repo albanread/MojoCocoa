@@ -123,31 +123,31 @@ run_file_expect() {  # ex, file, required-substring
 }
 run_file_expect moonshot checks.mojo "Moonshot checks done"
 
-# Trench: the same physics behind a Cocoa interface. Built rather than run,
+# Mission Planner: the same physics behind a Cocoa interface. Built rather than run,
 # because it links AppKit symbols the JIT cannot resolve, and with the two
 # sections that give a bare binary its bundle identity -- AppleScript name
-# resolution reads them. TRENCH_FRAMES drives its own pump headlessly and
-# TRENCH_SHOTS makes it photograph each view THROUGH ITS OWN APPLE EVENTS,
+# resolution reads them. PLANNER_FRAMES drives its own pump headlessly and
+# PLANNER_SHOTS makes it photograph each view THROUGH ITS OWN APPLE EVENTS,
 # so a broken toolbar, split, table or scripting surface fails here rather
 # than in front of someone.
-trench_check() {
-  local log=/tmp/ex-trench
-  if ! "$RUN" --build examples/moonshot/trench.mojo -o /tmp/exb-trench \
+planner_check() {
+  local log=/tmp/ex-planner
+  if ! "$RUN" --build examples/moonshot/planner.mojo -o /tmp/exb-planner \
         -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __info_plist \
-        -Xlinker tools/trench-info.plist \
+        -Xlinker tools/mission-planner-info.plist \
         -Xlinker -sectcreate -Xlinker __TEXT -Xlinker __sdef \
-        -Xlinker examples/moonshot/Trench.sdef >"$log.err" 2>&1; then
-    echo "  FAIL trench (build)"; grep -m3 error "$log.err" | sed 's/^/      /'; fail=$((fail+1)); return
+        -Xlinker examples/moonshot/MissionPlanner.sdef >"$log.err" 2>&1; then
+    echo "  FAIL mission-planner (build)"; grep -m3 error "$log.err" | sed 's/^/      /'; fail=$((fail+1)); return
   fi
-  rm -rf /tmp/trench-shots && mkdir -p /tmp/trench-shots
-  if TRENCH_FRAMES=6 TRENCH_SHOTS=/tmp/trench-shots timeout 300 /tmp/exb-trench >"$log.out" 2>&1 \
-     && [ "$(ls /tmp/trench-shots/*.png 2>/dev/null | wc -l | tr -d ' ')" = 5 ]; then
-    echo "  OK   trench (built, flew headless; views, section filter and export over Apple Events)"; pass=$((pass+1))
+  rm -rf /tmp/planner-shots && mkdir -p /tmp/planner-shots
+  if PLANNER_FRAMES=6 PLANNER_SHOTS=/tmp/planner-shots timeout 300 /tmp/exb-planner >"$log.out" 2>&1 \
+     && [ "$(ls /tmp/planner-shots/*.png 2>/dev/null | wc -l | tr -d ' ')" = 5 ]; then
+    echo "  OK   mission-planner (built, flew headless; views, section filter and export over Apple Events)"; pass=$((pass+1))
   else
-    echo "  FAIL trench (run)"; grep -m3 -E "error|Assert" "$log.out" | sed 's/^/      /'; fail=$((fail+1))
+    echo "  FAIL mission-planner (run)"; grep -m3 -E "error|Assert" "$log.out" | sed 's/^/      /'; fail=$((fail+1))
   fi
 }
-trench_check
+planner_check
 
 # Oracles. A test file here is a program with a main (std.testing's
 # TestSuite), and exit 0 is the pass: moonshot's astronomy is asserted
