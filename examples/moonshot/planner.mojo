@@ -160,7 +160,19 @@ comptime N_CX = 5
 comptime N_CY = 6
 comptime N_CZ = 7
 comptime N_SPAN = 8
-comptime N_COUNT = 9
+# Where the Moon is NOW. The plot used to draw it at the last sample of its
+# own path -- its position at the end of the planned arc -- so it hung
+# still while the spacecraft moved, and once the camera followed the craft
+# in, the disc sat a frame-width from where the craft actually was.
+comptime N_MX = 9
+comptime N_MY = 10
+comptime N_MZ = 11
+# And where it will be at the ARRIVAL -- perilune, not the end of the
+# recorded arc, which runs six hours past it.
+comptime N_AX = 12
+comptime N_AY = 13
+comptime N_AZ = 14
+comptime N_COUNT = 15
 
 comptime CMD_REPLAN = 1
 comptime CMD_FLY = 2
@@ -503,8 +515,11 @@ def frame_course(m: Mission):
     # Arriving: the Moon, and the craft beside it.
     let moon_extent = d_moon * 2.4 + 12000.0
 
-    # Launch into the crossing, by how far out the craft has come.
-    var a = (r_earth - 40000.0) / 160000.0
+    # Launch into the crossing, by how far out the craft has come. The
+    # range ends not far past the stage boundary at 60 000 km: a view
+    # labelled "Translunar" that does not yet hold the Moon is the label
+    # and the picture disagreeing again.
+    var a = (r_earth - 30000.0) / 50000.0
     if a < 0.0:
         a = 0.0
     if a > 1.0:
@@ -528,6 +543,9 @@ def frame_course(m: Mission):
     set_num(N_CY, centre.y)
     set_num(N_CZ, centre.z)
     set_num(N_SPAN, extent / 0.77)
+    set_num(N_MX, moon.x)
+    set_num(N_MY, moon.y)
+    set_num(N_MZ, moon.z)
 
 
 def follow_mission(m: Mission):
@@ -632,10 +650,34 @@ fn draw_trajectory(b: CGRect):
         )
         ui.text(String("Earth"), e.x + r + 6.0, h - e.y - 6.0, 10.0, ui.secondary())
 
-    if len(g_moon()[]) >= 3:
-        let n = len(g_moon()[]) - 3
-        let mv = Vec3(g_moon()[][n], g_moon()[][n + 1], g_moon()[][n + 2])
-        let m = cam.project(mv, iw, ih)
+    # Where the Moon will be when the spacecraft gets there, as an empty
+    # ring: the point of the whole exercise is that the transfer is aimed
+    # at a place the Moon has not reached yet, and a plot that draws only
+    # the Moon's present position makes every lunar trajectory look like a
+    # miss.
+    let moon_now = Vec3(num(N_MX), num(N_MY), num(N_MZ))
+    var craft_far = True
+    if len(g_flown()[]) >= 3:
+        let k = len(g_flown()[]) - 3
+        let cv = Vec3(g_flown()[][k], g_flown()[][k + 1], g_flown()[][k + 2])
+        craft_far = (cv - moon_now).norm() > MOON_SOI
+    if craft_far:
+        let av = Vec3(num(N_AX), num(N_AY), num(N_AZ))
+        if av.norm() > 1.0:
+            let a = cam.project(av, iw, ih)
+            if a.ok:
+                var r = cam.focal(ih) * R_MOON / a.depth
+                if r < 3.0:
+                    r = 3.0
+                ui.stroke_oval(
+                    ui.rect(a.x - r, h - a.y - r, 2.0 * r, 2.0 * r), 1.0,
+                    ui.tertiary(),
+                )
+
+    # The Moon itself, where it is at the moment being shown -- it moves,
+    # and the spacecraft is aiming ahead of it.
+    if moon_now.norm() > 1.0:
+        let m = cam.project(moon_now, iw, ih)
         if m.ok:
             var r = cam.focal(ih) * R_MOON / m.depth
             if r < 2.5:
@@ -1717,6 +1759,12 @@ def refresh_arc(m: Mission):
         g_moon()[].append(mp.y)
         g_moon()[].append(mp.z)
         i += 8
+    # Where the Moon is at the moment the transfer is aimed at, which is
+    # perilune -- the arc itself carries on for six hours past it.
+    let aim = m.bodies.moon_at(m.target_t_p)
+    set_num(N_AX, aim.x)
+    set_num(N_AY, aim.y)
+    set_num(N_AZ, aim.z)
 
 
 def refresh_map(wm: WindowMap):
