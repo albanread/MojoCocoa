@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Embedded as __TEXT,__info_plist in the bare `trench` binary, so the
+     process has a bundle identity even when nobody has built Trench.app:
+     AppleScript name resolution and the TCC prompts both read it, and
+     `tell application "Trench"` cannot find a process that has none.
+     Same technique as tools/roast-info.plist. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>  <string>org.mojococoa.trench</string>
+  <key>CFBundleName</key>        <string>Trench</string>
+  <key>NSAppleScriptEnabled</key><true/>
+</dict>
+</plist>

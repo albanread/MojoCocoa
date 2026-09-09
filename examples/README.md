@@ -106,7 +106,18 @@ which opens itself when a build starts and toggles with ⌘0.
                   LOI is called off, a debrief that names the plan line
                   responsible, and the chip for the calls, the alarm and
                   the touchdown. `checks.mojo` prints the sums; see
-                  moonshot_design.md
+                  moonshot_design.md.
+                  And `trench.mojo` beside it: the SAME physics behind a
+                  Mac interface instead of a 1969 console -- a unified
+                  toolbar, a three-pane split, a source list, an inspector
+                  of real NSTableView rows, a flight log, a menu bar with
+                  key equivalents, and the course, the launch-window map
+                  and the descent profile drawn in vectors. Every colour
+                  is a semantic system colour, so it is right in light and
+                  dark without a second palette. It is scriptable the way
+                  `roast` is -- `tell application "Trench" to do command
+                  "mode map"` -- and photographs its own window through
+                  that surface, which is how the suite checks it
     ferns/        a landscape of Barnsley ferns growing live over a
                   procedural lawn, under a cloudy dusk sky (CPU)
     fernwind/     the same meadow swaying in the wind: every fern redrawn
