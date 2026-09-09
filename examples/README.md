@@ -121,7 +121,11 @@ which opens itself when a build starts and toggles with ⌘0.
                   photographs its own window through that surface, which
                   is how the suite checks it. `tell application "Mission
                   Planner" to do command "mode map"` needs the BUNDLE
-                  tools/make-planner-app.sh builds: Launch Services is what
+                  tools/make-planner-app.sh builds -- which also signs it
+                  with a Developer ID, notarizes it and staples it, and
+                  gives it the Moon that tools/make-planner-icon.py draws
+                  from arithmetic. The mission clock runs at 1x to 3600x
+                  from the toolbar: Launch Services is what
                   resolves an application by name, and it only knows about
                   bundles. Events sent by raw code, and any event the
                   process sends itself, work either way

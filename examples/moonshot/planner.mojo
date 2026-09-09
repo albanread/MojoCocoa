@@ -98,6 +98,7 @@ comptime g_actions = named_global["planner.actions", Int]
 comptime g_status = named_global["planner.status", Int]
 comptime g_spinner = named_global["planner.spinner", Int]
 comptime g_seg = named_global["planner.seg", Int]
+comptime g_speedpop = named_global["planner.speedpop", Int]
 comptime g_flybtn = named_global["planner.flybtn", Int]
 
 comptime g_mode = named_global["planner.mode", Int]
@@ -152,6 +153,36 @@ comptime CMD_FLY = 2
 comptime CMD_RESET = 4
 comptime CMD_QUIT = 8
 comptime CMD_EXPORT = 16
+
+fn speed_count() -> Int:
+    return 6
+
+
+fn speed_rate(i: Int) -> Float64:
+    """Seconds of mission per second of wall clock. 900x flies Apollo 11's
+    103 hours in about seven minutes, which is why it is the default; 1x is
+    there because a burn lasting 336 seconds is worth watching once."""
+    var r = List[Float64]()
+    r.append(1.0)
+    r.append(60.0)
+    r.append(300.0)
+    r.append(900.0)
+    r.append(1800.0)
+    r.append(3600.0)
+    return r[i] if i >= 0 and i < len(r) else 900.0
+
+
+fn speed_label(i: Int) -> String:
+    let v = speed_rate(i)
+    return String("1×  real time") if v == 1.0 else (ui.f(v, 0) + "×")
+
+
+fn speed_index_of(v: Float64) -> Int:
+    for i in range(speed_count()):
+        if speed_rate(i) == v:
+            return i
+    return 3
+
 
 comptime MODE_TRAJECTORY = 0
 comptime MODE_MAP = 1
@@ -799,6 +830,7 @@ class PlannerDelegate:
 comptime TB_REPLAN = "planner.replan"
 comptime TB_FLY = "planner.fly"
 comptime TB_VIEW = "planner.view"
+comptime TB_SPEED = "planner.speed"
 comptime TB_EXPORT = "planner.export"
 
 
@@ -807,6 +839,7 @@ def toolbar_ids_object() -> ObjCObject:
     for name in [
         String(TB_REPLAN),
         String(TB_FLY),
+        String(TB_SPEED),
         String("NSToolbarFlexibleSpaceItem"),
         String(TB_VIEW),
         String("NSToolbarFlexibleSpaceItem"),
@@ -837,6 +870,10 @@ class PlannerActions:
 
     def plannerExport_(self, sender: ObjCObject):
         g_cmd()[] = g_cmd()[] | CMD_EXPORT
+
+    def plannerSpeedChanged_(self, sender: ObjCObject):
+        let i = Obj["NSPopUpButton"](sender.addr()).indexOfSelectedItem()
+        set_num(N_WARP, speed_rate(i))
 
     def plannerViewChanged_(self, sender: ObjCObject):
         g_mode()[] = Obj["NSSegmentedControl"](sender.addr()).selectedSegment()
@@ -1006,6 +1043,41 @@ class PlannerActions:
                 )
                 _ = external_call["objc_retain", P](seg.ptr())
                 g_seg()[] = seg.addr()
+                return item
+
+            # The playback rate. A pop-up rather than a slider: the useful
+            # rates are decades apart, and a slider would spend most of its
+            # travel on values nobody wants.
+            if Obj["NSString"](ident.addr()).isEqualToString(
+                nsstring(String(TB_SPEED)).ptr()
+            ):
+                var pop = Cls["NSPopUpButton"]().alloc()
+                pop = Obj["NSPopUpButton"](pop.addr()).initWithFrame_pullsDown(
+                    ui.rect(0.0, 0.0, 124.0, 24.0), False
+                )
+                for k in range(speed_count()):
+                    Obj["NSPopUpButton"](pop.addr()).addItemWithTitle(
+                        nsstring(speed_label(k)).ptr()
+                    )
+                Obj["NSPopUpButton"](pop.addr()).selectItemAtIndex(
+                    speed_index_of(num(N_WARP))
+                )
+                Obj["NSControl"](pop.addr()).setControlSize(Int(1))
+                Obj["NSPopUpButton"](pop.addr()).setFont(
+                    Cls["NSFont"]().monospacedDigitSystemFontOfSize_weight(
+                        11.0, ui.W_REGULAR
+                    ).ptr()
+                )
+                Obj["NSControl"](pop.addr()).setTarget(owner.ptr())
+                Obj["NSControl"](pop.addr()).setAction(
+                    sel["plannerSpeedChanged:"]().ptr()
+                )
+                Obj["NSToolbarItem"](item.addr()).setView(pop.ptr())
+                Obj["NSToolbarItem"](item.addr()).setLabel(
+                    nsstring(String("Speed")).ptr()
+                )
+                _ = external_call["objc_retain", P](pop.ptr())
+                g_speedpop()[] = pop.addr()
                 return item
 
             var title = String("")
@@ -1839,7 +1911,8 @@ def main() raises:
                 redraw()
                 set_status(
                     String("Flying · GET ") + ui.get_hms(m.get)
-                    + " · " + (m.outcome if m.phase == PHASE_DONE else String("in flight"))
+                    + " · " + ui.f(num(N_WARP), 0) + "× · "
+                    + (m.outcome if m.phase == PHASE_DONE else String("in flight"))
                 )
             else:
                 last = perf_counter_ns()
@@ -2004,13 +2077,14 @@ def run_command(cmd: String) -> String:
     if c == "help":
         return String(
             "status · replan · fly · hold · reset · mode "
-            "trajectory|map|descent · section <name> · export [path] · "
-            "screenshot [path] · quit"
+            "trajectory|map|descent · speed <n> · section <name> · "
+            "export [path] · screenshot [path] · quit"
         )
     if c == "status":
         return (
             String("mode ") + mode_name(g_mode()[])
             + "; " + (String("flying") if g_flying()[] != 0 else String("held"))
+            + " at " + ui.f(num(N_WARP), 0) + "×"
             + "; section " + g_phases()[][g_phase_sel()[]]
             + "; " + String(shown_count()) + " of " + String(row_count())
             + " plan rows shown; "
@@ -2021,6 +2095,25 @@ def run_command(cmd: String) -> String:
         if c.byte_length() > 11:
             where = String(c[byte=11:].strip())
         return capture_window(where)
+    if c.startswith("speed"):
+        let arg = String(c[byte=5:].strip())
+        if arg == "":
+            return String("speed ") + speed_label(speed_index_of(num(N_WARP)))
+        var want = 0.0
+        try:
+            want = Float64(atof(arg))
+        except:
+            return String("error: speed <seconds of mission per second>")
+        if want < 1.0:
+            want = 1.0
+        if want > 3600.0:
+            want = 3600.0
+        set_num(N_WARP, want)
+        if g_speedpop()[] != 0:
+            Obj["NSPopUpButton"](ObjCObject(g_speedpop()[]).addr()).selectItemAtIndex(
+                speed_index_of(want)
+            )
+        return String("speed ") + ui.f(num(N_WARP), 0) + "×"
     if c.startswith("section"):
         let which = String(c[byte=7:].strip())
         var idx = -1

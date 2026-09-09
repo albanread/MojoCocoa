@@ -99,6 +99,15 @@ install_name_tool -add_rpath "@executable_path/../Frameworks" \
 
 cp "$ROOT/examples/moonshot/MissionPlanner.sdef" "$APP/Contents/Resources/"
 
+# The icon, if it has been drawn. tools/make-planner-icon.py writes it; the
+# name in Resources has to match CFBundleIconFile below.
+if [ -f "$ROOT/tools/mission-planner.icns" ]; then
+  cp -f "$ROOT/tools/mission-planner.icns" "$APP/Contents/Resources/AppIcon.icns"
+  echo "   icon: tools/mission-planner.icns"
+else
+  echo "   no icon -- run ./tools/make-planner-icon.py" >&2
+fi
+
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -117,6 +126,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key>   <true/>
   <key>LSApplicationCategoryType</key> <string>public.app-category.education</string>
   <key>NSHumanReadableCopyright</key>  <string>MojoCocoa</string>
+  <key>CFBundleIconFile</key>          <string>AppIcon</string>
   <!-- Scriptable. The events work by raw code without these; what they add
        is the words, and sdef(1) resolves them only for a bundle. -->
   <key>NSAppleScriptEnabled</key>      <true/>
