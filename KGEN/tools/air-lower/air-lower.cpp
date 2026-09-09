@@ -216,6 +216,22 @@ int main(int argc, char **argv) {
     return kRefused;
   }
 
+  // Refuse anything but AIR, and refuse it *before* emitObject.
+  //
+  // Not defensiveness: the EmitContext below is deliberately empty, which is
+  // safe only because AirBackend::emitObject reads none of it. HostBackend's
+  // override does -- it calls ctx.runLlc -- so an empty function_ref there is
+  // a null call, and a triple that resolves to the host backend segfaults in
+  // a stack naming no user code. Measured, not imagined.
+  if ((*backend)->name() != "air") {
+    llvm::errs() << argv[0] << ": target triple '"
+                 << module->getTargetTriple().str() << "' resolves to the '"
+                 << (*backend)->name()
+                 << "' backend, not AIR. This tool builds Metal libraries "
+                    "only; give the module an air64 triple.\n";
+    return kRefused;
+  }
+
   llvm::Triple codegenTriple(fixTargetTriple(module->getTargetTriple().str()));
   llvm::Expected<std::unique_ptr<llvm::TargetMachine>> tm =
       llvm::codegen::createTargetMachineForTriple(codegenTriple,
