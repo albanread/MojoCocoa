@@ -114,12 +114,17 @@ which opens itself when a build starts and toggles with ⌘0.
                   key equivalents, and the course, the launch-window map
                   and the descent profile drawn in vectors. Every colour
                   is a semantic system colour, so it is right in light and
-                  dark without a second palette. It is scriptable the way
-                  `roast` is -- `tell application "Trench" to do command
-                  "mode map"` -- and photographs its own window through
-                  that surface, which is how the suite checks it. The
-                  source list filters the sheet to one phase; Export
-                  writes the canvas alone through a save panel
+                  dark without a second palette. The source list filters
+                  the sheet to one phase; Export writes the canvas alone
+                  through a save panel. It is scriptable the way `roast`
+                  is -- one verb over a TRNC/cmnd Apple Event -- and
+                  photographs its own window through that surface, which
+                  is how the suite checks it. `tell application "Trench"
+                  to do command "mode map"` needs the BUNDLE that
+                  tools/make-trench-app.sh builds: Launch Services is what
+                  resolves an application by name, and it only knows about
+                  bundles. Events sent by raw code, and any event the
+                  process sends itself, work either way
     ferns/        a landscape of Barnsley ferns growing live over a
                   procedural lawn, under a cloudy dusk sky (CPU)
     fernwind/     the same meadow swaying in the wind: every fern redrawn
