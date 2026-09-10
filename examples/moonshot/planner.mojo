@@ -53,7 +53,7 @@ from astro import (
 from orbit import Bodies, RVd, F_ALL
 from max.gpu.host import DeviceContext
 from window import WindowMap, compute_map, FIELDS, F_DV_TLI, F_DV_LOI, F_FLAGS, FLAG_CORRIDOR, FLAG_LIT, FLAG_OK
-from descent import Terrain, high_gate, low_gate
+from descent import Terrain, high_gate, low_gate, phase_label
 from plan import Choices, PlanSheet, make_plan, apollo_11_choices
 from mission import (
     Mission, PHASE_PARKING, PHASE_LUNAR_ORBIT, PHASE_DESCENT, PHASE_DONE,
@@ -84,6 +84,26 @@ comptime g_phases = named_global["planner.phases", List[String]]
 comptime g_arc = named_global["planner.arc", List[Float64]]
 """The planned course in kilometres, x y z per sample."""
 comptime g_flown = named_global["planner.flown", List[Float64]]
+comptime g_dtrail = named_global["planner.dtrail", List[Float64]]
+"""The powered descent as flown: downrange and altitude in metres, a pair
+per guidance cycle."""
+comptime g_dstate = named_global["planner.dstate", List[Float64]]
+"""And where it is now, by the D_* indices."""
+
+comptime D_RANGE = 0
+comptime D_ALT = 1
+comptime D_RATE = 2
+comptime D_GS = 3
+comptime D_THR = 4
+comptime D_HOVER = 5
+comptime D_PHASE = 6
+comptime D_LIVE = 7
+comptime D_AIM = 8
+comptime D_REDES = 9
+comptime D_LANDX = 10
+comptime D_CONTACT = 11
+comptime D_ALARM = 12
+comptime D_COUNT = 13
 """What the spacecraft has actually flown, same layout."""
 
 comptime g_moon = named_global["planner.moon", List[Float64]]
@@ -106,6 +126,9 @@ comptime g_flybtn = named_global["planner.flybtn", Int]
 
 comptime g_mode = named_global["planner.mode", Int]
 """0 trajectory, 1 window map, 2 descent."""
+comptime g_mission_phase = named_global["planner.missionphase", Int]
+"""The flight's phase, so the scripting surface can refuse a call that
+makes no sense where the mission actually is."""
 comptime g_seenphase = named_global["planner.seenphase", Int]
 """The stage the view last reacted to, so the view follows the flight on
 its TRANSITIONS and never fights a viewer who has chosen to look somewhere
@@ -179,9 +202,12 @@ comptime CMD_FLY = 2
 comptime CMD_RESET = 4
 comptime CMD_QUIT = 8
 comptime CMD_EXPORT = 16
+comptime CMD_ABORT = 32
+comptime CMD_GO = 64
+comptime CMD_NOGO = 128
 
 fn speed_count() -> Int:
-    return 6
+    return 7
 
 
 fn speed_rate(i: Int) -> Float64:
@@ -190,12 +216,25 @@ fn speed_rate(i: Int) -> Float64:
     there because a burn lasting 336 seconds is worth watching once."""
     var r = List[Float64]()
     r.append(1.0)
+    r.append(10.0)
     r.append(60.0)
     r.append(300.0)
     r.append(900.0)
     r.append(1800.0)
     r.append(3600.0)
     return r[i] if i >= 0 and i < len(r) else 900.0
+
+
+fn set_speed(v: Float64):
+    """The rate, and the control that shows it. The powered descent runs at
+    10x whatever is asked (mission.advance caps it), so the menu carries a
+    10x step and the descent selects it -- a popup reading 900x over a
+    descent crawling at 10 is the control lying about the clock."""
+    set_num(N_WARP, v)
+    if g_speedpop()[] != 0:
+        Obj["NSPopUpButton"](ObjCObject(g_speedpop()[]).addr()).selectItemAtIndex(
+            speed_index_of(v)
+        )
 
 
 fn speed_label(i: Int) -> String:
@@ -207,7 +246,7 @@ fn speed_index_of(v: Float64) -> Int:
     for i in range(speed_count()):
         if speed_rate(i) == v:
             return i
-    return 3
+    return 4
 
 
 comptime MODE_TRAJECTORY = 0
@@ -554,11 +593,15 @@ def follow_mission(m: Mission):
     when the stage does, so someone who has deliberately opened the
     launch-window map keeps it until the mission moves on."""
     frame_course(m)
+    g_mission_phase()[] = m.phase
     let k = stage_of(m)
     if k != g_seenphase()[]:
         g_seenphase()[] = k
         if k == 3:
             set_mode(MODE_DESCENT)
+            # Twelve minutes of powered flight is the one part of this
+            # worth watching at something near its own pace.
+            set_speed(10.0)
         elif g_mode()[] != MODE_TRAJECTORY:
             set_mode(MODE_TRAJECTORY)
     g_dirty()[] = 1
@@ -833,9 +876,20 @@ fn month_name(m: Int) -> String:
 
 fn draw_descent(b: CGRect):
     """The powered descent, as a profile: altitude against the ground still
-    to run. The two gates are the guidance's own targets from `descent.mojo`,
-    and the ground under them is the real terrain that file generates for
-    this site -- the same craters the LM would be looking at."""
+    to run, with the LM on it and the ground it is choosing between.
+
+    The axes follow the LM down. Powered descent begins 480 km uprange at
+    15 km and ends on the footpads, and no single scale serves both ends
+    of that -- a chart fixed at the endgame shows nothing at all for ten
+    of the twelve minutes, and one fixed at the start ends with the whole
+    approach in a pixel. So the extents come from where the LM is, with
+    floors, which walks the picture through braking, approach and the
+    final descent.
+
+    Close in it stops being a trajectory chart and becomes a landing
+    chart: the craters and the boulder fields the guidance is steering
+    between, the site, and the aim point the crew have chosen -- which
+    moves when they redesignate, and every second of that costs hover."""
     let w = b.size.width
     let h = b.size.height
     let left = 54.0
@@ -844,90 +898,200 @@ fn draw_descent(b: CGRect):
     let gw = w - left - 20.0
     let gh = h - bottom - top
 
-    ui.text_weight(
-        String("Powered descent · ") + landing_name(choice(C_TARGET)),
-        left, h - 22.0, 12.0, ui.W_SEMIBOLD, ui.label(),
-    )
-    ui.text(
-        String("P63 braking · P64 approach · P66 final, from high gate to the probes"),
-        left, h - 36.0, 10.0, ui.tertiary(),
-    )
+    let live = len(g_dstate()[]) >= D_COUNT and g_dstate()[][D_LIVE] > 0.5
+    var x_max = 9000.0
+    var y_max = 2600.0
+    if live:
+        let rr = -g_dstate()[][D_RANGE]
+        let aa = g_dstate()[][D_ALT]
+        x_max = rr * 1.20
+        if x_max < 260.0:
+            x_max = 260.0
+        y_max = aa * 1.30
+        if y_max < 60.0:
+            y_max = 60.0
+    # Ground BEYOND the site as well: what the crew are flying over is as
+    # much the point as what they have crossed, and a redesignation is
+    # usually forward.
+    var x_ahead = x_max * 0.14
+    if x_ahead < 30.0:
+        x_ahead = 30.0
+    let x_lo = -x_max
+    let x_hi = x_ahead
+    let close = x_max < 4000.0
 
-    # Range runs right to left: the site is at the origin, and the LM comes
-    # in from uprange, which is how every descent chart is drawn.
-    let x_max = 9000.0
-    let y_max = 2600.0
+    var head = String("Powered descent · ") + landing_name(choice(C_TARGET))
+    if live:
+        head += "  ·  " + phase_label(Int(g_dstate()[][D_PHASE]))
+    ui.text_weight(head, left, h - 22.0, 12.0, ui.W_SEMIBOLD, ui.label())
+    if live:
+        var sub = String("alt ") + ui.f(g_dstate()[][D_ALT], 0) + " m   down "
+        sub += ui.f(g_dstate()[][D_RATE], 1) + " m/s   ground "
+        sub += ui.f(g_dstate()[][D_GS], 1) + " m/s   throttle "
+        sub += ui.f(g_dstate()[][D_THR] * 100.0, 0) + "%   hover "
+        sub += ui.f(g_dstate()[][D_HOVER], 0) + " s"
+        if g_dstate()[][D_REDES] > 0.0:
+            sub += "   redesignated " + ui.f(g_dstate()[][D_REDES], 0) + "×"
+        ui.text(sub, left, h - 36.0, 10.0, ui.secondary())
+    else:
+        ui.text(
+            String("P63 braking · P64 approach · P66 final, from high gate to the probes"),
+            left, h - 36.0, 10.0, ui.tertiary(),
+        )
+
     ui.hairline(left, bottom - 1.0, gw, 1.0)
     ui.hairline(left - 1.0, bottom, 1.0, gh)
     for k in range(0, 5):
         let a = Float64(k) / 4.0
+        let av = y_max * a
         ui.digits_right(
-            ui.f(y_max * a / 1000.0, 1) + " km",
+            (ui.f(av, 0) + " m") if y_max < 3000.0 else (ui.f(av / 1000.0, 1) + " km"),
             0.0, bottom + gh * a - 4.0, left - 8.0, 9.0, ui.tertiary(),
         )
         if k > 0:
             ui.fill_rect(ui.rect(left, bottom + gh * a, gw, 0.5), ui.quaternary())
     for k in range(0, 4):
         let a = Float64(k) / 3.0
+        let rv = -(x_lo + (x_hi - x_lo) * a)
         ui.text_centre(
-            String(Int(x_max * (1.0 - a) / 1000.0)) + " km",
-            left + gw * a - 20.0, bottom - 16.0, 40.0, 9.0, ui.tertiary(),
+            (ui.f(rv, 0) + " m") if x_max < 12000.0 else (ui.f(rv / 1000.0, 0) + " km"),
+            left + gw * a - 24.0, bottom - 16.0, 48.0, 9.0, ui.tertiary(),
         )
 
-    # The two gates, and the profile through them.
+    # The planned profile, over its own nine kilometres, through whatever
+    # the axes currently are.
     let hg = high_gate()
     let lg = low_gate()
     var prof = ui.Path()
-    let n = 90
+    let n = 140
     for k in range(n + 1):
-        let f = Float64(k) / Float64(n)
-        # A cubic through (x_max, y_max) -> high gate -> low gate -> 0, which
-        # is the shape the quartic guidance flies; the numbers at the ends are
-        # the gates' own.
-        let rng = x_max * (1.0 - f)
+        let along = x_lo + (x_hi - x_lo) * Float64(k) / Float64(n)
+        let rng = -along
         var alt = 0.0
+        if rng > 9000.0:
+            prof.lift()
+            continue
         if rng > -hg.x:
-            let u = (rng + hg.x) / (x_max + hg.x)
-            alt = hg.z + (y_max - hg.z) * u * u
+            let u = (rng + hg.x) / (9000.0 + hg.x)
+            alt = hg.z + (2600.0 - hg.z) * u * u
         elif rng > -lg.x:
             let u = (rng + lg.x) / (-hg.x + lg.x)
             alt = lg.z + (hg.z - lg.z) * u * u
-        else:
+        elif rng > 0.0:
             let u = rng / (-lg.x)
-            alt = lg.z * u * u if u > 0.0 else 0.0
-        prof.add(left + gw * f, bottom + gh * alt / y_max)
-    prof.stroke(2.0, ui.accent())
+            alt = lg.z * u * u
+        if alt <= y_max * 1.05:
+            prof.add(left + gw * Float64(k) / Float64(n), bottom + gh * alt / y_max)
+        else:
+            prof.lift()
+    prof.stroke(1.5, ui.mix(ui.accent(), ui.control_bg(), 0.45) if live else ui.accent())
 
     for g in [hg, lg]:
-        let f = (x_max + g.x) / x_max
-        let gx = left + gw * f
-        let gy = bottom + gh * g.z / y_max
-        ui.dot(gx, gy, 3.0, ui.label())
-        ui.line(gx, bottom, gx, gy, 0.5, ui.quaternary())
+        let rng = -g.x
+        if rng <= x_max and g.z <= y_max:
+            let gx = left + gw * (-g.x - x_lo) / (x_hi - x_lo)
+            let gy = bottom + gh * g.z / y_max
+            ui.dot(gx, gy, 3.0, ui.label())
+            ui.line(gx, bottom, gx, gy, 0.5, ui.quaternary())
+            ui.text(
+                (String("high gate") if g.z > 1000.0 else String("low gate"))
+                + "  " + ui.f(g.z, 0) + " m",
+                gx + 6.0, gy + 8.0, 9.0, ui.secondary(),
+            )
 
-    ui.text(String("high gate  2 286 m"), left + gw * 0.10, bottom + gh * hg.z / y_max + 8.0, 9.0, ui.secondary())
-    ui.text(String("low gate  152 m"), left + gw * 0.78, bottom + gh * lg.z / y_max + 10.0, 9.0, ui.secondary())
-
-    # The ground: the real terrain this site generates, sampled along the
-    # approach and drawn to the same vertical scale, exaggerated so it reads.
+    # The ground, at the LM's own cross-range.
     let site = landing_sites()[choice(C_TARGET)]
     var ground = Terrain(site.lat, site.lon, False)
-    # A band of its own along the bottom: the terrain is tens of metres
-    # against a 2.6 km axis, so at the chart's own scale it is a straight
-    # line, and a straight line says nothing about where it is safe to land.
     let band = 34.0
+    var exag = 0.28
+    if live and y_max < 1200.0:
+        exag = gh / y_max * 0.55
     var gp = ui.Path()
-    for k in range(0, 181):
-        let f = Float64(k) / 180.0
-        let along = -x_max * (1.0 - f)
+    for k in range(0, 241):
+        let along = x_lo + (x_hi - x_lo) * Float64(k) / 240.0
         let hgt = ground.height(along, 0.0)
-        gp.add(left + gw * f, bottom + band * 0.5 + hgt * 0.28)
+        gp.add(left + gw * Float64(k) / 240.0, bottom + band * 0.5 + hgt * exag)
     gp.stroke(1.25, ui.secondary())
     ui.fill_rect(ui.rect(left, bottom, gw, 0.5), ui.quaternary())
-    ui.text(
-        String("terrain along the approach · ±60 m about the mean"),
-        left + 8.0, bottom + band + 2.0, 9.0, ui.tertiary(),
-    )
+
+    # Close in, the hazards the guidance is steering between: the craters
+    # as spans on the ground line, the boulder fields under them, the site
+    # and the aim point the crew have settled on.
+    if close:
+        for i in range(len(ground.fields) // 4):
+            let fx = ground.fields[i * 4]
+            let fr = ground.fields[i * 4 + 2]
+            if fx + fr > x_lo and fx - fr < x_hi:
+                let ax = left + gw * (fx - fr - x_lo) / (x_hi - x_lo)
+                let bx = left + gw * (fx + fr - x_lo) / (x_hi - x_lo)
+                ui.fill_rect(ui.rect(ax, bottom + 3.0, bx - ax, 3.0), ui.mix(ui.orange(), ui.control_bg(), 0.5))
+        for i in range(len(ground.craters) // 4):
+            let cx = ground.craters[i * 4]
+            let cr = ground.craters[i * 4 + 2]
+            if cx + cr > x_lo and cx - cr < x_hi:
+                let ax = left + gw * (cx - cr - x_lo) / (x_hi - x_lo)
+                let bx = left + gw * (cx + cr - x_lo) / (x_hi - x_lo)
+                ui.fill_rect(ui.rect(ax, bottom + 8.0, bx - ax, 2.5), ui.rgba(0.85, 0.25, 0.25, 0.85))
+        ui.text(String("craters · boulder fields"), left + 6.0, bottom + 14.0, 9.0, ui.tertiary())
+        let sx = left + gw * (0.0 - x_lo) / (x_hi - x_lo)
+        ui.line(sx, bottom, sx, bottom + gh * 0.5, 1.0, ui.mix(ui.accent(), ui.control_bg(), 0.5))
+        ui.text(landing_name(choice(C_TARGET)), sx + 5.0, bottom + gh * 0.5 - 10.0, 9.0, ui.secondary())
+        if live:
+            let aim = g_dstate()[][D_AIM]
+            if aim > x_lo and aim < x_hi:
+                let ax = left + gw * (aim - x_lo) / (x_hi - x_lo)
+                ui.line(ax, bottom, ax, bottom + gh * 0.34, 1.5, ui.orange())
+                ui.dot(ax, bottom + gh * 0.34, 3.0, ui.orange())
+                ui.text(String("aim"), ax + 5.0, bottom + gh * 0.34 - 4.0, 9.0, ui.orange())
+
+    # What has actually been flown, and the LM at the head of it.
+    if live:
+        var fp = ui.Path()
+        var i = 0
+        var started = False
+        while i + 1 < len(g_dtrail()[]):
+            let along = g_dtrail()[][i]
+            let alt = g_dtrail()[][i + 1]
+            if along >= x_lo and along <= x_hi and alt <= y_max * 1.2:
+                fp.add(left + gw * (along - x_lo) / (x_hi - x_lo), bottom + gh * alt / y_max)
+                started = True
+            elif started:
+                fp.lift()
+            i += 2
+        fp.stroke(2.0, ui.orange())
+        let along = g_dstate()[][D_RANGE]
+        let alt = g_dstate()[][D_ALT]
+        if along >= x_lo and along <= x_hi:
+            let lx = left + gw * (along - x_lo) / (x_hi - x_lo)
+            var ly = bottom + gh * alt / y_max
+            if ly > bottom + gh:
+                ly = bottom + gh
+            ui.dot(lx, ly, 3.5, ui.orange())
+            ui.stroke_oval(ui.rect(lx - 7.0, ly - 7.0, 14.0, 14.0), 1.0, ui.orange())
+            let fl = 8.0 + 26.0 * g_dstate()[][D_THR]
+            ui.line(lx, ly, lx, ly - fl, 2.0, ui.mix(ui.orange(), ui.control_bg(), 0.35))
+        if Int(g_dstate()[][D_ALARM]) == 1:
+            ui.text_weight(
+                String("1202 PROGRAM ALARM   ⌘G go   ⌘K abort"),
+                left + 8.0, bottom + gh * 0.80, 12.0, ui.W_SEMIBOLD,
+                ui.rgba(0.85, 0.22, 0.22, 1.0),
+            )
+        elif Int(g_dstate()[][D_PHASE]) < 3:
+            ui.text(
+                String("⌘. aborts the descent"),
+                left + 8.0, bottom + gh * 0.80, 9.0, ui.tertiary(),
+            )
+        if Int(g_dstate()[][D_PHASE]) == 3:
+            ui.text(
+                String("down ") + ui.f(g_dstate()[][D_CONTACT], 2) + " m/s · "
+                + ui.f(g_dstate()[][D_LANDX], 0) + " m from the site",
+                left + 8.0, bottom + gh * 0.62, 10.0, ui.label(),
+            )
+    else:
+        ui.text(
+            String("terrain along the approach · ±60 m about the mean"),
+            left + 8.0, bottom + band + 2.0, 9.0, ui.tertiary(),
+        )
 
 
 fn landing_name(i: Int) -> String:
@@ -1033,6 +1197,15 @@ class PlannerActions:
 
     def plannerExport_(self, sender: ObjCObject):
         g_cmd()[] = g_cmd()[] | CMD_EXPORT
+
+    def plannerAbort_(self, sender: ObjCObject):
+        g_cmd()[] = g_cmd()[] | CMD_ABORT
+
+    def plannerGo_(self, sender: ObjCObject):
+        g_cmd()[] = g_cmd()[] | CMD_GO
+
+    def plannerNoGo_(self, sender: ObjCObject):
+        g_cmd()[] = g_cmd()[] | CMD_NOGO
 
     def plannerSpeedChanged_(self, sender: ObjCObject):
         let i = Obj["NSPopUpButton"](sender.addr()).indexOfSelectedItem()
@@ -1347,6 +1520,11 @@ def build_menu_bar(app: ObjCObject, actions: Int):
     add_item(mission, String("Fly / Hold"), sel["plannerFly:"](), String("\r"), actions)
     add_separator(mission)
     add_item(mission, String("Reset to Launch"), sel["plannerReset:"](), String("R"), actions)
+    add_separator(mission)
+    # The calls the trench actually makes once the LM is on the way down.
+    add_item(mission, String("Alarm: GO"), sel["plannerGo:"](), String("g"), actions)
+    add_item(mission, String("Alarm: NO-GO"), sel["plannerNoGo:"](), String("k"), actions)
+    add_item(mission, String("ABORT Descent"), sel["plannerAbort:"](), String("."), actions)
 
     let view = add_submenu(bar, String("View"))
     add_item(view, String("Trajectory"), sel["plannerModeTrajectory:"](), String("1"), actions)
@@ -1811,6 +1989,38 @@ def refresh_flown(m: Mission):
         i += 1
 
 
+def refresh_descent(m: Mission):
+    """The powered descent as the plot needs it: the flown profile in
+    downrange and altitude, and where the LM is now."""
+    g_dtrail()[].clear()
+    let n = len(m.descent.trail) // 4
+    var i = 0
+    while i < n:
+        g_dtrail()[].append(m.descent.trail[i * 4 + 1])
+        g_dtrail()[].append(m.descent.trail[i * 4 + 3])
+        i += 1
+    g_dstate()[].clear()
+    for _ in range(D_COUNT):
+        g_dstate()[].append(0.0)
+    g_dstate()[][D_RANGE] = m.descent.downrange()
+    g_dstate()[][D_ALT] = m.descent.altitude()
+    g_dstate()[][D_RATE] = m.descent.descent_rate()
+    g_dstate()[][D_GS] = m.descent.ground_speed()
+    g_dstate()[][D_THR] = m.descent.throttle
+    g_dstate()[][D_HOVER] = m.descent.hover_seconds()
+    g_dstate()[][D_PHASE] = Float64(m.descent.phase)
+    g_dstate()[][D_LIVE] = 1.0
+    # Where the crew are aiming, in the frame the chart is drawn in: the
+    # aim is held in the site frame, and what the LM will actually reach
+    # is that aim displaced by the navigation error it does not know it
+    # has.
+    g_dstate()[][D_AIM] = m.descent.aim_x - m.descent.nav_err.x
+    g_dstate()[][D_REDES] = Float64(m.descent.redesignations)
+    g_dstate()[][D_LANDX] = m.descent.landed_x
+    g_dstate()[][D_CONTACT] = m.descent.contact_speed
+    g_dstate()[][D_ALARM] = Float64(m.descent.alarm_state)
+
+
 def plan_log(sheet: PlanSheet, ch: Choices):
     """The flight plan as the log's opening entry, so the pane carries the
     timeline before there is a flight to report. Ground Elapsed Time from
@@ -2022,7 +2232,21 @@ def main() raises:
                 let want_reset = (g_cmd()[] & CMD_RESET) != 0
                 let want_quit = (g_cmd()[] & CMD_QUIT) != 0
                 let want_export = (g_cmd()[] & CMD_EXPORT) != 0
+                let want_abort = (g_cmd()[] & CMD_ABORT) != 0
+                let want_go = (g_cmd()[] & CMD_GO) != 0
+                let want_nogo = (g_cmd()[] & CMD_NOGO) != 0
                 g_cmd()[] = 0
+                if m.phase == PHASE_DESCENT:
+                    if want_abort:
+                        m.descent.call_abort(String("abort called from the ground"))
+                        refresh_descent(m)
+                        g_dirty()[] = 1
+                    if want_go:
+                        m.descent.call_alarm(True)
+                    if want_nogo:
+                        m.descent.call_alarm(False)
+                        refresh_descent(m)
+                        g_dirty()[] = 1
                 if want_export:
                     export_with_panel()
                 if want_quit:
@@ -2084,6 +2308,8 @@ def main() raises:
                 m.advance(dt)
                 follow_mission(m)
                 refresh_flown(m)
+                if m.descent.t > 0.0:
+                    refresh_descent(m)
                 refresh_log(m)
                 build_rows(sheet, ch, m.get, True)
                 reload()
@@ -2147,6 +2373,10 @@ def main() raises:
             set_num(N_WARP, 3600.0)
             var seen = List[Int]()
             var in_orbit = False
+            var shot_at = 0
+            var descent_marks = List[Float64]()
+            for v in [120.0, 480.0, 660.0, 735.0]:
+                descent_marks.append(Float64(v))
             var guard = 0
             while m.phase != PHASE_DONE and guard < 4000:
                 m.warp = num(N_WARP)
@@ -2172,6 +2402,24 @@ def main() raises:
                 # camera has only started moving. One more picture once
                 # the craft is in lunar orbit shows where it ended up,
                 # which is the claim: the Moon, filling the frame.
+                # The descent is the part that has to look alive, so it is
+                # photographed as it runs: braking, approach, and the last
+                # of it with the ground and the aim point in frame.
+                if m.phase == PHASE_DESCENT:
+                    refresh_descent(m)
+                    while shot_at < 4 and m.descent.t >= descent_marks[shot_at]:
+                        let mk = shot_at
+                        shot_at += 1
+                        print("  descent t+", ui.f(m.descent.t, 0),
+                              "·", phase_label(m.descent.phase),
+                              "· alt", ui.f(m.descent.altitude(), 0),
+                              "m · range", ui.f(-m.descent.downrange(), 0),
+                              "m · throttle", ui.f(m.descent.throttle * 100.0, 0),
+                              "% · hover", ui.f(m.descent.hover_seconds(), 0), "s")
+                        _ = send_self(
+                            String("screenshot ") + shots + "/planner-descent-"
+                            + String(mk) + ".png"
+                        )
                 if m.phase == PHASE_LUNAR_ORBIT and not in_orbit:
                     in_orbit = True
                     refresh_flown(m)
@@ -2338,12 +2586,19 @@ def run_command(cmd: String) -> String:
             want = 1.0
         if want > 3600.0:
             want = 3600.0
-        set_num(N_WARP, want)
-        if g_speedpop()[] != 0:
-            Obj["NSPopUpButton"](ObjCObject(g_speedpop()[]).addr()).selectItemAtIndex(
-                speed_index_of(want)
-            )
+        set_speed(want)
         return String("speed ") + ui.f(num(N_WARP), 0) + "×"
+    if c == "abort":
+        if g_mission_phase()[] != PHASE_DESCENT:
+            return String("abort: nothing to abort -- not in powered descent")
+        g_cmd()[] = g_cmd()[] | CMD_ABORT
+        return String("abort called")
+    if c == "go":
+        g_cmd()[] = g_cmd()[] | CMD_GO
+        return String("GO")
+    if c == "nogo":
+        g_cmd()[] = g_cmd()[] | CMD_NOGO
+        return String("NO-GO")
     if c.startswith("section"):
         let which = String(c[byte=7:].strip())
         var idx = -1

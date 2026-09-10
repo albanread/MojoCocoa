@@ -568,6 +568,15 @@ struct Descent(Movable):
                 self.phase = ABORTED
                 self.outcome_reason = String("no place to land within reach: abort")
 
+    def call_abort(mut self, reason: String):
+        """The call nobody wants to make. Staging on the ascent engine is
+        survivable at any altitude the DPS still has; what it costs is the
+        landing, and the mission."""
+        if self.phase >= LANDED:
+            return
+        self.phase = ABORTED
+        self.outcome_reason = reason
+
     def call_alarm(mut self, go: Bool):
         """The trench's answer to the alarm."""
         if self.alarm_state != 1:
